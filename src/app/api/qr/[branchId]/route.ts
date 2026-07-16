@@ -17,7 +17,9 @@ export async function GET(_request: NextRequest, { params }: Params) {
 
     const result = await loadCustomerMenu(branch);
     if (result.status === "not-found") throw new ApiError(404, "المنيو ده مش متاح");
-    if (result.status === "disabled") throw new ApiError(403, "المنيو غير متاح حاليًا");
+    if (result.status === "disabled" || result.status === "suspended") {
+      throw new ApiError(403, "المنيو غير متاح حاليًا");
+    }
 
     return NextResponse.json(result.menu);
   } catch (error) {

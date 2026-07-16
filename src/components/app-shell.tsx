@@ -48,7 +48,6 @@ const NAV: { href: string; label: string; icon: string; permission: Permission }
   { href: "/reports", label: t.nav.reports, icon: "📈", permission: "reports:read" },
   { href: "/shifts", label: t.nav.shiftReports, icon: "🧮", permission: "shifts:read" },
   { href: "/audit", label: t.nav.audit, icon: "🕓", permission: "audit:read" },
-  { href: "/admin/cafes", label: t.nav.cafes, icon: "🏢", permission: "platform:manage" },
 ];
 
 export function AppShell({
@@ -66,13 +65,7 @@ export function AppShell({
   const router = useRouter();
   const can = (permission: Permission) => hasPermission(user.role, permission);
 
-  // Super admins work at platform level: cafe pages need a tenant, so
-  // their nav is trimmed to platform + audit.
-  const navItems = NAV.filter((item) =>
-    user.role === "SUPER_ADMIN"
-      ? ["platform:manage", "audit:read"].includes(item.permission)
-      : can(item.permission)
-  );
+  const navItems = NAV.filter((item) => can(item.permission));
 
   async function logout() {
     await fetch("/api/auth/logout", { method: "POST" });

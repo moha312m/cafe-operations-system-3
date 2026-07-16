@@ -11,11 +11,14 @@ export default async function AppLayout({
   const session = await getSession();
   if (!session) redirect("/login");
 
+  // Platform owner works in the dedicated /admin surface, not the cafe app.
+  if (session.role === "SUPER_ADMIN") redirect("/admin/dashboard");
+
   const [cafe, branch] = await Promise.all([
     session.cafeId
       ? db.cafe.findUnique({
           where: { id: session.cafeId },
-          select: { id: true, name: true, slug: true, currency: true, taxRate: true },
+          select: { id: true, name: true, slug: true, currency: true, taxRate: true, isActive: true },
         })
       : null,
     session.branchId
@@ -26,12 +29,25 @@ export default async function AppLayout({
       : null,
   ]);
 
+  // A cafe suspended after login must not keep serving the app to its staff.
+  if (cafe && !cafe.isActive) {
+    const { clearSessionCookie } = await import("@/lib/auth");
+    await clearSessionCookie();
+    redirect("/login?suspended=1");
+  }
+
   return (
     <AppShell
       user={session}
       cafe={
         cafe
-          ? { ...cafe, taxRate: Number(cafe.taxRate) }
+          ? {
+              id: cafe.id,
+              name: cafe.name,
+              slug: cafe.slug,
+              currency: cafe.currency,
+              taxRate: Number(cafe.taxRate),
+            }
           : null
       }
       branchName={branch?.name ?? null}

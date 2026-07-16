@@ -77,6 +77,17 @@ enum ShiftStatus {
   CLOSED
 }
 
+// SaaS subscription state for a cafe tenant. Independent of `isActive`,
+// which is the hard on/off switch the platform owner flips to suspend a
+// cafe. TRIAL/ACTIVE keep the cafe usable; EXPIRED/SUSPENDED are shown in
+// the super-admin panel and can be extended into hard enforcement later.
+enum SubscriptionStatus {
+  TRIAL // فترة تجريبية
+  ACTIVE // اشتراك نشط
+  EXPIRED // اشتراك منتهي
+  SUSPENDED // اشتراك موقوف
+}
+
 // ─────────────────────────── Tenancy core ────────────────────────────
 
 model Cafe {
@@ -85,10 +96,21 @@ model Cafe {
   slug      String   @unique
   currency  String   @default("USD")
   taxRate   Decimal  @default(0) @db.Decimal(5, 2) // percent, e.g. 14.00
-  isActive  Boolean  @default(true)
+  isActive  Boolean  @default(true) // false = suspended by the platform owner
   // Allow serving orders even if an ingredient goes below zero. Default
   // off: serving is blocked when stock is insufficient.
   allowNegativeStock Boolean @default(false)
+
+  // Platform suspension audit (set when isActive is flipped off).
+  suspendedAt     DateTime?
+  suspendedReason String?
+
+  // SaaS subscription (placeholder billing — DB-ready, UI-visible).
+  planName             String             @default("تجريبي")
+  subscriptionStatus   SubscriptionStatus @default(TRIAL)
+  subscriptionStartedAt DateTime?
+  subscriptionEndsAt    DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

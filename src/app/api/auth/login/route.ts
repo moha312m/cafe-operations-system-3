@@ -32,7 +32,7 @@ export async function POST(request: NextRequest) {
       throw new ApiError(403, "الحساب موقوف — كلم المدير");
     }
     if (user.cafe && !user.cafe.isActive) {
-      throw new ApiError(403, "This cafe is suspended");
+      throw new ApiError(403, "تم إيقاف حساب الكافيه، برجاء التواصل مع إدارة المنصة");
     }
 
     await db.user.update({

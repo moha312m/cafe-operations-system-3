@@ -10,6 +10,7 @@ import type {
   PaymentStatus,
   ShiftStatus,
   Role,
+  SubscriptionStatus,
 } from "@prisma/client";
 
 export const t = {
@@ -200,6 +201,76 @@ export const t = {
     BARISTA: "بارستا",
     INVENTORY_MANAGER: "مسؤول مخزون",
   } satisfies Record<Role, string>,
+
+  // ── Super Admin (platform owner) panel ──
+  admin: {
+    brand: "إدارة المنصة",
+    brandSub: "لوحة تحكم المالك",
+    nav: {
+      dashboard: "لوحة المنصة",
+      cafes: "الكافيهات",
+      reports: "التقارير",
+      users: "المستخدمين",
+      subscriptions: "الاشتراكات",
+      payments: "المدفوعات",
+      audit: "سجل الحركات",
+      settings: "الإعدادات",
+    },
+    subStatus: {
+      TRIAL: "تجريبي",
+      ACTIVE: "نشط",
+      EXPIRED: "منتهي",
+      SUSPENDED: "موقوف",
+    } satisfies Record<SubscriptionStatus, string>,
+    cafeStatus: {
+      active: "نشط",
+      suspended: "موقوف",
+    },
+    stats: {
+      totalCafes: "إجمالي الكافيهات",
+      activeCafes: "الكافيهات النشطة",
+      suspendedCafes: "الكافيهات الموقوفة",
+      totalBranches: "إجمالي الفروع",
+      totalUsers: "إجمالي المستخدمين",
+      totalOrders: "إجمالي الطلبات",
+      todaySales: "مبيعات اليوم للمنصة",
+      monthSales: "مبيعات الشهر للمنصة",
+      openShifts: "الشيفتات المفتوحة",
+      todayOrders: "طلبات اليوم",
+      avgOrderValue: "متوسط قيمة الطلب",
+      topCafeToday: "أفضل كافيه اليوم",
+      topCafeMonth: "الأكثر مبيعًا هذا الشهر",
+    },
+    charts: {
+      sales7: "مبيعات آخر ٧ أيام (كل المنصة)",
+      orders7: "الطلبات آخر ٧ أيام",
+      topCafes: "أفضل ٥ كافيهات حسب المبيعات",
+      byPayment: "توزيع المبيعات حسب طريقة الدفع",
+      cafeGrowth: "نمو عدد الكافيهات",
+    },
+    actions: {
+      view: "عرض",
+      edit: "تعديل",
+      suspend: "إيقاف",
+      activate: "تفعيل",
+      resetPassword: "تغيير كلمة المرور",
+      manage: "إدارة",
+      exportCsv: "تصدير CSV",
+      backToCafes: "الرجوع للكافيهات",
+    },
+    passwordReset: {
+      title: "تغيير كلمة المرور",
+      newPassword: "كلمة المرور الجديدة",
+      confirmPassword: "تأكيد كلمة المرور",
+      required: "كلمة المرور مطلوبة",
+      tooShort: "كلمة المرور يجب أن تكون 8 أحرف على الأقل",
+      mismatch: "تأكيد كلمة المرور غير مطابق",
+      success: "تم تغيير كلمة المرور بنجاح",
+    },
+    empty: "لا توجد بيانات لعرضها",
+    loading: "جاري تحميل بيانات المنصة…",
+    suspendedCafeLogin: "تم إيقاف حساب الكافيه، برجاء التواصل مع إدارة المنصة",
+  },
 
   dashboard: {
     title: "لوحة التحكم",

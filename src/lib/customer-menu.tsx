@@ -6,6 +6,7 @@ import { branchShift, round2 } from "@/lib/pricing";
 export type CustomerMenuResult =
   | { status: "ok"; menu: MenuData }
   | { status: "disabled" }
+  | { status: "suspended" }
   | { status: "not-found" };
 
 // Loads the public menu for a branch, exposing only customer-safe
@@ -15,9 +16,11 @@ export type CustomerMenuResult =
 export async function loadCustomerMenu(
   branch: (Branch & { cafe: Cafe }) | null
 ): Promise<CustomerMenuResult> {
-  if (!branch || !branch.isActive || !branch.cafe.isActive) {
+  if (!branch || !branch.isActive) {
     return { status: "not-found" };
   }
+  // Cafe suspended by the platform owner — public menu goes dark.
+  if (!branch.cafe.isActive) return { status: "suspended" };
   if (!branch.publicMenuEnabled) return { status: "disabled" };
 
   const [categories, products] = await Promise.all([
@@ -104,18 +107,25 @@ export async function loadCustomerMenu(
   };
 }
 
-export function MenuUnavailable({ reason }: { reason: "disabled" | "not-found" }) {
+export function MenuUnavailable({
+  reason,
+}: {
+  reason: "disabled" | "suspended" | "not-found";
+}) {
+  const unavailable = reason === "disabled" || reason === "suspended";
   return (
     <main className="flex min-h-screen items-center justify-center bg-muted/40 p-6">
       <div className="max-w-sm space-y-2 rounded-2xl border bg-card p-8 text-center shadow-sm">
         <p className="text-4xl">☕</p>
         <p className="text-lg font-semibold">
-          {reason === "disabled" ? "المنيو غير متاح حاليًا" : "الرابط ده مش صحيح"}
+          {unavailable ? "المنيو غير متاح حاليًا" : "الرابط ده مش صحيح"}
         </p>
         <p className="text-sm text-muted-foreground">
           {reason === "disabled"
             ? "اسأل الويتر أو اطلب من الكاشير مباشرة."
-            : "اتأكد من الكود اللي على الترابيزة."}
+            : reason === "suspended"
+              ? "الكافيه ده متوقف مؤقتًا."
+              : "اتأكد من الكود اللي على الترابيزة."}
         </p>
       </div>
     </main>

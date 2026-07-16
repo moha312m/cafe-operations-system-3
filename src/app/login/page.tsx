@@ -27,8 +27,11 @@ export default function LoginPage() {
     setError(null);
     setLoading(true);
     try {
-      await api("/api/auth/login", { method: "POST", body: { email, password } });
-      router.push("/dashboard");
+      const { user } = await api<{ user: { role: string } }>("/api/auth/login", {
+        method: "POST",
+        body: { email, password },
+      });
+      router.push(user.role === "SUPER_ADMIN" ? "/admin/dashboard" : "/dashboard");
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "فشل تسجيل الدخول");
