@@ -15,6 +15,7 @@ import {
 import { CustomerCategoryTabs } from "./customer-category-tabs";
 import { CustomerProductCard } from "./customer-product-card";
 import { CustomerCart } from "./customer-cart";
+import { MenuAIChat } from "./menu-ai-chat";
 import {
   CustomerOrderForm,
   type CustomerOrderDetails,
@@ -243,6 +244,9 @@ export function CustomerMenuPage({
           </Button>
         </div>
       )}
+
+      {/* ── AI menu assistant ──────────────────────────────────── */}
+      <MenuAIChat menu={menu} onPick={selectProduct} raised={cart.length > 0} />
 
       {/* ── Cart & checkout dialog ─────────────────────────────── */}
       <Dialog open={cartOpen} onOpenChange={setCartOpen}>
