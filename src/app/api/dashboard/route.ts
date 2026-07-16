@@ -56,7 +56,11 @@ export async function GET(request: NextRequest) {
       createdAt: { gte: startOfToday },
     };
 
-    const [todayAgg, openOrders, weekOrders, topItems, branches, inventoryItems] =
+    const [
+      todayAgg, openOrders, weekOrders, topItems, branches, inventoryItems,
+      openShiftsCount, cashTodayAgg, paymentSplitRows, salesByBranchToday,
+      cashiersTodayRows, recentOrders, leastItems,
+    ] =
       await Promise.all([
         db.order.aggregate({
           where: completedToday,
@@ -93,7 +97,57 @@ export async function GET(request: NextRequest) {
           where: { cafeId, ...branchFilter, archivedAt: null },
           select: { currentStock: true, minimumStock: true },
         }),
+        // Open shifts (net cash + shift count headline cards)
+        db.shift.count({ where: { cafeId, ...branchFilter, status: "OPEN" } }),
+        db.payment.aggregate({
+          where: { cafeId, ...branchFilter, status: "PAID", method: "CASH", createdAt: { gte: startOfToday } },
+          _sum: { amount: true },
+        }),
+        db.payment.groupBy({
+          by: ["method"],
+          where: { cafeId, ...branchFilter, status: "PAID", createdAt: { gte: startOfToday } },
+          _sum: { amount: true },
+        }),
+        db.order.groupBy({
+          by: ["branchId"],
+          where: { cafeId, status: "SERVED", createdAt: { gte: startOfToday } },
+          _sum: { total: true },
+        }),
+        db.payment.groupBy({
+          by: ["receivedById"],
+          where: { cafeId, ...branchFilter, status: "PAID", createdAt: { gte: startOfToday } },
+          _sum: { amount: true },
+          orderBy: { _sum: { amount: "desc" } },
+          take: 5,
+        }),
+        db.order.findMany({
+          where: { cafeId, ...branchFilter },
+          orderBy: { createdAt: "desc" },
+          take: 8,
+          select: {
+            id: true, orderNumber: true, status: true, source: true, total: true,
+            tableNumber: true, customerName: true, createdAt: true,
+            branch: { select: { name: true } },
+          },
+        }),
+        db.orderItem.groupBy({
+          by: ["productName"],
+          where: {
+            order: { cafeId, ...branchFilter, status: "SERVED", createdAt: { gte: sevenDaysAgo } },
+          },
+          _sum: { quantity: true, lineTotal: true },
+          orderBy: { _sum: { quantity: "asc" } },
+          take: 5,
+        }),
       ]);
+
+    // Resolve cashier names for the "top cashiers" table.
+    const cashierIds = cashiersTodayRows.map((r) => r.receivedById).filter(Boolean) as string[];
+    const cashierUsers = cashierIds.length
+      ? await db.user.findMany({ where: { id: { in: cashierIds } }, select: { id: true, name: true } })
+      : [];
+    const cashierName = new Map(cashierUsers.map((u) => [u.id, u.name]));
+    const branchName = new Map(branches.map((b) => [b.id, b.name]));
 
     // Inventory alert counts (derived from stock vs minimum).
     let lowStockCount = 0;
@@ -133,8 +187,38 @@ export async function GET(request: NextRequest) {
       todayOrders: todayCount,
       averageOrderValue: todayCount > 0 ? todayRevenue / todayCount : 0,
       openOrders,
+      openShifts: openShiftsCount,
+      netCash: Number(cashTodayAgg._sum.amount ?? 0),
       revenueByDay,
+      paymentSplit: paymentSplitRows.map((p) => ({
+        method: p.method,
+        value: Number(p._sum.amount ?? 0),
+      })),
+      branchPerformance: session.branchId
+        ? []
+        : salesByBranchToday
+            .map((r) => ({ name: branchName.get(r.branchId) ?? "—", value: Number(r._sum.total ?? 0) }))
+            .sort((a, b) => b.value - a.value),
+      topCashiers: cashiersTodayRows
+        .filter((r) => r.receivedById)
+        .map((r) => ({ name: cashierName.get(r.receivedById!) ?? "—", value: Number(r._sum.amount ?? 0) })),
+      recentOrders: recentOrders.map((o) => ({
+        id: o.id,
+        orderNumber: o.orderNumber,
+        status: o.status,
+        source: o.source,
+        total: Number(o.total),
+        table: o.tableNumber,
+        customer: o.customerName,
+        branch: o.branch.name,
+        createdAt: o.createdAt,
+      })),
       topProducts: topItems.map((t) => ({
+        name: t.productName,
+        quantity: t._sum.quantity ?? 0,
+        revenue: Number(t._sum.lineTotal ?? 0),
+      })),
+      leastProducts: leastItems.map((t) => ({
         name: t.productName,
         quantity: t._sum.quantity ?? 0,
         revenue: Number(t._sum.lineTotal ?? 0),

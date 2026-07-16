@@ -10,7 +10,6 @@ import {
   type Permission,
 } from "@/lib/permissions";
 import { t } from "@/lib/i18n";
-import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 export type AppContextValue = {
@@ -73,52 +72,71 @@ export function AppShell({
     router.refresh();
   }
 
+  const initials = user.name.slice(0, 2);
+
   return (
     <AppContext.Provider value={{ user, cafe, branchName, can }}>
-      <div className="flex min-h-screen w-full">
-        <aside className="flex w-56 shrink-0 flex-col border-e bg-sidebar">
-          <div className="flex items-center gap-2 border-b px-4 py-4">
-            <span className="text-xl">☕</span>
+      <div className="flex min-h-screen w-full bg-slate-50 dark:bg-background">
+        {/* Premium dark sidebar */}
+        <aside className="sticky top-0 flex h-screen w-60 shrink-0 flex-col bg-[#0f172a] text-slate-300">
+          <div className="flex items-center gap-3 border-b border-white/10 px-5 py-5">
+            <span className="flex size-10 items-center justify-center rounded-xl bg-emerald-600 text-xl shadow-sm">
+              ☕
+            </span>
             <div className="min-w-0">
-              <p className="truncate text-sm font-semibold">
+              <p className="truncate font-heading text-sm font-bold text-white">
                 {cafe?.name ?? t.appName}
               </p>
-              {branchName && (
-                <p className="truncate text-xs text-muted-foreground">{branchName}</p>
-              )}
+              <p className="truncate text-xs text-slate-400">
+                {branchName ?? t.appName}
+              </p>
             </div>
           </div>
-          <nav className="flex-1 space-y-1 p-2">
-            {navItems.map((item) => (
-              <Link
-                key={item.href}
-                href={item.href}
-                className={cn(
-                  "flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors hover:bg-accent",
-                  pathname.startsWith(item.href) && "bg-accent"
-                )}
-              >
-                <span>{item.icon}</span>
-                {item.label}
-              </Link>
-            ))}
+
+          <nav className="flex-1 space-y-0.5 overflow-y-auto p-3">
+            {navItems.map((item) => {
+              const active =
+                pathname === item.href || pathname.startsWith(item.href + "/");
+              return (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className={cn(
+                    "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                    active
+                      ? "bg-emerald-600 text-white shadow-sm"
+                      : "text-slate-300 hover:bg-white/5 hover:text-white"
+                  )}
+                >
+                  <span className="text-base leading-none">{item.icon}</span>
+                  {item.label}
+                </Link>
+              );
+            })}
           </nav>
-          <div className="border-t p-3">
-            <p className="truncate text-sm font-medium">{user.name}</p>
-            <p className="truncate text-xs text-muted-foreground">
-              {ROLE_LABELS[user.role]}
-            </p>
-            <Button
-              variant="outline"
-              size="sm"
-              className="mt-2 w-full"
+
+          <div className="border-t border-white/10 p-4">
+            <div className="mb-3 flex items-center gap-2.5">
+              <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-white/10 text-xs font-semibold text-white">
+                {initials}
+              </span>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-white">{user.name}</p>
+                <p className="truncate text-xs text-slate-400">
+                  {ROLE_LABELS[user.role]}
+                </p>
+              </div>
+            </div>
+            <button
               onClick={logout}
+              className="w-full rounded-lg border border-white/15 px-3 py-2 text-xs font-medium text-slate-200 transition-colors hover:bg-white/5"
             >
               {t.common.signOut}
-            </Button>
+            </button>
           </div>
         </aside>
-        <main className="min-w-0 flex-1 bg-muted/20 p-6">{children}</main>
+
+        <main className="min-w-0 flex-1 overflow-x-hidden p-6 lg:p-8">{children}</main>
       </div>
     </AppContext.Provider>
   );
