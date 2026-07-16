@@ -17,12 +17,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-type Shift = {
+export type Shift = {
   id: string;
   shiftNumber: number;
   openedAt: string;
   openingCashAmount: string;
   expectedCashAmount: string;
+  totalSales: string;
   totalCashSales: string;
   totalCardSales: string;
   totalWalletSales: string;
@@ -41,7 +42,10 @@ export function ShiftControls({
 }: {
   branchId: string;
   currency: string;
-  onActiveChange: (hasActiveShift: boolean) => void;
+  // Receives the active shift (or null). The second arg lets consumers
+  // that need the full figures (e.g. /current-shift) avoid a second fetch;
+  // consumers that only need a boolean (POS) can ignore it.
+  onActiveChange: (hasActiveShift: boolean, shift?: Shift | null) => void;
 }) {
   const [shift, setShift] = useState<Shift | null>(null);
   const [loading, setLoading] = useState(true);
@@ -55,7 +59,7 @@ export function ShiftControls({
   const setActive = useCallback(
     (s: Shift | null) => {
       setShift(s);
-      onActiveChange(s !== null);
+      onActiveChange(s !== null, s);
     },
     [onActiveChange]
   );
@@ -140,7 +144,13 @@ export function ShiftControls({
     }
   }
 
-  if (loading) return null;
+  // Fixed-height placeholder while the first fetch resolves — keeps the
+  // layout from collapsing/jumping when data arrives.
+  if (loading) {
+    return (
+      <div className="h-[52px] animate-pulse rounded-xl border border-dashed bg-muted/30" />
+    );
+  }
 
   const expected = shift ? Number(shift.expectedCashAmount) : 0;
   const diffPreview = (Number(actualCash) || 0) - expected;
