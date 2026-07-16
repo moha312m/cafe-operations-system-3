@@ -6,6 +6,7 @@ import {
   resolveCafeId,
   handleApiError,
   ApiError,
+  requireFeature,
 } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { round2 } from "@/lib/inventory";
@@ -43,6 +44,7 @@ function scopeBranch(
 export async function GET(request: NextRequest) {
   try {
     const session = await requirePermission("inventory:read");
+    await requireFeature(session, "inventoryEnabled");
     const params = request.nextUrl.searchParams;
     const cafeId = resolveCafeId(session, params.get("cafeId"));
     const branchId = scopeBranch(session, params.get("branchId"));
@@ -113,6 +115,7 @@ const createSchema = z.object({
 export async function POST(request: NextRequest) {
   try {
     const session = await requirePermission("inventory:manage");
+    await requireFeature(session, "inventoryEnabled");
     const data = createSchema.parse(await request.json());
     const cafeId = resolveCafeId(session, data.cafeId);
 

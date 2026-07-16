@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { api, money } from "@/lib/client";
 import { useApp } from "@/components/app-shell";
+import { FeatureGate } from "@/components/feature-gate";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -260,6 +261,7 @@ export default function InventoryPage() {
   ];
 
   return (
+    <FeatureGate feature="inventoryEnabled">
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold">المخزون</h1>
@@ -667,5 +669,6 @@ export default function InventoryPage() {
         </DialogContent>
       </Dialog>
     </div>
+    </FeatureGate>
   );
 }

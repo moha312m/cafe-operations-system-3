@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { unitPrice as computeUnitPrice } from "@/lib/pricing";
+import { getCafeSettings } from "@/lib/cafe-settings";
 
 type Params = { params: Promise<{ branchId: string }> };
 
@@ -52,6 +53,23 @@ export async function POST(request: NextRequest, { params }: Params) {
       throw new ApiError(403, "المنيو غير متاح حاليًا");
     }
     const cafeId = branch.cafeId;
+
+    // Workflow settings decide where the order lands and its type.
+    const settings = await getCafeSettings(cafeId);
+    if (!settings.qrMenuEnabled) {
+      throw new ApiError(403, "منيو QR غير متاح لهذا الكافيه حاليًا");
+    }
+    // WAITER_APPROVAL → approval queue; every other routing → CONFIRMED so
+    // it appears directly for the cashier / kitchen.
+    const orderStatus =
+      settings.qrOrderRoutingMode === "WAITER_APPROVAL"
+        ? ("PENDING_WAITER_APPROVAL" as const)
+        : ("CONFIRMED" as const);
+    // Takeaway-only cafes (or tables disabled) default to TAKEAWAY.
+    const orderType =
+      settings.workflowMode === "TAKEAWAY_ONLY" || !settings.enableTables
+        ? ("TAKEAWAY" as const)
+        : ("DINE_IN" as const);
 
     const productIds = [...new Set(data.items.map((i) => i.productId))];
     const products = await db.product.findMany({
@@ -142,8 +160,8 @@ export async function POST(request: NextRequest, { params }: Params) {
           cafeId,
           branchId,
           orderNumber: (last._max.orderNumber ?? 0) + 1,
-          type: "DINE_IN",
-          status: "PENDING_WAITER_APPROVAL",
+          type: orderType,
+          status: orderStatus,
           source: "QR_MENU",
           customerName: data.customerName,
           customerPhone: data.customerPhone || null,

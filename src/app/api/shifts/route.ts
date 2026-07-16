@@ -9,6 +9,7 @@ import {
   resolveBranchId,
   handleApiError,
   ApiError,
+  requireFeature,
 } from "@/lib/api";
 import { audit } from "@/lib/audit";
 
@@ -75,6 +76,7 @@ const openShiftSchema = z.object({
 export async function POST(request: NextRequest) {
   try {
     const session = await requirePermission("shifts:operate");
+    await requireFeature(session, "shiftManagementEnabled");
     const data = openShiftSchema.parse(await request.json());
     const cafeId = resolveCafeId(session, data.cafeId);
     const branchId = resolveBranchId(session, data.branchId);

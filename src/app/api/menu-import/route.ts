@@ -6,6 +6,7 @@ import {
   resolveCafeId,
   handleApiError,
   ApiError,
+  requireFeature,
 } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import {
@@ -33,6 +34,7 @@ type FailedRow = { rowNumber: number; productName: string; reason: string };
 export async function POST(request: NextRequest) {
   try {
     const session = await requirePermission("menu:manage");
+    await requireFeature(session, "excelImportEnabled");
     const body = bodySchema.parse(await request.json());
     const cafeId = resolveCafeId(session, body.cafeId);
     const mode: ImportMode = body.mode;

@@ -6,6 +6,7 @@ import {
   resolveCafeId,
   handleApiError,
   ApiError,
+  requireFeature,
 } from "@/lib/api";
 import { hashPassword } from "@/lib/auth";
 import { MANAGEABLE_ROLES } from "@/lib/permissions";
@@ -33,6 +34,7 @@ const userSelect = {
 export async function GET(request: NextRequest) {
   try {
     const session = await requirePermission("users:manage");
+    await requireFeature(session, "staffManagementEnabled");
     const params = request.nextUrl.searchParams;
     const cafeId = resolveCafeId(session, params.get("cafeId"));
 
@@ -93,6 +95,7 @@ const createUserSchema = z.object({
 export async function POST(request: NextRequest) {
   try {
     const session = await requirePermission("users:manage");
+    await requireFeature(session, "staffManagementEnabled");
     const data = createUserSchema.parse(await request.json());
     const cafeId = resolveCafeId(session, data.cafeId);
 

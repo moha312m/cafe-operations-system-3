@@ -16,6 +16,8 @@ import {
 } from "@/components/admin/ui";
 import { PasswordResetDialog } from "@/components/admin/password-reset-dialog";
 import { SuspendDialog } from "@/components/admin/suspend-dialog";
+import { CafeSettingsTab } from "@/components/admin/cafe-settings-tab";
+import type { CafeFeatures } from "@/lib/cafe-settings";
 
 type Detail = {
   cafe: {
@@ -36,6 +38,7 @@ type Detail = {
     byPayment: { method: string; value: number }[];
     topProducts: { name: string; quantity: number; revenue: number }[];
   };
+  settings: CafeFeatures;
   orders: { id: string; orderNumber: number; source: string; status: string; total: string; createdAt: string; branch: { name: string } }[];
   shifts: { id: string; shiftNumber: number; status: string; openedAt: string; closedAt: string | null; totalSales: string; cashDifference: string | null; cashier: { name: string }; branch: { name: string } }[];
   audit: { id: string; action: string; entity: string; createdAt: string; user: { name: string } | null }[];
@@ -117,6 +120,7 @@ export default function CafeDetailPage({ params }: { params: Promise<{ cafeId: s
           <TabsTrigger value="branches">الفروع</TabsTrigger>
           <TabsTrigger value="users">المستخدمين</TabsTrigger>
           <TabsTrigger value="reports">التقارير</TabsTrigger>
+          <TabsTrigger value="settings">الإعدادات والمميزات</TabsTrigger>
           <TabsTrigger value="orders">الطلبات</TabsTrigger>
           <TabsTrigger value="shifts">الشيفتات</TabsTrigger>
           <TabsTrigger value="audit">سجل الحركات</TabsTrigger>
@@ -240,6 +244,11 @@ export default function CafeDetailPage({ params }: { params: Promise<{ cafeId: s
               )}
             </Panel>
           </div>
+        </TabsContent>
+
+        {/* Settings & features */}
+        <TabsContent value="settings">
+          <CafeSettingsTab cafeId={cafeId} initial={data.settings} onSaved={load} />
         </TabsContent>
 
         {/* E) Orders */}

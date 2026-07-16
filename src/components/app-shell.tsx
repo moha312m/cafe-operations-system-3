@@ -11,6 +11,7 @@ import {
 } from "@/lib/permissions";
 import { t } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
+import type { CafeFeatures } from "@/lib/cafe-settings";
 
 export type AppContextValue = {
   user: SessionUser;
@@ -23,6 +24,7 @@ export type AppContextValue = {
   } | null;
   branchName: string | null;
   can: (permission: Permission) => boolean;
+  features: CafeFeatures | null;
 };
 
 const AppContext = createContext<AppContextValue | null>(null);
@@ -33,19 +35,29 @@ export function useApp(): AppContextValue {
   return ctx;
 }
 
-const NAV: { href: string; label: string; icon: string; permission: Permission }[] = [
+// `feature` (when set) hides the item if the cafe has that module disabled.
+type NavItem = {
+  href: string;
+  label: string;
+  icon: string;
+  permission: Permission;
+  feature?: (f: CafeFeatures) => boolean;
+};
+
+const NAV: NavItem[] = [
   { href: "/dashboard", label: t.nav.dashboard, icon: "📊", permission: "dashboard:read" },
   { href: "/pos", label: t.nav.pos, icon: "🧾", permission: "orders:create" },
-  { href: "/current-shift", label: t.nav.currentShift, icon: "🧑‍💼", permission: "shifts:operate" },
-  { href: "/kitchen", label: t.nav.kitchen, icon: "☕", permission: "orders:update-status" },
+  { href: "/current-shift", label: t.nav.currentShift, icon: "🧑‍💼", permission: "shifts:operate", feature: (f) => f.shiftManagementEnabled },
+  { href: "/kitchen", label: t.nav.kitchen, icon: "☕", permission: "orders:update-status", feature: (f) => f.kitchenScreenEnabled },
   { href: "/orders", label: t.nav.orders, icon: "🔔", permission: "orders:read" },
-  { href: "/approvals", label: t.nav.approvals, icon: "📱", permission: "orders:approve" },
+  // Approvals shows when waiter approval is on OR QR orders route to a waiter.
+  { href: "/approvals", label: t.nav.approvals, icon: "📱", permission: "orders:approve", feature: (f) => f.waiterApprovalEnabled || f.qrOrderRoutingMode === "WAITER_APPROVAL" },
   { href: "/menu", label: t.nav.menu, icon: "📖", permission: "menu:manage" },
-  { href: "/branches", label: t.nav.branches, icon: "🏬", permission: "branches:manage" },
-  { href: "/staff", label: t.nav.staff, icon: "👥", permission: "users:manage" },
-  { href: "/inventory", label: t.nav.inventory, icon: "📦", permission: "inventory:read" },
+  { href: "/branches", label: t.nav.branches, icon: "🏬", permission: "branches:manage", feature: (f) => f.branchManagementEnabled },
+  { href: "/staff", label: t.nav.staff, icon: "👥", permission: "users:manage", feature: (f) => f.staffManagementEnabled },
+  { href: "/inventory", label: t.nav.inventory, icon: "📦", permission: "inventory:read", feature: (f) => f.inventoryEnabled },
   { href: "/reports", label: t.nav.reports, icon: "📈", permission: "reports:read" },
-  { href: "/shifts", label: t.nav.shiftReports, icon: "🧮", permission: "shifts:read" },
+  { href: "/shifts", label: t.nav.shiftReports, icon: "🧮", permission: "shifts:read", feature: (f) => f.shiftManagementEnabled },
   { href: "/audit", label: t.nav.audit, icon: "🕓", permission: "audit:read" },
 ];
 
@@ -53,18 +65,24 @@ export function AppShell({
   user,
   cafe,
   branchName,
+  features,
   children,
 }: {
   user: SessionUser;
   cafe: AppContextValue["cafe"];
   branchName: string | null;
+  features: CafeFeatures | null;
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
   const router = useRouter();
   const can = (permission: Permission) => hasPermission(user.role, permission);
 
-  const navItems = NAV.filter((item) => can(item.permission));
+  const navItems = NAV.filter(
+    (item) =>
+      can(item.permission) &&
+      (!item.feature || !features || item.feature(features))
+  );
 
   async function logout() {
     await fetch("/api/auth/logout", { method: "POST" });
@@ -75,7 +93,7 @@ export function AppShell({
   const initials = user.name.slice(0, 2);
 
   return (
-    <AppContext.Provider value={{ user, cafe, branchName, can }}>
+    <AppContext.Provider value={{ user, cafe, branchName, can, features }}>
       <div className="flex min-h-screen w-full bg-slate-50 dark:bg-background">
         {/* Premium dark sidebar */}
         <aside className="sticky top-0 flex h-screen w-60 shrink-0 flex-col bg-[#0f172a] text-slate-300">

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { requirePermission, handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
+import { getCafeSettings, toFeatureMap } from "@/lib/cafe-settings";
 import type { Prisma } from "@prisma/client";
 
 type Params = { params: Promise<{ cafeId: string }> };
@@ -16,6 +17,8 @@ export async function GET(_req: NextRequest, { params }: Params) {
 
     const cafe = await db.cafe.findUnique({ where: { id: cafeId } });
     if (!cafe) throw new ApiError(404, "الكافيه غير موجود");
+
+    const settings = await getCafeSettings(cafeId);
 
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
@@ -171,6 +174,7 @@ export async function GET(_req: NextRequest, { params }: Params) {
         subscriptionStartedAt: cafe.subscriptionStartedAt,
         subscriptionEndsAt: cafe.subscriptionEndsAt, createdAt: cafe.createdAt,
       },
+      settings: toFeatureMap(settings),
       overview: {
         branches: branches.length,
         staff: staffCount,

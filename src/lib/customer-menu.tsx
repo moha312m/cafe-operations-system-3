@@ -2,10 +2,12 @@ import { db } from "@/lib/db";
 import type { Branch, Cafe } from "@prisma/client";
 import type { MenuData } from "@/components/customer-menu/types";
 import { branchShift, round2 } from "@/lib/pricing";
+import { getCafeSettings } from "@/lib/cafe-settings";
 
 export type CustomerMenuResult =
   | { status: "ok"; menu: MenuData }
   | { status: "disabled" }
+  | { status: "qr-disabled" } // qrMenuEnabled feature flag off
   | { status: "suspended" }
   | { status: "not-found" };
 
@@ -22,6 +24,10 @@ export async function loadCustomerMenu(
   // Cafe suspended by the platform owner — public menu goes dark.
   if (!branch.cafe.isActive) return { status: "suspended" };
   if (!branch.publicMenuEnabled) return { status: "disabled" };
+
+  // Super-admin feature flag: the whole QR menu can be turned off per cafe.
+  const settings = await getCafeSettings(branch.cafeId);
+  if (!settings.qrMenuEnabled) return { status: "qr-disabled" };
 
   const [categories, products] = await Promise.all([
     db.menuCategory.findMany({
@@ -75,6 +81,10 @@ export async function loadCustomerMenu(
         taxRate: Number(branch.cafe.taxRate),
       },
       branch: { id: branch.id, name: branch.name },
+      features: {
+        aiAssistant: settings.aiAssistantEnabled,
+        enableTables: settings.enableTables,
+      },
       categories,
       products: products.map((p) => {
         const priceable = {
@@ -110,23 +120,29 @@ export async function loadCustomerMenu(
 export function MenuUnavailable({
   reason,
 }: {
-  reason: "disabled" | "suspended" | "not-found";
+  reason: "disabled" | "qr-disabled" | "suspended" | "not-found";
 }) {
-  const unavailable = reason === "disabled" || reason === "suspended";
+  const notFound = reason === "not-found";
+  const title =
+    reason === "qr-disabled"
+      ? "منيو QR غير متاح لهذا الكافيه حاليًا"
+      : notFound
+        ? "الرابط ده مش صحيح"
+        : "المنيو غير متاح حاليًا";
+  const sub =
+    reason === "disabled"
+      ? "اسأل الويتر أو اطلب من الكاشير مباشرة."
+      : reason === "suspended"
+        ? "الكافيه ده متوقف مؤقتًا."
+        : reason === "qr-disabled"
+          ? "اطلب من الكاشير مباشرة."
+          : "اتأكد من الكود اللي على الترابيزة.";
   return (
     <main className="flex min-h-screen items-center justify-center bg-muted/40 p-6">
       <div className="max-w-sm space-y-2 rounded-2xl border bg-card p-8 text-center shadow-sm">
         <p className="text-4xl">☕</p>
-        <p className="text-lg font-semibold">
-          {unavailable ? "المنيو غير متاح حاليًا" : "الرابط ده مش صحيح"}
-        </p>
-        <p className="text-sm text-muted-foreground">
-          {reason === "disabled"
-            ? "اسأل الويتر أو اطلب من الكاشير مباشرة."
-            : reason === "suspended"
-              ? "الكافيه ده متوقف مؤقتًا."
-              : "اتأكد من الكود اللي على الترابيزة."}
-        </p>
+        <p className="text-lg font-semibold">{title}</p>
+        <p className="text-sm text-muted-foreground">{sub}</p>
       </div>
     </main>
   );

@@ -6,6 +6,7 @@ import { api, money } from "@/lib/client";
 import { t, formatTime } from "@/lib/i18n";
 import { handledBy } from "@/lib/order-staff";
 import { useApp } from "@/components/app-shell";
+import { FeatureGate } from "@/components/feature-gate";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -221,6 +222,7 @@ export default function KitchenPage() {
 
 
   return (
+    <FeatureGate feature="kitchenScreenEnabled">
     <div className="space-y-4">
       {/* ── Header & filters ─────────────────────────────────── */}
       <div className="flex flex-wrap items-center gap-3">
@@ -563,5 +565,6 @@ export default function KitchenPage() {
         </DialogContent>
       </Dialog>
     </div>
+    </FeatureGate>
   );
 }

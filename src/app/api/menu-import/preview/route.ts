@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { requirePermission, resolveCafeId, handleApiError, ApiError } from "@/lib/api";
+import { requirePermission, requireFeature, resolveCafeId, handleApiError, ApiError } from "@/lib/api";
 import {
   validateRow,
   MAX_IMPORT_ROWS,
@@ -19,6 +19,7 @@ const bodySchema = z.object({
 export async function POST(request: NextRequest) {
   try {
     const session = await requirePermission("menu:manage");
+    await requireFeature(session, "excelImportEnabled");
     const body = bodySchema.parse(await request.json());
     const cafeId = resolveCafeId(session, body.cafeId);
 

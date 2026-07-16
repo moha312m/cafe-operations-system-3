@@ -77,6 +77,23 @@ enum ShiftStatus {
   CLOSED
 }
 
+// How a cafe operates end-to-end. Drives sensible defaults for the
+// feature flags + QR routing; the individual flags still win.
+enum CafeWorkflowMode {
+  FULL_SERVICE // كافيه كامل
+  SMALL_CAFE // كافيه صغير
+  TAKEAWAY_ONLY // تيك أواي فقط
+  RESTAURANT // مطعم
+}
+
+// Where a QR-menu order goes the moment the customer submits it.
+enum QrOrderRoutingMode {
+  WAITER_APPROVAL // يذهب لموافقة الويتر (PENDING_WAITER_APPROVAL)
+  CASHIER_DIRECT // يذهب للكاشير مباشرة (CONFIRMED)
+  KITCHEN_DIRECT // يذهب للبار مباشرة (CONFIRMED)
+  AUTO_CONFIRMED // يتأكد تلقائيًا (CONFIRMED)
+}
+
 // SaaS subscription state for a cafe tenant. Independent of `isActive`,
 // which is the hard on/off switch the platform owner flips to suspend a
 // cafe. TRIAL/ACTIVE keep the cafe usable; EXPIRED/SUSPENDED are shown in
@@ -126,6 +143,42 @@ model Cafe {
   inventoryItems InventoryItem[]
   inventoryTxns  InventoryTransaction[]
   recipeItems    ProductRecipeItem[]
+  settings       CafeSettings?
+}
+
+// Per-cafe module flags + workflow, controlled ONLY by SUPER_ADMIN.
+// One row per cafe (created with defaults on demand). Cafe owners/staff
+// can use enabled features but can never flip a flag themselves.
+model CafeSettings {
+  id     String @id @default(cuid())
+  cafeId String @unique
+
+  workflowMode       CafeWorkflowMode   @default(FULL_SERVICE)
+  qrOrderRoutingMode QrOrderRoutingMode @default(WAITER_APPROVAL)
+
+  // Feature flags
+  aiAssistantEnabled     Boolean @default(false)
+  qrMenuEnabled          Boolean @default(true)
+  waiterApprovalEnabled  Boolean @default(true)
+  kitchenScreenEnabled   Boolean @default(true)
+  inventoryEnabled       Boolean @default(true)
+  shiftManagementEnabled Boolean @default(true)
+  advancedReportsEnabled Boolean @default(false)
+  excelImportEnabled     Boolean @default(true)
+  recipeCostingEnabled   Boolean @default(true)
+  staffManagementEnabled Boolean @default(true)
+  branchManagementEnabled Boolean @default(true)
+
+  // Extra workflow switches
+  requireShiftForQrOrders     Boolean @default(false)
+  allowCashierToPrepareOrders Boolean @default(false)
+  allowCashierToServeOrders   Boolean @default(false)
+  enableTables                Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cafe Cafe @relation(fields: [cafeId], references: [id], onDelete: Cascade)
 }
 
 model Branch {

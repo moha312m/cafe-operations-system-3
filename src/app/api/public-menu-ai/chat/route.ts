@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { getPublicMenuForAI, askMenuAssistant, aiAssistantAvailable } from "@/lib/menu-ai";
 import { audit } from "@/lib/audit";
+import { getCafeSettings } from "@/lib/cafe-settings";
 
 export const dynamic = "force-dynamic";
 
@@ -62,6 +63,15 @@ export async function POST(request: NextRequest) {
     if (menuResult.status !== "ok") {
       return NextResponse.json(
         { reply: "المنيو غير متاح حاليًا", productIds: [] },
+        { status: 200 }
+      );
+    }
+
+    // Cafe-level feature gate: the assistant may be turned off for this cafe.
+    const settings = await getCafeSettings(menuResult.cafeId);
+    if (!settings.aiAssistantEnabled) {
+      return NextResponse.json(
+        { reply: "المساعد الذكي غير متاح حاليًا", productIds: [], unavailable: true },
         { status: 200 }
       );
     }

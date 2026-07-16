@@ -5,6 +5,7 @@ import {
   requirePermission,
   resolveCafeId,
   handleApiError,
+  requireFeature,
 } from "@/lib/api";
 import { audit } from "@/lib/audit";
 
@@ -35,6 +36,7 @@ const createBranchSchema = z.object({
 export async function POST(request: NextRequest) {
   try {
     const session = await requirePermission("branches:manage");
+    await requireFeature(session, "branchManagementEnabled");
     const data = createBranchSchema.parse(await request.json());
     const cafeId = resolveCafeId(session, data.cafeId);
 

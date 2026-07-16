@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { requirePermission, handleApiError, ApiError } from "@/lib/api";
+import { requirePermission, requireFeature, handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { unitsCompatible, productCost, profitFor } from "@/lib/costing";
 import type { SessionUser } from "@/lib/auth";
@@ -21,6 +21,7 @@ async function findOwnedProduct(id: string, session: SessionUser) {
 export async function GET(_request: NextRequest, { params }: Params) {
   try {
     const session = await requirePermission("cost:read");
+    await requireFeature(session, "recipeCostingEnabled");
     const { id } = await params;
     const product = await findOwnedProduct(id, session);
 
@@ -64,6 +65,7 @@ const recipeSchema = z.object({
 export async function PUT(request: NextRequest, { params }: Params) {
   try {
     const session = await requirePermission("recipe:manage");
+    await requireFeature(session, "recipeCostingEnabled");
     const { id } = await params;
     const product = await findOwnedProduct(id, session);
     const data = recipeSchema.parse(await request.json());

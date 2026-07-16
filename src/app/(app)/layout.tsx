@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { getSession } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { AppShell } from "@/components/app-shell";
+import { getCafeFeatures } from "@/lib/cafe-settings";
 
 export default async function AppLayout({
   children,
@@ -36,6 +37,9 @@ export default async function AppLayout({
     redirect("/login?suspended=1");
   }
 
+  // Per-cafe feature flags drive which nav items appear.
+  const features = cafe ? await getCafeFeatures(cafe.id) : null;
+
   return (
     <AppShell
       user={session}
@@ -51,6 +55,7 @@ export default async function AppLayout({
           : null
       }
       branchName={branch?.name ?? null}
+      features={features}
     >
       {children}
     </AppShell>

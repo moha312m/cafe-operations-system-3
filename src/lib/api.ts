@@ -2,6 +2,11 @@ import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { getSession, type SessionUser } from "@/lib/auth";
 import { hasPermission, type Permission } from "@/lib/permissions";
+import {
+  getCafeSettings,
+  FEATURE_DISABLED_MESSAGE,
+  type FeatureFlag,
+} from "@/lib/cafe-settings";
 
 export class ApiError extends Error {
   status: number;
@@ -55,6 +60,21 @@ export function resolveBranchId(
   }
   if (!requestedBranchId) throw new ApiError(400, "اختار الفرع الأول");
   return requestedBranchId;
+}
+
+// Feature gate: throws 403 if the cafe has the module disabled. Super
+// admins (no cafeId) bypass — they operate at platform level. Call AFTER
+// requirePermission so role checks run first.
+export async function requireFeature(
+  session: SessionUser,
+  feature: FeatureFlag
+): Promise<void> {
+  if (session.role === "SUPER_ADMIN") return;
+  if (!session.cafeId) throw new ApiError(403, "الحساب مش مرتبط بكافيه");
+  const settings = await getCafeSettings(session.cafeId);
+  if (!settings[feature]) {
+    throw new ApiError(403, FEATURE_DISABLED_MESSAGE);
+  }
 }
 
 export function handleApiError(error: unknown): NextResponse {

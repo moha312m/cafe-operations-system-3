@@ -245,8 +245,10 @@ export function CustomerMenuPage({
         </div>
       )}
 
-      {/* ── AI menu assistant ──────────────────────────────────── */}
-      <MenuAIChat menu={menu} onPick={selectProduct} raised={cart.length > 0} />
+      {/* ── AI menu assistant (only if enabled for this cafe) ──── */}
+      {menu.features.aiAssistant && (
+        <MenuAIChat menu={menu} onPick={selectProduct} raised={cart.length > 0} />
+      )}
 
       {/* ── Cart & checkout dialog ─────────────────────────────── */}
       <Dialog open={cartOpen} onOpenChange={setCartOpen}>

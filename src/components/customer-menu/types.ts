@@ -20,6 +20,8 @@ export type MenuData = {
   branch: { id: string; name: string };
   categories: { id: string; name: string }[];
   products: MenuProduct[];
+  // Per-cafe feature flags that shape the customer experience.
+  features: { aiAssistant: boolean; enableTables: boolean };
 };
 
 export type CustomerCartLine = {
