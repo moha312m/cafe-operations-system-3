@@ -47,6 +47,7 @@ export type OrderType = "DINE_IN" | "TAKEAWAY" | "DELIVERY";
 
 export type PaymentMethod = "CASH" | "CARD" | "WALLET" | "MIXED";
 export type SplitMethod = "CASH" | "CARD" | "WALLET";
+export type CollectionMode = "NOW" | "PENDING" | "PARTIAL";
 
 export function lineKey(
   productId: string,

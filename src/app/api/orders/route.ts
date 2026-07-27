@@ -10,7 +10,8 @@ import {
 } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { unitPrice as computeUnitPrice } from "@/lib/pricing";
-import { getActiveShift } from "@/lib/shifts";
+import { getActiveShift, recomputeShiftTotals } from "@/lib/shifts";
+import { getBranchFinancialSettings, computeCharges } from "@/lib/financials";
 
 const orderInclude = {
   items: { include: { addOns: true } },
@@ -73,6 +74,13 @@ const createOrderSchema = z.object({
   tableNumber: z.string().optional(),
   notes: z.string().optional(),
   discountAmount: z.number().min(0).default(0),
+  // Payment collection: NOW (pay full), PENDING (collect later), PARTIAL.
+  collectionMode: z.enum(["NOW", "PENDING", "PARTIAL"]).default("NOW"),
+  paidAmount: z.number().min(0).optional(), // required for PARTIAL
+  method: z.enum(["CASH", "CARD", "WALLET", "MIXED"]).optional(),
+  splits: z
+    .array(z.object({ method: z.enum(["CASH", "CARD", "WALLET"]), amount: z.number().positive() }))
+    .optional(),
   items: z
     .array(
       z.object({
@@ -198,20 +206,62 @@ export async function POST(request: NextRequest) {
       };
     });
 
-    const discountAmount = round2(Math.min(data.discountAmount, subtotal));
-    const taxAmount = round2((subtotal - discountAmount) * (Number(cafe.taxRate) / 100));
-    const total = round2(subtotal - discountAmount + taxAmount);
+    // Charges come from the branch's configurable tax/service settings,
+    // snapshotted onto the order so later edits never rewrite history.
+    const finSettings = await getBranchFinancialSettings(branchId);
+    const charges = computeCharges({
+      subtotal,
+      discount: data.discountAmount,
+      orderType: data.type,
+      settings: finSettings,
+    });
+    const total = charges.total;
 
-    // The source is derived from the authenticated role — clients can
-    // never claim QR_MENU (that only happens via the public QR endpoint).
+    // ── Resolve payment collection ──
+    let paidAmount = 0;
+    let paymentStatus: "PAID" | "PARTIAL" | "PENDING_COLLECTION" = "PENDING_COLLECTION";
+    let paySplits: { method: "CASH" | "CARD" | "WALLET"; amount: number }[] = [];
+
+    if (data.collectionMode === "NOW") {
+      if (!data.method) throw new ApiError(400, "من فضلك اختار طريقة الدفع");
+      if (data.method === "MIXED") {
+        paySplits = (data.splits ?? []).filter((s) => s.amount > 0);
+        const sum = round2(paySplits.reduce((s, p) => s + p.amount, 0));
+        if (Math.abs(sum - total) > 0.01) throw new ApiError(400, "مبلغ الدفع لا يساوي إجمالي الطلب");
+      } else {
+        paySplits = [{ method: data.method, amount: total }];
+      }
+      paidAmount = total;
+      paymentStatus = "PAID";
+    } else if (data.collectionMode === "PARTIAL") {
+      if (!data.method || data.method === "MIXED") throw new ApiError(400, "من فضلك اختار طريقة الدفع");
+      const amount = round2(data.paidAmount ?? 0);
+      if (amount <= 0) throw new ApiError(400, "مبلغ الدفع يجب أن يكون أكبر من صفر");
+      if (amount > total + 0.001) throw new ApiError(400, "مبلغ الدفع لا يمكن أن يكون أكبر من إجمالي الطلب");
+      paySplits = [{ method: data.method, amount }];
+      paidAmount = amount;
+      paymentStatus = amount >= total - 0.001 ? "PAID" : "PARTIAL";
+    }
+    // PENDING → paidAmount 0, status PENDING_COLLECTION.
+
+    // Cashiers collecting money must have an open shift.
+    let shift = null as Awaited<ReturnType<typeof getActiveShift>>;
+    if (paySplits.length > 0) {
+      shift = await getActiveShift(branchId, session.id);
+      if (session.role === "CASHIER" && !shift) {
+        throw new ApiError(400, "لا يمكن تحصيل الدفع بدون شيفت مفتوح");
+      }
+    }
+
     const source = session.role === "WAITER" ? "WAITER" : "CASHIER_POS";
+    const remainingAmount = round2(total - paidAmount);
 
     const order = await db.$transaction(async (tx) => {
       const last = await tx.order.aggregate({
         where: { branchId },
         _max: { orderNumber: true },
       });
-      return tx.order.create({
+      const created = await tx.order.create({
         data: {
           cafeId,
           branchId,
@@ -224,10 +274,16 @@ export async function POST(request: NextRequest) {
           deliveryAddress: data.deliveryAddress,
           tableNumber: data.tableNumber,
           notes: data.notes,
-          subtotal,
-          taxAmount,
-          discountAmount,
+          subtotal: charges.subtotal,
+          discountAmount: charges.discountAmount,
+          serviceChargeAmount: charges.serviceChargeAmount,
+          taxAmount: charges.taxAmount,
           total,
+          paymentStatus,
+          paidAmount,
+          remainingAmount,
+          taxRateSnapshot: charges.taxRateSnapshot,
+          serviceRateSnapshot: charges.serviceRateSnapshot,
           createdById: session.id,
           items: {
             create: itemRows.map((row) => ({
@@ -245,23 +301,34 @@ export async function POST(request: NextRequest) {
         },
         include: orderInclude,
       });
+      for (const s of paySplits) {
+        await tx.payment.create({
+          data: {
+            cafeId, branchId, orderId: created.id, shiftId: shift?.id ?? null,
+            cashierId: session.id, amount: s.amount, method: s.method,
+            status: "PAID", receivedById: session.id,
+          },
+        });
+      }
+      return created;
     });
 
+    if (shift) await recomputeShiftTotals(shift.id);
+
     await audit({
-      cafeId,
-      userId: session.id,
-      action: "ORDER_CREATED",
-      entity: "Order",
-      entityId: order.id,
-      details: {
-        orderNumber: order.orderNumber,
-        total,
-        branchId,
-        source,
-        createdById: session.id,
-        createdByName: session.name,
-      },
+      cafeId, userId: session.id, action: "ORDER_CREATED", entity: "Order", entityId: order.id,
+      details: { orderNumber: order.orderNumber, total, branchId, source, createdByName: session.name },
     });
+    if (data.collectionMode === "PENDING") {
+      await audit({ cafeId, userId: session.id, action: "PAYMENT_COLLECTION_PENDING", entity: "Order", entityId: order.id, details: { orderNumber: order.orderNumber, branchId, total } });
+    } else if (paidAmount > 0) {
+      await audit({
+        cafeId, userId: session.id,
+        action: paymentStatus === "PARTIAL" ? "PARTIAL_PAYMENT_RECORDED" : "PAYMENT_COLLECTED",
+        entity: "Order", entityId: order.id,
+        details: { orderNumber: order.orderNumber, branchId, shiftId: shift?.id ?? null, paidAmount, remainingAmount, total },
+      });
+    }
 
     return NextResponse.json({ order }, { status: 201 });
   } catch (error) {

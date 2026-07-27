@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { api, money } from "@/lib/client";
 import { t } from "@/lib/i18n";
 import { branchShift, round2 as r2 } from "@/lib/pricing";
+import { computeCharges, type ChargeSettings } from "@/lib/charges";
 import { useApp } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -37,6 +38,7 @@ import {
   type Branch,
   type CartLine,
   type Category,
+  type CollectionMode,
   type OrderType,
   type PaymentMethod,
   type SplitMethod,
@@ -80,7 +82,9 @@ export default function PosPage() {
   const [mixed, setMixed] = useState<{ CASH: string; CARD: string; WALLET: string }>(
     EMPTY_MIXED
   );
-  const [payNow, setPayNow] = useState(true);
+  const [collectionMode, setCollectionMode] = useState<CollectionMode>("NOW");
+  const [paidInput, setPaidInput] = useState("");
+  const [finSettings, setFinSettings] = useState<ChargeSettings | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   // ── Shift gate (cashiers must have an open shift) ────────────
@@ -111,6 +115,15 @@ export default function PosPage() {
       })
       .catch((e) => toast.error(e.message));
   }, [user.branchId]);
+
+  // Branch tax/service settings drive the live totals (server recomputes
+  // authoritatively on submit).
+  useEffect(() => {
+    if (!branchId) return;
+    api<{ settings: ChargeSettings }>(`/api/branches/${branchId}/financial-settings`)
+      .then((r) => setFinSettings(r.settings))
+      .catch(() => setFinSettings(null));
+  }, [branchId]);
 
   // POS shows only showInPOS products, priced for the selected branch:
   // a branch override shifts the base and every variant equally.
@@ -243,11 +256,29 @@ export default function PosPage() {
 
   // ── Totals & validation ──────────────────────────────────────
   const subtotal = round2(cart.reduce((s, l) => s + l.unitPrice * l.quantity, 0));
-  const discountAmount = round2(
-    Math.min(Math.max(Number(discountInput) || 0, 0), subtotal)
-  );
-  const taxAmount = round2((subtotal - discountAmount) * (taxRate / 100));
-  const total = round2(subtotal - discountAmount + taxAmount);
+  // Fall back to the cafe tax rate until branch settings load.
+  const effectiveSettings: ChargeSettings =
+    finSettings ?? {
+      taxEnabled: taxRate > 0,
+      taxRate,
+      applyTaxTo: "ALL_ORDERS",
+      serviceChargeEnabled: false,
+      serviceChargeType: "PERCENTAGE",
+      serviceChargeRate: 0,
+      serviceChargeFixedAmount: 0,
+      applyServiceTo: "DINE_IN_ONLY",
+    };
+  const charges = computeCharges({
+    subtotal,
+    discount: Number(discountInput) || 0,
+    orderType,
+    settings: effectiveSettings,
+  });
+  const discountAmount = charges.discountAmount;
+  const serviceCharge = charges.serviceChargeAmount;
+  const taxAmount = charges.taxAmount;
+  const effectiveTaxRate = charges.taxRateSnapshot;
+  const total = charges.total;
 
   const disabledReason = useMemo(() => {
     if (needsShift && !shiftActive) return t.shifts.mustOpen;
@@ -269,6 +300,22 @@ export default function PosPage() {
     if (disabledReason) return;
     setSubmitting(true);
     try {
+      // Payment collection is resolved server-side (order + payment created
+      // atomically) based on the collection mode.
+      const paymentBody =
+        collectionMode === "NOW"
+          ? method === "MIXED"
+            ? {
+                method: "MIXED" as const,
+                splits: (["CASH", "CARD", "WALLET"] as SplitMethod[])
+                  .map((m) => ({ method: m, amount: Number(mixed[m]) || 0 }))
+                  .filter((s) => s.amount > 0),
+              }
+            : { method }
+          : collectionMode === "PARTIAL"
+            ? { method, paidAmount: round2(Number(paidInput) || 0) }
+            : {};
+
       const { order } = await api<{ order: PlacedOrder }>("/api/orders", {
         method: "POST",
         body: {
@@ -279,6 +326,8 @@ export default function PosPage() {
           deliveryAddress: details.deliveryAddress.trim() || undefined,
           tableNumber: details.tableNumber.trim() || undefined,
           discountAmount,
+          collectionMode,
+          ...paymentBody,
           items: cart.map((l) => ({
             productId: l.product.id,
             variantId: l.variant?.id ?? null,
@@ -289,42 +338,23 @@ export default function PosPage() {
         },
       });
 
-      let paid = false;
-      if (payNow) {
-        // Mixed → one payment row per non-zero method; otherwise a single
-        // payment for the whole total.
-        const body =
-          method === "MIXED"
-            ? {
-                orderId: order.id,
-                splits: (["CASH", "CARD", "WALLET"] as SplitMethod[])
-                  .map((m) => ({ method: m, amount: Number(mixed[m]) || 0 }))
-                  .filter((s) => s.amount > 0),
-              }
-            : { orderId: order.id, amount: Number(order.total), method };
-        try {
-          await api("/api/payments", { method: "POST", body });
-          paid = true;
-        } catch (e) {
-          toast.error(
-            `الطلب اتسجل لكن الدفع فشل: ${e instanceof Error ? e.message : ""}`
-          );
-        }
-      }
+      const collectedMsg =
+        collectionMode === "NOW"
+          ? ` · اتحصّل ${money(order.total, currency)}`
+          : collectionMode === "PARTIAL"
+            ? ` · ${t.collection.partial}`
+            : ` · ${t.collection.pending}`;
+      toast.success(`طلب رقم ${order.orderNumber} اتسجل${collectedMsg}`, {
+        action: { label: "عرض الطلب", onClick: () => router.push("/orders") },
+        duration: 5000,
+      });
 
-      toast.success(
-        `طلب رقم ${order.orderNumber} اتسجل${paid ? ` · اتحصّل ${money(order.total, currency)} ${t.paymentMethods[method]}` : " · لسه متدفعش"}`,
-        {
-          action: { label: "عرض الطلب", onClick: () => router.push("/orders") },
-          duration: 5000,
-        }
-      );
-
-      // Reset for the next customer; keep order type & payment method.
+      // Reset for the next customer; keep order type & collection settings.
       setCart([]);
       setDetails(EMPTY_DETAILS);
       setDiscountInput("");
       setMixed(EMPTY_MIXED);
+      setPaidInput("");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "فشل تسجيل الطلب");
     } finally {
@@ -398,12 +428,14 @@ export default function PosPage() {
         subtotal={subtotal}
         discountInput={discountInput}
         discountAmount={discountAmount}
-        taxRate={taxRate}
+        serviceCharge={serviceCharge}
+        taxRate={effectiveTaxRate}
         taxAmount={taxAmount}
         total={total}
+        collectionMode={collectionMode}
+        paidInput={paidInput}
         method={method}
         mixed={mixed}
-        payNow={payNow}
         placeDisabled={disabledReason !== null}
         disabledReason={disabledReason}
         submitting={submitting}
@@ -413,9 +445,10 @@ export default function PosPage() {
         onRemove={removeLine}
         onNoteChange={changeNote}
         onDiscountChange={setDiscountInput}
+        onCollectionModeChange={setCollectionMode}
+        onPaidChange={setPaidInput}
         onMethodChange={setMethod}
         onMixedChange={changeMixed}
-        onPayNowChange={setPayNow}
         onPlaceOrder={placeOrder}
       />
 

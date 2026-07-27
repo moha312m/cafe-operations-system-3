@@ -8,6 +8,8 @@ import { handledBy } from "@/lib/order-staff";
 import { useApp } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   Dialog,
@@ -43,6 +45,7 @@ type Order = {
   customerName: string | null;
   tableNumber: string | null;
   total: string;
+  paymentStatus: "UNPAID" | "PENDING_COLLECTION" | "PARTIAL" | "PAID" | "REFUNDED" | "CANCELLED";
   createdAt: string;
   branch: { id: string; name: string };
   createdBy: { name: string } | null;
@@ -70,6 +73,7 @@ export default function OrdersPage() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [paying, setPaying] = useState<Order | null>(null);
   const [payMethod, setPayMethod] = useState("CASH");
+  const [payAmount, setPayAmount] = useState("");
   const [busy, setBusy] = useState(false);
   const [sourceFilter, setSourceFilter] = useState<string>("all");
   const [detail, setDetail] = useState<Order | null>(null);
@@ -109,12 +113,20 @@ export default function OrdersPage() {
     setBusy(true);
     try {
       const remaining = Number(paying.total) - paidAmount(paying);
+      // Amount defaults to the full remaining; a smaller amount is a partial.
+      const amount = payAmount.trim() ? Math.min(Number(payAmount) || 0, remaining) : remaining;
+      if (amount <= 0) {
+        toast.error(t.collection.validation.amountPositive);
+        setBusy(false);
+        return;
+      }
       await api("/api/payments", {
         method: "POST",
-        body: { orderId: paying.id, amount: remaining, method: payMethod },
+        body: { orderId: paying.id, amount, method: payMethod },
       });
-      toast.success(`اتحصّلت فلوس طلب رقم ${paying.orderNumber}`);
+      toast.success(t.collection.collectedSuccess);
       setPaying(null);
+      setPayAmount("");
       await load();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "فشل تسجيل الدفع");
@@ -192,8 +204,18 @@ export default function OrdersPage() {
                             {t.orderSource[order.source]}
                           </Badge>
                           <Badge variant="outline">{t.orderStatus[order.status]}</Badge>
-                          <Badge variant={isPaid ? "default" : "destructive"}>
-                            {isPaid ? "مدفوع" : "لسه متدفعش"}
+                          <Badge
+                            variant={
+                              order.paymentStatus === "PAID"
+                                ? "default"
+                                : order.paymentStatus === "PARTIAL"
+                                  ? "secondary"
+                                  : order.paymentStatus === "PENDING_COLLECTION"
+                                    ? "outline"
+                                    : "destructive"
+                            }
+                          >
+                            {t.paymentStatus[order.paymentStatus] ?? "غير مدفوع"}
                           </Badge>
                         </div>
                       </div>
@@ -256,10 +278,11 @@ export default function OrdersPage() {
                               disabled={busy}
                               onClick={() => {
                                 setPayMethod("CASH");
+                                setPayAmount("");
                                 setPaying(order);
                               }}
                             >
-                              تحصيل
+                              {t.collection.collectPayment}
                             </Button>
                           )}
                           {can("orders:cancel") &&
@@ -378,10 +401,30 @@ export default function OrdersPage() {
             <DialogTitle>تحصيل — طلب رقم {paying?.orderNumber}</DialogTitle>
           </DialogHeader>
           {paying && (
-            <div className="space-y-4">
-              <p className="text-center text-3xl font-semibold tabular-nums">
-                {money(Number(paying.total) - paidAmount(paying), currency)}
-              </p>
+            <div className="space-y-3">
+              <dl className="space-y-1.5 rounded-lg border bg-muted/30 p-3 text-sm">
+                <div className="flex justify-between">
+                  <dt className="text-muted-foreground">{t.collection.orderTotal}</dt>
+                  <dd className="tabular-nums">{money(paying.total, currency)}</dd>
+                </div>
+                <div className="flex justify-between text-emerald-600">
+                  <dt>{t.collection.paid}</dt>
+                  <dd className="tabular-nums">{money(paidAmount(paying), currency)}</dd>
+                </div>
+                <div className="flex justify-between border-t pt-1.5 font-semibold text-amber-600">
+                  <dt>{t.collection.remaining}</dt>
+                  <dd className="tabular-nums">{money(Number(paying.total) - paidAmount(paying), currency)}</dd>
+                </div>
+              </dl>
+              <div className="space-y-1.5">
+                <Label>{t.collection.collectAmount}</Label>
+                <Input
+                  type="number" min="0" step="0.01" dir="ltr"
+                  placeholder={String(Number(paying.total) - paidAmount(paying))}
+                  value={payAmount}
+                  onChange={(e) => setPayAmount(e.target.value)}
+                />
+              </div>
               <div className="flex gap-2">
                 {(["CASH", "CARD", "WALLET"] as const).map((m) => (
                   <Button
@@ -398,7 +441,7 @@ export default function OrdersPage() {
           )}
           <DialogFooter>
             <Button onClick={recordPayment} disabled={busy}>
-              {busy ? "جاري التسجيل…" : "تسجيل الدفع"}
+              {busy ? "جاري التسجيل…" : t.collection.collectPayment}
             </Button>
           </DialogFooter>
         </DialogContent>

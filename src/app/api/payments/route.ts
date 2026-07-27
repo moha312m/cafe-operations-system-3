@@ -91,36 +91,34 @@ export async function POST(request: NextRequest) {
 
     if (shift) await recomputeShiftTotals(shift.id);
 
-    await audit({
-      cafeId: order.cafeId,
-      userId: session.id,
-      action: "PAYMENT_RECORDED",
-      entity: "Payment",
-      entityId: created[0]?.id ?? null,
-      details: {
-        branchId: order.branchId,
-        shiftId: shift?.id ?? null,
-        orderId: order.id,
-        orderNumber: order.orderNumber,
-        newValue: splits,
-      },
+    // Sync the order's denormalised payment state.
+    const newPaid = round2(alreadyPaid + payAmount);
+    const newRemaining = round2(Number(order.total) - newPaid);
+    const oldStatus = order.paymentStatus;
+    const newStatus = newRemaining <= 0.001 ? "PAID" : "PARTIAL";
+    await db.order.update({
+      where: { id: order.id },
+      data: { paidAmount: newPaid, remainingAmount: Math.max(newRemaining, 0), paymentStatus: newStatus },
     });
 
-    // Order fully settled?
-    if (round2(remaining - payAmount) <= 0) {
+    const payMeta = {
+      branchId: order.branchId,
+      shiftId: shift?.id ?? null,
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+    };
+    await audit({
+      cafeId: order.cafeId, userId: session.id,
+      action: newStatus === "PAID" ? "PAYMENT_COLLECTED" : "PARTIAL_PAYMENT_RECORDED",
+      entity: "Payment", entityId: created[0]?.id ?? null,
+      details: { ...payMeta, paidAmount: newPaid, remainingAmount: Math.max(newRemaining, 0), newValue: splits },
+    });
+    if (oldStatus !== newStatus) {
       await audit({
-        cafeId: order.cafeId,
-        userId: session.id,
-        action: "ORDER_PAID",
-        entity: "Order",
-        entityId: order.id,
-        details: {
-          branchId: order.branchId,
-          shiftId: shift?.id ?? null,
-          orderId: order.id,
-          orderNumber: order.orderNumber,
-          total: Number(order.total),
-        },
+        cafeId: order.cafeId, userId: session.id,
+        action: "ORDER_PAYMENT_STATUS_CHANGED",
+        entity: "Order", entityId: order.id,
+        details: { ...payMeta, oldValue: oldStatus, newValue: newStatus },
       });
     }
 

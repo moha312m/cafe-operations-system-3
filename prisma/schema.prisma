@@ -66,10 +66,25 @@ enum PaymentMethod {
 }
 
 enum PaymentStatus {
-  PAID
-  PARTIAL
-  REFUNDED
-  CANCELLED
+  UNPAID // غير مدفوع
+  PENDING_COLLECTION // في انتظار التحصيل
+  PARTIAL // مدفوع جزئيًا
+  PAID // مدفوع
+  REFUNDED // مرتجع
+  CANCELLED // ملغي
+}
+
+enum ServiceChargeType {
+  PERCENTAGE // نسبة
+  FIXED // مبلغ ثابت
+}
+
+// Which order types a tax / service charge applies to.
+enum ChargeApplicationScope {
+  ALL_ORDERS
+  DINE_IN_ONLY
+  TAKEAWAY_ONLY
+  DELIVERY_ONLY
 }
 
 enum ShiftStatus {
@@ -203,8 +218,34 @@ model Branch {
   inventoryItems InventoryItem[]
   inventoryTxns  InventoryTransaction[]
   productPrices  ProductBranchPrice[]
+  financialSettings BranchFinancialSettings?
 
   @@unique([cafeId, menuSlug])
+  @@index([cafeId])
+}
+
+// Configurable tax & service charge per branch (owner/manager editable).
+// One row per branch, created lazily from the cafe's tax rate.
+model BranchFinancialSettings {
+  id       String @id @default(cuid())
+  branchId String @unique
+  cafeId   String
+
+  taxEnabled Boolean @default(false)
+  taxRate    Decimal @default(0) @db.Decimal(5, 2)
+  applyTaxTo ChargeApplicationScope @default(ALL_ORDERS)
+
+  serviceChargeEnabled     Boolean           @default(false)
+  serviceChargeType        ServiceChargeType @default(PERCENTAGE)
+  serviceChargeRate        Decimal           @default(0) @db.Decimal(5, 2)
+  serviceChargeFixedAmount Decimal           @default(0) @db.Decimal(10, 2)
+  applyServiceTo           ChargeApplicationScope @default(DINE_IN_ONLY)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
   @@index([cafeId])
 }
 
@@ -391,7 +432,17 @@ model Order {
   subtotal       Decimal     @db.Decimal(10, 2)
   taxAmount      Decimal     @default(0) @db.Decimal(10, 2)
   discountAmount Decimal     @default(0) @db.Decimal(10, 2)
+  serviceChargeAmount Decimal @default(0) @db.Decimal(10, 2)
   total          Decimal     @db.Decimal(10, 2)
+
+  // Payment collection state (denormalised from the Payment ledger).
+  paymentStatus   PaymentStatus @default(UNPAID)
+  paidAmount      Decimal       @default(0) @db.Decimal(10, 2)
+  remainingAmount Decimal       @default(0) @db.Decimal(10, 2)
+  // Rates captured at order time so later settings edits never rewrite history.
+  taxRateSnapshot     Decimal? @db.Decimal(5, 2)
+  serviceRateSnapshot Decimal? @db.Decimal(10, 2)
+
   createdById    String? // null for QR menu orders placed by customers
   createdAt      DateTime    @default(now())
   updatedAt      DateTime    @updatedAt

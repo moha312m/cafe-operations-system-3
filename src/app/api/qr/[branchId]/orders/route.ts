@@ -5,6 +5,7 @@ import { handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { unitPrice as computeUnitPrice } from "@/lib/pricing";
 import { getCafeSettings } from "@/lib/cafe-settings";
+import { getBranchFinancialSettings, computeCharges } from "@/lib/financials";
 
 type Params = { params: Promise<{ branchId: string }> };
 
@@ -147,8 +148,16 @@ export async function POST(request: NextRequest, { params }: Params) {
       };
     });
 
-    const taxAmount = round2(subtotal * (Number(branch.cafe.taxRate) / 100));
-    const total = round2(subtotal + taxAmount);
+    // Tax/service come from the branch's configurable settings, snapshotted.
+    const finSettings = await getBranchFinancialSettings(branchId);
+    const charges = computeCharges({
+      subtotal,
+      discount: 0,
+      orderType,
+      settings: finSettings,
+    });
+    const taxAmount = charges.taxAmount;
+    const total = charges.total;
 
     const order = await db.$transaction(async (tx) => {
       const last = await tx.order.aggregate({
@@ -169,7 +178,14 @@ export async function POST(request: NextRequest, { params }: Params) {
           notes: data.notes,
           subtotal,
           taxAmount,
+          serviceChargeAmount: charges.serviceChargeAmount,
           total,
+          // Customer hasn't paid yet — collected by staff on pickup/delivery.
+          paymentStatus: "PENDING_COLLECTION",
+          paidAmount: 0,
+          remainingAmount: total,
+          taxRateSnapshot: charges.taxRateSnapshot,
+          serviceRateSnapshot: charges.serviceRateSnapshot,
           createdById: null, // placed by the customer, no user account
           items: {
             create: itemRows.map((row) => ({

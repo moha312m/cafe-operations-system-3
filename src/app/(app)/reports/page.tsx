@@ -27,9 +27,18 @@ type Report = {
     cancelled: number;
     gross: number;
     discounts: number;
+    service: number;
     tax: number;
     revenue: number;
     avgOrderValue: number;
+  };
+  collection: {
+    paidTotal: number;
+    uncollectedTotal: number;
+    pendingCount: number;
+    pendingRemaining: number;
+    partialCount: number;
+    partialRemaining: number;
   };
   shifts: { open: number; closed: number; cashDifferenceTotal: number };
   byPaymentMethod: { method: string; amount: number; count: number }[];
@@ -89,7 +98,11 @@ export default function ReportsPage() {
                 label: "فروقات الكاش",
                 value: money(report.shifts.cashDifferenceTotal, currency),
               },
-              { label: "الضريبة المحصّلة", value: money(report.totals.tax, currency) },
+              { label: "إجمالي السيرفيس", value: money(report.totals.service, currency) },
+              { label: "إجمالي الضريبة", value: money(report.totals.tax, currency) },
+              { label: "طلبات في انتظار التحصيل", value: String(report.collection.pendingCount) },
+              { label: "إجمالي المبالغ غير المحصلة", value: money(report.collection.uncollectedTotal, currency) },
+              { label: "إجمالي المدفوع جزئيًا", value: money(report.collection.partialRemaining, currency) },
             ].map((stat) => (
               <Card key={stat.label}>
                 <CardHeader className="pb-1">

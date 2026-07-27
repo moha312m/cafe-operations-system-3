@@ -24,6 +24,7 @@ export async function GET(request: NextRequest) {
     const [
       completed,
       cancelledCount,
+      collectionGroups,
       payments,
       itemSales,
       branchTotals,
@@ -34,11 +35,21 @@ export async function GET(request: NextRequest) {
     ] = await Promise.all([
         db.order.aggregate({
           where: { cafeId, ...branchFilter, status: "SERVED", createdAt: dayWindow },
-          _sum: { total: true, subtotal: true, taxAmount: true, discountAmount: true },
+          _sum: { total: true, subtotal: true, taxAmount: true, discountAmount: true, serviceChargeAmount: true },
           _count: true,
         }),
         db.order.count({
           where: { cafeId, ...branchFilter, status: "CANCELLED", createdAt: dayWindow },
+        }),
+        // Collection state across non-cancelled orders created today.
+        db.order.groupBy({
+          by: ["paymentStatus"],
+          where: {
+            cafeId, ...branchFilter, createdAt: dayWindow,
+            status: { notIn: ["CANCELLED", "REJECTED", "PENDING_WAITER_APPROVAL"] },
+          },
+          _sum: { total: true, paidAmount: true, remainingAmount: true },
+          _count: true,
         }),
         db.payment.groupBy({
           by: ["method"],
@@ -110,6 +121,15 @@ export async function GET(request: NextRequest) {
     const orderCount = completed._count;
     const revenue = Number(completed._sum.total ?? 0);
 
+    // Collection breakdown by payment status.
+    const collectRow = (status: string) => collectionGroups.find((g) => g.paymentStatus === status);
+    const pending = collectRow("PENDING_COLLECTION");
+    const partial = collectRow("PARTIAL");
+    const paidAmountTotal = collectionGroups.reduce((s, g) => s + Number(g._sum.paidAmount ?? 0), 0);
+    const uncollectedTotal = collectionGroups
+      .filter((g) => g.paymentStatus === "PENDING_COLLECTION" || g.paymentStatus === "PARTIAL")
+      .reduce((s, g) => s + Number(g._sum.remainingAmount ?? 0), 0);
+
     return NextResponse.json({
       date: dayStart.toISOString().slice(0, 10),
       totals: {
@@ -117,9 +137,18 @@ export async function GET(request: NextRequest) {
         cancelled: cancelledCount,
         gross: Number(completed._sum.subtotal ?? 0),
         discounts: Number(completed._sum.discountAmount ?? 0),
+        service: Number(completed._sum.serviceChargeAmount ?? 0),
         tax: Number(completed._sum.taxAmount ?? 0),
         revenue,
         avgOrderValue: orderCount > 0 ? Math.round((revenue / orderCount) * 100) / 100 : 0,
+      },
+      collection: {
+        paidTotal: Math.round(paidAmountTotal * 100) / 100,
+        uncollectedTotal: Math.round(uncollectedTotal * 100) / 100,
+        pendingCount: pending?._count ?? 0,
+        pendingRemaining: Math.round(Number(pending?._sum.remainingAmount ?? 0) * 100) / 100,
+        partialCount: partial?._count ?? 0,
+        partialRemaining: Math.round(Number(partial?._sum.remainingAmount ?? 0) * 100) / 100,
       },
       shifts: {
         open: openShifts,

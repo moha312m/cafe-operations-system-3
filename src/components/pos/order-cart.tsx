@@ -8,7 +8,7 @@ import {
   type CustomerDetails,
 } from "./order-type-selector";
 import { PaymentSummary, type MixedAmounts } from "./payment-summary";
-import type { CartLine, OrderType, PaymentMethod, SplitMethod } from "./types";
+import type { CartLine, CollectionMode, OrderType, PaymentMethod, SplitMethod } from "./types";
 
 export function OrderCart({
   cart,
@@ -18,12 +18,14 @@ export function OrderCart({
   subtotal,
   discountInput,
   discountAmount,
+  serviceCharge,
   taxRate,
   taxAmount,
   total,
+  collectionMode,
+  paidInput,
   method,
   mixed,
-  payNow,
   placeDisabled,
   disabledReason,
   submitting,
@@ -33,9 +35,10 @@ export function OrderCart({
   onRemove,
   onNoteChange,
   onDiscountChange,
+  onCollectionModeChange,
+  onPaidChange,
   onMethodChange,
   onMixedChange,
-  onPayNowChange,
   onPlaceOrder,
 }: {
   cart: CartLine[];
@@ -45,12 +48,14 @@ export function OrderCart({
   subtotal: number;
   discountInput: string;
   discountAmount: number;
+  serviceCharge: number;
   taxRate: number;
   taxAmount: number;
   total: number;
+  collectionMode: CollectionMode;
+  paidInput: string;
   method: PaymentMethod;
   mixed: MixedAmounts;
-  payNow: boolean;
   placeDisabled: boolean;
   disabledReason: string | null;
   submitting: boolean;
@@ -60,9 +65,10 @@ export function OrderCart({
   onRemove: (key: string) => void;
   onNoteChange: (key: string, note: string) => void;
   onDiscountChange: (value: string) => void;
+  onCollectionModeChange: (mode: CollectionMode) => void;
+  onPaidChange: (value: string) => void;
   onMethodChange: (method: PaymentMethod) => void;
   onMixedChange: (field: SplitMethod, value: string) => void;
-  onPayNowChange: (payNow: boolean) => void;
   onPlaceOrder: () => void;
 }) {
   const itemCount = cart.reduce((sum, line) => sum + line.quantity, 0);
@@ -112,19 +118,22 @@ export function OrderCart({
           subtotal={subtotal}
           discountInput={discountInput}
           discountAmount={discountAmount}
+          serviceCharge={serviceCharge}
           taxRate={taxRate}
           taxAmount={taxAmount}
           total={total}
+          collectionMode={collectionMode}
+          paidInput={paidInput}
           method={method}
           mixed={mixed}
-          payNow={payNow}
           placeDisabled={placeDisabled}
           disabledReason={disabledReason}
           submitting={submitting}
           onDiscountChange={onDiscountChange}
+          onCollectionModeChange={onCollectionModeChange}
+          onPaidChange={onPaidChange}
           onMethodChange={onMethodChange}
           onMixedChange={onMixedChange}
-          onPayNowChange={onPayNowChange}
           onPlaceOrder={onPlaceOrder}
         />
       </div>

@@ -138,11 +138,59 @@ export const t = {
   } satisfies Record<PaymentMethod, string>,
 
   paymentStatus: {
+    UNPAID: "غير مدفوع",
+    PENDING_COLLECTION: "في انتظار التحصيل",
+    PARTIAL: "مدفوع جزئيًا",
     PAID: "مدفوع",
-    PARTIAL: "مدفوع جزئي",
     REFUNDED: "مرتجع",
     CANCELLED: "ملغي",
   } satisfies Record<PaymentStatus, string>,
+
+  // POS payment collection + configurable tax/service
+  collection: {
+    title: "طريقة التحصيل",
+    now: "تحصيل الآن",
+    pending: "انتظار التحصيل",
+    partial: "مدفوع جزئيًا",
+    paid: "المدفوع",
+    remaining: "المتبقي",
+    collectPayment: "تحصيل الدفع",
+    collectAmount: "مبلغ التحصيل",
+    orderTotal: "إجمالي الطلب",
+    collectedSuccess: "تم تحصيل الدفع بنجاح",
+    validation: {
+      needMode: "من فضلك اختار طريقة التحصيل",
+      needMethod: "من فضلك اختار طريقة الدفع",
+      amountPositive: "مبلغ الدفع يجب أن يكون أكبر من صفر",
+      amountTooBig: "مبلغ الدفع لا يمكن أن يكون أكبر من إجمالي الطلب",
+      needShift: "لا يمكن تحصيل الدفع بدون شيفت مفتوح",
+    },
+  },
+
+  finance: {
+    settingsTitle: "إعدادات الضريبة والسيرفيس",
+    taxEnabled: "تفعيل الضريبة",
+    taxRate: "نسبة الضريبة",
+    serviceEnabled: "تفعيل السيرفيس",
+    serviceRate: "نسبة السيرفيس",
+    serviceFixed: "قيمة السيرفيس الثابتة",
+    serviceType: "نوع السيرفيس",
+    percentage: "نسبة",
+    fixed: "مبلغ ثابت",
+    applyServiceTo: "تطبيق السيرفيس على",
+    applyTaxTo: "تطبيق الضريبة على",
+    service: "السيرفيس",
+    tax: "الضريبة",
+    finalTotal: "الإجمالي النهائي",
+    save: "حفظ الإعدادات",
+    saved: "تم حفظ الإعدادات",
+    scope: {
+      ALL_ORDERS: "كل الطلبات",
+      DINE_IN_ONLY: "الصالة فقط",
+      TAKEAWAY_ONLY: "التيك أواي فقط",
+      DELIVERY_ONLY: "الدليفري فقط",
+    },
+  },
 
   shiftStatus: {
     OPEN: "مفتوح",

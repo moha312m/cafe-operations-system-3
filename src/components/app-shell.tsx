@@ -58,6 +58,7 @@ const NAV: NavItem[] = [
   { href: "/inventory", label: t.nav.inventory, icon: "📦", permission: "inventory:read", feature: (f) => f.inventoryEnabled },
   { href: "/reports", label: t.nav.reports, icon: "📈", permission: "reports:read" },
   { href: "/shifts", label: t.nav.shiftReports, icon: "🧮", permission: "shifts:read", feature: (f) => f.shiftManagementEnabled },
+  { href: "/settings", label: "الإعدادات", icon: "⚙️", permission: "branches:manage" },
   { href: "/audit", label: t.nav.audit, icon: "🕓", permission: "audit:read" },
 ];
 
