@@ -15,6 +15,7 @@ export function OrderCart({
   currency,
   orderType,
   details,
+  branchId,
   subtotal,
   discountInput,
   discountAmount,
@@ -45,6 +46,7 @@ export function OrderCart({
   currency: string;
   orderType: OrderType;
   details: CustomerDetails;
+  branchId?: string;
   subtotal: number;
   discountInput: string;
   discountAmount: number;
@@ -86,6 +88,7 @@ export function OrderCart({
         <OrderTypeSelector
           type={orderType}
           details={details}
+          branchId={branchId}
           onTypeChange={onTypeChange}
           onDetailsChange={onDetailsChange}
         />

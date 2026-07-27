@@ -23,7 +23,9 @@ const MANAGER_KEYS = [
   "orders.view", "orders.update_status", "orders.cancel",
   "qr_orders.view", "qr_orders.approve",
   "kitchen.view", "kitchen.update_status",
-  "tables.view", "tables.manage",
+  "tables.view", "tables.manage", "tables.open", "tables.close",
+  "tables.collect_payment", "tables.partial_payment", "tables.item_payment",
+  "tables.transfer", "tables.merge",
   "menu.view", "menu.create", "menu.edit", "menu.edit_prices", "menu.import_excel", "menu.manage_recipes",
   "inventory.view", "inventory.edit", "inventory.transactions",
   "purchases.view", "purchases.manage",
@@ -41,7 +43,8 @@ const MANAGER_KEYS = [
 const CASHIER_KEYS = [
   "pos.view", "pos.create_order", "pos.collect_payment", "pos.view_payments",
   "orders.view", "orders.update_status",
-  "tables.view",
+  "tables.view", "tables.open", "tables.close",
+  "tables.collect_payment", "tables.partial_payment", "tables.item_payment",
   "menu.view",
   "shifts.view_current", "shifts.open", "shifts.close",
 ];
@@ -50,7 +53,7 @@ const WAITER_KEYS = [
   "pos.view", "pos.create_order",
   "orders.view", "orders.update_status",
   "qr_orders.view", "qr_orders.approve",
-  "tables.view",
+  "tables.view", "tables.open",
   "menu.view",
 ];
 

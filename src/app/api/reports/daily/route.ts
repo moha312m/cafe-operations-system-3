@@ -102,6 +102,34 @@ export async function GET(request: NextRequest) {
         }),
       ]);
 
+    // ── Table sessions ──
+    const [openTables, closedTables, tablePayAgg] = await Promise.all([
+      db.tableSession.findMany({
+        where: { cafeId, ...branchFilter, status: "OPEN" },
+        select: { remainingAmount: true },
+      }),
+      db.tableSession.findMany({
+        where: { cafeId, ...branchFilter, status: "CLOSED", closedAt: dayWindow },
+        select: { startedAt: true, closedAt: true, totalAmount: true },
+      }),
+      // Payments collected through the tables board today.
+      db.payment.aggregate({
+        where: {
+          cafeId, status: "PAID", createdAt: dayWindow,
+          tableSessionId: { not: null }, order: { ...branchFilter },
+        },
+        _sum: { amount: true },
+        _count: true,
+      }),
+    ]);
+    const tableUncollected = openTables.reduce((s, ts) => s + Number(ts.remainingAmount), 0);
+    const durations = closedTables
+      .filter((ts) => ts.closedAt)
+      .map((ts) => (new Date(ts.closedAt!).getTime() - new Date(ts.startedAt).getTime()) / 60_000);
+    const avgTableMinutes = durations.length
+      ? Math.round(durations.reduce((s, d) => s + d, 0) / durations.length)
+      : 0;
+
     const branchName = new Map(branches.map((b) => [b.id, b.name]));
 
     // Resolve cashier names.
@@ -154,6 +182,15 @@ export async function GET(request: NextRequest) {
         open: openShifts,
         closed: closedShifts,
         cashDifferenceTotal: Number(closedAgg._sum.cashDifference ?? 0),
+      },
+      tables: {
+        openCount: openTables.length,
+        closedTodayCount: closedTables.length,
+        avgSittingMinutes: avgTableMinutes,
+        collectedTotal: Number(tablePayAgg._sum.amount ?? 0),
+        collectedCount: tablePayAgg._count,
+        uncollectedTotal: Math.round(tableUncollected * 100) / 100,
+        closedSales: Math.round(closedTables.reduce((s, ts) => s + Number(ts.totalAmount), 0) * 100) / 100,
       },
       byCashier: cashierGroups
         .filter((c) => c.cashierId)

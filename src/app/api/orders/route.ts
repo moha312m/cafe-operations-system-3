@@ -12,6 +12,7 @@ import { audit } from "@/lib/audit";
 import { unitPrice as computeUnitPrice } from "@/lib/pricing";
 import { getActiveShift, recomputeShiftTotals } from "@/lib/shifts";
 import { getBranchFinancialSettings, computeCharges } from "@/lib/financials";
+import { attachOrderToTableSession } from "@/lib/table-sessions";
 
 const orderInclude = {
   items: { include: { addOns: true } },
@@ -314,6 +315,16 @@ export async function POST(request: NextRequest) {
     });
 
     if (shift) await recomputeShiftTotals(shift.id);
+
+    // Dine-in orders join (or open) their table's session automatically.
+    await attachOrderToTableSession(
+      {
+        id: order.id, cafeId, branchId, type: order.type,
+        tableNumber: order.tableNumber, orderNumber: order.orderNumber,
+        customerName: order.customerName,
+      },
+      session.id
+    );
 
     await audit({
       cafeId, userId: session.id, action: "ORDER_CREATED", entity: "Order", entityId: order.id,

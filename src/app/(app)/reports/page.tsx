@@ -41,6 +41,15 @@ type Report = {
     partialRemaining: number;
   };
   shifts: { open: number; closed: number; cashDifferenceTotal: number };
+  tables?: {
+    openCount: number;
+    closedTodayCount: number;
+    avgSittingMinutes: number;
+    collectedTotal: number;
+    collectedCount: number;
+    uncollectedTotal: number;
+    closedSales: number;
+  };
   byPaymentMethod: { method: string; amount: number; count: number }[];
   byBranch: { branchId: string; branchName: string; revenue: number; orders: number }[];
   byCashier: { cashierId: string; cashierName: string; amount: number; count: number }[];
@@ -103,6 +112,15 @@ export default function ReportsPage() {
               { label: "طلبات في انتظار التحصيل", value: String(report.collection.pendingCount) },
               { label: "إجمالي المبالغ غير المحصلة", value: money(report.collection.uncollectedTotal, currency) },
               { label: "إجمالي المدفوع جزئيًا", value: money(report.collection.partialRemaining, currency) },
+              ...(report.tables
+                ? [
+                    { label: "الترابيزات المفتوحة", value: String(report.tables.openCount) },
+                    { label: "الترابيزات المقفولة اليوم", value: String(report.tables.closedTodayCount) },
+                    { label: "متوسط مدة الجلوس", value: `${report.tables.avgSittingMinutes} دقيقة` },
+                    { label: "إجمالي تحصيل الترابيزات", value: money(report.tables.collectedTotal, currency) },
+                    { label: "مبالغ غير محصلة على الترابيزات", value: money(report.tables.uncollectedTotal, currency) },
+                  ]
+                : []),
             ].map((stat) => (
               <Card key={stat.label}>
                 <CardHeader className="pb-1">

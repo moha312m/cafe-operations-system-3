@@ -425,6 +425,7 @@ export default function PosPage() {
         currency={currency}
         orderType={orderType}
         details={details}
+        branchId={branchId || undefined}
         subtotal={subtotal}
         discountInput={discountInput}
         discountAmount={discountAmount}

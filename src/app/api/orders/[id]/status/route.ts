@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { requirePermission, handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { deductStockForOrder, auditDeduction, StockError } from "@/lib/stock-deduction";
+import { recomputeSessionTotals } from "@/lib/table-sessions";
 import type { OrderStatus } from "@prisma/client";
 
 type Params = { params: Promise<{ id: string }> };
@@ -125,6 +126,11 @@ export async function PATCH(request: NextRequest, { params }: Params) {
         throw new ApiError(400, e.message);
       }
       throw e;
+    }
+
+    // Cancellations change the table bill — keep the session totals fresh.
+    if (order.tableSessionId) {
+      await recomputeSessionTotals(order.tableSessionId);
     }
 
     if (deduction) {

@@ -5,6 +5,7 @@ import { hasPermission } from "@/lib/permissions";
 import { handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { recomputeShiftTotals } from "@/lib/shifts";
+import { recomputeSessionTotals } from "@/lib/table-sessions";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -22,7 +23,7 @@ export async function POST(_request: NextRequest, { params }: Params) {
 
     const payment = await db.payment.findUnique({
       where: { id },
-      include: { order: { select: { orderNumber: true } } },
+      include: { order: { select: { orderNumber: true, tableSessionId: true } } },
     });
     if (!payment) throw new ApiError(404, "عملية الدفع مش موجودة");
     if (session.role !== "SUPER_ADMIN" && payment.cafeId !== session.cafeId) {
@@ -38,6 +39,10 @@ export async function POST(_request: NextRequest, { params }: Params) {
       data: { status: "REFUNDED" },
     });
     if (payment.shiftId) await recomputeShiftTotals(payment.shiftId);
+    // Refunds shrink the table's paid amount too.
+    if (payment.order?.tableSessionId) {
+      await recomputeSessionTotals(payment.order.tableSessionId);
+    }
 
     await audit({
       cafeId: payment.cafeId,

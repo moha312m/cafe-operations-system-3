@@ -3,6 +3,7 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { requirePermission, handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
+import { recomputeSessionTotals } from "@/lib/table-sessions";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -39,6 +40,9 @@ export async function POST(request: NextRequest, { params }: Params) {
         rejectionReason: reason,
       },
     });
+
+    // Rejected orders drop out of the table bill (session stays open).
+    if (order.tableSessionId) await recomputeSessionTotals(order.tableSessionId);
 
     await audit({
       cafeId: order.cafeId,

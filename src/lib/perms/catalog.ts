@@ -161,7 +161,14 @@ export const PERMISSION_KEYS: PermKey[] = [
 
   // Tables
   { key: "tables.view", module: "TABLES", label: "عرض الترابيزات" },
-  { key: "tables.manage", module: "TABLES", label: "إدارة الترابيزات" },
+  { key: "tables.manage", module: "TABLES", label: "إدارة الترابيزات", sensitive: true },
+  { key: "tables.open", module: "TABLES", label: "فتح ترابيزة (أول طلب)" },
+  { key: "tables.close", module: "TABLES", label: "قفل الترابيزة" },
+  { key: "tables.collect_payment", module: "TABLES", label: "تحصيل حساب الترابيزة", sensitive: true },
+  { key: "tables.partial_payment", module: "TABLES", label: "تحصيل جزئي" },
+  { key: "tables.item_payment", module: "TABLES", label: "تحصيل أصناف محددة" },
+  { key: "tables.transfer", module: "TABLES", label: "نقل الترابيزة" },
+  { key: "tables.merge", module: "TABLES", label: "دمج الترابيزات" },
 
   // AI assistant
   { key: "ai.use", module: "AI_ASSISTANT", label: "استخدام المساعد الذكي" },
@@ -198,7 +205,7 @@ export function keysForModule(code: ModuleCode): PermKey[] {
 export const LEGACY_TO_KEYS: Record<string, string[]> = {
   "platform:manage": ["platform.manage"],
   "cafe:manage": ["settings.view", "settings.edit"],
-  "branches:manage": ["branches.view", "branches.manage"],
+  "branches:manage": ["branches.view", "branches.manage", "tables.manage", "tables.transfer", "tables.merge"],
   "users:manage": [
     "users.view", "users.create", "users.edit",
     "users.reset_password", "users.deactivate", "users.manage_permissions",
@@ -208,12 +215,15 @@ export const LEGACY_TO_KEYS: Record<string, string[]> = {
     "menu.edit_prices", "menu.import_excel", "excel.import",
   ],
   "menu:read": ["menu.view"],
-  "orders:create": ["pos.view", "pos.create_order", "pos.collect_payment", "pos.view_payments", "tables.view", "pos.apply_discount"],
+  "orders:create": ["pos.view", "pos.create_order", "pos.collect_payment", "pos.view_payments", "tables.view", "tables.open", "pos.apply_discount"],
   "orders:read": ["orders.view"],
   "orders:update-status": ["orders.update_status", "kitchen.view", "kitchen.update_status"],
   "orders:cancel": ["orders.cancel", "orders.refund"],
   "orders:approve": ["qr_orders.view", "qr_orders.approve"],
-  "payments:create": ["pos.collect_payment"],
+  "payments:create": [
+    "pos.collect_payment",
+    "tables.collect_payment", "tables.partial_payment", "tables.item_payment", "tables.close",
+  ],
   "payments:read": ["pos.view_payments"],
   "shifts:operate": ["shifts.view_current", "shifts.open", "shifts.close"],
   "shifts:read": ["shifts.view_reports"],

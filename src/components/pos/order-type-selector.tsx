@@ -1,8 +1,11 @@
 "use client";
 
+import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { t } from "@/lib/i18n";
+import { api } from "@/lib/client";
 import type { OrderType } from "./types";
 
 const TYPES: { value: OrderType; label: string; icon: string }[] = [
@@ -24,16 +27,43 @@ export type CustomerDetails = {
 export function OrderTypeSelector({
   type,
   details,
+  branchId,
   onTypeChange,
   onDetailsChange,
 }: {
   type: OrderType;
   details: CustomerDetails;
+  branchId?: string;
   onTypeChange: (type: OrderType) => void;
   onDetailsChange: (details: CustomerDetails) => void;
 }) {
   const set = (patch: Partial<CustomerDetails>) =>
     onDetailsChange({ ...details, ...patch });
+
+  // Open-session hint: typing a table number that already has an open
+  // bill shows "the order will be added to table X's bill".
+  const [openTable, setOpenTable] = useState<{ table: string; sessionId: string } | null>(null);
+  const tableNumber = details.tableNumber.trim();
+  useEffect(() => {
+    if (type !== "DINE_IN" || !tableNumber || !branchId) {
+      setOpenTable(null);
+      return;
+    }
+    let stale = false;
+    const timer = setTimeout(() => {
+      api<{ sessions: { id: string; tableNumber: string }[] }>(
+        `/api/tables?branchId=${branchId}&tableNumber=${encodeURIComponent(tableNumber)}`
+      )
+        .then((r) => {
+          if (!stale) {
+            const s = r.sessions[0];
+            setOpenTable(s ? { table: s.tableNumber, sessionId: s.id } : null);
+          }
+        })
+        .catch(() => !stale && setOpenTable(null)); // e.g. no tables.view permission
+    }, 350);
+    return () => { stale = true; clearTimeout(timer); };
+  }, [type, tableNumber, branchId]);
 
   return (
     <div className="space-y-2">
@@ -57,19 +87,29 @@ export function OrderTypeSelector({
       </div>
 
       {type === "DINE_IN" && (
-        <div className="flex gap-2">
-          <Input
-            placeholder={t.pos.tableNumber}
-            className="w-32"
-            value={details.tableNumber}
-            onChange={(e) => set({ tableNumber: e.target.value })}
-          />
-          <Input
-            placeholder={t.pos.customerNameOptional}
-            value={details.customerName}
-            onChange={(e) => set({ customerName: e.target.value })}
-          />
-        </div>
+        <>
+          <div className="flex gap-2">
+            <Input
+              placeholder={t.pos.tableNumber}
+              className="w-32"
+              value={details.tableNumber}
+              onChange={(e) => set({ tableNumber: e.target.value })}
+            />
+            <Input
+              placeholder={t.pos.customerNameOptional}
+              value={details.customerName}
+              onChange={(e) => set({ customerName: e.target.value })}
+            />
+          </div>
+          {openTable && (
+            <p className="rounded-lg bg-blue-500/10 px-2.5 py-1.5 text-xs text-blue-700 dark:text-blue-400">
+              سيتم إضافة الطلب على حساب الترابيزة رقم {openTable.table} ·{" "}
+              <Link href="/tables" className="font-semibold underline">
+                عرض حساب الترابيزة
+              </Link>
+            </p>
+          )}
+        </>
       )}
       {type === "TAKEAWAY" && (
         <Input

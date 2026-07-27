@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { requirePermission, handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
+import { recomputeSessionTotals } from "@/lib/table-sessions";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -37,6 +38,9 @@ export async function POST(_request: NextRequest, { params }: Params) {
         approvedBy: { select: { id: true, name: true } },
       },
     });
+
+    // Approval makes the order count towards the table bill.
+    if (order.tableSessionId) await recomputeSessionTotals(order.tableSessionId);
 
     await audit({
       cafeId: order.cafeId,

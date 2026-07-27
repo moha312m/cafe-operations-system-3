@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { requirePermission, handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { getActiveShift, recomputeShiftTotals } from "@/lib/shifts";
+import { recomputeSessionTotals } from "@/lib/table-sessions";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -82,6 +83,7 @@ export async function POST(request: NextRequest) {
               method: s.method,
               status: "PAID",
               receivedById: session.id,
+              tableSessionId: order.tableSessionId,
             },
           })
         );
@@ -90,6 +92,7 @@ export async function POST(request: NextRequest) {
     });
 
     if (shift) await recomputeShiftTotals(shift.id);
+    if (order.tableSessionId) await recomputeSessionTotals(order.tableSessionId);
 
     // Sync the order's denormalised payment state.
     const newPaid = round2(alreadyPaid + payAmount);

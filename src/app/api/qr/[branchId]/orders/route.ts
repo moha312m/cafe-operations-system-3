@@ -6,6 +6,7 @@ import { audit } from "@/lib/audit";
 import { unitPrice as computeUnitPrice } from "@/lib/pricing";
 import { getCafeSettings } from "@/lib/cafe-settings";
 import { getBranchFinancialSettings, computeCharges } from "@/lib/financials";
+import { attachOrderToTableSession } from "@/lib/table-sessions";
 
 type Params = { params: Promise<{ branchId: string }> };
 
@@ -203,6 +204,17 @@ export async function POST(request: NextRequest, { params }: Params) {
         },
       });
     });
+
+    // First QR order for a table opens its session (timer starts at first
+    // submission, even while the order awaits waiter approval).
+    await attachOrderToTableSession(
+      {
+        id: order.id, cafeId, branchId, type: order.type,
+        tableNumber: order.tableNumber, orderNumber: order.orderNumber,
+        customerName: data.customerName,
+      },
+      null // placed by the customer, no staff user
+    );
 
     await audit({
       cafeId,
