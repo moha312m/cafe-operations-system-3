@@ -1,9 +1,10 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { requirePermission, handleApiError, ApiError } from "@/lib/api";
+import { requireKey, handleApiError, ApiError } from "@/lib/api";
 import { hashPassword } from "@/lib/auth";
 import { MANAGEABLE_ROLES } from "@/lib/permissions";
+import { resolvePermissions } from "@/lib/perms/effective";
 import { audit } from "@/lib/audit";
 import type { Prisma } from "@prisma/client";
 
@@ -19,13 +20,16 @@ const updateUserSchema = z.object({
     .enum(["CAFE_OWNER", "BRANCH_MANAGER", "CASHIER", "WAITER", "BARISTA", "INVENTORY_MANAGER"])
     .optional(),
   branchId: z.string().nullable().optional(),
+  cafeRoleId: z.string().nullable().optional(),
   isActive: z.boolean().optional(),
   archived: z.boolean().optional(), // true = أرشفة، false = إلغاء الأرشفة
 });
 
 export async function PATCH(request: NextRequest, { params }: Params) {
   try {
-    const session = await requirePermission("users:manage");
+    // Base guard is "edit staff"; password resets are additionally gated
+    // below by users.reset_password.
+    const session = await requireKey("users.edit");
     const { id } = await params;
 
     const target = await db.user.findUnique({ where: { id } });
@@ -44,6 +48,33 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     }
 
     const data = updateUserSchema.parse(await request.json());
+
+    // Password resets need the dedicated sensitive permission (own password
+    // change is always allowed).
+    if (data.password && id !== session.id) {
+      const { keys } = await resolvePermissions(session);
+      if (!keys.has("users.reset_password")) throw new ApiError(403, NOT_ALLOWED);
+    }
+
+    // Role (permission-group) assignment: validate it belongs to the cafe,
+    // is active, and doesn't grant keys the actor lacks. You can't change
+    // your own role.
+    if (data.cafeRoleId !== undefined && data.cafeRoleId !== target.cafeRoleId) {
+      if (id === session.id) throw new ApiError(403, "لا يمكنك تغيير دورك بنفسك");
+      const { keys: myKeys } = await resolvePermissions(session);
+      if (!myKeys.has("users.manage_permissions")) throw new ApiError(403, NOT_ALLOWED);
+      if (data.cafeRoleId) {
+        const role = await db.cafeRole.findFirst({
+          where: { id: data.cafeRoleId, cafeId: target.cafeId ?? undefined },
+          include: { permissions: { where: { allowed: true }, select: { permissionKey: true } } },
+        });
+        if (!role) throw new ApiError(400, "الدور غير موجود في هذا الكافيه");
+        if (!role.isActive) throw new ApiError(400, "الدور موقوف — فعّله أولاً");
+        if (role.permissions.some((p) => !myKeys.has(p.permissionKey))) {
+          throw new ApiError(403, "لا يمكنك إسناد دور يمنح صلاحيات لا تملكها");
+        }
+      }
+    }
 
     // ── Anti-escalation rules ──
     if (data.role && data.role !== target.role) {
@@ -84,6 +115,11 @@ export async function PATCH(request: NextRequest, { params }: Params) {
         : { disconnect: true };
     }
     if (data.isActive !== undefined) update.isActive = data.isActive;
+    if (data.cafeRoleId !== undefined) {
+      update.cafeRole = data.cafeRoleId
+        ? { connect: { id: data.cafeRoleId } }
+        : { disconnect: true };
+    }
     if (data.password) update.passwordHash = await hashPassword(data.password);
     if (data.archived === true) {
       update.archivedAt = new Date();
@@ -140,6 +176,13 @@ export async function PATCH(request: NextRequest, { params }: Params) {
         ...base,
         action: "STAFF_BRANCH_CHANGED",
         details: { ...who, oldValue: target.branchId, newValue: data.branchId },
+      });
+    }
+    if (data.cafeRoleId !== undefined && data.cafeRoleId !== target.cafeRoleId) {
+      await audit({
+        ...base,
+        action: "USER_ROLE_ASSIGNED",
+        details: { ...who, oldValue: target.cafeRoleId, newValue: data.cafeRoleId },
       });
     }
     if (data.name !== undefined || data.phone !== undefined) {

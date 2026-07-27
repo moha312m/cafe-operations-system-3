@@ -159,6 +159,7 @@ model Cafe {
   inventoryTxns  InventoryTransaction[]
   recipeItems    ProductRecipeItem[]
   settings       CafeSettings?
+  roles          CafeRole[]
 }
 
 // Per-cafe module flags + workflow, controlled ONLY by SUPER_ADMIN.
@@ -253,6 +254,7 @@ model User {
   id           String    @id @default(cuid())
   cafeId       String? // null only for SUPER_ADMIN
   branchId     String? // set for branch-level staff (manager, cashier, kitchen, inventory)
+  cafeRoleId   String? // custom permission role (overrides the legacy `role` defaults)
   email        String    @unique
   passwordHash String
   name         String
@@ -266,6 +268,8 @@ model User {
 
   cafe             Cafe?      @relation(fields: [cafeId], references: [id], onDelete: Cascade)
   branch           Branch?    @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  cafeRole         CafeRole?  @relation(fields: [cafeRoleId], references: [id], onDelete: SetNull)
+  permissionOverrides UserPermissionOverride[]
   ordersCreated    Order[]    @relation("OrderCreatedBy")
   ordersApproved   Order[]    @relation("OrderApprovedBy")
   ordersRejected   Order[]    @relation("OrderRejectedBy")
@@ -276,6 +280,61 @@ model User {
 
   @@index([cafeId])
   @@index([branchId])
+  @@index([cafeRoleId])
+}
+
+// ───────────────────────── Custom cafe roles ─────────────────────────
+// Cafe-level permission groups (like ERP roles). A role belongs to exactly
+// one cafe and holds a set of allowed permission keys. System-default roles
+// are seeded per cafe (isSystemDefault) and can be duplicated/edited.
+model CafeRole {
+  id              String   @id @default(cuid())
+  cafeId          String
+  name            String
+  code            String // stable identifier, unique per cafe (e.g. MANAGER, custom-xyz)
+  description     String?
+  isSystemDefault Boolean  @default(false)
+  isActive        Boolean  @default(true)
+  archivedAt      DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  cafe        Cafe                 @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  permissions CafeRolePermission[]
+  users       User[]
+
+  @@unique([cafeId, code])
+  @@index([cafeId])
+}
+
+model CafeRolePermission {
+  id            String   @id @default(cuid())
+  cafeRoleId    String
+  permissionKey String
+  allowed       Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  cafeRole CafeRole @relation(fields: [cafeRoleId], references: [id], onDelete: Cascade)
+
+  @@unique([cafeRoleId, permissionKey])
+  @@index([cafeRoleId])
+}
+
+// Per-user permission overrides that win over the role's grant. `allowed`
+// true = explicitly granted, false = explicitly denied.
+model UserPermissionOverride {
+  id            String   @id @default(cuid())
+  userId        String
+  permissionKey String
+  allowed       Boolean
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, permissionKey])
+  @@index([userId])
 }
 
 // ─────────────────────────────── Menu ────────────────────────────────

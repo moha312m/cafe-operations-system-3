@@ -6,6 +6,7 @@ import { api } from "@/lib/client";
 import { formatTime } from "@/lib/i18n";
 import { useApp } from "@/components/app-shell";
 import { MANAGEABLE_ROLES, ROLE_LABELS } from "@/lib/permissions";
+import { PermissionEditor } from "@/components/staff/permission-editor";
 import type { Role } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -45,8 +46,11 @@ type StaffUser = {
   lastLoginAt: string | null;
   branchId: string | null;
   branch: { name: string } | null;
+  cafeRoleId: string | null;
+  cafeRole: { id: string; name: string; isActive: boolean } | null;
 };
 type Branch = { id: string; name: string };
+type RoleOption = { id: string; name: string; isSystemDefault: boolean };
 
 const STATUS = {
   ACTIVE: { label: "نشط", variant: "secondary" as const },
@@ -67,13 +71,17 @@ const EMPTY_FORM = {
   confirm: "",
   role: "CASHIER" as Role,
   branchId: "",
+  cafeRoleId: "",
 };
 
 export default function StaffPage() {
-  const { user } = useApp();
+  const { user, canKey } = useApp();
   const [users, setUsers] = useState<StaffUser[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
+  const [roleOptions, setRoleOptions] = useState<RoleOption[]>([]);
+  const [permTarget, setPermTarget] = useState<StaffUser | null>(null);
   const [busy, setBusy] = useState(false);
+  const canManagePerms = canKey("users.manage_permissions");
 
   // filters
   const [q, setQ] = useState("");
@@ -85,7 +93,7 @@ export default function StaffPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [editing, setEditing] = useState<StaffUser | null>(null);
-  const [editForm, setEditForm] = useState({ name: "", phone: "", role: "" as Role, branchId: "" });
+  const [editForm, setEditForm] = useState({ name: "", phone: "", role: "" as Role, branchId: "", cafeRoleId: "" });
   const [pwTarget, setPwTarget] = useState<StaffUser | null>(null);
   const [pw, setPw] = useState({ password: "", confirm: "" });
 
@@ -114,6 +122,9 @@ export default function StaffPage() {
     api<{ branches: Branch[] }>("/api/branches")
       .then((r) => setBranches(r.branches))
       .catch(() => {});
+    api<{ roles: RoleOption[] }>("/api/roles/options")
+      .then((r) => setRoleOptions(r.roles))
+      .catch(() => {});
   }, []);
 
   const canManage = (u: StaffUser) =>
@@ -137,6 +148,7 @@ export default function StaffPage() {
           role: form.role,
           branchId:
             form.role === "CAFE_OWNER" ? null : form.branchId || user.branchId,
+          cafeRoleId: form.cafeRoleId || null,
         },
       });
       toast.success("تم إضافة الموظف بنجاح");
@@ -156,6 +168,7 @@ export default function StaffPage() {
       phone: u.phone ?? "",
       role: u.role,
       branchId: u.branchId ?? "",
+      cafeRoleId: u.cafeRoleId ?? "",
     });
     setEditing(u);
   }
@@ -172,6 +185,9 @@ export default function StaffPage() {
           ...(editForm.role !== editing.role ? { role: editForm.role } : {}),
           ...(editForm.branchId !== (editing.branchId ?? "")
             ? { branchId: editForm.branchId || null }
+            : {}),
+          ...(editForm.cafeRoleId !== (editing.cafeRoleId ?? "")
+            ? { cafeRoleId: editForm.cafeRoleId || null }
             : {}),
         },
       });
@@ -294,6 +310,7 @@ export default function StaffPage() {
               <TableHead>البريد الإلكتروني</TableHead>
               <TableHead>رقم الموبايل</TableHead>
               <TableHead>الدور</TableHead>
+              <TableHead>مجموعة الصلاحيات</TableHead>
               <TableHead>الفرع</TableHead>
               <TableHead>الحالة</TableHead>
               <TableHead>آخر دخول</TableHead>
@@ -303,7 +320,7 @@ export default function StaffPage() {
           <TableBody>
             {users.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={8} className="text-center text-muted-foreground">
+                <TableCell colSpan={9} className="text-center text-muted-foreground">
                   مفيش موظفين
                 </TableCell>
               </TableRow>
@@ -317,6 +334,15 @@ export default function StaffPage() {
                     <TableCell dir="ltr" className="text-end">{u.phone ?? "—"}</TableCell>
                     <TableCell>
                       <Badge variant="outline">{ROLE_LABELS[u.role]}</Badge>
+                    </TableCell>
+                    <TableCell>
+                      {u.cafeRole ? (
+                        <span className="rounded-md bg-violet-500/12 px-2 py-0.5 text-xs text-violet-700 dark:text-violet-400">
+                          {u.cafeRole.name}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">افتراضي</span>
+                      )}
                     </TableCell>
                     <TableCell>{u.branch?.name ?? "كل الفروع"}</TableCell>
                     <TableCell>
@@ -333,6 +359,11 @@ export default function StaffPage() {
                               <Button size="sm" variant="ghost" disabled={busy} onClick={() => openEdit(u)}>
                                 تعديل
                               </Button>
+                              {canManagePerms && (
+                                <Button size="sm" variant="ghost" disabled={busy} onClick={() => setPermTarget(u)}>
+                                  صلاحيات مخصصة
+                                </Button>
+                              )}
                               <Button
                                 size="sm"
                                 variant="ghost"
@@ -495,6 +526,19 @@ export default function StaffPage() {
                 </div>
               )}
             </div>
+            <div className="space-y-2">
+              <Label>الدور / مجموعة الصلاحيات</Label>
+              <select
+                value={form.cafeRoleId}
+                onChange={(e) => setForm({ ...form, cafeRoleId: e.target.value })}
+                className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm"
+              >
+                <option value="">— بدون دور (الافتراضي حسب النوع) —</option>
+                {roleOptions.map((r) => (
+                  <option key={r.id} value={r.id}>{r.name}</option>
+                ))}
+              </select>
+            </div>
           </div>
           <DialogFooter>
             <Button
@@ -578,6 +622,19 @@ export default function StaffPage() {
                 </div>
               )}
             </div>
+            <div className="space-y-2">
+              <Label>الدور / مجموعة الصلاحيات</Label>
+              <select
+                value={editForm.cafeRoleId}
+                onChange={(e) => setEditForm({ ...editForm, cafeRoleId: e.target.value })}
+                className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm"
+              >
+                <option value="">— بدون دور (الافتراضي حسب النوع) —</option>
+                {roleOptions.map((r) => (
+                  <option key={r.id} value={r.id}>{r.name}</option>
+                ))}
+              </select>
+            </div>
           </div>
           <DialogFooter>
             <Button onClick={saveEdit} disabled={busy || !editForm.name}>
@@ -586,6 +643,16 @@ export default function StaffPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {permTarget && (
+        <PermissionEditor
+          userId={permTarget.id}
+          userName={permTarget.name}
+          roleOptions={roleOptions}
+          onClose={() => setPermTarget(null)}
+          onSaved={() => { setPermTarget(null); load(); }}
+        />
+      )}
 
       {/* Password dialog */}
       <Dialog open={pwTarget !== null} onOpenChange={(o) => !busy && !o && setPwTarget(null)}>

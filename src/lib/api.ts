@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { getSession, type SessionUser } from "@/lib/auth";
-import { hasPermission, type Permission } from "@/lib/permissions";
+import { type Permission } from "@/lib/permissions";
+import { resolvePermissions } from "@/lib/perms/effective";
+import { primaryKey } from "@/lib/perms/catalog";
 import {
   getCafeSettings,
   FEATURE_DISABLED_MESSAGE,
@@ -16,15 +18,46 @@ export class ApiError extends Error {
   }
 }
 
-// Every route handler resolves auth through this: verifies the session
-// and checks the role's permission grant in one step.
+const DENIED = "ليس لديك صلاحية لتنفيذ هذا الإجراء";
+
+// Every route handler resolves auth through this: verifies the session and
+// checks the acting user's EFFECTIVE permission (custom cafe role ± per-user
+// overrides, gated by feature flags). Legacy `Permission` strings are mapped
+// to their canonical key so existing call sites keep working while honouring
+// custom roles.
 export async function requirePermission(
   permission: Permission
 ): Promise<SessionUser> {
   const session = await getSession();
   if (!session) throw new ApiError(401, "سجّل دخولك الأول");
-  if (!hasPermission(session.role, permission)) {
-    throw new ApiError(403, "ليس لديك صلاحية لتنفيذ هذا الإجراء");
+  const key = primaryKey(permission);
+  const { keys } = await resolvePermissions(session);
+  if (!key || !keys.has(key)) {
+    throw new ApiError(403, DENIED);
+  }
+  return session;
+}
+
+// Granular guard: checks a specific new permission key. Use for routes that
+// need finer control than the legacy Permission strings (staff, roles,
+// inventory transactions, settings edit, report export, profit view…).
+export async function requireKey(key: string): Promise<SessionUser> {
+  const session = await getSession();
+  if (!session) throw new ApiError(401, "سجّل دخولك الأول");
+  const { keys } = await resolvePermissions(session);
+  if (!keys.has(key)) {
+    throw new ApiError(403, DENIED);
+  }
+  return session;
+}
+
+// Like requireKey but requires the acting user to hold ALL listed keys.
+export async function requireAllKeys(...required: string[]): Promise<SessionUser> {
+  const session = await getSession();
+  if (!session) throw new ApiError(401, "سجّل دخولك الأول");
+  const { keys } = await resolvePermissions(session);
+  if (!required.every((k) => keys.has(k))) {
+    throw new ApiError(403, DENIED);
   }
   return session;
 }

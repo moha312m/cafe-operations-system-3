@@ -5,10 +5,10 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import type { SessionUser } from "@/lib/auth";
 import {
-  hasPermission,
   ROLE_LABELS,
   type Permission,
 } from "@/lib/permissions";
+import { primaryKey } from "@/lib/perms/catalog";
 import { t } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import type { CafeFeatures } from "@/lib/cafe-settings";
@@ -24,6 +24,8 @@ export type AppContextValue = {
   } | null;
   branchName: string | null;
   can: (permission: Permission) => boolean;
+  canKey: (key: string) => boolean;
+  permKeys: string[];
   features: CafeFeatures | null;
 };
 
@@ -41,6 +43,7 @@ type NavItem = {
   label: string;
   icon: string;
   permission: Permission;
+  key?: string; // optional new granular permission key (wins over `permission`)
   feature?: (f: CafeFeatures) => boolean;
 };
 
@@ -59,6 +62,7 @@ const NAV: NavItem[] = [
   { href: "/reports", label: t.nav.reports, icon: "📈", permission: "reports:read" },
   { href: "/shifts", label: t.nav.shiftReports, icon: "🧮", permission: "shifts:read", feature: (f) => f.shiftManagementEnabled },
   { href: "/settings", label: "الإعدادات", icon: "⚙️", permission: "branches:manage" },
+  { href: "/roles-permissions", label: "الأدوار والصلاحيات", icon: "🛡️", permission: "users:manage", key: "users.manage_permissions" },
   { href: "/audit", label: t.nav.audit, icon: "🕓", permission: "audit:read" },
 ];
 
@@ -67,21 +71,31 @@ export function AppShell({
   cafe,
   branchName,
   features,
+  permKeys,
   children,
 }: {
   user: SessionUser;
   cafe: AppContextValue["cafe"];
   branchName: string | null;
   features: CafeFeatures | null;
+  permKeys: string[];
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
   const router = useRouter();
-  const can = (permission: Permission) => hasPermission(user.role, permission);
+  const keySet = new Set(permKeys);
+  const canKey = (key: string) => keySet.has(key);
+  // Legacy Permission → its canonical key, then membership in the effective set.
+  const can = (permission: Permission) => {
+    const key = primaryKey(permission);
+    return key ? keySet.has(key) : false;
+  };
 
   const navItems = NAV.filter(
     (item) =>
-      can(item.permission) &&
+      // An explicit `key` (new granular gate) wins; else fall back to the
+      // legacy permission bridge.
+      (item.key ? canKey(item.key) : can(item.permission)) &&
       (!item.feature || !features || item.feature(features))
   );
 
@@ -94,7 +108,7 @@ export function AppShell({
   const initials = user.name.slice(0, 2);
 
   return (
-    <AppContext.Provider value={{ user, cafe, branchName, can, features }}>
+    <AppContext.Provider value={{ user, cafe, branchName, can, canKey, permKeys, features }}>
       <div className="flex min-h-screen w-full bg-slate-50 dark:bg-background">
         {/* Premium dark sidebar */}
         <aside className="sticky top-0 flex h-screen w-60 shrink-0 flex-col bg-[#0f172a] text-slate-300">

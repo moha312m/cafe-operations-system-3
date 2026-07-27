@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { requirePermission, handleApiError, ApiError } from "@/lib/api";
+import { requirePermission, requireKey, handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { getBranchFinancialSettings } from "@/lib/financials";
 
@@ -10,7 +10,8 @@ type Params = { params: Promise<{ id: string }> };
 // Owner (any branch in cafe) or branch manager (own branch only). Cashiers/
 // waiters/baristas never reach this — they lack branches:manage.
 async function authorizeBranch(branchId: string) {
-  const session = await requirePermission("branches:manage");
+  // Editing tax/service is a sensitive settings change.
+  const session = await requireKey("settings.edit");
   const branch = await db.branch.findUnique({ where: { id: branchId } });
   if (!branch) throw new ApiError(404, "الفرع غير موجود");
   if (session.role !== "SUPER_ADMIN" && branch.cafeId !== session.cafeId) {

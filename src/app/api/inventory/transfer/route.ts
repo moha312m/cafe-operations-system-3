@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import {
-  requirePermission,
+  requireKey,
   resolveCafeId,
   handleApiError,
   ApiError,
@@ -24,7 +24,7 @@ const transferSchema = z.object({
 // (name, unit) or created if missing.
 export async function POST(request: NextRequest) {
   try {
-    const session = await requirePermission("inventory:manage");
+    const session = await requireKey("inventory.transactions");
     const data = transferSchema.parse(await request.json());
     const cafeId = resolveCafeId(session, data.cafeId);
 

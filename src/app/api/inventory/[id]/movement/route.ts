@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { requirePermission, handleApiError, ApiError } from "@/lib/api";
+import { requireKey, handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { round2, signedDelta, TXN_AUDIT_ACTION } from "@/lib/inventory";
 import { findScopedItem } from "../route";
@@ -19,7 +19,7 @@ const movementSchema = z.object({
 
 export async function POST(request: NextRequest, { params }: Params) {
   try {
-    const session = await requirePermission("inventory:manage");
+    const session = await requireKey("inventory.transactions");
     const { id } = await params;
     const item = await findScopedItem(id, session);
     const data = movementSchema.parse(await request.json());

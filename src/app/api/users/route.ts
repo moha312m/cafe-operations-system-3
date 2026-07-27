@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import {
-  requirePermission,
+  requireKey,
   resolveCafeId,
   handleApiError,
   ApiError,
@@ -10,7 +10,27 @@ import {
 } from "@/lib/api";
 import { hashPassword } from "@/lib/auth";
 import { MANAGEABLE_ROLES } from "@/lib/permissions";
+import { resolvePermissions } from "@/lib/perms/effective";
 import { audit } from "@/lib/audit";
+
+// Validate a requested cafe-role assignment: it must live in the cafe, be
+// active, and never grant keys the acting user doesn't hold (no escalation).
+async function assertAssignableRole(
+  session: { id: string; role: string },
+  cafeId: string,
+  cafeRoleId: string
+) {
+  const role = await db.cafeRole.findFirst({
+    where: { id: cafeRoleId, cafeId },
+    include: { permissions: { where: { allowed: true }, select: { permissionKey: true } } },
+  });
+  if (!role) throw new ApiError(400, "الدور غير موجود في هذا الكافيه");
+  if (!role.isActive) throw new ApiError(400, "الدور موقوف — فعّله أولاً");
+  const { keys } = await resolvePermissions(session as never);
+  if (role.permissions.some((p) => !keys.has(p.permissionKey))) {
+    throw new ApiError(403, "لا يمكنك إسناد دور يمنح صلاحيات لا تملكها");
+  }
+}
 
 const userSelect = {
   id: true,
@@ -23,6 +43,8 @@ const userSelect = {
   lastLoginAt: true,
   branchId: true,
   branch: { select: { name: true } },
+  cafeRoleId: true,
+  cafeRole: { select: { id: true, name: true, isActive: true } },
   createdAt: true,
 } as const;
 
@@ -33,7 +55,7 @@ const userSelect = {
 //   ?status=       ACTIVE | INACTIVE | ARCHIVED (default: hides archived)
 export async function GET(request: NextRequest) {
   try {
-    const session = await requirePermission("users:manage");
+    const session = await requireKey("users.view");
     await requireFeature(session, "staffManagementEnabled");
     const params = request.nextUrl.searchParams;
     const cafeId = resolveCafeId(session, params.get("cafeId"));
@@ -89,12 +111,13 @@ const createUserSchema = z.object({
     "INVENTORY_MANAGER",
   ]),
   branchId: z.string().nullable().optional(),
+  cafeRoleId: z.string().nullable().optional(), // custom permission role
   cafeId: z.string().optional(), // super admin only
 });
 
 export async function POST(request: NextRequest) {
   try {
-    const session = await requirePermission("users:manage");
+    const session = await requireKey("users.create");
     await requireFeature(session, "staffManagementEnabled");
     const data = createUserSchema.parse(await request.json());
     const cafeId = resolveCafeId(session, data.cafeId);
@@ -116,6 +139,10 @@ export async function POST(request: NextRequest) {
       throw new ApiError(400, "الفرع مطلوب");
     }
 
+    if (data.cafeRoleId) {
+      await assertAssignableRole(session, cafeId, data.cafeRoleId);
+    }
+
     const existing = await db.user.findUnique({
       where: { email: data.email.toLowerCase() },
     });
@@ -130,6 +157,7 @@ export async function POST(request: NextRequest) {
       data: {
         cafeId,
         branchId,
+        cafeRoleId: data.cafeRoleId ?? null,
         email: data.email.toLowerCase(),
         name: data.name,
         phone: data.phone?.trim() || null,

@@ -1,13 +1,13 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { requirePermission, resolveCafeId, handleApiError } from "@/lib/api";
+import { requireKey, resolveCafeId, handleApiError } from "@/lib/api";
 import { productCost, profitFor } from "@/lib/costing";
 
 // تقرير تكلفة المنتجات — cost, profit, margin, and profitability tier for
 // every product, with the recipe status. Gated by cost:read.
 export async function GET(request: NextRequest) {
   try {
-    const session = await requirePermission("cost:read");
+    const session = await requireKey("finance.view_profit");
     const params = request.nextUrl.searchParams;
     const cafeId = resolveCafeId(session, params.get("cafeId"));
     const categoryId = params.get("categoryId") ?? undefined;

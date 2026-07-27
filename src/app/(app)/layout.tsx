@@ -3,6 +3,7 @@ import { getSession } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { AppShell } from "@/components/app-shell";
 import { getCafeFeatures } from "@/lib/cafe-settings";
+import { resolvePermissionKeys } from "@/lib/perms/effective";
 
 export default async function AppLayout({
   children,
@@ -40,9 +41,13 @@ export default async function AppLayout({
   // Per-cafe feature flags drive which nav items appear.
   const features = cafe ? await getCafeFeatures(cafe.id) : null;
 
+  // The acting user's effective permission keys seed the client `can()`.
+  const permKeys = await resolvePermissionKeys(session);
+
   return (
     <AppShell
       user={session}
+      permKeys={permKeys}
       cafe={
         cafe
           ? {
