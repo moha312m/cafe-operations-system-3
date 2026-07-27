@@ -134,7 +134,7 @@ export function ShiftControls({
           : diff > 0
             ? `${t.shifts.surplus} ${money(diff, currency)}`
             : `${t.shifts.shortage} ${money(-diff, currency)}`;
-      toast.success(`${t.shifts.closedSuccess} · ${msg}`);
+      toast.success(`${t.shifts.lockedSuccess} · ${msg}`);
       setCloseDialog(false);
       setActive(null);
     } catch (e) {

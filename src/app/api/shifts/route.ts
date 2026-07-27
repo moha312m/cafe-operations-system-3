@@ -38,14 +38,23 @@ export async function GET(request: NextRequest) {
     const status = params.get("status");
     const date = params.get("date");
 
-    let openedFilter: { gte: Date; lt: Date } | undefined;
+    let dateFilter: { gte: Date; lt: Date } | undefined;
     if (date) {
       const start = new Date(`${date}T00:00:00`);
       if (isNaN(start.getTime())) throw new ApiError(400, "Invalid date");
       const end = new Date(start);
       end.setDate(end.getDate() + 1);
-      openedFilter = { gte: start, lt: end };
+      dateFilter = { gte: start, lt: end };
     }
+
+    // When reporting on CLOSED shifts, key the day filter on closedAt so a
+    // shift opened before midnight but closed today lands on the right day.
+    // Otherwise (OPEN / all) key on openedAt.
+    const dateWhere = dateFilter
+      ? status === "CLOSED"
+        ? { closedAt: dateFilter }
+        : { openedAt: dateFilter }
+      : {};
 
     const shifts = await db.shift.findMany({
       where: {
@@ -53,7 +62,7 @@ export async function GET(request: NextRequest) {
         ...(branchId ? { branchId } : {}),
         ...(cashierId ? { cashierId } : {}),
         ...(status === "OPEN" || status === "CLOSED" ? { status } : {}),
-        ...(openedFilter ? { openedAt: openedFilter } : {}),
+        ...dateWhere,
       },
       include: shiftInclude,
       orderBy: { openedAt: "desc" },

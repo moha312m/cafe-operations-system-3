@@ -238,6 +238,12 @@ export const t = {
     payments: "المدفوعات",
     auditTrail: "سجل الحركات",
     details: "بيانات الشيفت",
+    openBadge: "شيفت مفتوح",
+    closedBadge: "شيفت مغلق",
+    latestClosed: "آخر شيفت مغلق",
+    closedTodayTotal: "إجمالي الشيفتات المغلقة اليوم",
+    noOpenShift: "لا يوجد شيفت مفتوح",
+    lockedSuccess: "تم قفل الشيفت بنجاح",
   },
 
   roles: {
@@ -334,6 +340,35 @@ export const t = {
     quantity: "الكمية",
     revenue: "المبيعات",
     ordersCount: "طلب",
+    // Date-range filter labels
+    range: {
+      today: "النهارده",
+      d7: "آخر ٧ أيام",
+      d30: "آخر ٣٠ يوم",
+      month: "هذا الشهر",
+      custom: "مخصص",
+    },
+    refresh: "تحديث",
+    // Expanded KPI labels
+    completedOrders: "الطلبات المكتملة",
+    cancelledOrders: "الطلبات الملغية",
+    openShiftsLabel: "الشيفتات المفتوحة",
+    closedShiftsToday: "الشيفتات المغلقة اليوم",
+    netCash: "صافي الكاش",
+    uncollected: "المبيعات غير المحصلة",
+    pendingCollection: "في انتظار التحصيل",
+    taxTotal: "إجمالي الضريبة",
+    serviceTotal: "إجمالي السيرفيس",
+    stockAlerts: "تنبيهات المخزون",
+    vsPrev: "مقارنة بالفترة السابقة",
+    insights: "لمحات سريعة",
+    bestBranch: "أفضل فرع",
+    bestProduct: "الأكثر مبيعًا",
+    worstProduct: "الأقل مبيعًا",
+    bestCashier: "أفضل كاشير",
+    ordersBySource: "توزيع مصدر الطلبات",
+    pendingOrders: "طلبات في انتظار التحصيل",
+    recentShifts: "آخر الشيفتات",
   },
 } as const;
 

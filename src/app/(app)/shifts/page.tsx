@@ -6,7 +6,6 @@ import { api, money } from "@/lib/client";
 import { t } from "@/lib/i18n";
 import { useApp } from "@/components/app-shell";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -136,9 +135,50 @@ export default function ShiftReportsPage() {
     }
   }
 
+  // Derived summary from the loaded (branch-scoped) shift list.
+  const isToday = (v: string | null) => {
+    if (!v) return false;
+    const d = new Date(v);
+    const now = new Date();
+    return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  };
+  const openCount = shifts.filter((s) => s.status === "OPEN").length;
+  const closedTodayCount = shifts.filter((s) => s.status === "CLOSED" && isToday(s.closedAt)).length;
+  const latestClosed = shifts
+    .filter((s) => s.status === "CLOSED" && s.closedAt)
+    .sort((a, b) => new Date(b.closedAt!).getTime() - new Date(a.closedAt!).getTime())[0] ?? null;
+
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-semibold">{t.shifts.reports}</h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-semibold">{t.shifts.reports}</h1>
+        <Button size="sm" variant="outline" onClick={() => load()}>↻ {t.dashboard.refresh}</Button>
+      </div>
+
+      {/* Summary cards */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        <div className="rounded-2xl border border-border bg-card p-4">
+          <p className="text-xs text-muted-foreground">{t.shifts.openBadge}</p>
+          <p className="mt-1 text-2xl font-bold tabular-nums text-emerald-600 dark:text-emerald-400">{openCount}</p>
+        </div>
+        <div className="rounded-2xl border border-border bg-card p-4">
+          <p className="text-xs text-muted-foreground">{t.shifts.closedTodayTotal}</p>
+          <p className="mt-1 text-2xl font-bold tabular-nums text-foreground">{closedTodayCount}</p>
+        </div>
+        <div className="rounded-2xl border border-border bg-card p-4 col-span-2 sm:col-span-1">
+          <p className="text-xs text-muted-foreground">{t.shifts.latestClosed}</p>
+          {latestClosed ? (
+            <p className="mt-1 text-sm font-semibold text-foreground">
+              #{latestClosed.shiftNumber} — {latestClosed.cashier.name}
+              <span className="block text-xs font-normal text-muted-foreground">
+                {money(latestClosed.totalSales, currency)} · {latestClosed.closedAt ? fmtTime(latestClosed.closedAt) : ""}
+              </span>
+            </p>
+          ) : (
+            <p className="mt-1 text-sm text-muted-foreground">{t.shifts.noOpenShift}</p>
+          )}
+        </div>
+      </div>
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-2">
@@ -222,9 +262,13 @@ export default function ShiftReportsPage() {
                     {diffBadge(s.cashDifference)}
                   </TableCell>
                   <TableCell>
-                    <Badge variant={s.status === "OPEN" ? "default" : "secondary"}>
-                      {t.shiftStatus[s.status]}
-                    </Badge>
+                    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                      s.status === "OPEN"
+                        ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
+                        : "bg-foreground/8 text-muted-foreground"
+                    }`}>
+                      {s.status === "OPEN" ? t.shifts.openBadge : t.shifts.closedBadge}
+                    </span>
                   </TableCell>
                   <TableCell>
                     <Button size="sm" variant="ghost" onClick={() => openDetail(s.id)}>
