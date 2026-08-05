@@ -10,7 +10,6 @@ import { APPROVAL_MODE_LABEL } from "@/lib/qr-approval";
 import type { Role, QrApprovalMode } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent } from "@/components/ui/card";
@@ -18,6 +17,7 @@ import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { QrApprovalSettingsDialog } from "@/components/qr-approval-settings-dialog";
+import { QrOrderEditDialog } from "@/components/approvals/qr-order-edit-dialog";
 
 type OrderItem = {
   id: string; productName: string; variantName: string | null;
@@ -28,12 +28,6 @@ type PendingOrder = {
   customerName: string | null; notes: string | null; total: number; createdAt: string;
   approvalMode: QrApprovalMode | null; assignedRole: Role | null; assignedUser: string | null;
   items: OrderItem[];
-};
-
-type EditState = {
-  order: PendingOrder;
-  quantities: Record<string, number>;
-  tableNumber: string; customerName: string; notes: string;
 };
 
 function assignedLabel(o: PendingOrder): string {
@@ -57,7 +51,7 @@ export default function ApprovalsPage() {
   const [busy, setBusy] = useState(false);
   const [rejecting, setRejecting] = useState<PendingOrder | null>(null);
   const [reason, setReason] = useState("");
-  const [editing, setEditing] = useState<EditState | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const canEditSettings = canKey("settings.edit_qr_approval");
@@ -107,51 +101,6 @@ export default function ApprovalsPage() {
       setBusy(false);
     }
   }
-
-  function startEdit(order: PendingOrder) {
-    setEditing({
-      order,
-      quantities: Object.fromEntries(order.items.map((i) => [i.id, i.quantity])),
-      tableNumber: order.tableNumber ?? "",
-      customerName: order.customerName ?? "",
-      notes: order.notes ?? "",
-    });
-  }
-
-  async function saveEditAndApprove(approveAfter: boolean) {
-    if (!editing) return;
-    setBusy(true);
-    try {
-      await api(`/api/orders/${editing.order.id}`, {
-        method: "PATCH",
-        body: {
-          tableNumber: editing.tableNumber || null,
-          customerName: editing.customerName || null,
-          notes: editing.notes || null,
-          items: Object.entries(editing.quantities).map(([id, quantity]) => ({ id, quantity })),
-        },
-      });
-      if (approveAfter) {
-        await api(`/api/orders/${editing.order.id}/approve`, { method: "POST" });
-        toast.success("تم حفظ التعديل وتأكيد الطلب");
-      } else {
-        toast.success("تم حفظ التعديل");
-      }
-      setEditing(null);
-      await load();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "فشل التعديل");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const editTotal = editing
-    ? editing.order.items.reduce((sum, item) => {
-        const qty = editing.quantities[item.id] ?? item.quantity;
-        return sum + item.unitPrice * qty;
-      }, 0) * (1 + (cafe?.taxRate ?? 0) / 100)
-    : 0;
 
   return (
     <div className="space-y-4">
@@ -213,7 +162,7 @@ export default function ApprovalsPage() {
                     <Button size="sm" disabled={busy} onClick={() => approve(order)}>تأكيد الطلب</Button>
                   )}
                   {perms.canEdit && (
-                    <Button size="sm" variant="outline" disabled={busy} onClick={() => startEdit(order)}>تعديل</Button>
+                    <Button size="sm" variant="outline" disabled={busy} onClick={() => setEditingId(order.id)}>تعديل الطلب</Button>
                   )}
                   {perms.canReject && (
                     <Button size="sm" variant="ghost" className="text-destructive" disabled={busy}
@@ -243,60 +192,15 @@ export default function ApprovalsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* ── Edit dialog ── */}
-      <Dialog open={editing !== null} onOpenChange={(o) => !o && setEditing(null)}>
-        <DialogContent className="max-h-[85vh] max-w-md overflow-y-auto">
-          <DialogHeader><DialogTitle>تعديل طلب رقم {editing?.order.orderNumber} قبل التأكيد</DialogTitle></DialogHeader>
-          {editing && (
-            <div className="space-y-4">
-              <div className="space-y-2">
-                {editing.order.items.map((item) => {
-                  const qty = editing.quantities[item.id] ?? item.quantity;
-                  return (
-                    <div key={item.id} className="flex items-center justify-between gap-2 rounded-md border p-2">
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium">
-                          {item.productName}{item.variantName && <span className="text-muted-foreground"> · {item.variantName}</span>}
-                        </p>
-                        <p className="text-xs tabular-nums text-muted-foreground">{money(item.unitPrice, currency)}</p>
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        <Button variant="outline" size="sm" className="size-7 p-0"
-                          onClick={() => setEditing({ ...editing, quantities: { ...editing.quantities, [item.id]: Math.max(0, qty - 1) } })}>−</Button>
-                        <span className="w-6 text-center text-sm tabular-nums">{qty}</span>
-                        <Button variant="outline" size="sm" className="size-7 p-0"
-                          onClick={() => setEditing({ ...editing, quantities: { ...editing.quantities, [item.id]: qty + 1 } })}>+</Button>
-                      </div>
-                    </div>
-                  );
-                })}
-                <p className="text-xs text-muted-foreground">الكمية صفر = حذف الصنف من الطلب</p>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-2">
-                  <Label>رقم الترابيزة</Label>
-                  <Input value={editing.tableNumber} onChange={(e) => setEditing({ ...editing, tableNumber: e.target.value })} />
-                </div>
-                <div className="space-y-2">
-                  <Label>اسم العميل</Label>
-                  <Input value={editing.customerName} onChange={(e) => setEditing({ ...editing, customerName: e.target.value })} />
-                </div>
-              </div>
-              <div className="space-y-2">
-                <Label>ملاحظات</Label>
-                <Textarea rows={2} value={editing.notes} onChange={(e) => setEditing({ ...editing, notes: e.target.value })} />
-              </div>
-              <p className="text-sm font-semibold tabular-nums">الإجمالي الجديد تقريباً: {money(editTotal, currency)}</p>
-            </div>
-          )}
-          <DialogFooter className="flex-wrap gap-2">
-            <Button variant="outline" onClick={() => saveEditAndApprove(false)} disabled={busy}>حفظ فقط</Button>
-            {perms.canApprove && (
-              <Button onClick={() => saveEditAndApprove(true)} disabled={busy}>حفظ وتأكيد</Button>
-            )}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* ── Full edit-before-approval dialog ── */}
+      {editingId && (
+        <QrOrderEditDialog
+          orderId={editingId}
+          canApprove={perms.canApprove}
+          onClose={() => setEditingId(null)}
+          onSaved={() => { setEditingId(null); load(); }}
+        />
+      )}
 
       {settingsOpen && (
         <QrApprovalSettingsDialog onClose={() => setSettingsOpen(false)} onSaved={() => { setSettingsOpen(false); load(); }} />
