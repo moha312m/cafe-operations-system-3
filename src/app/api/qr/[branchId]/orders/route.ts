@@ -7,6 +7,7 @@ import { unitPrice as computeUnitPrice } from "@/lib/pricing";
 import { getCafeSettings } from "@/lib/cafe-settings";
 import { getBranchFinancialSettings, computeCharges } from "@/lib/financials";
 import { attachOrderToTableSession } from "@/lib/table-sessions";
+import { getApprovalSettings, resolveRouting } from "@/lib/qr-approval";
 
 type Params = { params: Promise<{ branchId: string }> };
 
@@ -61,12 +62,15 @@ export async function POST(request: NextRequest, { params }: Params) {
     if (!settings.qrMenuEnabled) {
       throw new ApiError(403, "منيو QR غير متاح لهذا الكافيه حاليًا");
     }
-    // WAITER_APPROVAL → approval queue; every other routing → CONFIRMED so
-    // it appears directly for the cashier / kitchen.
-    const orderStatus =
-      settings.qrOrderRoutingMode === "WAITER_APPROVAL"
-        ? ("PENDING_WAITER_APPROVAL" as const)
-        : ("CONFIRMED" as const);
+    // Branch-level approval routing decides who confirms the order (falls
+    // back to the cafe qrOrderRoutingMode inside resolveRouting when the
+    // branch settings are disabled).
+    const approval = await getApprovalSettings(cafeId, branchId);
+    const routing = resolveRouting(approval, {
+      waiterApprovalEnabled: settings.waiterApprovalEnabled,
+      kitchenScreenEnabled: settings.kitchenScreenEnabled,
+    });
+    const orderStatus = routing.orderStatus;
     // Takeaway-only cafes (or tables disabled) default to TAKEAWAY.
     const orderType =
       settings.workflowMode === "TAKEAWAY_ONLY" || !settings.enableTables
@@ -172,6 +176,10 @@ export async function POST(request: NextRequest, { params }: Params) {
           orderNumber: (last._max.orderNumber ?? 0) + 1,
           type: orderType,
           status: orderStatus,
+          approvalStatus: routing.approvalStatus,
+          approvalModeSnapshot: routing.approvalModeSnapshot,
+          assignedApproverRole: routing.assignedApproverRole,
+          assignedApproverUserId: routing.assignedApproverUserId,
           source: "QR_MENU",
           customerName: data.customerName,
           customerPhone: data.customerPhone || null,
@@ -227,8 +235,20 @@ export async function POST(request: NextRequest, { params }: Params) {
         total,
         customerName: data.customerName,
         tableNumber: data.tableNumber ?? null,
+        approvalMode: routing.approvalModeSnapshot,
       },
     });
+    if (routing.approvalStatus === "PENDING_APPROVAL") {
+      await audit({
+        cafeId, action: "QR_ORDER_ASSIGNED", entity: "Order", entityId: order.id,
+        details: {
+          branchId, orderId: order.id, orderNumber: order.orderNumber,
+          approvalMode: routing.approvalModeSnapshot,
+          assignedApproverRole: routing.assignedApproverRole,
+          assignedApproverUserId: routing.assignedApproverUserId,
+        },
+      });
+    }
 
     return NextResponse.json(
       {

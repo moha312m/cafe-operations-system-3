@@ -2,7 +2,11 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { requirePermission, handleApiError, ApiError } from "@/lib/api";
+import { getSession } from "@/lib/auth";
 import { audit } from "@/lib/audit";
+import { resolvePermissions } from "@/lib/perms/effective";
+import { canApproveOrder, getApprovalSettings } from "@/lib/qr-approval";
+import { recomputeSessionTotals } from "@/lib/table-sessions";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -46,7 +50,8 @@ const editSchema = z.object({
 // recomputed server-side from the stored price snapshots.
 export async function PATCH(request: NextRequest, { params }: Params) {
   try {
-    const session = await requirePermission("orders:approve");
+    const session = await getSession();
+    if (!session) throw new ApiError(401, "سجّل دخولك الأول");
     const { id } = await params;
     const data = editSchema.parse(await request.json());
 
@@ -55,14 +60,17 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       include: { items: { include: { addOns: true } }, cafe: true },
     });
     if (!order) throw new ApiError(404, "الطلب مش موجود");
-    if (session.role !== "SUPER_ADMIN" && order.cafeId !== session.cafeId) {
-      throw new ApiError(403, "ليس لديك صلاحية لتنفيذ هذا الإجراء");
-    }
-    if (session.branchId && order.branchId !== session.branchId) {
-      throw new ApiError(403, "الطلب تبع فرع تاني");
-    }
     if (order.status !== "PENDING_WAITER_APPROVAL") {
       throw new ApiError(400, "الطلب اتأكد بالفعل — مينفعش يتعدل من هنا");
+    }
+    // Must be an authorized approver of THIS order and hold the edit key.
+    const { keys } = await resolvePermissions(session);
+    if (!canApproveOrder(session, order, keys.has("qr_orders.approve")) || !keys.has("qr_orders.edit_before_approval")) {
+      throw new ApiError(403, "ليس لديك صلاحية لتأكيد هذا الطلب");
+    }
+    const appr = await getApprovalSettings(order.cafeId, order.branchId);
+    if (!appr.allowApproverToEditOrder && session.role !== "CAFE_OWNER" && session.role !== "BRANCH_MANAGER") {
+      throw new ApiError(403, "تعديل الطلب غير مسموح في إعدادات هذا الفرع");
     }
 
     const quantities = new Map((data.items ?? []).map((i) => [i.id, i.quantity]));
@@ -124,17 +132,19 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       });
     });
 
+    // Keep the table bill in sync if the order is attached to a session.
+    if (order.tableSessionId) await recomputeSessionTotals(order.tableSessionId);
+
     await audit({
       cafeId: order.cafeId,
       userId: session.id,
-      action: "ORDER_UPDATED",
+      action: "QR_ORDER_EDITED_BEFORE_APPROVAL",
       entity: "Order",
       entityId: id,
       details: {
-        orderNumber: order.orderNumber,
-        removedItems: removals.length,
-        changedItems: lineUpdates.length,
-        total,
+        branchId: order.branchId, orderId: id, orderNumber: order.orderNumber,
+        removedItems: removals.length, changedItems: lineUpdates.length,
+        oldValue: Number(order.total), newValue: total,
       },
     });
 

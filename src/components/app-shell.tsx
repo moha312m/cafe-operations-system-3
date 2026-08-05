@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext } from "react";
+import { createContext, useContext, useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import type { SessionUser } from "@/lib/auth";
@@ -56,7 +56,7 @@ const NAV: NavItem[] = [
   { href: "/tables/setup", label: "إعداد الترابيزات", icon: "🪑", permission: "branches:manage", key: "tables.manage", feature: (f) => f.enableTables },
   { href: "/orders", label: t.nav.orders, icon: "🔔", permission: "orders:read" },
   // Approvals shows when waiter approval is on OR QR orders route to a waiter.
-  { href: "/approvals", label: t.nav.approvals, icon: "📱", permission: "orders:approve", feature: (f) => f.waiterApprovalEnabled || f.qrOrderRoutingMode === "WAITER_APPROVAL" },
+  { href: "/approvals", label: t.nav.approvals, icon: "📱", permission: "orders:approve", key: "qr_orders.view", feature: (f) => f.qrMenuEnabled },
   { href: "/menu", label: t.nav.menu, icon: "📖", permission: "menu:manage" },
   { href: "/branches", label: t.nav.branches, icon: "🏬", permission: "branches:manage", feature: (f) => f.branchManagementEnabled },
   { href: "/staff", label: t.nav.staff, icon: "👥", permission: "users:manage", feature: (f) => f.staffManagementEnabled },
@@ -103,6 +103,23 @@ export function AppShell({
       (!item.feature || !features || item.feature(features))
   );
 
+  // Pending QR-approval count for the sidebar badge (assignment-aware,
+  // lightweight 20s poll — only for users who can act on the queue).
+  const [pendingQr, setPendingQr] = useState(0);
+  const canSeeQr = canKey("qr_orders.view") || canKey("qr_orders.approve");
+  useEffect(() => {
+    if (!canSeeQr || !features?.qrMenuEnabled) return;
+    let stop = false;
+    const tick = () =>
+      fetch("/api/qr-orders/pending?countOnly=1")
+        .then((r) => (r.ok ? r.json() : { count: 0 }))
+        .then((d) => { if (!stop) setPendingQr(d.count ?? 0); })
+        .catch(() => {});
+    tick();
+    const timer = setInterval(tick, 20_000);
+    return () => { stop = true; clearInterval(timer); };
+  }, [canSeeQr, features?.qrMenuEnabled, pathname]);
+
   async function logout() {
     await fetch("/api/auth/logout", { method: "POST" });
     router.push("/login");
@@ -146,7 +163,12 @@ export function AppShell({
                   )}
                 >
                   <span className="text-base leading-none">{item.icon}</span>
-                  {item.label}
+                  <span className="flex-1">{item.label}</span>
+                  {item.href === "/approvals" && pendingQr > 0 && (
+                    <span className="flex min-w-5 items-center justify-center rounded-full bg-red-500 px-1.5 text-xs font-bold text-white">
+                      {pendingQr}
+                    </span>
+                  )}
                 </Link>
               );
             })}

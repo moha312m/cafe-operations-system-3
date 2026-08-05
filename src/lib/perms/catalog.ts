@@ -87,7 +87,11 @@ export const PERMISSION_KEYS: PermKey[] = [
 
   // QR / customer orders
   { key: "qr_orders.view", module: "QR_ORDERS", label: "عرض طلبات المنيو" },
-  { key: "qr_orders.approve", module: "QR_ORDERS", label: "موافقة/رفض طلبات المنيو" },
+  { key: "qr_orders.approve", module: "QR_ORDERS", label: "تأكيد طلبات المنيو" },
+  { key: "qr_orders.reject", module: "QR_ORDERS", label: "رفض طلبات المنيو" },
+  { key: "qr_orders.edit_before_approval", module: "QR_ORDERS", label: "تعديل الطلب قبل التأكيد" },
+  { key: "qr_orders.assign_settings", module: "QR_ORDERS", label: "إعدادات توجيه التأكيد", sensitive: true },
+  { key: "settings.edit_qr_approval", module: "QR_ORDERS", label: "تعديل إعدادات تأكيد QR", sensitive: true },
 
   // Kitchen / bar
   { key: "kitchen.view", module: "KITCHEN", label: "شاشة البار" },
@@ -221,7 +225,7 @@ export function keysForModule(code: ModuleCode): PermKey[] {
 // exactly (no behavioural change for users without a custom role).
 export const LEGACY_TO_KEYS: Record<string, string[]> = {
   "platform:manage": ["platform.manage"],
-  "cafe:manage": ["settings.view", "settings.edit"],
+  "cafe:manage": ["settings.view", "settings.edit", "settings.edit_qr_approval", "qr_orders.assign_settings"],
   "branches:manage": [
     "branches.view", "branches.manage",
     "tables.manage", "tables.create", "tables.edit", "tables.archive", "tables.bulk_create",
@@ -240,7 +244,7 @@ export const LEGACY_TO_KEYS: Record<string, string[]> = {
   "orders:read": ["orders.view"],
   "orders:update-status": ["orders.update_status", "kitchen.view", "kitchen.update_status"],
   "orders:cancel": ["orders.cancel", "orders.refund"],
-  "orders:approve": ["qr_orders.view", "qr_orders.approve"],
+  "orders:approve": ["qr_orders.view", "qr_orders.approve", "qr_orders.reject", "qr_orders.edit_before_approval"],
   "payments:create": [
     "pos.collect_payment",
     "tables.collect_payment", "tables.partial_payment", "tables.item_payment", "tables.close",

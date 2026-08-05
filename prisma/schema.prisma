@@ -117,6 +117,27 @@ enum QrOrderRoutingMode {
   AUTO_CONFIRMED // يتأكد تلقائيًا (CONFIRMED)
 }
 
+// Branch-level QR approval routing — who confirms a public-menu order
+// before it enters preparation. Richer than the cafe-level QrOrderRoutingMode.
+enum QrApprovalMode {
+  AUTO_CONFIRM // تأكيد تلقائي
+  ROLE_BASED // حسب الدور (targetRole)
+  SPECIFIC_USER // موظف معين (targetUserId)
+  ANY_AUTHORIZED_USER // أي موظف عنده صلاحية التأكيد
+  CASHIER_DIRECT // الكاشير مباشرة
+  WAITER_APPROVAL // موافقة الويتر
+  MANAGER_APPROVAL // موافقة المدير
+  KITCHEN_DIRECT // البار مباشرة
+}
+
+// Per-order approval lifecycle (independent of OrderStatus).
+enum ApprovalStatus {
+  NOT_REQUIRED // لا يحتاج تأكيد
+  PENDING_APPROVAL // في انتظار التأكيد
+  APPROVED // تم التأكيد
+  REJECTED // مرفوض
+}
+
 // SaaS subscription state for a cafe tenant. Independent of `isActive`,
 // which is the hard on/off switch the platform owner flips to suspend a
 // cafe. TRIAL/ACTIVE keep the cafe usable; EXPIRED/SUSPENDED are shown in
@@ -172,6 +193,7 @@ model Cafe {
   suppliers        Supplier[]
   purchaseInvoices PurchaseInvoice[]
   tables           CafeTable[]
+  qrApprovalSettings QrOrderApprovalSettings[]
 }
 
 // Per-cafe module flags + workflow, controlled ONLY by SUPER_ADMIN.
@@ -239,6 +261,7 @@ model Branch {
   tableSessions  TableSession[]
   purchaseInvoices PurchaseInvoice[]
   tables         CafeTable[]
+  qrApprovalSettings QrOrderApprovalSettings?
 
   @@unique([cafeId, menuSlug])
   @@index([cafeId])
@@ -276,6 +299,32 @@ model TableSession {
   @@index([tableNumber])
   @@index([status])
   @@index([startedAt])
+}
+
+// Branch-level QR order approval routing. One row per branch, created
+// lazily with a workflow-appropriate default.
+model QrOrderApprovalSettings {
+  id       String @id @default(cuid())
+  cafeId   String
+  branchId String @unique
+
+  enabled                  Boolean        @default(true)
+  approvalMode             QrApprovalMode @default(ANY_AUTHORIZED_USER)
+  targetRole               Role?
+  targetUserId             String?
+  autoConfirm              Boolean        @default(false)
+  allowApproverToEditOrder Boolean        @default(true)
+  allowApproverToRejectOrder Boolean      @default(true)
+  sendToKitchenAfterApproval Boolean      @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cafe       Cafe   @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  branch     Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  targetUser User?  @relation("QrApprovalTargetUser", fields: [targetUserId], references: [id], onDelete: SetNull)
+
+  @@index([cafeId])
 }
 
 // إعداد الترابيزات — the branch's configured tables (distinct from the live
@@ -381,6 +430,8 @@ model User {
   ordersCreated    Order[]    @relation("OrderCreatedBy")
   ordersApproved   Order[]    @relation("OrderApprovedBy")
   ordersRejected   Order[]    @relation("OrderRejectedBy")
+  ordersAssigned   Order[]    @relation("OrderAssignedApprover")
+  qrApprovalTargetFor QrOrderApprovalSettings[] @relation("QrApprovalTargetUser")
   paymentsReceived Payment[]
   shifts           Shift[]
   auditLogs        AuditLog[]
@@ -629,6 +680,14 @@ model Order {
   rejectedAt      DateTime?
   rejectionReason String?
 
+  // QR approval routing (branch QrOrderApprovalSettings). approvalStatus
+  // carries the lifecycle; order.status still gates kitchen/session (a
+  // pending order stays PENDING_WAITER_APPROVAL and is excluded from both).
+  approvalStatus         ApprovalStatus  @default(NOT_REQUIRED)
+  approvalModeSnapshot   QrApprovalMode?
+  assignedApproverRole   Role?
+  assignedApproverUserId String?
+
   // Set once ingredients are auto-deducted on SERVED (double-deduct guard)
   stockDeductedAt DateTime?
 
@@ -641,6 +700,7 @@ model Order {
   createdBy     User?                  @relation("OrderCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   approvedBy    User?                  @relation("OrderApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
   rejectedBy    User?                  @relation("OrderRejectedBy", fields: [rejectedById], references: [id], onDelete: SetNull)
+  assignedApprover User?               @relation("OrderAssignedApprover", fields: [assignedApproverUserId], references: [id], onDelete: SetNull)
   items         OrderItem[]
   payments      Payment[]
   inventoryTxns InventoryTransaction[]
@@ -650,6 +710,8 @@ model Order {
   @@index([cafeId, status])
   @@index([cafeId, source, createdAt])
   @@index([branchId, status])
+  @@index([branchId, approvalStatus])
+  @@index([assignedApproverUserId])
   @@index([createdById])
   @@index([approvedById])
   @@index([source])

@@ -21,7 +21,8 @@ const MANAGER_KEYS = [
   "dashboard.view",
   "pos.view", "pos.create_order", "pos.apply_discount", "pos.collect_payment", "pos.view_payments",
   "orders.view", "orders.update_status", "orders.cancel",
-  "qr_orders.view", "qr_orders.approve",
+  "qr_orders.view", "qr_orders.approve", "qr_orders.reject", "qr_orders.edit_before_approval",
+  "qr_orders.assign_settings", "settings.edit_qr_approval",
   "kitchen.view", "kitchen.update_status",
   "tables.view", "tables.manage", "tables.create", "tables.edit", "tables.archive", "tables.bulk_create",
   "tables.open", "tables.close",
@@ -46,6 +47,8 @@ const MANAGER_KEYS = [
 const CASHIER_KEYS = [
   "pos.view", "pos.create_order", "pos.collect_payment", "pos.view_payments",
   "orders.view", "orders.update_status",
+  // Cashiers can confirm QR orders routed to them (assignment-checked).
+  "qr_orders.view", "qr_orders.approve", "qr_orders.reject",
   "tables.view", "tables.open", "tables.close",
   "tables.collect_payment", "tables.partial_payment", "tables.item_payment",
   "menu.view",
@@ -55,7 +58,7 @@ const CASHIER_KEYS = [
 const WAITER_KEYS = [
   "pos.view", "pos.create_order",
   "orders.view", "orders.update_status",
-  "qr_orders.view", "qr_orders.approve",
+  "qr_orders.view", "qr_orders.approve", "qr_orders.reject", "qr_orders.edit_before_approval",
   "tables.view", "tables.open",
   "menu.view",
 ];
