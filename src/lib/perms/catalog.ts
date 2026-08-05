@@ -13,7 +13,7 @@ type GateFlag = FeatureFlag | WorkflowSwitch;
 
 export type ModuleCode =
   | "DASHBOARD" | "TABLES" | "POS" | "KITCHEN" | "SALES" | "ORDERS"
-  | "QR_ORDERS" | "MENU" | "INVENTORY" | "PURCHASES" | "EXPENSES"
+  | "QR_ORDERS" | "MENU" | "INVENTORY" | "PURCHASES" | "SUPPLIERS" | "EXPENSES"
   | "SHIFTS" | "FINANCE" | "USERS" | "EDIT_CENTER" | "AUDIT"
   | "SETTINGS" | "CUSTOMER_ORDERS" | "EXCEL" | "HANDOVER" | "REPORTS"
   | "AI_ASSISTANT" | "BRANCHES";
@@ -44,7 +44,8 @@ export const MODULES: PermModule[] = [
   { code: "TABLES", label: "الترابيزات", icon: "🍽️", feature: "enableTables" },
   { code: "MENU", label: "المنيو والمنتجات", icon: "📖" },
   { code: "INVENTORY", label: "المخزون", icon: "📦", feature: "inventoryEnabled" },
-  { code: "PURCHASES", label: "المشتريات", icon: "🛒", feature: "inventoryEnabled" },
+  { code: "PURCHASES", label: "المشتريات", icon: "🛒", feature: "purchasesEnabled" },
+  { code: "SUPPLIERS", label: "الموردين", icon: "🚚", feature: "purchasesEnabled" },
   { code: "EXPENSES", label: "المصاريف", icon: "💸" },
   { code: "SHIFTS", label: "الشيفتات", icon: "🕒", feature: "shiftManagementEnabled" },
   { code: "FINANCE", label: "المالية", icon: "💰" },
@@ -108,7 +109,19 @@ export const PERMISSION_KEYS: PermKey[] = [
 
   // Purchases
   { key: "purchases.view", module: "PURCHASES", label: "عرض المشتريات" },
+  { key: "purchases.create", module: "PURCHASES", label: "إنشاء فاتورة شراء" },
+  { key: "purchases.edit", module: "PURCHASES", label: "تعديل فاتورة (مسودة)" },
+  { key: "purchases.confirm", module: "PURCHASES", label: "تأكيد الفاتورة (إضافة للمخزون)", sensitive: true },
+  { key: "purchases.cancel", module: "PURCHASES", label: "إلغاء الفاتورة", sensitive: true },
+  { key: "purchases.record_payment", module: "PURCHASES", label: "تسجيل دفعة مورد", sensitive: true },
+  { key: "purchases.view_cost", module: "PURCHASES", label: "عرض تكاليف الشراء" },
   { key: "purchases.manage", module: "PURCHASES", label: "إدارة المشتريات" },
+
+  // Suppliers
+  { key: "suppliers.view", module: "SUPPLIERS", label: "عرض الموردين" },
+  { key: "suppliers.create", module: "SUPPLIERS", label: "إضافة مورد" },
+  { key: "suppliers.edit", module: "SUPPLIERS", label: "تعديل مورد" },
+  { key: "suppliers.deactivate", module: "SUPPLIERS", label: "إيقاف/تفعيل مورد", sensitive: true },
 
   // Expenses
   { key: "expenses.view", module: "EXPENSES", label: "عرض المصاريف" },
@@ -229,7 +242,13 @@ export const LEGACY_TO_KEYS: Record<string, string[]> = {
   "shifts:read": ["shifts.view_reports"],
   "dashboard:read": ["dashboard.view"],
   "reports:read": ["reports.view", "sales.view", "reports.export", "excel.export"],
-  "inventory:manage": ["inventory.view", "inventory.edit", "inventory.transactions", "purchases.view", "purchases.manage", "handover.view", "handover.manage"],
+  "inventory:manage": [
+    "inventory.view", "inventory.edit", "inventory.transactions",
+    "purchases.view", "purchases.create", "purchases.edit", "purchases.confirm",
+    "purchases.cancel", "purchases.record_payment", "purchases.view_cost", "purchases.manage",
+    "suppliers.view", "suppliers.create", "suppliers.edit", "suppliers.deactivate",
+    "handover.view", "handover.manage",
+  ],
   "inventory:read": ["inventory.view"],
   "recipe:manage": ["menu.manage_recipes"],
   "cost:read": ["finance.view_revenue", "finance.view_profit", "sales.view"],

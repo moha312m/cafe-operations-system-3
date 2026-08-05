@@ -71,6 +71,7 @@ type DashboardData = {
     lowMargin: number;
     topProduct: { name: string; profit: number; margin: number } | null;
   } | null;
+  purchases?: { todayTotal: number; monthTotal: number; unpaidCount: number } | null;
 };
 
 const RANGES: { key: Range; label: string }[] = [
@@ -245,6 +246,19 @@ export default function DashboardPage() {
             accent={data.recipes.lowMargin > 0 ? "red" : "slate"}
             href="/menu"
           />
+        )}
+        {data.purchases && (
+          <>
+            <StatCard label="مشتريات النهارده" value={fmt(data.purchases.todayTotal)} icon="🛒" accent="blue" href="/purchases" />
+            <StatCard label="مشتريات الشهر" value={fmt(data.purchases.monthTotal)} icon="📅" accent="slate" href="/purchases" />
+            <StatCard
+              label="فواتير مشتريات غير مدفوعة"
+              value={data.purchases.unpaidCount}
+              icon="⏳"
+              accent={data.purchases.unpaidCount > 0 ? "amber" : "slate"}
+              href="/purchases"
+            />
+          </>
         )}
       </div>
 

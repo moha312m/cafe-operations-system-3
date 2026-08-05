@@ -28,7 +28,9 @@ const MANAGER_KEYS = [
   "tables.transfer", "tables.merge",
   "menu.view", "menu.create", "menu.edit", "menu.edit_prices", "menu.import_excel", "menu.manage_recipes",
   "inventory.view", "inventory.edit", "inventory.transactions",
-  "purchases.view", "purchases.manage",
+  "purchases.view", "purchases.create", "purchases.edit", "purchases.confirm",
+  "purchases.cancel", "purchases.record_payment", "purchases.view_cost", "purchases.manage",
+  "suppliers.view", "suppliers.create", "suppliers.edit", "suppliers.deactivate",
   "expenses.view", "expenses.manage",
   "shifts.view_current", "shifts.open", "shifts.close", "shifts.view_reports",
   "finance.view_revenue", "finance.view_profit",
@@ -73,12 +75,17 @@ const ACCOUNTANT_KEYS = [
   "orders.view", "pos.view_payments",
   "audit.view",
   "excel.export",
+  // Accounting sees purchases and settles supplier balances.
+  "purchases.view", "purchases.view_cost", "purchases.record_payment",
+  "suppliers.view",
 ];
 
 const INVENTORY_KEYS = [
   "menu.view",
   "inventory.view", "inventory.edit", "inventory.transactions",
-  "purchases.view", "purchases.manage",
+  "purchases.view", "purchases.create", "purchases.edit", "purchases.confirm",
+  "purchases.cancel", "purchases.record_payment", "purchases.view_cost", "purchases.manage",
+  "suppliers.view", "suppliers.create", "suppliers.edit", "suppliers.deactivate",
   "handover.view", "handover.manage",
 ];
 

@@ -16,6 +16,7 @@ export const FEATURE_FLAGS = [
   "recipeCostingEnabled",
   "staffManagementEnabled",
   "branchManagementEnabled",
+  "purchasesEnabled",
 ] as const;
 
 export type FeatureFlag = (typeof FEATURE_FLAGS)[number];
@@ -32,6 +33,7 @@ export const FEATURE_LABELS: Record<FeatureFlag, string> = {
   recipeCostingEnabled: "تفعيل تكلفة الوصفات",
   staffManagementEnabled: "تفعيل إدارة الموظفين",
   branchManagementEnabled: "تفعيل إدارة الفروع",
+  purchasesEnabled: "تفعيل المشتريات",
 };
 
 // Extra workflow switches (checkboxes).
@@ -87,6 +89,7 @@ export function toFeatureMap(s: CafeSettings): CafeFeatures {
     recipeCostingEnabled: s.recipeCostingEnabled,
     staffManagementEnabled: s.staffManagementEnabled,
     branchManagementEnabled: s.branchManagementEnabled,
+    purchasesEnabled: s.purchasesEnabled,
     requireShiftForQrOrders: s.requireShiftForQrOrders,
     allowCashierToPrepareOrders: s.allowCashierToPrepareOrders,
     allowCashierToServeOrders: s.allowCashierToServeOrders,

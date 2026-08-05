@@ -3,6 +3,37 @@ import { db } from "@/lib/db";
 import { requirePermission, resolveCafeId, handleApiError } from "@/lib/api";
 import { hasPermission } from "@/lib/permissions";
 import { productCost, profitFor } from "@/lib/costing";
+import { resolvePermissions } from "@/lib/perms/effective";
+import { getCafeSettings } from "@/lib/cafe-settings";
+import type { SessionUser } from "@/lib/auth";
+
+// Purchases dashboard summary — only when the feature is on and the user
+// can view purchases.
+async function buildPurchaseSummary(
+  session: SessionUser,
+  cafeId: string,
+  branchFilter: { branchId?: string },
+  startOfToday: Date
+) {
+  const settings = await getCafeSettings(cafeId);
+  if (!settings.purchasesEnabled) return null;
+  const { keys } = await resolvePermissions(session);
+  if (!keys.has("purchases.view")) return null;
+
+  const startOfMonth = new Date(startOfToday);
+  startOfMonth.setDate(1);
+  const scope = { cafeId, ...branchFilter, status: { not: "CANCELLED" as const } };
+  const [today, month, unpaid] = await Promise.all([
+    db.purchaseInvoice.aggregate({ where: { ...scope, invoiceDate: { gte: startOfToday } }, _sum: { totalAmount: true } }),
+    db.purchaseInvoice.aggregate({ where: { ...scope, invoiceDate: { gte: startOfMonth } }, _sum: { totalAmount: true } }),
+    db.purchaseInvoice.count({ where: { ...scope, paymentStatus: { in: ["UNPAID", "PARTIAL"] } } }),
+  ]);
+  return {
+    todayTotal: Number(today._sum.totalAmount ?? 0),
+    monthTotal: Number(month._sum.totalAmount ?? 0),
+    unpaidCount: unpaid,
+  };
+}
 
 // Recipe/profit dashboard summary — only for cost-privileged roles.
 async function buildRecipeSummary(role: string, cafeId: string) {
@@ -309,6 +340,7 @@ export async function GET(request: NextRequest) {
       branches,
       inventory: { lowStockCount, outOfStockCount },
       recipes: await buildRecipeSummary(session.role, cafeId),
+      purchases: await buildPurchaseSummary(session, cafeId, branchFilter, startOfToday),
     });
   } catch (error) {
     return handleApiError(error);

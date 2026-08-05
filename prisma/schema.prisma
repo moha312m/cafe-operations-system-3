@@ -169,6 +169,8 @@ model Cafe {
   settings       CafeSettings?
   roles          CafeRole[]
   tableSessions  TableSession[]
+  suppliers        Supplier[]
+  purchaseInvoices PurchaseInvoice[]
 }
 
 // Per-cafe module flags + workflow, controlled ONLY by SUPER_ADMIN.
@@ -193,6 +195,7 @@ model CafeSettings {
   recipeCostingEnabled   Boolean @default(true)
   staffManagementEnabled Boolean @default(true)
   branchManagementEnabled Boolean @default(true)
+  purchasesEnabled       Boolean @default(true)
 
   // Extra workflow switches
   requireShiftForQrOrders     Boolean @default(false)
@@ -230,6 +233,7 @@ model Branch {
   productPrices  ProductBranchPrice[]
   financialSettings BranchFinancialSettings?
   tableSessions  TableSession[]
+  purchaseInvoices PurchaseInvoice[]
 
   @@unique([cafeId, menuSlug])
   @@index([cafeId])
@@ -348,6 +352,8 @@ model User {
   shifts           Shift[]
   auditLogs        AuditLog[]
   inventoryTxns    InventoryTransaction[]
+  purchaseInvoices PurchaseInvoice[]
+  purchasePayments PurchasePayment[]
 
   @@index([cafeId])
   @@index([branchId])
@@ -782,6 +788,7 @@ model InventoryItem {
   branch       Branch                 @relation(fields: [branchId], references: [id], onDelete: Cascade)
   transactions InventoryTransaction[]
   recipeItems  ProductRecipeItem[]
+  purchaseItems PurchaseInvoiceItem[]
 
   @@index([cafeId])
   @@index([branchId])
@@ -819,6 +826,133 @@ model InventoryTransaction {
   @@index([createdAt])
   @@index([cafeId, createdAt])
   @@index([orderId])
+}
+
+// ─────────────────────────── Purchases ───────────────────────────────
+enum PurchaseInvoiceStatus {
+  DRAFT // مسودة — editable, no stock impact yet
+  CONFIRMED // مؤكدة — quantities added to inventory
+  CANCELLED // ملغية
+}
+
+enum PurchasePaymentStatus {
+  UNPAID // غير مدفوعة
+  PARTIAL // مدفوعة جزئيًا
+  PAID // مدفوعة بالكامل
+}
+
+enum PurchasePaymentMethod {
+  CASH
+  CARD
+  WALLET
+  BANK_TRANSFER // تحويل بنكي
+}
+
+// Raw-material suppliers (cafe-scoped).
+model Supplier {
+  id        String   @id @default(cuid())
+  cafeId    String
+  name      String
+  phone     String?
+  email     String?
+  address   String?
+  notes     String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cafe     Cafe              @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  invoices PurchaseInvoice[]
+
+  @@index([cafeId])
+  @@index([cafeId, isActive])
+}
+
+// A purchase invoice: draft → confirmed (adds stock) with supplier payment
+// tracking. Totals are denormalised from items/payments.
+model PurchaseInvoice {
+  id            String                @id @default(cuid())
+  cafeId        String
+  branchId      String
+  supplierId    String?
+  invoiceNumber String // human-friendly, per branch (auto or manual)
+  invoiceDate   DateTime              @default(now())
+  status        PurchaseInvoiceStatus @default(DRAFT)
+  confirmedAt   DateTime? // set once stock is added — guards double-add
+  cancelledAt   DateTime?
+
+  subtotalAmount  Decimal @default(0) @db.Decimal(12, 2)
+  discountAmount  Decimal @default(0) @db.Decimal(12, 2)
+  taxAmount       Decimal @default(0) @db.Decimal(12, 2)
+  totalAmount     Decimal @default(0) @db.Decimal(12, 2)
+  paidAmount      Decimal @default(0) @db.Decimal(12, 2)
+  remainingAmount Decimal @default(0) @db.Decimal(12, 2)
+
+  paymentStatus   PurchasePaymentStatus @default(UNPAID)
+  notes           String?
+  createdByUserId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  cafe      Cafe                  @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  branch    Branch                @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  supplier  Supplier?             @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  createdBy User?                 @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+  items     PurchaseInvoiceItem[]
+  payments  PurchasePayment[]
+
+  @@unique([branchId, invoiceNumber])
+  @@index([cafeId])
+  @@index([branchId])
+  @@index([supplierId])
+  @@index([cafeId, invoiceDate])
+  @@index([status])
+  @@index([paymentStatus])
+}
+
+model PurchaseInvoiceItem {
+  id                String        @id @default(cuid())
+  cafeId            String
+  branchId          String
+  purchaseInvoiceId String
+  inventoryItemId   String
+  quantity          Decimal       @db.Decimal(12, 3)
+  unit              InventoryUnit
+  unitCost          Decimal       @db.Decimal(12, 2)
+  totalCost         Decimal       @db.Decimal(12, 2)
+  expiryDate        DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  invoice       PurchaseInvoice @relation(fields: [purchaseInvoiceId], references: [id], onDelete: Cascade)
+  inventoryItem InventoryItem   @relation(fields: [inventoryItemId], references: [id], onDelete: Restrict)
+
+  @@index([cafeId])
+  @@index([branchId])
+  @@index([purchaseInvoiceId])
+  @@index([inventoryItemId])
+}
+
+// A payment recorded against a purchase invoice (cash out to the supplier).
+model PurchasePayment {
+  id                String                @id @default(cuid())
+  cafeId            String
+  branchId          String
+  purchaseInvoiceId String
+  amount            Decimal               @db.Decimal(12, 2)
+  method            PurchasePaymentMethod @default(CASH)
+  paidAt            DateTime              @default(now())
+  note              String?
+  createdByUserId   String?
+  createdAt         DateTime              @default(now())
+
+  invoice   PurchaseInvoice @relation(fields: [purchaseInvoiceId], references: [id], onDelete: Cascade)
+  createdBy User?           @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([cafeId])
+  @@index([branchId])
+  @@index([purchaseInvoiceId])
+  @@index([cafeId, paidAt])
 }
 
 // ───────────────────────────── Audit log ─────────────────────────────

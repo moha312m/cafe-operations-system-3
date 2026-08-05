@@ -32,6 +32,7 @@ const patchSchema = z.object({
   recipeCostingEnabled: boolSchema.optional(),
   staffManagementEnabled: boolSchema.optional(),
   branchManagementEnabled: boolSchema.optional(),
+  purchasesEnabled: boolSchema.optional(),
   requireShiftForQrOrders: boolSchema.optional(),
   allowCashierToPrepareOrders: boolSchema.optional(),
   allowCashierToServeOrders: boolSchema.optional(),

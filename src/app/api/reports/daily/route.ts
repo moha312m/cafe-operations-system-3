@@ -122,6 +122,22 @@ export async function GET(request: NextRequest) {
         _count: true,
       }),
     ]);
+    // ── Purchases (day) ──
+    const [purchaseAgg, supplierPayAgg, purchaseUnpaid] = await Promise.all([
+      db.purchaseInvoice.aggregate({
+        where: { cafeId, ...branchFilter, status: { not: "CANCELLED" }, invoiceDate: dayWindow },
+        _sum: { totalAmount: true }, _count: true,
+      }),
+      db.purchasePayment.aggregate({
+        where: { cafeId, ...branchFilter, paidAt: dayWindow },
+        _sum: { amount: true },
+      }),
+      db.purchaseInvoice.aggregate({
+        where: { cafeId, ...branchFilter, status: { not: "CANCELLED" }, paymentStatus: { in: ["UNPAID", "PARTIAL"] } },
+        _sum: { remainingAmount: true },
+      }),
+    ]);
+
     const tableUncollected = openTables.reduce((s, ts) => s + Number(ts.remainingAmount), 0);
     const durations = closedTables
       .filter((ts) => ts.closedAt)
@@ -191,6 +207,12 @@ export async function GET(request: NextRequest) {
         collectedCount: tablePayAgg._count,
         uncollectedTotal: Math.round(tableUncollected * 100) / 100,
         closedSales: Math.round(closedTables.reduce((s, ts) => s + Number(ts.totalAmount), 0) * 100) / 100,
+      },
+      purchases: {
+        total: Number(purchaseAgg._sum.totalAmount ?? 0),
+        invoiceCount: purchaseAgg._count,
+        supplierPayments: Number(supplierPayAgg._sum.amount ?? 0),
+        unpaidTotal: Math.round(Number(purchaseUnpaid._sum.remainingAmount ?? 0) * 100) / 100,
       },
       byCashier: cashierGroups
         .filter((c) => c.cashierId)

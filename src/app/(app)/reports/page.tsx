@@ -50,6 +50,12 @@ type Report = {
     uncollectedTotal: number;
     closedSales: number;
   };
+  purchases?: {
+    total: number;
+    invoiceCount: number;
+    supplierPayments: number;
+    unpaidTotal: number;
+  };
   byPaymentMethod: { method: string; amount: number; count: number }[];
   byBranch: { branchId: string; branchName: string; revenue: number; orders: number }[];
   byCashier: { cashierId: string; cashierName: string; amount: number; count: number }[];
@@ -119,6 +125,13 @@ export default function ReportsPage() {
                     { label: "متوسط مدة الجلوس", value: `${report.tables.avgSittingMinutes} دقيقة` },
                     { label: "إجمالي تحصيل الترابيزات", value: money(report.tables.collectedTotal, currency) },
                     { label: "مبالغ غير محصلة على الترابيزات", value: money(report.tables.uncollectedTotal, currency) },
+                  ]
+                : []),
+              ...(report.purchases
+                ? [
+                    { label: "إجمالي المشتريات", value: money(report.purchases.total, currency) },
+                    { label: "مدفوعات الموردين", value: money(report.purchases.supplierPayments, currency) },
+                    { label: "مشتريات غير مدفوعة", value: money(report.purchases.unpaidTotal, currency) },
                   ]
                 : []),
             ].map((stat) => (

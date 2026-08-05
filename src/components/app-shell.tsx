@@ -60,6 +60,8 @@ const NAV: NavItem[] = [
   { href: "/branches", label: t.nav.branches, icon: "🏬", permission: "branches:manage", feature: (f) => f.branchManagementEnabled },
   { href: "/staff", label: t.nav.staff, icon: "👥", permission: "users:manage", feature: (f) => f.staffManagementEnabled },
   { href: "/inventory", label: t.nav.inventory, icon: "📦", permission: "inventory:read", feature: (f) => f.inventoryEnabled },
+  { href: "/purchases", label: "المشتريات", icon: "🛒", permission: "inventory:read", key: "purchases.view", feature: (f) => f.purchasesEnabled },
+  { href: "/suppliers", label: "الموردين", icon: "🚚", permission: "inventory:read", key: "suppliers.view", feature: (f) => f.purchasesEnabled },
   { href: "/reports", label: t.nav.reports, icon: "📈", permission: "reports:read" },
   { href: "/shifts", label: t.nav.shiftReports, icon: "🧮", permission: "shifts:read", feature: (f) => f.shiftManagementEnabled },
   { href: "/settings", label: "الإعدادات", icon: "⚙️", permission: "branches:manage" },
