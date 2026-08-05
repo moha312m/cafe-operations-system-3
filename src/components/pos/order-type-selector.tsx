@@ -3,10 +3,6 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
-import {
-  Dialog, DialogContent, DialogHeader, DialogTitle,
-} from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { t } from "@/lib/i18n";
 import { api } from "@/lib/client";
@@ -74,7 +70,6 @@ export function OrderTypeSelector({
 
   const [tables, setTables] = useState<SelectorTable[] | null>(null);
   const [allowCustom, setAllowCustom] = useState(false);
-  const [pickerOpen, setPickerOpen] = useState(false);
   const [manual, setManual] = useState(false);
 
   useEffect(() => {
@@ -117,33 +112,53 @@ export function OrderTypeSelector({
 
       {type === "DINE_IN" && (
         <div className="space-y-2">
-          <p className="text-xs font-medium text-muted-foreground">الترابيزة</p>
+          <div className="flex items-center justify-between">
+            <p className="text-xs font-medium text-muted-foreground">اختر الترابيزة</p>
+            {allowCustom && (
+              <button type="button" onClick={() => setManual((v) => !v)}
+                className="text-[11px] text-muted-foreground underline hover:text-foreground">
+                {manual ? "اختيار من الشبكة" : "إدخال رقم يدوي"}
+              </button>
+            )}
+          </div>
 
-          {/* Compact selected-table summary or a "choose" button. */}
-          {selected ? (
-            <div className={cn("flex items-center justify-between gap-2 rounded-xl border-2 bg-card p-2.5", selectedTbl ? statusOf(selectedTbl).card : "border-border")}>
-              <div className="min-w-0">
-                <p className="font-heading text-sm font-bold text-foreground">🍽️ ترابيزة {selected}</p>
-                {selectedSession ? (
-                  <p className="text-[11px] leading-tight text-muted-foreground">
-                    {STATUS[selectedSession.displayStatus]?.label ?? "مشغولة"} · المتبقي {selectedSession.remainingAmount} ج.م · {sinceLabel(selectedSession.startedAt)}
-                  </p>
-                ) : (
-                  <p className="text-[11px] text-emerald-700 dark:text-emerald-400">متاحة · حساب جديد</p>
-                )}
-              </div>
-              {(tables && tables.length > 0) || allowCustom ? (
-                <Button size="sm" variant="outline" className="shrink-0" onClick={() => { setManual(false); setPickerOpen(true); }}>تغيير</Button>
-              ) : null}
-            </div>
-          ) : tables && tables.length > 0 ? (
-            <Button variant="outline" className="w-full justify-center" onClick={() => { setManual(false); setPickerOpen(true); }}>
-              🍽️ اختيار الترابيزة
-            </Button>
-          ) : allowCustom ? (
-            <Input placeholder={t.pos.tableNumber} dir="ltr" value={details.tableNumber} onChange={(e) => set({ tableNumber: e.target.value })} />
-          ) : (
+          {/* Direct visible table grid — no modal, no compact row. */}
+          {tables === null ? (
             <p className="text-xs text-muted-foreground">جاري تحميل الترابيزات…</p>
+          ) : manual ? (
+            <Input placeholder={t.pos.tableNumber} dir="ltr" value={details.tableNumber} onChange={(e) => set({ tableNumber: e.target.value })} />
+          ) : tables.length === 0 ? (
+            <p className="rounded-lg bg-muted/40 px-2.5 py-2 text-xs text-muted-foreground">لا توجد ترابيزات لهذا الفرع</p>
+          ) : (
+            <div className="grid max-h-64 grid-cols-2 gap-2 overflow-y-auto pe-0.5 sm:grid-cols-3">
+              {tables.map((tbl) => {
+                const active = tbl.tableNumber === selected;
+                const st = statusOf(tbl);
+                return (
+                  <button
+                    key={tbl.id}
+                    type="button"
+                    onClick={() => set({ tableNumber: tbl.tableNumber })}
+                    className={cn(
+                      "flex aspect-square flex-col items-center justify-center gap-1 rounded-xl border-2 p-2 text-center transition-all",
+                      active
+                        ? "border-primary bg-primary/10 ring-2 ring-primary/40 shadow-sm"
+                        : cn("bg-card hover:shadow-sm", st.card)
+                    )}
+                  >
+                    <span className="font-heading text-lg font-bold tabular-nums text-foreground">ترابيزة {tbl.tableNumber}</span>
+                    <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-medium leading-none", st.badge)}>{st.label}</span>
+                    {tbl.session && (
+                      <span className="text-[10px] leading-tight text-muted-foreground">
+                        المتبقي {tbl.session.remainingAmount} ج.م
+                        <br />
+                        {sinceLabel(tbl.session.startedAt)}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
           )}
 
           {/* Optional customer name */}
@@ -153,60 +168,16 @@ export function OrderTypeSelector({
             onChange={(e) => set({ customerName: e.target.value })}
           />
 
-          {selectedSession && (
+          {selectedSession ? (
             <p className="rounded-lg bg-blue-500/10 px-2.5 py-1.5 text-[11px] leading-snug text-blue-700 dark:text-blue-400">
               يوجد حساب مفتوح على الترابيزة رقم {selected}، سيتم إضافة الطلب على نفس الحساب.{" "}
               <Link href="/tables" className="font-semibold underline">عرض الحساب</Link>
             </p>
-          )}
-
-          {/* ── Table picker modal ── */}
-          <Dialog open={pickerOpen} onOpenChange={setPickerOpen}>
-            <DialogContent className="max-h-[85vh] max-w-2xl overflow-hidden">
-              <DialogHeader><DialogTitle>اختر الترابيزة</DialogTitle></DialogHeader>
-              {allowCustom && (
-                <div className="flex items-center justify-between">
-                  <button className="text-xs text-muted-foreground underline hover:text-foreground" onClick={() => setManual((v) => !v)}>
-                    {manual ? "اختيار من الشبكة" : "إدخال رقم يدوي"}
-                  </button>
-                </div>
-              )}
-              {manual ? (
-                <div className="flex gap-2">
-                  <Input placeholder={t.pos.tableNumber} dir="ltr" value={details.tableNumber} onChange={(e) => set({ tableNumber: e.target.value })} />
-                  <Button onClick={() => setPickerOpen(false)}>تأكيد</Button>
-                </div>
-              ) : (
-                <div className="grid max-h-[65vh] grid-cols-3 gap-2.5 overflow-y-auto p-0.5 sm:grid-cols-4 md:grid-cols-5">
-                  {(tables ?? []).map((tbl) => {
-                    const active = tbl.tableNumber === selected;
-                    const st = statusOf(tbl);
-                    return (
-                      <button
-                        key={tbl.id}
-                        type="button"
-                        onClick={() => { set({ tableNumber: tbl.tableNumber }); setPickerOpen(false); }}
-                        className={cn(
-                          "flex h-24 flex-col items-center justify-center gap-1 rounded-xl border-2 bg-card p-2 text-center transition-all hover:shadow-sm",
-                          active ? "border-primary ring-2 ring-primary/30" : st.card
-                        )}
-                      >
-                        <span className="text-lg leading-none">🍽️</span>
-                        <span className="font-heading text-base font-bold tabular-nums text-foreground">ترابيزة {tbl.tableNumber}</span>
-                        <span className={cn("rounded-full px-1.5 py-0.5 text-[10px] font-medium leading-none", st.badge)}>{st.label}</span>
-                        {tbl.session && (
-                          <span className="text-[10px] leading-tight text-muted-foreground">المتبقي {tbl.session.remainingAmount} ج.م</span>
-                        )}
-                      </button>
-                    );
-                  })}
-                  {tables && tables.length === 0 && (
-                    <p className="col-span-full py-6 text-center text-sm text-muted-foreground">لا توجد ترابيزات لهذا الفرع</p>
-                  )}
-                </div>
-              )}
-            </DialogContent>
-          </Dialog>
+          ) : selected ? (
+            <p className="rounded-lg bg-emerald-500/10 px-2.5 py-1.5 text-[11px] text-emerald-700 dark:text-emerald-400">
+              سيتم فتح حساب جديد على الترابيزة رقم {selected}
+            </p>
+          ) : null}
         </div>
       )}
 
