@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/client";
 import { useApp } from "@/components/app-shell";
 import { PageHeader, StatCard, EmptyState, LoadingState } from "@/components/cafe/ui";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -30,12 +31,40 @@ type Form = {
 };
 const EMPTY: Form = { tableNumber: "", displayName: "", area: "", seatsCount: "", sortOrder: "", isActive: true };
 
+type StatusFilter = "ALL" | "ACTIVE" | "INACTIVE" | "ARCHIVED";
+const FILTERS: { key: StatusFilter; label: string }[] = [
+  { key: "ALL", label: "الكل" },
+  { key: "ACTIVE", label: "النشطة" },
+  { key: "INACTIVE", label: "الموقوفة" },
+  { key: "ARCHIVED", label: "المؤرشفة" },
+];
+
+// Visual state → accent classes. Occupied wins over active (blue), then
+// archived (muted), inactive (amber), active (green).
+type Visual = "occupied" | "active" | "inactive" | "archived";
+function visualOf(t: CafeTable, occupied: boolean): Visual {
+  if (t.archivedAt) return "archived";
+  if (t.isActive && occupied) return "occupied";
+  if (t.isActive) return "active";
+  return "inactive";
+}
+const VISUAL: Record<Visual, { card: string; badge: string; label: string; ring: string }> = {
+  active:   { card: "border-emerald-500/40", badge: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400", label: "نشطة", ring: "text-emerald-600 dark:text-emerald-400" },
+  occupied: { card: "border-blue-500/50", badge: "bg-blue-500/15 text-blue-700 dark:text-blue-400", label: "مشغولة الآن", ring: "text-blue-600 dark:text-blue-400" },
+  inactive: { card: "border-amber-500/40", badge: "bg-amber-500/12 text-amber-700 dark:text-amber-400", label: "موقوفة", ring: "text-amber-600 dark:text-amber-400" },
+  archived: { card: "border-border opacity-60", badge: "bg-foreground/8 text-muted-foreground", label: "مؤرشفة", ring: "text-muted-foreground" },
+};
+
 export default function TableSetupPage() {
   const { user, canKey, features } = useApp();
   const [tables, setTables] = useState<CafeTable[] | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [occupied, setOccupied] = useState<Set<string>>(new Set());
   const [branches, setBranches] = useState<Branch[]>([]);
   const [branchId, setBranchId] = useState(user.branchId ?? "");
+  const [q, setQ] = useState("");
+  const [filter, setFilter] = useState<StatusFilter>("ALL");
+  const [view, setView] = useState<"grid" | "list">("grid");
   const [form, setForm] = useState<Form | null>(null);
   const [bulkOpen, setBulkOpen] = useState(false);
   const [bulk, setBulk] = useState({ from: "1", to: "15", namePrefix: "", area: "", seatsCount: "" });
@@ -51,11 +80,12 @@ export default function TableSetupPage() {
   const load = useCallback(async () => {
     if (!branchId) { setTables([]); setSummary(null); return; }
     try {
-      const data = await api<{ summary: Summary; tables: CafeTable[] }>(
+      const data = await api<{ summary: Summary; tables: CafeTable[]; occupiedNumbers: string[] }>(
         `/api/tables/config?branchId=${branchId}&includeArchived=1`
       );
       setTables(data.tables);
       setSummary(data.summary);
+      setOccupied(new Set(data.occupiedNumbers ?? []));
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "فشل تحميل الترابيزات");
     }
@@ -70,6 +100,18 @@ export default function TableSetupPage() {
         .catch(() => {});
     }
   }, [user.branchId, branchId]);
+
+  const filtered = useMemo(() => {
+    if (!tables) return [];
+    const needle = q.trim().toLowerCase();
+    return tables.filter((t) => {
+      if (filter === "ACTIVE" && !(t.isActive && !t.archivedAt)) return false;
+      if (filter === "INACTIVE" && !(!t.isActive && !t.archivedAt)) return false;
+      if (filter === "ARCHIVED" && !t.archivedAt) return false;
+      if (needle && !`${t.tableNumber} ${t.displayName ?? ""}`.toLowerCase().includes(needle)) return false;
+      return true;
+    });
+  }, [tables, q, filter]);
 
   async function save() {
     if (!form) return;
@@ -127,6 +169,14 @@ export default function TableSetupPage() {
     }
   }
 
+  function editForm(t: CafeTable): Form {
+    return {
+      id: t.id, tableNumber: t.tableNumber, displayName: t.displayName ?? "",
+      area: t.area ?? "", seatsCount: t.seatsCount != null ? String(t.seatsCount) : "",
+      sortOrder: String(t.sortOrder), isActive: t.isActive,
+    };
+  }
+
   async function patch(t: CafeTable, body: Record<string, unknown>, ok: string) {
     setBusy(true);
     try {
@@ -161,6 +211,8 @@ export default function TableSetupPage() {
   const bulkPreview = Number.isFinite(bulkFrom) && Number.isFinite(bulkTo) && bulkFrom <= bulkTo
     ? `سيتم إنشاء الترابيزات من ${bulkFrom} إلى ${bulkTo}` : null;
 
+  const emptyBranch = tables !== null && tables.length === 0;
+
   return (
     <>
       <PageHeader title="إعداد الترابيزات" subtitle="إدارة ترابيزات كل فرع">
@@ -185,12 +237,96 @@ export default function TableSetupPage() {
         </div>
       )}
 
+      {/* Toolbar: search + status chips + view toggle */}
+      {!emptyBranch && (
+        <div className="mt-5 flex flex-wrap items-center gap-2">
+          <Input placeholder="ابحث برقم أو اسم الترابيزة…" className="w-56" value={q} onChange={(e) => setQ(e.target.value)} />
+          <div className="flex rounded-xl border border-border bg-card p-0.5 text-sm">
+            {FILTERS.map((f) => (
+              <button key={f.key} onClick={() => setFilter(f.key)}
+                className={cn("rounded-lg px-3 py-1.5 font-medium transition-colors",
+                  filter === f.key ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground")}>
+                {f.label}
+              </button>
+            ))}
+          </div>
+          <div className="ms-auto flex rounded-xl border border-border bg-card p-0.5 text-sm">
+            <button onClick={() => setView("grid")}
+              className={cn("rounded-lg px-3 py-1.5 font-medium transition-colors", view === "grid" ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground")}>
+              ▦ عرض كمربعات
+            </button>
+            <button onClick={() => setView("list")}
+              className={cn("rounded-lg px-3 py-1.5 font-medium transition-colors", view === "list" ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground")}>
+              ☰ عرض كجدول
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="mt-4">
         {tables === null ? (
           <LoadingState />
-        ) : tables.length === 0 ? (
-          <EmptyState message="لم يتم إنشاء ترابيزات لهذا الفرع بعد" icon="🍽️" />
+        ) : emptyBranch ? (
+          <div className="rounded-2xl border border-dashed border-border bg-card p-12 text-center">
+            <p className="text-4xl">🍽️</p>
+            <p className="mt-3 text-sm font-medium text-muted-foreground">لا توجد ترابيزات مضافة لهذا الفرع بعد</p>
+            <div className="mt-4 flex flex-wrap justify-center gap-2">
+              {canCreate && <Button onClick={() => setForm({ ...EMPTY })}>+ إضافة ترابيزة</Button>}
+              {canBulk && <Button variant="outline" onClick={() => setBulkOpen(true)}>إنشاء ترابيزات دفعة واحدة</Button>}
+            </div>
+          </div>
+        ) : filtered.length === 0 ? (
+          <EmptyState message="لا توجد ترابيزات مطابقة للبحث" icon="🔍" />
+        ) : view === "grid" ? (
+          // ── Card grid ──
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
+            {filtered.map((t) => {
+              const v = visualOf(t, occupied.has(t.tableNumber));
+              const meta = VISUAL[v];
+              return (
+                <div key={t.id}
+                  className={cn("group flex flex-col rounded-2xl border-2 bg-card p-4 shadow-sm transition-all hover:shadow-md", meta.card)}>
+                  <div className="flex items-start justify-between gap-2">
+                    <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-medium", meta.badge)}>{meta.label}</span>
+                    <span className="text-[11px] text-muted-foreground">#{t.sortOrder}</span>
+                  </div>
+
+                  <div className="flex flex-col items-center py-3 text-center">
+                    <span className="text-3xl leading-none">🍽️</span>
+                    <span className={cn("mt-1.5 font-heading text-2xl font-bold tabular-nums text-foreground")}>ترابيزة {t.tableNumber}</span>
+                    <span className="mt-0.5 text-xs text-muted-foreground">{t.displayName || "بدون اسم"}</span>
+                  </div>
+
+                  <div className="flex items-center justify-center gap-3 border-t border-border/60 pt-2 text-xs text-muted-foreground">
+                    <span>📍 {t.area || "بدون منطقة"}</span>
+                    <span>🪑 {t.seatsCount != null ? `${t.seatsCount} كراسي` : "—"}</span>
+                  </div>
+
+                  {(canEdit || canArchive) && (
+                    <div className="mt-3 flex flex-wrap justify-center gap-1">
+                      {!t.archivedAt && canEdit && (
+                        <Button size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={busy} onClick={() => setForm(editForm(t))}>تعديل</Button>
+                      )}
+                      {!t.archivedAt && canArchive && (
+                        <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" disabled={busy}
+                          onClick={() => patch(t, { isActive: !t.isActive }, t.isActive ? "تم إيقاف الترابيزة" : "تم تفعيل الترابيزة")}>
+                          {t.isActive ? "إيقاف" : "تفعيل"}
+                        </Button>
+                      )}
+                      {canArchive && (
+                        <Button size="sm" variant="ghost" className={cn("h-7 px-2 text-xs", !t.archivedAt && "text-destructive")} disabled={busy}
+                          onClick={() => patch(t, { archived: !t.archivedAt }, t.archivedAt ? "تم استرجاع الترابيزة" : "تم أرشفة الترابيزة")}>
+                          {t.archivedAt ? "استرجاع" : "أرشفة"}
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         ) : (
+          // ── List (table) view ──
           <div className="overflow-x-auto rounded-2xl border border-border bg-card">
             <Table>
               <TableHeader><TableRow>
@@ -203,47 +339,38 @@ export default function TableSetupPage() {
                 <TableHead className="text-end">إجراءات</TableHead>
               </TableRow></TableHeader>
               <TableBody>
-                {tables.map((t) => (
-                  <TableRow key={t.id} className={t.archivedAt ? "opacity-50" : ""}>
-                    <TableCell className="font-medium tabular-nums">{t.tableNumber}</TableCell>
-                    <TableCell>{t.displayName ?? "—"}</TableCell>
-                    <TableCell className="text-muted-foreground">{t.area ?? "—"}</TableCell>
-                    <TableCell className="text-center tabular-nums">{t.seatsCount ?? "—"}</TableCell>
-                    <TableCell>
-                      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-                        t.archivedAt ? "bg-foreground/8 text-muted-foreground"
-                        : t.isActive ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
-                        : "bg-amber-500/12 text-amber-700 dark:text-amber-400"
-                      }`}>
-                        {t.archivedAt ? "مؤرشفة" : t.isActive ? "نشطة" : "موقوفة"}
-                      </span>
-                    </TableCell>
-                    <TableCell className="text-center tabular-nums text-muted-foreground">{t.sortOrder}</TableCell>
-                    <TableCell className="text-end">
-                      <div className="flex justify-end gap-1">
-                        {!t.archivedAt && canEdit && (
-                          <Button size="sm" variant="ghost" disabled={busy} onClick={() => setForm({
-                            id: t.id, tableNumber: t.tableNumber, displayName: t.displayName ?? "",
-                            area: t.area ?? "", seatsCount: t.seatsCount != null ? String(t.seatsCount) : "",
-                            sortOrder: String(t.sortOrder), isActive: t.isActive,
-                          })}>تعديل</Button>
-                        )}
-                        {!t.archivedAt && canArchive && (
-                          <Button size="sm" variant="ghost" disabled={busy}
-                            onClick={() => patch(t, { isActive: !t.isActive }, t.isActive ? "تم إيقاف الترابيزة" : "تم تفعيل الترابيزة")}>
-                            {t.isActive ? "إيقاف" : "تفعيل"}
-                          </Button>
-                        )}
-                        {canArchive && (
-                          <Button size="sm" variant="ghost" className={t.archivedAt ? "" : "text-destructive"} disabled={busy}
-                            onClick={() => patch(t, { archived: !t.archivedAt }, t.archivedAt ? "تم استرجاع الترابيزة" : "تم أرشفة الترابيزة")}>
-                            {t.archivedAt ? "استرجاع" : "أرشفة"}
-                          </Button>
-                        )}
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {filtered.map((t) => {
+                  const meta = VISUAL[visualOf(t, occupied.has(t.tableNumber))];
+                  return (
+                    <TableRow key={t.id} className={t.archivedAt ? "opacity-50" : ""}>
+                      <TableCell className="font-medium tabular-nums">{t.tableNumber}</TableCell>
+                      <TableCell>{t.displayName ?? "—"}</TableCell>
+                      <TableCell className="text-muted-foreground">{t.area ?? "—"}</TableCell>
+                      <TableCell className="text-center tabular-nums">{t.seatsCount ?? "—"}</TableCell>
+                      <TableCell><span className={cn("rounded-full px-2 py-0.5 text-xs font-medium", meta.badge)}>{meta.label}</span></TableCell>
+                      <TableCell className="text-center tabular-nums text-muted-foreground">{t.sortOrder}</TableCell>
+                      <TableCell className="text-end">
+                        <div className="flex justify-end gap-1">
+                          {!t.archivedAt && canEdit && (
+                            <Button size="sm" variant="ghost" disabled={busy} onClick={() => setForm(editForm(t))}>تعديل</Button>
+                          )}
+                          {!t.archivedAt && canArchive && (
+                            <Button size="sm" variant="ghost" disabled={busy}
+                              onClick={() => patch(t, { isActive: !t.isActive }, t.isActive ? "تم إيقاف الترابيزة" : "تم تفعيل الترابيزة")}>
+                              {t.isActive ? "إيقاف" : "تفعيل"}
+                            </Button>
+                          )}
+                          {canArchive && (
+                            <Button size="sm" variant="ghost" className={t.archivedAt ? "" : "text-destructive"} disabled={busy}
+                              onClick={() => patch(t, { archived: !t.archivedAt }, t.archivedAt ? "تم استرجاع الترابيزة" : "تم أرشفة الترابيزة")}>
+                              {t.archivedAt ? "استرجاع" : "أرشفة"}
+                            </Button>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           </div>

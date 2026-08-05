@@ -31,12 +31,13 @@ export async function GET(request: NextRequest) {
 
     // Occupied = active tables whose number has an OPEN session in the branch.
     let occupied = 0;
+    let openNums = new Set<string>();
     if (branchId) {
       const openSessions = await db.tableSession.findMany({
         where: { cafeId, branchId, status: "OPEN" },
         select: { tableNumber: true },
       });
-      const openNums = new Set(openSessions.map((s) => s.tableNumber));
+      openNums = new Set(openSessions.map((s) => s.tableNumber));
       occupied = tables.filter((t) => t.isActive && !t.archivedAt && openNums.has(t.tableNumber)).length;
     }
 
@@ -45,6 +46,7 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       summary: { total: tables.filter((t) => !t.archivedAt).length, active, inactive, occupied },
+      occupiedNumbers: [...openNums],
       tables: tables.map((t) => ({
         id: t.id,
         tableNumber: t.tableNumber,
