@@ -372,10 +372,10 @@ export default function PosPage() {
           onActiveChange={setShiftActive}
         />
       )}
-      <div className="flex flex-col gap-4 lg:flex-row">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
       {/* Main area: search, categories, product grid */}
-      <div className="flex min-w-0 flex-1 flex-col gap-3 lg:min-h-[calc(100vh-5.5rem)]">
-        <div className="flex flex-wrap items-center gap-2">
+      <div className="flex min-w-0 flex-1 flex-col gap-3 lg:h-[calc(100vh-5.5rem)] lg:overflow-hidden">
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
           <div className="relative min-w-48 flex-1">
             <span className="pointer-events-none absolute start-3 top-1/2 -translate-y-1/2 text-muted-foreground">
               🔍

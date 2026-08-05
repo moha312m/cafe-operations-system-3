@@ -76,15 +76,17 @@ export function OrderCart({
   const itemCount = cart.reduce((sum, line) => sum + line.quantity, 0);
 
   return (
-    <aside className="flex w-full shrink-0 flex-col rounded-xl border bg-card shadow-sm lg:sticky lg:top-4 lg:h-[calc(100vh-5.5rem)] lg:w-88 xl:w-96">
-      <div className="flex items-center justify-between border-b px-4 py-3">
+    <aside className="flex max-h-[calc(100vh-5.5rem)] w-full shrink-0 flex-col overflow-hidden rounded-xl border bg-card shadow-sm lg:sticky lg:top-4 lg:h-[calc(100vh-5.5rem)] lg:w-[24rem] xl:w-[26rem]">
+      {/* Header (fixed) */}
+      <div className="flex shrink-0 items-center justify-between border-b px-4 py-3">
         <h2 className="font-semibold">{t.pos.currentOrder}</h2>
         <Badge variant="secondary" className="tabular-nums">
           {itemCount} {t.pos.items}
         </Badge>
       </div>
 
-      <div className="flex flex-1 flex-col gap-3 overflow-hidden p-3">
+      {/* Scroll region: order type + table + customer + cart items */}
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
         <OrderTypeSelector
           type={orderType}
           details={details}
@@ -93,9 +95,9 @@ export function OrderCart({
           onDetailsChange={onDetailsChange}
         />
 
-        <div className="flex-1 space-y-2 overflow-y-auto">
+        <div className="space-y-2 border-t pt-3">
           {cart.length === 0 ? (
-            <div className="flex h-full min-h-32 flex-col items-center justify-center gap-2 text-center">
+            <div className="flex min-h-40 flex-col items-center justify-center gap-2 text-center">
               <span className="text-4xl">🛒</span>
               <p className="text-sm font-medium">{t.pos.cartEmpty}</p>
               <p className="max-w-48 text-xs text-muted-foreground">
@@ -115,7 +117,11 @@ export function OrderCart({
             ))
           )}
         </div>
+      </div>
 
+      {/* Pinned footer: totals + submit (always visible; scrolls only on very
+          short screens so the submit is never clipped). */}
+      <div className="max-h-[70%] shrink-0 overflow-y-auto border-t bg-card p-3">
         <PaymentSummary
           currency={currency}
           subtotal={subtotal}

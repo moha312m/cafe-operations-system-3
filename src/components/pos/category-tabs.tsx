@@ -42,7 +42,7 @@ export function CategoryTabs({
   );
 
   return (
-    <div className="flex gap-2 overflow-x-auto pb-1">
+    <div className="flex shrink-0 gap-2 overflow-x-auto pb-1">
       {tab("all", "الكل")}
       {categories.map((c) => tab(c.id, c.name, categoryIcon(c.name)))}
     </div>

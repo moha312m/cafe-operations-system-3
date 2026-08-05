@@ -85,7 +85,7 @@ export function PaymentSummary({
   const partialInvalid = partial && (paid <= 0 || paid > total + 0.001);
 
   return (
-    <div className="space-y-3 border-t pt-3">
+    <div className="space-y-3">
       {/* Collection mode selector */}
       <div className="space-y-1.5">
         <p className="text-xs font-medium text-muted-foreground">{t.collection.title}</p>
