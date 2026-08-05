@@ -53,7 +53,8 @@ const NAV: NavItem[] = [
   { href: "/current-shift", label: t.nav.currentShift, icon: "🧑‍💼", permission: "shifts:operate", feature: (f) => f.shiftManagementEnabled },
   { href: "/kitchen", label: t.nav.kitchen, icon: "☕", permission: "orders:update-status", feature: (f) => f.kitchenScreenEnabled },
   { href: "/tables", label: "الترابيزات", icon: "🍽️", permission: "orders:create", key: "tables.view", feature: (f) => f.enableTables },
-  { href: "/tables/setup", label: "إعداد الترابيزات", icon: "🪑", permission: "branches:manage", key: "tables.manage", feature: (f) => f.enableTables },
+  // Table setup is no longer a prominent daily page — it's reached from a
+  // small "إدارة أرقام الترابيزات" button on /tables (owner/manager only).
   { href: "/orders", label: t.nav.orders, icon: "🔔", permission: "orders:read" },
   // Approvals shows when waiter approval is on OR QR orders route to a waiter.
   { href: "/approvals", label: t.nav.approvals, icon: "📱", permission: "orders:approve", key: "qr_orders.view", feature: (f) => f.qrMenuEnabled },

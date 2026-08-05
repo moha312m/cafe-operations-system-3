@@ -1,11 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { toast } from "sonner";
 import { api, money } from "@/lib/client";
 import { t, formatTime } from "@/lib/i18n";
 import { useApp } from "@/components/app-shell";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -298,6 +299,11 @@ export default function TablesPage() {
                 {branches.map((b) => <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>)}
               </SelectContent>
             </Select>
+          )}
+          {canManage && (
+            <Link href="/tables/setup" className={buttonVariants({ size: "sm", variant: "outline" })}>
+              إدارة أرقام الترابيزات
+            </Link>
           )}
           <Button size="sm" variant="outline" onClick={load}>↻ {t.dashboard.refresh}</Button>
         </div>

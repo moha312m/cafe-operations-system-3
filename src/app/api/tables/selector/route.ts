@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { requireKey, resolveCafeId, handleApiError, ApiError, requireFeature } from "@/lib/api";
 import { getCafeSettings } from "@/lib/cafe-settings";
 import { sessionDisplayStatus } from "@/lib/table-sessions";
+import { ensureDefaultTables } from "@/lib/table-setup";
 
 // GET /api/tables/selector?branchId= — active configured tables for a branch,
 // each annotated with its live open-session state. Powers the POS visual
@@ -15,6 +16,10 @@ export async function GET(request: NextRequest) {
     const cafeId = resolveCafeId(session, params.get("cafeId"));
     const branchId = session.branchId ?? params.get("branchId") ?? undefined;
     if (!branchId) throw new ApiError(400, "اختار الفرع الأول");
+
+    // First-use fallback: a branch that never opened table setup still gets
+    // a usable set of tables (1..15) so the cashier can pick one right away.
+    const autoCreated = await ensureDefaultTables(cafeId, branchId);
 
     const [tables, openSessions, settings] = await Promise.all([
       db.cafeTable.findMany({
@@ -32,6 +37,7 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       allowCustomTables: settings.allowCustomTables,
+      autoCreated: autoCreated > 0,
       tables: tables.map((t) => {
         const s = sessionByNumber.get(t.tableNumber);
         return {

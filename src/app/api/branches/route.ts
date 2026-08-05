@@ -49,6 +49,10 @@ export async function POST(request: NextRequest) {
       },
     });
 
+    // New branches start with default tables 1..15 so POS works immediately.
+    const { ensureDefaultTables } = await import("@/lib/table-setup");
+    await ensureDefaultTables(cafeId, branch.id);
+
     await audit({
       cafeId,
       userId: session.id,
