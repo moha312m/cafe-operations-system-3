@@ -16,6 +16,7 @@ export function OrderCart({
   orderType,
   details,
   branchId,
+  tableReloadKey,
   subtotal,
   discountInput,
   discountAmount,
@@ -47,6 +48,7 @@ export function OrderCart({
   orderType: OrderType;
   details: CustomerDetails;
   branchId?: string;
+  tableReloadKey?: number;
   subtotal: number;
   discountInput: string;
   discountAmount: number;
@@ -91,6 +93,7 @@ export function OrderCart({
           type={orderType}
           details={details}
           branchId={branchId}
+          tableReloadKey={tableReloadKey}
           onTypeChange={onTypeChange}
           onDetailsChange={onDetailsChange}
         />

@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { t } from "@/lib/i18n";
 import { api } from "@/lib/client";
+import { TableInvoices } from "./table-invoices";
 import type { OrderType } from "./types";
 
 const TYPES: { value: OrderType; label: string; icon: string }[] = [
@@ -56,12 +57,14 @@ export function OrderTypeSelector({
   type,
   details,
   branchId,
+  tableReloadKey = 0,
   onTypeChange,
   onDetailsChange,
 }: {
   type: OrderType;
   details: CustomerDetails;
   branchId?: string;
+  tableReloadKey?: number;
   onTypeChange: (type: OrderType) => void;
   onDetailsChange: (details: CustomerDetails) => void;
 }) {
@@ -71,6 +74,8 @@ export function OrderTypeSelector({
   const [tables, setTables] = useState<SelectorTable[] | null>(null);
   const [allowCustom, setAllowCustom] = useState(false);
   const [manual, setManual] = useState(false);
+  // Bumped after an in-place invoice change (payment/close) to refetch the grid.
+  const [localReload, setLocalReload] = useState(0);
 
   useEffect(() => {
     if (type !== "DINE_IN" || !branchId) return;
@@ -79,7 +84,7 @@ export function OrderTypeSelector({
       .then((r) => { if (!stale) { setTables(r.tables); setAllowCustom(r.allowCustomTables); } })
       .catch(() => { if (!stale) { setTables([]); setAllowCustom(true); } });
     return () => { stale = true; };
-  }, [type, branchId]);
+  }, [type, branchId, tableReloadKey, localReload]);
 
   const selected = details.tableNumber.trim();
   const selectedTbl = tables?.find((x) => x.tableNumber === selected) ?? null;
@@ -178,6 +183,16 @@ export function OrderTypeSelector({
               سيتم فتح حساب جديد على الترابيزة رقم {selected}
             </p>
           ) : null}
+
+          {/* فواتير الترابيزة — collapsible invoice cards for the selected table. */}
+          {selected && branchId && (
+            <TableInvoices
+              branchId={branchId}
+              tableNumber={selected}
+              reloadKey={tableReloadKey + localReload}
+              onChanged={() => setLocalReload((k) => k + 1)}
+            />
+          )}
         </div>
       )}
 

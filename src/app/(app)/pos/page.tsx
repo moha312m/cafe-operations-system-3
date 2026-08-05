@@ -86,6 +86,8 @@ export default function PosPage() {
   const [paidInput, setPaidInput] = useState("");
   const [finSettings, setFinSettings] = useState<ChargeSettings | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Bumped after a dine-in order is placed so the table invoice cards refetch.
+  const [tableReload, setTableReload] = useState(0);
 
   // ── Shift gate (cashiers must have an open shift) ────────────
   const [shiftActive, setShiftActive] = useState(false);
@@ -338,23 +340,31 @@ export default function PosPage() {
         },
       });
 
+      const isDineIn = orderType === "DINE_IN";
       const collectedMsg =
         collectionMode === "NOW"
           ? ` · اتحصّل ${money(order.total, currency)}`
           : collectionMode === "PARTIAL"
             ? ` · ${t.collection.partial}`
             : ` · ${t.collection.pending}`;
-      toast.success(`طلب رقم ${order.orderNumber} اتسجل${collectedMsg}`, {
-        action: { label: "عرض الطلب", onClick: () => router.push("/orders") },
-        duration: 5000,
-      });
+      toast.success(
+        isDineIn
+          ? `تم إضافة الفاتورة على الترابيزة${collectedMsg}`
+          : `طلب رقم ${order.orderNumber} اتسجل${collectedMsg}`,
+        {
+          action: { label: "عرض الطلب", onClick: () => router.push("/orders") },
+          duration: 5000,
+        }
+      );
 
-      // Reset for the next customer; keep order type & collection settings.
+      // Reset the cart for the next order. For dine-in keep the table selected
+      // so the newly-added invoice appears in "فواتير الترابيزة" cards.
       setCart([]);
-      setDetails(EMPTY_DETAILS);
+      setDetails(isDineIn ? { ...EMPTY_DETAILS, tableNumber: details.tableNumber } : EMPTY_DETAILS);
       setDiscountInput("");
       setMixed(EMPTY_MIXED);
       setPaidInput("");
+      if (isDineIn) setTableReload((k) => k + 1);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "فشل تسجيل الطلب");
     } finally {
@@ -426,6 +436,7 @@ export default function PosPage() {
         orderType={orderType}
         details={details}
         branchId={branchId || undefined}
+        tableReloadKey={tableReload}
         subtotal={subtotal}
         discountInput={discountInput}
         discountAmount={discountAmount}
