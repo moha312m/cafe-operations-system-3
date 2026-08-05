@@ -37,6 +37,7 @@ const patchSchema = z.object({
   allowCashierToPrepareOrders: boolSchema.optional(),
   allowCashierToServeOrders: boolSchema.optional(),
   enableTables: boolSchema.optional(),
+  allowCustomTables: boolSchema.optional(),
 });
 
 export async function PATCH(request: NextRequest, { params }: Params) {

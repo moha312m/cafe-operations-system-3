@@ -174,7 +174,11 @@ export const PERMISSION_KEYS: PermKey[] = [
 
   // Tables
   { key: "tables.view", module: "TABLES", label: "عرض الترابيزات" },
-  { key: "tables.manage", module: "TABLES", label: "إدارة الترابيزات", sensitive: true },
+  { key: "tables.manage", module: "TABLES", label: "إدارة إعداد الترابيزات", sensitive: true },
+  { key: "tables.create", module: "TABLES", label: "إضافة ترابيزة" },
+  { key: "tables.edit", module: "TABLES", label: "تعديل ترابيزة" },
+  { key: "tables.archive", module: "TABLES", label: "أرشفة/إيقاف ترابيزة", sensitive: true },
+  { key: "tables.bulk_create", module: "TABLES", label: "إنشاء ترابيزات دفعة واحدة" },
   { key: "tables.open", module: "TABLES", label: "فتح ترابيزة (أول طلب)" },
   { key: "tables.close", module: "TABLES", label: "قفل الترابيزة" },
   { key: "tables.collect_payment", module: "TABLES", label: "تحصيل حساب الترابيزة", sensitive: true },
@@ -218,7 +222,11 @@ export function keysForModule(code: ModuleCode): PermKey[] {
 export const LEGACY_TO_KEYS: Record<string, string[]> = {
   "platform:manage": ["platform.manage"],
   "cafe:manage": ["settings.view", "settings.edit"],
-  "branches:manage": ["branches.view", "branches.manage", "tables.manage", "tables.transfer", "tables.merge"],
+  "branches:manage": [
+    "branches.view", "branches.manage",
+    "tables.manage", "tables.create", "tables.edit", "tables.archive", "tables.bulk_create",
+    "tables.transfer", "tables.merge",
+  ],
   "users:manage": [
     "users.view", "users.create", "users.edit",
     "users.reset_password", "users.deactivate", "users.manage_permissions",

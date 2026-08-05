@@ -42,6 +42,7 @@ export const WORKFLOW_SWITCHES = [
   "allowCashierToPrepareOrders",
   "allowCashierToServeOrders",
   "enableTables",
+  "allowCustomTables",
 ] as const;
 
 export type WorkflowSwitch = (typeof WORKFLOW_SWITCHES)[number];
@@ -51,6 +52,7 @@ export const SWITCH_LABELS: Record<WorkflowSwitch, string> = {
   allowCashierToPrepareOrders: "السماح للكاشير بتحضير الطلبات",
   allowCashierToServeOrders: "السماح للكاشير بتسليم الطلبات",
   enableTables: "تفعيل الترابيزات",
+  allowCustomTables: "السماح بكتابة رقم ترابيزة يدوي",
 };
 
 export const WORKFLOW_MODE_LABELS: Record<CafeWorkflowMode, string> = {
@@ -94,6 +96,7 @@ export function toFeatureMap(s: CafeSettings): CafeFeatures {
     allowCashierToPrepareOrders: s.allowCashierToPrepareOrders,
     allowCashierToServeOrders: s.allowCashierToServeOrders,
     enableTables: s.enableTables,
+    allowCustomTables: s.allowCustomTables,
     workflowMode: s.workflowMode,
     qrOrderRoutingMode: s.qrOrderRoutingMode,
   };

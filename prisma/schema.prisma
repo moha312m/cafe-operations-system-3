@@ -171,6 +171,7 @@ model Cafe {
   tableSessions  TableSession[]
   suppliers        Supplier[]
   purchaseInvoices PurchaseInvoice[]
+  tables           CafeTable[]
 }
 
 // Per-cafe module flags + workflow, controlled ONLY by SUPER_ADMIN.
@@ -202,6 +203,9 @@ model CafeSettings {
   allowCashierToPrepareOrders Boolean @default(false)
   allowCashierToServeOrders   Boolean @default(false)
   enableTables                Boolean @default(true)
+  // Allow staff to type a free table number in POS (vs. only picking a
+  // configured CafeTable). Default true keeps existing behaviour.
+  allowCustomTables           Boolean @default(true)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -234,6 +238,7 @@ model Branch {
   financialSettings BranchFinancialSettings?
   tableSessions  TableSession[]
   purchaseInvoices PurchaseInvoice[]
+  tables         CafeTable[]
 
   @@unique([cafeId, menuSlug])
   @@index([cafeId])
@@ -271,6 +276,34 @@ model TableSession {
   @@index([tableNumber])
   @@index([status])
   @@index([startedAt])
+}
+
+// إعداد الترابيزات — the branch's configured tables (distinct from the live
+// TableSession). Drives the POS table selector and QR links. A session may
+// outlive its table config (archived tables keep their session history).
+model CafeTable {
+  id          String    @id @default(cuid())
+  cafeId      String
+  branchId    String
+  tableNumber String
+  displayName String?
+  area        String? // المنطقة (داخلي، تراس…)
+  seatsCount  Int?
+  isActive    Boolean   @default(true)
+  sortOrder   Int       @default(0)
+  archivedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  cafe   Cafe   @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([branchId, tableNumber])
+  @@index([cafeId])
+  @@index([branchId])
+  @@index([tableNumber])
+  @@index([isActive])
+  @@index([sortOrder])
 }
 
 // Item-level payment tracking: one guest pays for their own items and

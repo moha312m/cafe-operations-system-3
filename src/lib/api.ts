@@ -8,6 +8,7 @@ import {
   getCafeSettings,
   FEATURE_DISABLED_MESSAGE,
   type FeatureFlag,
+  type WorkflowSwitch,
 } from "@/lib/cafe-settings";
 
 export class ApiError extends Error {
@@ -100,7 +101,7 @@ export function resolveBranchId(
 // requirePermission so role checks run first.
 export async function requireFeature(
   session: SessionUser,
-  feature: FeatureFlag
+  feature: FeatureFlag | WorkflowSwitch
 ): Promise<void> {
   if (session.role === "SUPER_ADMIN") return;
   if (!session.cafeId) throw new ApiError(403, "الحساب مش مرتبط بكافيه");

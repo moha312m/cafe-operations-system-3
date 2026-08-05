@@ -1,11 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import Link from "next/link";
 import QRCode from "qrcode";
 import { toast } from "sonner";
+import { api } from "@/lib/client";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import {
   Table,
   TableBody,
@@ -27,7 +27,9 @@ export function publicMenuUrl(
   return table !== undefined ? `${base}?table=${table}` : base;
 }
 
-// روابط QR للترابيزات — per-table links with copy / open / QR download.
+type ConfTable = { id: string; tableNumber: string };
+
+// روابط QR للترابيزات — per-table links from the branch's configured tables.
 export function TableQrLinks({
   cafeSlug,
   branch,
@@ -35,12 +37,18 @@ export function TableQrLinks({
   cafeSlug: string;
   branch: { id: string; name: string; menuSlug: string | null };
 }) {
-  const [tableCount, setTableCount] = useState(10);
-  const [qrPreview, setQrPreview] = useState<{ table: number; dataUrl: string } | null>(
-    null
-  );
+  const [tables, setTables] = useState<ConfTable[] | null>(null);
+  const [qrPreview, setQrPreview] = useState<{ table: string; dataUrl: string } | null>(null);
 
-  async function copyLink(table: number) {
+  useEffect(() => {
+    let stale = false;
+    api<{ tables: ConfTable[] }>(`/api/tables/selector?branchId=${branch.id}`)
+      .then((r) => { if (!stale) setTables(r.tables); })
+      .catch(() => { if (!stale) setTables([]); });
+    return () => { stale = true; };
+  }, [branch.id]);
+
+  async function copyLink(table: string) {
     const url = publicMenuUrl(cafeSlug, branch, table);
     try {
       await navigator.clipboard.writeText(url);
@@ -50,14 +58,10 @@ export function TableQrLinks({
     }
   }
 
-  async function downloadQr(table: number) {
+  async function downloadQr(table: string) {
     try {
       const url = publicMenuUrl(cafeSlug, branch, table);
-      const dataUrl = await QRCode.toDataURL(url, {
-        width: 512,
-        margin: 2,
-        errorCorrectionLevel: "M",
-      });
+      const dataUrl = await QRCode.toDataURL(url, { width: 512, margin: 2, errorCorrectionLevel: "M" });
       const a = document.createElement("a");
       a.href = dataUrl;
       a.download = `qr-${branch.menuSlug ?? branch.id}-table-${table}.png`;
@@ -68,26 +72,26 @@ export function TableQrLinks({
     }
   }
 
-  const tables = Array.from({ length: Math.max(1, Math.min(tableCount, 100)) }, (_, i) => i + 1);
+  if (tables === null) {
+    return <p className="text-sm text-muted-foreground">جاري التحميل…</p>;
+  }
+
+  if (tables.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed p-4 text-center">
+        <p className="text-sm text-muted-foreground">لم يتم إنشاء ترابيزات لهذا الفرع بعد</p>
+        <Link href="/tables/setup" className="mt-2 inline-block text-sm font-semibold text-primary underline">
+          إنشاء ترابيزات الآن
+        </Link>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-3">
-      <div className="flex items-end gap-2">
-        <div className="space-y-1">
-          <Label className="text-xs">عدد الترابيزات</Label>
-          <Input
-            type="number"
-            min="1"
-            max="100"
-            className="w-24"
-            value={tableCount}
-            onChange={(e) => setTableCount(Number(e.target.value) || 1)}
-          />
-        </div>
-        <p className="pb-2 text-xs text-muted-foreground">
-          امسح أي كود بموبايلك وهتفتح منيو {branch.name} بالترابيزة المحددة.
-        </p>
-      </div>
+      <p className="text-xs text-muted-foreground">
+        امسح أي كود بموبايلك وهتفتح منيو {branch.name} بالترابيزة المحددة. (الترابيزات المفعّلة فقط)
+      </p>
 
       <div className="max-h-72 overflow-y-auto rounded-md border">
         <Table>
@@ -98,27 +102,13 @@ export function TableQrLinks({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {tables.map((table) => (
-              <TableRow key={table}>
-                <TableCell className="font-medium tabular-nums">
-                  ترابيزة {table}
-                </TableCell>
+            {tables.map((tbl) => (
+              <TableRow key={tbl.id}>
+                <TableCell className="font-medium tabular-nums">ترابيزة {tbl.tableNumber}</TableCell>
                 <TableCell className="text-end [&>button]:ms-1">
-                  <Button size="sm" variant="outline" onClick={() => copyLink(table)}>
-                    نسخ الرابط
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() =>
-                      window.open(publicMenuUrl(cafeSlug, branch, table), "_blank")
-                    }
-                  >
-                    فتح المنيو
-                  </Button>
-                  <Button size="sm" onClick={() => downloadQr(table)}>
-                    تحميل QR
-                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => copyLink(tbl.tableNumber)}>نسخ الرابط</Button>
+                  <Button size="sm" variant="outline" onClick={() => window.open(publicMenuUrl(cafeSlug, branch, tbl.tableNumber), "_blank")}>فتح المنيو</Button>
+                  <Button size="sm" onClick={() => downloadQr(tbl.tableNumber)}>تحميل QR</Button>
                 </TableCell>
               </TableRow>
             ))}
@@ -129,14 +119,9 @@ export function TableQrLinks({
       {qrPreview && (
         <div className="flex items-center gap-3 rounded-md border p-3">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={qrPreview.dataUrl}
-            alt={`QR ترابيزة ${qrPreview.table}`}
-            className="size-24 rounded-md border"
-          />
+          <img src={qrPreview.dataUrl} alt={`QR ترابيزة ${qrPreview.table}`} className="size-24 rounded-md border" />
           <p className="text-sm text-muted-foreground">
-            ده كود ترابيزة {qrPreview.table} — اتحمّل كصورة PNG، اطبعه وحطه على
-            الترابيزة.
+            ده كود ترابيزة {qrPreview.table} — اتحمّل كصورة PNG، اطبعه وحطه على الترابيزة.
           </p>
         </div>
       )}

@@ -102,6 +102,7 @@ export default function TablesPage() {
 
   const [sessions, setSessions] = useState<SessionCard[] | null>(null);
   const [closedToday, setClosedToday] = useState<ClosedCard[]>([]);
+  const [available, setAvailable] = useState<{ id: string; tableNumber: string; area: string | null; seatsCount: number | null }[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [branchId, setBranchId] = useState("ALL");
   const [filter, setFilter] = useState<"ALL" | DisplayStatus>("ALL");
@@ -129,6 +130,19 @@ export default function TablesPage() {
       );
       setSessions(data.sessions);
       setClosedToday(data.closedToday);
+
+      // Configured tables without an open session → "available" cards.
+      // Requires a specific branch (the selector is branch-scoped).
+      if (branchId !== "ALL") {
+        try {
+          const sel = await api<{ tables: { id: string; tableNumber: string; area: string | null; seatsCount: number | null; session: unknown }[] }>(
+            `/api/tables/selector?branchId=${branchId}`
+          );
+          setAvailable(sel.tables.filter((t) => !t.session).map((t) => ({ id: t.id, tableNumber: t.tableNumber, area: t.area, seatsCount: t.seatsCount })));
+        } catch { setAvailable([]); }
+      } else {
+        setAvailable([]);
+      }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "فشل تحميل الترابيزات");
     }
@@ -301,34 +315,57 @@ export default function TablesPage() {
 
       {sessions === null ? (
         <LoadingState />
-      ) : filtered.length === 0 ? (
-        <EmptyState message="لا توجد ترابيزات مفتوحة حاليًا" icon="🍽️" />
+      ) : filtered.length === 0 && available.length === 0 ? (
+        <EmptyState
+          message={branchId === "ALL" ? "لا توجد ترابيزات مفتوحة حاليًا" : "لا توجد ترابيزات مضافة لهذا الفرع"}
+          icon="🍽️"
+        />
       ) : (
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {filtered.map((s) => {
-            const meta = STATUS_META[s.displayStatus];
-            return (
-              <button key={s.id} onClick={() => openDetail(s.id)}
-                className={`rounded-2xl border-2 bg-card p-4 text-start shadow-sm transition-shadow hover:shadow-md ${meta.card}`}>
-                <div className="flex items-start justify-between gap-2">
-                  <span className="font-heading text-xl font-bold text-foreground">🍽️ ترابيزة {s.tableNumber}</span>
-                  <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${meta.cls}`}>{meta.label}</span>
-                </div>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {s.branch}{s.customerName ? ` · ${s.customerName}` : ""}
-                </p>
-                <p className="mt-2 text-xs text-muted-foreground">⏱ <Duration since={s.startedAt} /></p>
-                <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs">
-                  <div><p className="text-muted-foreground">الإجمالي</p><p className="mt-0.5 font-bold tabular-nums text-foreground">{fmt(s.totalAmount)}</p></div>
-                  <div><p className="text-muted-foreground">المدفوع</p><p className="mt-0.5 font-bold tabular-nums text-emerald-600 dark:text-emerald-400">{fmt(s.paidAmount)}</p></div>
-                  <div><p className="text-muted-foreground">المتبقي</p><p className="mt-0.5 font-bold tabular-nums text-amber-600 dark:text-amber-400">{fmt(s.remainingAmount)}</p></div>
-                </div>
-                <p className="mt-2 text-xs text-muted-foreground">
-                  {s.orderCount} طلب{s.lastOrderAt ? ` · آخر طلب ${formatTime(s.lastOrderAt)}` : ""}
-                </p>
-              </button>
-            );
-          })}
+        <div className="space-y-5">
+          {filtered.length > 0 && (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+              {filtered.map((s) => {
+                const meta = STATUS_META[s.displayStatus];
+                return (
+                  <button key={s.id} onClick={() => openDetail(s.id)}
+                    className={`rounded-2xl border-2 bg-card p-4 text-start shadow-sm transition-shadow hover:shadow-md ${meta.card}`}>
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="font-heading text-xl font-bold text-foreground">🍽️ ترابيزة {s.tableNumber}</span>
+                      <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${meta.cls}`}>{meta.label}</span>
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {s.branch}{s.customerName ? ` · ${s.customerName}` : ""}
+                    </p>
+                    <p className="mt-2 text-xs text-muted-foreground">⏱ <Duration since={s.startedAt} /></p>
+                    <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs">
+                      <div><p className="text-muted-foreground">الإجمالي</p><p className="mt-0.5 font-bold tabular-nums text-foreground">{fmt(s.totalAmount)}</p></div>
+                      <div><p className="text-muted-foreground">المدفوع</p><p className="mt-0.5 font-bold tabular-nums text-emerald-600 dark:text-emerald-400">{fmt(s.paidAmount)}</p></div>
+                      <div><p className="text-muted-foreground">المتبقي</p><p className="mt-0.5 font-bold tabular-nums text-amber-600 dark:text-amber-400">{fmt(s.remainingAmount)}</p></div>
+                    </div>
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      {s.orderCount} طلب{s.lastOrderAt ? ` · آخر طلب ${formatTime(s.lastOrderAt)}` : ""}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Available configured tables (no open session) */}
+          {available.length > 0 && (filter === "ALL") && (
+            <div>
+              <p className="mb-2 text-sm font-medium text-muted-foreground">الترابيزات المتاحة ({available.length})</p>
+              <div className="grid grid-cols-3 gap-2 sm:grid-cols-5 lg:grid-cols-8">
+                {available.map((tbl) => (
+                  <div key={tbl.id} className="flex flex-col items-center gap-0.5 rounded-xl border border-dashed border-border bg-card px-2 py-3 text-center">
+                    <span className="font-heading text-lg font-bold text-foreground">{tbl.tableNumber}</span>
+                    <span className="rounded-full bg-emerald-500/12 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:text-emerald-400">متاحة</span>
+                    {tbl.area && <span className="text-[10px] text-muted-foreground">{tbl.area}</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
