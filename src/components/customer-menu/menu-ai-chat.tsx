@@ -89,17 +89,22 @@ export function MenuAIChat({
 
   return (
     <>
-      {/* Floating trigger */}
+      {/* Floating trigger — sits above the bottom cart bar (raised) and the
+          iPhone home indicator (safe-area inset). */}
       <button
         onClick={() => setOpen(true)}
-        className={`fixed start-4 z-30 flex items-center gap-2 rounded-full bg-emerald-600 px-4 py-3 text-sm font-semibold text-white shadow-lg transition-all active:scale-95 ${raised ? "bottom-24" : "bottom-4"}`}
+        className={`fixed start-4 z-30 flex min-h-11 items-center gap-2 rounded-full bg-emerald-600 px-4 py-3 text-sm font-semibold text-white shadow-lg transition-all active:scale-95 ${
+          raised
+            ? "bottom-[calc(6.5rem_+_env(safe-area-inset-bottom))]"
+            : "bottom-[calc(1rem_+_env(safe-area-inset-bottom))]"
+        }`}
       >
         <span className="text-base">✨</span>
         اسأل المساعد
       </button>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="flex h-[85vh] max-h-[85vh] w-full max-w-lg flex-col gap-0 overflow-hidden p-0">
+        <DialogContent className="inset-x-0 bottom-0 top-auto mx-auto flex h-[88dvh] max-h-[88dvh] w-full max-w-full translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-b-none rounded-t-2xl p-0 sm:max-w-lg data-open:slide-in-from-bottom-8 data-closed:slide-out-to-bottom-8">
           <DialogHeader className="border-b px-4 py-3">
             <DialogTitle className="flex items-center gap-2 text-base">
               <span>✨</span> مساعد المنيو
@@ -182,15 +187,16 @@ export function MenuAIChat({
               e.preventDefault();
               send(input);
             }}
-            className="flex items-center gap-2 border-t p-3"
+            className="flex items-center gap-2 border-t p-3 pb-[calc(0.75rem_+_env(safe-area-inset-bottom))]"
           >
             <Input
+              className="h-11"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               placeholder="اكتب طلبك… مثلاً: عايز حاجة ساقعة"
               disabled={loading}
             />
-            <Button type="submit" disabled={loading || !input.trim()}>
+            <Button type="submit" className="h-11" disabled={loading || !input.trim()}>
               إرسال
             </Button>
           </form>

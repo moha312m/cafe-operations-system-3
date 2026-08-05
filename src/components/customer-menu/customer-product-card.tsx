@@ -36,6 +36,10 @@ export function CustomerProductCard({
           <img
             src={product.imageUrl}
             alt={product.name}
+            width={64}
+            height={64}
+            loading="lazy"
+            decoding="async"
             className="size-full object-cover"
           />
         ) : (
@@ -62,13 +66,13 @@ export function CustomerProductCard({
       </div>
       <span
         className={cn(
-          "shrink-0 rounded-full px-3 py-1.5 text-xs font-semibold",
+          "flex min-h-9 shrink-0 items-center rounded-full px-3.5 text-xs font-semibold",
           unavailable
             ? "bg-muted text-muted-foreground"
             : "bg-primary text-primary-foreground"
         )}
       >
-        {unavailable ? "غير متاح" : "أضف للطلب"}
+        {unavailable ? "غير متاح" : "إضافة +"}
       </span>
     </button>
   );

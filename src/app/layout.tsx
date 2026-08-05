@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Cairo } from "next/font/google";
 import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
@@ -11,6 +11,14 @@ const cairo = Cairo({
 export const metadata: Metadata = {
   title: "كافيه أوبس — إدارة الكافيهات",
   description: "منصة إدارة الكافيهات والمطاعم متعددة الفروع",
+};
+
+// viewportFit cover lets fixed bottom bars extend into the iPhone home
+// indicator area (padded back with env(safe-area-inset-bottom)).
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
 };
 
 export default function RootLayout({

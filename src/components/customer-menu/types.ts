@@ -15,6 +15,8 @@ export type MenuProduct = {
   addOns: { addOn: MenuAddOn }[];
 };
 
+import type { ChargeSettings, ChargeOrderType } from "@/lib/charges";
+
 export type MenuData = {
   cafe: { name: string; currency: string; taxRate: number };
   branch: { id: string; name: string };
@@ -22,6 +24,10 @@ export type MenuData = {
   products: MenuProduct[];
   // Per-cafe feature flags that shape the customer experience.
   features: { aiAssistant: boolean; enableTables: boolean };
+  // Branch tax/service settings (plain numbers) + the order type QR orders
+  // get server-side — so the client total matches the server exactly.
+  charges: ChargeSettings & { taxRate: number; serviceChargeRate: number; serviceChargeFixedAmount: number };
+  orderType: ChargeOrderType;
 };
 
 export type CustomerCartLine = {

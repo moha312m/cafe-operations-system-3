@@ -3,6 +3,7 @@ import type { Branch, Cafe } from "@prisma/client";
 import type { MenuData } from "@/components/customer-menu/types";
 import { branchShift, round2 } from "@/lib/pricing";
 import { getCafeSettings } from "@/lib/cafe-settings";
+import { getBranchFinancialSettings } from "@/lib/financials";
 
 export type CustomerMenuResult =
   | { status: "ok"; menu: MenuData }
@@ -29,7 +30,7 @@ export async function loadCustomerMenu(
   const settings = await getCafeSettings(branch.cafeId);
   if (!settings.qrMenuEnabled) return { status: "qr-disabled" };
 
-  const [categories, products] = await Promise.all([
+  const [categories, products, finSettings] = await Promise.all([
     db.menuCategory.findMany({
       where: {
         cafeId: branch.cafeId,
@@ -70,6 +71,7 @@ export async function loadCustomerMenu(
         },
       },
     }),
+    getBranchFinancialSettings(branch.id),
   ]);
 
   return {
@@ -85,6 +87,22 @@ export async function loadCustomerMenu(
         aiAssistant: settings.aiAssistantEnabled,
         enableTables: settings.enableTables,
       },
+      // Same settings + order type the QR order route uses, so the totals the
+      // customer sees (service + tax) match the server-computed order exactly.
+      charges: {
+        taxEnabled: finSettings.taxEnabled,
+        taxRate: Number(finSettings.taxRate),
+        applyTaxTo: finSettings.applyTaxTo,
+        serviceChargeEnabled: finSettings.serviceChargeEnabled,
+        serviceChargeType: finSettings.serviceChargeType,
+        serviceChargeRate: Number(finSettings.serviceChargeRate),
+        serviceChargeFixedAmount: Number(finSettings.serviceChargeFixedAmount),
+        applyServiceTo: finSettings.applyServiceTo,
+      },
+      orderType:
+        settings.workflowMode === "TAKEAWAY_ONLY" || !settings.enableTables
+          ? "TAKEAWAY"
+          : "DINE_IN",
       categories,
       products: products.map((p) => {
         const priceable = {
@@ -125,7 +143,7 @@ export function MenuUnavailable({
   const notFound = reason === "not-found";
   const title =
     reason === "qr-disabled"
-      ? "منيو QR غير متاح لهذا الكافيه حاليًا"
+      ? "منيو QR غير متاح حاليًا"
       : notFound
         ? "الرابط ده مش صحيح"
         : "المنيو غير متاح حاليًا";

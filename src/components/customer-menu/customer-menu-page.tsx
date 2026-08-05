@@ -2,13 +2,13 @@
 
 import { useMemo, useState } from "react";
 import { money } from "@/lib/client";
+import { computeCharges } from "@/lib/charges";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -30,7 +30,14 @@ import {
   type MenuVariant,
 } from "./types";
 
-type PlacedOrder = { orderNumber: number; total: string };
+type PlacedOrder = { orderNumber: number; total: string; status?: string };
+
+// Bottom-sheet styling shared by the cart and the product-config dialogs.
+// Overrides the centered dialog into a mobile sheet pinned to the bottom.
+const SHEET =
+  "inset-x-0 bottom-0 top-auto mx-auto w-full max-w-full translate-x-0 translate-y-0 rounded-b-none rounded-t-2xl sm:max-w-lg " +
+  "flex max-h-[92dvh] flex-col gap-0 overflow-hidden p-0 " +
+  "data-open:slide-in-from-bottom-8 data-closed:slide-out-to-bottom-8";
 
 // The whole customer-facing menu experience. Receives the menu data
 // from the server component (fresh on every request, so manager edits
@@ -43,7 +50,6 @@ export function CustomerMenuPage({
   initialTable: string | null;
 }) {
   const currency = menu.cafe.currency;
-  const taxRate = menu.cafe.taxRate;
 
   const [activeCategory, setActiveCategory] = useState("all");
   const [cart, setCart] = useState<CustomerCartLine[]>([]);
@@ -73,8 +79,20 @@ export function CustomerMenuPage({
   );
 
   const subtotal = cart.reduce((s, l) => s + l.unitPrice * l.quantity, 0);
-  const total = Math.round(subtotal * (1 + taxRate / 100) * 100) / 100;
   const itemCount = cart.reduce((s, l) => s + l.quantity, 0);
+  // Same pure engine + settings the server uses when creating the order, so
+  // the customer sees the exact total (service + tax included) up front.
+  const charges = useMemo(
+    () =>
+      computeCharges({
+        subtotal,
+        discount: 0,
+        orderType: menu.orderType,
+        settings: menu.charges,
+      }),
+    [subtotal, menu.orderType, menu.charges]
+  );
+  const total = charges.total;
 
   function addToCart(
     product: MenuProduct,
@@ -136,6 +154,15 @@ export function CustomerMenuPage({
   }
 
   async function submitOrder() {
+    if (submitting) return; // hard double-submit guard
+    if (cart.length === 0) {
+      setError("من فضلك أضف صنف واحد على الأقل");
+      return;
+    }
+    if (details.customerName.trim().length < 2) {
+      setError("من فضلك اكتب اسمك");
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {
@@ -161,7 +188,7 @@ export function CustomerMenuPage({
       setPlaced(data.order);
       setCartOpen(false);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "فشل إرسال الطلب");
+      setError(e instanceof Error ? e.message : "فشل إرسال الطلب — جرب تاني");
     } finally {
       setSubmitting(false);
     }
@@ -169,20 +196,22 @@ export function CustomerMenuPage({
 
   // ── Success screen ────────────────────────────────────────────
   if (placed) {
+    const pending = placed.status === "PENDING_WAITER_APPROVAL";
     return (
-      <main className="flex min-h-screen items-center justify-center bg-muted/40 p-6">
+      <main className="flex min-h-dvh items-center justify-center bg-muted/40 p-6">
         <div className="w-full max-w-sm space-y-3 rounded-2xl border bg-card p-8 text-center shadow-sm">
           <p className="text-5xl">✅</p>
-          <h1 className="text-xl font-bold">
-            تم إرسال طلبك، في انتظار تأكيد الويتر
-          </h1>
+          <h1 className="text-xl font-bold">تم إرسال طلبك بنجاح</h1>
+          <p className="text-sm font-medium text-amber-700 dark:text-amber-400">
+            {pending ? "طلبك في انتظار التأكيد" : "طلبك وصل للكافيه وجاري تجهيزه"}
+          </p>
           <p className="text-3xl font-bold tabular-nums">#{placed.orderNumber}</p>
           <p className="text-sm text-muted-foreground">
             الإجمالي {money(placed.total, currency)} — الدفع عند التسليم.
           </p>
           <Button
             variant="outline"
-            className="w-full"
+            className="h-12 w-full"
             onClick={() => {
               setPlaced(null);
               setCart([]);
@@ -196,17 +225,41 @@ export function CustomerMenuPage({
     );
   }
 
+  const showTableBanner = menu.orderType === "DINE_IN" && !initialTable;
+
   return (
-    <main className="mx-auto min-h-screen max-w-lg space-y-3 px-4 pb-28">
-      {/* Header */}
-      <header className="space-y-1 pt-4 text-center">
-        <p className="text-4xl">☕</p>
-        <h1 className="text-2xl font-bold">{menu.cafe.name}</h1>
-        <p className="text-sm text-muted-foreground">
-          {menu.branch.name}
-          {details.tableNumber && ` · ترابيزة ${details.tableNumber}`}
-        </p>
-        <h2 className="pt-1 text-sm font-semibold text-muted-foreground">المنيو</h2>
+    <main className="mx-auto flex min-h-dvh w-full max-w-lg flex-col overflow-x-clip pb-36">
+      {/* ── Sticky header: cafe / branch / table + cart button ─── */}
+      <header className="sticky top-0 z-20 flex items-center gap-3 border-b bg-background/95 px-4 py-2.5 backdrop-blur">
+        <div className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xl">
+          ☕
+        </div>
+        <div className="min-w-0 flex-1">
+          <h1 className="truncate text-base font-bold leading-tight">
+            {menu.cafe.name}
+          </h1>
+          <p className="truncate text-xs text-muted-foreground">
+            المنيو · {menu.branch.name}
+            {details.tableNumber && (
+              <span className="font-medium text-foreground">
+                {" "}· ترابيزة رقم {details.tableNumber}
+              </span>
+            )}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setCartOpen(true)}
+          aria-label="السلة"
+          className="relative flex size-11 shrink-0 items-center justify-center rounded-full border bg-card text-xl shadow-sm transition-colors active:bg-accent"
+        >
+          🛒
+          {itemCount > 0 && (
+            <span className="absolute -top-1 -end-1 flex size-5 items-center justify-center rounded-full bg-primary text-[11px] font-bold tabular-nums text-primary-foreground">
+              {itemCount}
+            </span>
+          )}
+        </button>
       </header>
 
       <CustomerCategoryTabs
@@ -215,7 +268,14 @@ export function CustomerMenuPage({
         onChange={setActiveCategory}
       />
 
-      <div className="space-y-2">
+      {showTableBanner && (
+        <p className="mx-4 mt-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-400">
+          رقم الترابيزة غير موجود في الرابط — تقدر تكتبه عند إتمام الطلب.
+        </p>
+      )}
+
+      {/* ── Products ───────────────────────────────────────────── */}
+      <div className="grid grid-cols-1 gap-2 px-4 pt-3 sm:grid-cols-2">
         {visible.map((p) => (
           <CustomerProductCard
             key={p.id}
@@ -225,21 +285,28 @@ export function CustomerMenuPage({
           />
         ))}
         {visible.length === 0 && (
-          <p className="py-8 text-center text-sm text-muted-foreground">
-            مفيش منتجات في التصنيف ده.
+          <p className="col-span-full py-10 text-center text-sm text-muted-foreground">
+            {menu.products.length === 0
+              ? "لا توجد منتجات متاحة حاليًا"
+              : "لا توجد منتجات في هذا القسم"}
           </p>
         )}
       </div>
 
-      {/* ── Floating cart bar ──────────────────────────────────── */}
+      {/* ── Sticky bottom cart bar ─────────────────────────────── */}
       {cart.length > 0 && (
-        <div className="fixed inset-x-0 bottom-0 z-20 p-3">
+        <div className="fixed inset-x-0 bottom-0 z-20 mx-auto w-full max-w-lg px-3 pb-[calc(0.75rem_+_env(safe-area-inset-bottom))] pt-2">
           <Button
             size="lg"
-            className="mx-auto flex h-13 w-full max-w-lg items-center justify-between px-5 text-base font-semibold shadow-lg"
+            className="flex h-14 w-full items-center justify-between rounded-2xl px-5 text-base font-semibold shadow-lg"
             onClick={() => setCartOpen(true)}
           >
-            <span>🛒 سلة الطلب · {itemCount} صنف</span>
+            <span className="flex items-center gap-2">
+              <span className="flex size-6 items-center justify-center rounded-full bg-primary-foreground/20 text-sm tabular-nums">
+                {itemCount}
+              </span>
+              عرض السلة
+            </span>
             <span className="tabular-nums">{money(total, currency)}</span>
           </Button>
         </div>
@@ -250,44 +317,96 @@ export function CustomerMenuPage({
         <MenuAIChat menu={menu} onPick={selectProduct} raised={cart.length > 0} />
       )}
 
-      {/* ── Cart & checkout dialog ─────────────────────────────── */}
+      {/* ── Cart & checkout bottom sheet ───────────────────────── */}
       <Dialog open={cartOpen} onOpenChange={setCartOpen}>
-        <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>سلة الطلب</DialogTitle>
+        <DialogContent className={SHEET}>
+          <DialogHeader className="shrink-0 border-b px-4 py-3">
+            <DialogTitle>السلة</DialogTitle>
           </DialogHeader>
-          <CustomerCart
-            cart={cart}
-            currency={currency}
-            onQuantityChange={changeQuantity}
-            onRemove={(key) => setCart((prev) => prev.filter((l) => l.key !== key))}
-            onNoteChange={changeNote}
-          />
-          {cart.length > 0 && (
-            <CustomerOrderForm
-              details={details}
-              tableLocked={initialTable !== null}
+
+          {/* Scrollable middle: items + customer details */}
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-4 py-3">
+            <CustomerCart
+              cart={cart}
               currency={currency}
-              subtotal={subtotal}
-              taxRate={taxRate}
-              total={total}
-              submitting={submitting}
-              error={error}
-              onChange={setDetails}
-              onSubmit={submitOrder}
+              onQuantityChange={changeQuantity}
+              onRemove={(key) =>
+                setCart((prev) => prev.filter((l) => l.key !== key))
+              }
+              onNoteChange={changeNote}
             />
+            {cart.length > 0 && (
+              <CustomerOrderForm
+                details={details}
+                tableLocked={initialTable !== null}
+                onChange={setDetails}
+              />
+            )}
+          </div>
+
+          {/* Pinned footer: totals + submit always visible */}
+          {cart.length > 0 && (
+            <div className="shrink-0 space-y-2 border-t bg-card px-4 pt-3 pb-[calc(0.75rem_+_env(safe-area-inset-bottom))]">
+              <div className="space-y-1 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">الإجمالي قبل الضريبة</span>
+                  <span className="tabular-nums">{money(charges.subtotal, currency)}</span>
+                </div>
+                {charges.serviceChargeAmount > 0 && (
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">السيرفيس</span>
+                    <span className="tabular-nums">
+                      {money(charges.serviceChargeAmount, currency)}
+                    </span>
+                  </div>
+                )}
+                {charges.taxAmount > 0 && (
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">
+                      الضريبة ({charges.taxRateSnapshot}٪)
+                    </span>
+                    <span className="tabular-nums">{money(charges.taxAmount, currency)}</span>
+                  </div>
+                )}
+                <div className="flex justify-between text-base font-bold">
+                  <span>الإجمالي</span>
+                  <span className="tabular-nums">{money(total, currency)}</span>
+                </div>
+              </div>
+
+              {error && <p className="text-sm text-destructive">{error}</p>}
+
+              <Button
+                size="lg"
+                className="h-12 w-full text-base font-semibold"
+                disabled={submitting}
+                onClick={submitOrder}
+              >
+                {submitting ? "جاري الإرسال…" : "إرسال الطلب"}
+              </Button>
+              <Button
+                variant="ghost"
+                className="h-10 w-full text-sm text-muted-foreground"
+                onClick={() => setCartOpen(false)}
+              >
+                رجوع للمنيو
+              </Button>
+            </div>
           )}
         </DialogContent>
       </Dialog>
 
-      {/* ── Variant / add-ons / note dialog ────────────────────── */}
-      <Dialog open={configuring !== null} onOpenChange={(o) => !o && setConfiguring(null)}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
+      {/* ── Variant / add-ons / note bottom sheet ──────────────── */}
+      <Dialog
+        open={configuring !== null}
+        onOpenChange={(o) => !o && setConfiguring(null)}
+      >
+        <DialogContent className={SHEET}>
+          <DialogHeader className="shrink-0 border-b px-4 py-3">
             <DialogTitle>{configuring?.name}</DialogTitle>
           </DialogHeader>
           {configuring && (
-            <div className="space-y-4">
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto overscroll-contain px-4 py-3">
               {configuring.description && (
                 <p className="text-sm text-muted-foreground">
                   {configuring.description}
@@ -300,8 +419,8 @@ export function CustomerMenuPage({
                     {configuring.variants.map((v) => (
                       <Button
                         key={v.id}
-                        size="sm"
                         variant={selVariant === v.id ? "default" : "outline"}
+                        className="h-11"
                         onClick={() => setSelVariant(v.id)}
                       >
                         {v.name} — {money(v.price, currency)}
@@ -317,8 +436,8 @@ export function CustomerMenuPage({
                     {configuring.addOns.map(({ addOn }) => (
                       <Button
                         key={addOn.id}
-                        size="sm"
                         variant={selAddOns.has(addOn.id) ? "default" : "outline"}
+                        className="h-11"
                         onClick={() =>
                           setSelAddOns((prev) => {
                             const next = new Set(prev);
@@ -338,15 +457,16 @@ export function CustomerMenuPage({
                 <Label>ملاحظة على الصنف (اختياري)</Label>
                 <Input
                   placeholder="مثلاً: من غير سكر"
+                  className="h-11"
                   value={itemNote}
                   onChange={(e) => setItemNote(e.target.value)}
                 />
               </div>
             </div>
           )}
-          <DialogFooter>
+          <div className="shrink-0 border-t px-4 pt-3 pb-[calc(0.75rem_+_env(safe-area-inset-bottom))]">
             <Button
-              className="w-full"
+              className="h-12 w-full text-base font-semibold"
               onClick={() => {
                 if (!configuring) return;
                 const variant =
@@ -358,9 +478,9 @@ export function CustomerMenuPage({
                 setConfiguring(null);
               }}
             >
-              أضف للطلب
+              إضافة
             </Button>
-          </DialogFooter>
+          </div>
         </DialogContent>
       </Dialog>
     </main>

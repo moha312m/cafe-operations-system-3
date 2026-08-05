@@ -25,9 +25,13 @@ export function CustomerCart({
 
   if (cart.length === 0) {
     return (
-      <p className="py-6 text-center text-sm text-muted-foreground">
-        سلة الطلب فاضية — ارجع للمنيو واختار حاجة.
-      </p>
+      <div className="space-y-1 py-8 text-center">
+        <p className="text-3xl">🛒</p>
+        <p className="text-sm font-medium">السلة فارغة</p>
+        <p className="text-xs text-muted-foreground">
+          ارجع للمنيو واختار حاجة تعجبك.
+        </p>
+      </div>
     );
   }
 
@@ -55,23 +59,21 @@ export function CustomerCart({
               {money(line.unitPrice * line.quantity, currency)}
             </p>
           </div>
-          <div className="mt-1.5 flex items-center gap-1.5">
+          <div className="mt-2 flex items-center gap-1.5">
             <Button
               variant="outline"
-              size="sm"
-              className="size-8 p-0 text-base"
+              className="size-10 p-0 text-lg"
               aria-label="قلّل الكمية"
               onClick={() => onQuantityChange(line.key, -1)}
             >
               −
             </Button>
-            <span className="w-7 text-center text-sm font-semibold tabular-nums">
+            <span className="w-8 text-center text-sm font-semibold tabular-nums">
               {line.quantity}
             </span>
             <Button
               variant="outline"
-              size="sm"
-              className="size-8 p-0 text-base"
+              className="size-10 p-0 text-lg"
               aria-label="زوّد الكمية"
               onClick={() => onQuantityChange(line.key, 1)}
             >
@@ -79,8 +81,7 @@ export function CustomerCart({
             </Button>
             <Button
               variant="ghost"
-              size="sm"
-              className="ms-auto h-8 px-2 text-xs text-muted-foreground"
+              className="ms-auto h-10 px-2.5 text-xs text-muted-foreground"
               onClick={() => {
                 setNoteDraft(line.note);
                 setNotingKey(line.key);
@@ -90,8 +91,7 @@ export function CustomerCart({
             </Button>
             <Button
               variant="ghost"
-              size="sm"
-              className="h-8 px-2 text-xs text-destructive"
+              className="h-10 px-2.5 text-xs text-destructive"
               onClick={() => onRemove(line.key)}
             >
               حذف
@@ -101,7 +101,7 @@ export function CustomerCart({
             <Input
               autoFocus
               placeholder="مثلاً: من غير سكر، سخن زيادة"
-              className="mt-2 h-8 text-xs"
+              className="mt-2 h-10"
               value={noteDraft}
               onChange={(e) => setNoteDraft(e.target.value)}
               onBlur={() => {
