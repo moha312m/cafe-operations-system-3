@@ -5,6 +5,7 @@ import { requirePermission, handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { getActiveShift, recomputeShiftTotals } from "@/lib/shifts";
 import { recomputeSessionTotals } from "@/lib/table-sessions";
+import { maybeAwardLoyaltyPoints } from "@/lib/loyalty";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -103,6 +104,9 @@ export async function POST(request: NextRequest) {
       where: { id: order.id },
       data: { paidAmount: newPaid, remainingAmount: Math.max(newRemaining, 0), paymentStatus: newStatus },
     });
+
+    // Loyalty: fully-paid orders earn their points exactly once.
+    if (newStatus === "PAID") await maybeAwardLoyaltyPoints(order.id);
 
     const payMeta = {
       branchId: order.branchId,

@@ -16,10 +16,12 @@ export type CustomerOrderDetails = {
 export function CustomerOrderForm({
   details,
   tableLocked,
+  phoneRequired = false,
   onChange,
 }: {
   details: CustomerOrderDetails;
   tableLocked: boolean;
+  phoneRequired?: boolean;
   onChange: (details: CustomerOrderDetails) => void;
 }) {
   const set = (patch: Partial<CustomerOrderDetails>) =>
@@ -58,7 +60,9 @@ export function CustomerOrderForm({
         </div>
       </div>
       <div className="space-y-1">
-        <Label className="text-xs">رقم الموبايل (اختياري)</Label>
+        <Label className="text-xs">
+          {phoneRequired ? "رقم الموبايل *" : "رقم الموبايل (اختياري)"}
+        </Label>
         <Input
           className="h-11"
           dir="ltr"
@@ -68,6 +72,11 @@ export function CustomerOrderForm({
           value={details.customerPhone}
           onChange={(e) => set({ customerPhone: e.target.value })}
         />
+        {phoneRequired && (
+          <p className="text-[11px] text-muted-foreground">
+            رقم الموبايل مطلوب عشان نضيف نقاط الولاء على طلبك.
+          </p>
+        )}
       </div>
       <div className="space-y-1">
         <Label className="text-xs">ملاحظات الطلب</Label>

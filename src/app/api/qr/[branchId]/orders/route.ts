@@ -8,6 +8,10 @@ import { getCafeSettings } from "@/lib/cafe-settings";
 import { getBranchFinancialSettings, computeCharges } from "@/lib/financials";
 import { attachOrderToTableSession } from "@/lib/table-sessions";
 import { getApprovalSettings, resolveRouting } from "@/lib/qr-approval";
+import { normalizeEgyptianPhone } from "@/lib/phone";
+import { findOrCreateCustomerByPhone, recordCustomerOrder } from "@/lib/customers";
+import { getLoyaltySettings, loyaltyCalcSettings, maybeAwardLoyaltyPoints } from "@/lib/loyalty";
+import { computeEarnedPoints } from "@/lib/loyalty-calc";
 
 type Params = { params: Promise<{ branchId: string }> };
 
@@ -18,7 +22,7 @@ const qrOrderSchema = z.object({
   customerPhone: z
     .string()
     .trim()
-    .regex(/^[0-9+\s-]{6,20}$/, "رقم موبايل مش صحيح")
+    .regex(/^[0-9+\s-]{6,20}$/, "رقم الموبايل غير صحيح")
     .optional()
     .or(z.literal("")),
   tableNumber: z.string().trim().optional(),
@@ -76,6 +80,29 @@ export async function POST(request: NextRequest, { params }: Params) {
       settings.workflowMode === "TAKEAWAY_ONLY" || !settings.enableTables
         ? ("TAKEAWAY" as const)
         : ("DINE_IN" as const);
+
+    // ── Customer profile link (loyalty foundation) ──
+    // Phone becomes mandatory only while the loyalty program is on AND the
+    // cafe requires it — QR checkout is untouched otherwise. NOTE: the QR
+    // flow can only EARN points; redeeming requires the POS (no OTP yet,
+    // so a phone number alone must never spend someone's balance).
+    const loyaltySettings = await getLoyaltySettings(cafeId);
+    const phoneRequired = loyaltySettings.enabled && loyaltySettings.customerPhoneRequiredForQr;
+    const rawPhone = data.customerPhone?.trim() ?? "";
+    if (phoneRequired && !rawPhone) {
+      throw new ApiError(400, "من فضلك اكتب رقم الموبايل");
+    }
+    let customer = null;
+    if (rawPhone) {
+      if (!normalizeEgyptianPhone(rawPhone)) {
+        throw new ApiError(400, "رقم الموبايل غير صحيح");
+      }
+      customer = await findOrCreateCustomerByPhone({
+        cafeId,
+        phone: rawPhone,
+        name: data.customerName,
+      });
+    }
 
     const productIds = [...new Set(data.items.map((i) => i.productId))];
     const products = await db.product.findMany({
@@ -195,6 +222,7 @@ export async function POST(request: NextRequest, { params }: Params) {
           remainingAmount: total,
           taxRateSnapshot: charges.taxRateSnapshot,
           serviceRateSnapshot: charges.serviceRateSnapshot,
+          customerId: customer?.id ?? null,
           createdById: null, // placed by the customer, no user account
           items: {
             create: itemRows.map((row) => ({
@@ -223,6 +251,22 @@ export async function POST(request: NextRequest, { params }: Params) {
       },
       null // placed by the customer, no staff user
     );
+
+    // Loyalty: link stats + (if eligible now) award. With the default
+    // earnOnPaidOrdersOnly=true the award happens later, when the cashier
+    // collects payment — maybeAwardLoyaltyPoints is a no-op here.
+    let expectedPoints = 0;
+    if (customer) {
+      await recordCustomerOrder(customer.id, total);
+      await audit({
+        cafeId, action: "CUSTOMER_LINKED_TO_ORDER", entity: "Order", entityId: order.id,
+        details: { customerId: customer.id, orderId: order.id, orderNumber: order.orderNumber, newValue: { phone: customer.normalizedPhone } },
+      });
+      if (loyaltySettings.enabled) {
+        expectedPoints = computeEarnedPoints(total, loyaltyCalcSettings(loyaltySettings));
+        await maybeAwardLoyaltyPoints(order.id);
+      }
+    }
 
     await audit({
       cafeId,
@@ -257,6 +301,10 @@ export async function POST(request: NextRequest, { params }: Params) {
           orderNumber: order.orderNumber,
           total: order.total,
           status: order.status,
+          // Loyalty preview for the success screen (0 when program off /
+          // no customer). Points are ADDED only on payment confirmation.
+          expectedPoints,
+          loyaltyEnabled: loyaltySettings.enabled && !!customer,
         },
       },
       { status: 201 }

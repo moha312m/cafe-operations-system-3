@@ -9,6 +9,7 @@ import {
 } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { handleApiError, ApiError } from "@/lib/api";
+import { ensureCafeRoles } from "@/lib/perms/roles";
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -49,6 +50,12 @@ export async function POST(request: NextRequest) {
       branchId: user.branchId,
     };
     await setSessionCookie(await createSessionToken(sessionUser));
+
+    // Keep system-default roles in sync with the permission catalog (new
+    // keys added by app updates reach existing cafes on next login).
+    if (user.cafeId) {
+      try { await ensureCafeRoles(user.cafeId); } catch { /* non-blocking */ }
+    }
 
     await audit({
       cafeId: user.cafeId,

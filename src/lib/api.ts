@@ -42,12 +42,12 @@ export async function requirePermission(
 // Granular guard: checks a specific new permission key. Use for routes that
 // need finer control than the legacy Permission strings (staff, roles,
 // inventory transactions, settings edit, report export, profit view…).
-export async function requireKey(key: string): Promise<SessionUser> {
+export async function requireKey(key: string, deniedMessage?: string): Promise<SessionUser> {
   const session = await getSession();
   if (!session) throw new ApiError(401, "سجّل دخولك الأول");
   const { keys } = await resolvePermissions(session);
   if (!keys.has(key)) {
-    throw new ApiError(403, DENIED);
+    throw new ApiError(403, deniedMessage ?? DENIED);
   }
   return session;
 }

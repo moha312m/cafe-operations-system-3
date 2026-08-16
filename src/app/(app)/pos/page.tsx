@@ -30,6 +30,7 @@ import { CategoryTabs } from "@/components/pos/category-tabs";
 import { ProductGrid } from "@/components/pos/product-grid";
 import { OrderCart } from "@/components/pos/order-cart";
 import { ShiftControls } from "@/components/pos/shift-controls";
+import type { LoyaltyRedeem } from "@/components/pos/customer-loyalty";
 import type { CustomerDetails } from "@/components/pos/order-type-selector";
 import {
   computeUnitPrice,
@@ -88,6 +89,8 @@ export default function PosPage() {
   const [submitting, setSubmitting] = useState(false);
   // Bumped after a dine-in order is placed so the table invoice cards refetch.
   const [tableReload, setTableReload] = useState(0);
+  // Loyalty points the cashier is redeeming for this order.
+  const [redeem, setRedeem] = useState<LoyaltyRedeem>({ points: 0, discount: 0 });
 
   // ── Shift gate (cashiers must have an open shift) ────────────
   const [shiftActive, setShiftActive] = useState(false);
@@ -270,9 +273,16 @@ export default function PosPage() {
       serviceChargeFixedAmount: 0,
       applyServiceTo: "DINE_IN_ONLY",
     };
-  const charges = computeCharges({
+  // Pre-loyalty total drives the redemption cap (max % of order).
+  const preLoyaltyCharges = computeCharges({
     subtotal,
     discount: Number(discountInput) || 0,
+    orderType,
+    settings: effectiveSettings,
+  });
+  const charges = computeCharges({
+    subtotal,
+    discount: (Number(discountInput) || 0) + redeem.discount,
     orderType,
     settings: effectiveSettings,
   });
@@ -327,7 +337,10 @@ export default function PosPage() {
           customerPhone: details.customerPhone.trim() || undefined,
           deliveryAddress: details.deliveryAddress.trim() || undefined,
           tableNumber: details.tableNumber.trim() || undefined,
-          discountAmount,
+          // Manual discount only — the server recomputes the loyalty
+          // discount from the redeemed points.
+          discountAmount: Number(discountInput) || 0,
+          loyaltyPointsToRedeem: redeem.points || undefined,
           collectionMode,
           ...paymentBody,
           items: cart.map((l) => ({
@@ -364,6 +377,7 @@ export default function PosPage() {
       setDiscountInput("");
       setMixed(EMPTY_MIXED);
       setPaidInput("");
+      setRedeem({ points: 0, discount: 0 });
       if (isDineIn) setTableReload((k) => k + 1);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "فشل تسجيل الطلب");
@@ -437,6 +451,9 @@ export default function PosPage() {
         details={details}
         branchId={branchId || undefined}
         tableReloadKey={tableReload}
+        totalBeforeLoyalty={preLoyaltyCharges.total}
+        redeem={redeem}
+        onRedeemChange={setRedeem}
         subtotal={subtotal}
         discountInput={discountInput}
         discountAmount={discountAmount}

@@ -16,7 +16,7 @@ export type ModuleCode =
   | "QR_ORDERS" | "MENU" | "INVENTORY" | "PURCHASES" | "SUPPLIERS" | "EXPENSES"
   | "SHIFTS" | "FINANCE" | "USERS" | "EDIT_CENTER" | "AUDIT"
   | "SETTINGS" | "CUSTOMER_ORDERS" | "EXCEL" | "HANDOVER" | "REPORTS"
-  | "AI_ASSISTANT" | "BRANCHES";
+  | "AI_ASSISTANT" | "BRANCHES" | "CUSTOMERS";
 
 export type PermModule = {
   code: ModuleCode;
@@ -60,6 +60,7 @@ export const MODULES: PermModule[] = [
   { code: "HANDOVER", label: "التسليم والاستلام", icon: "🤝" },
   { code: "AI_ASSISTANT", label: "المساعد الذكي", icon: "🤖", feature: "aiAssistantEnabled" },
   { code: "BRANCHES", label: "الفروع", icon: "🏬", feature: "branchManagementEnabled" },
+  { code: "CUSTOMERS", label: "العملاء والولاء", icon: "💳" },
 ];
 
 export const MODULE_MAP: Record<ModuleCode, PermModule> = Object.fromEntries(
@@ -194,6 +195,14 @@ export const PERMISSION_KEYS: PermKey[] = [
   // AI assistant
   { key: "ai.use", module: "AI_ASSISTANT", label: "استخدام المساعد الذكي" },
 
+  // Customers & loyalty
+  { key: "customers.view", module: "CUSTOMERS", label: "عرض العملاء" },
+  { key: "customers.edit", module: "CUSTOMERS", label: "تعديل بيانات العملاء" },
+  { key: "customers.adjust_points", module: "CUSTOMERS", label: "تعديل نقاط الولاء يدويًا", sensitive: true },
+  { key: "loyalty.view", module: "CUSTOMERS", label: "عرض برنامج الولاء" },
+  { key: "loyalty.settings_edit", module: "CUSTOMERS", label: "تعديل إعدادات الولاء", sensitive: true },
+  { key: "loyalty.redeem_points", module: "CUSTOMERS", label: "استخدام نقاط العملاء" },
+
   // Platform (super admin only — never granted inside a cafe role)
   { key: "platform.manage", module: "SETTINGS", label: "إدارة المنصة", sensitive: true },
 ];
@@ -225,11 +234,18 @@ export function keysForModule(code: ModuleCode): PermKey[] {
 // exactly (no behavioural change for users without a custom role).
 export const LEGACY_TO_KEYS: Record<string, string[]> = {
   "platform:manage": ["platform.manage"],
-  "cafe:manage": ["settings.view", "settings.edit", "settings.edit_qr_approval", "qr_orders.assign_settings"],
+  "cafe:manage": [
+    "settings.view", "settings.edit", "settings.edit_qr_approval", "qr_orders.assign_settings",
+    // Customers & loyalty: full control comes with cafe management (owner).
+    "customers.view", "customers.edit", "customers.adjust_points",
+    "loyalty.view", "loyalty.settings_edit", "loyalty.redeem_points",
+  ],
   "branches:manage": [
     "branches.view", "branches.manage",
     "tables.manage", "tables.create", "tables.edit", "tables.archive", "tables.bulk_create",
     "tables.transfer", "tables.merge",
+    // Branch managers see and maintain customer profiles (no settings edit).
+    "customers.view", "customers.edit", "loyalty.view",
   ],
   "users:manage": [
     "users.view", "users.create", "users.edit",
@@ -250,7 +266,8 @@ export const LEGACY_TO_KEYS: Record<string, string[]> = {
     "tables.collect_payment", "tables.partial_payment", "tables.item_payment", "tables.close",
   ],
   "payments:read": ["pos.view_payments"],
-  "shifts:operate": ["shifts.view_current", "shifts.open", "shifts.close"],
+  // Redeeming customer points rides with drawer operation (cashier/manager).
+  "shifts:operate": ["shifts.view_current", "shifts.open", "shifts.close", "loyalty.redeem_points"],
   "shifts:read": ["shifts.view_reports"],
   "dashboard:read": ["dashboard.view"],
   "reports:read": ["reports.view", "sales.view", "reports.export", "excel.export"],

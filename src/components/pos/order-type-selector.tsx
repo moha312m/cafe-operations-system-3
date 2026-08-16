@@ -205,19 +205,12 @@ export function OrderTypeSelector({
       )}
       {type === "DELIVERY" && (
         <div className="space-y-2">
-          <div className="flex gap-2">
-            <Input
-              placeholder={t.pos.customerNameRequired}
-              value={details.customerName}
-              onChange={(e) => set({ customerName: e.target.value })}
-            />
-            <Input
-              placeholder={t.common.phone}
-              className="w-32"
-              value={details.customerPhone}
-              onChange={(e) => set({ customerPhone: e.target.value })}
-            />
-          </div>
+          {/* Phone lives in the customer/loyalty block below the selector. */}
+          <Input
+            placeholder={t.pos.customerNameRequired}
+            value={details.customerName}
+            onChange={(e) => set({ customerName: e.target.value })}
+          />
           <Input
             placeholder={t.pos.deliveryAddress}
             value={details.deliveryAddress}

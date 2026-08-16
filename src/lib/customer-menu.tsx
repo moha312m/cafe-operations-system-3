@@ -4,6 +4,7 @@ import type { MenuData } from "@/components/customer-menu/types";
 import { branchShift, round2 } from "@/lib/pricing";
 import { getCafeSettings } from "@/lib/cafe-settings";
 import { getBranchFinancialSettings } from "@/lib/financials";
+import { getLoyaltySettings } from "@/lib/loyalty";
 
 export type CustomerMenuResult =
   | { status: "ok"; menu: MenuData }
@@ -73,6 +74,7 @@ export async function loadCustomerMenu(
     }),
     getBranchFinancialSettings(branch.id),
   ]);
+  const loyalty = await getLoyaltySettings(branch.cafeId);
 
   return {
     status: "ok",
@@ -103,6 +105,12 @@ export async function loadCustomerMenu(
         settings.workflowMode === "TAKEAWAY_ONLY" || !settings.enableTables
           ? "TAKEAWAY"
           : "DINE_IN",
+      loyalty: {
+        enabled: loyalty.enabled,
+        phoneRequired: loyalty.enabled && loyalty.customerPhoneRequiredForQr,
+        earnPointsPerAmount: loyalty.earnPointsPerAmount,
+        earnAmountStep: Number(loyalty.earnAmountStep),
+      },
       categories,
       products: products.map((p) => {
         const priceable = {

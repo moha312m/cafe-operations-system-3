@@ -194,6 +194,9 @@ model Cafe {
   purchaseInvoices PurchaseInvoice[]
   tables           CafeTable[]
   qrApprovalSettings QrOrderApprovalSettings[]
+  customers        Customer[]
+  loyaltySettings  LoyaltySettings?
+  loyaltyTxns      LoyaltyTransaction[]
 }
 
 // Per-cafe module flags + workflow, controlled ONLY by SUPER_ADMIN.
@@ -438,6 +441,7 @@ model User {
   inventoryTxns    InventoryTransaction[]
   purchaseInvoices PurchaseInvoice[]
   purchasePayments PurchasePayment[]
+  loyaltyTxnsCreated LoyaltyTransaction[] @relation("LoyaltyTxnCreatedBy")
 
   @@index([cafeId])
   @@index([branchId])
@@ -694,6 +698,13 @@ model Order {
   // جلسة الترابيزة — dine-in orders attach to their table's open session.
   tableSessionId String?
 
+  // العميل وبرنامج الولاء — linked by phone at order time.
+  customerId            String?
+  loyaltyPointsEarned   Int       @default(0)
+  loyaltyPointsRedeemed Int       @default(0)
+  loyaltyDiscountAmount Decimal   @default(0) @db.Decimal(10, 2)
+  loyaltyPointsAwardedAt DateTime? // set exactly once (double-earn guard)
+
   cafe          Cafe                   @relation(fields: [cafeId], references: [id], onDelete: Cascade)
   branch        Branch                 @relation(fields: [branchId], references: [id], onDelete: Cascade)
   tableSession  TableSession?          @relation(fields: [tableSessionId], references: [id], onDelete: SetNull)
@@ -701,11 +712,14 @@ model Order {
   approvedBy    User?                  @relation("OrderApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
   rejectedBy    User?                  @relation("OrderRejectedBy", fields: [rejectedById], references: [id], onDelete: SetNull)
   assignedApprover User?               @relation("OrderAssignedApprover", fields: [assignedApproverUserId], references: [id], onDelete: SetNull)
+  customer      Customer?              @relation(fields: [customerId], references: [id], onDelete: SetNull)
   items         OrderItem[]
   payments      Payment[]
   inventoryTxns InventoryTransaction[]
+  loyaltyTxns   LoyaltyTransaction[]
 
   @@unique([branchId, orderNumber])
+  @@index([customerId])
   @@index([cafeId, createdAt])
   @@index([cafeId, status])
   @@index([cafeId, source, createdAt])
@@ -1066,4 +1080,103 @@ model AuditLog {
   user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([cafeId, createdAt])
+}
+
+// ── العملاء وبرنامج الولاء ─────────────────────────────────────────
+
+enum LoyaltyTransactionType {
+  EARN
+  REDEEM
+  ADJUSTMENT_ADD
+  ADJUSTMENT_SUBTRACT
+  EXPIRED
+  CANCELLED_REVERSAL
+}
+
+// Customer profile keyed by normalized phone, scoped per cafe (the same
+// phone in another cafe is a separate customer — no cross-tenant sharing).
+model Customer {
+  id              String    @id @default(cuid())
+  cafeId          String
+  name            String?
+  phone           String // as originally entered
+  normalizedPhone String // canonical local format (e.g. 01012345678)
+  email           String?
+  birthDate       DateTime?
+  notes           String?
+
+  // Denormalised stats (kept in sync on order linking / payment)
+  totalOrders Int      @default(0)
+  totalSpent  Decimal  @default(0) @db.Decimal(12, 2)
+  lastOrderAt DateTime?
+
+  // Loyalty balances (every change must have a LoyaltyTransaction row)
+  loyaltyPointsBalance   Int @default(0)
+  lifetimePointsEarned   Int @default(0)
+  lifetimePointsRedeemed Int @default(0)
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cafe         Cafe                 @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  orders       Order[]
+  loyaltyTxns  LoyaltyTransaction[]
+
+  @@unique([cafeId, normalizedPhone])
+  @@index([cafeId, lastOrderAt])
+  @@index([cafeId, totalSpent])
+}
+
+// Per-cafe loyalty program configuration (lazily created with defaults).
+model LoyaltySettings {
+  id     String @id @default(cuid())
+  cafeId String @unique
+
+  enabled Boolean @default(false)
+
+  // Earning: every earnAmountStep EGP of the final order total earns
+  // earnPointsPerAmount points (floor).
+  earnPointsPerAmount Int     @default(1)
+  earnAmountStep      Decimal @default(10) @db.Decimal(10, 2)
+
+  // Redeeming: 1 point = pointValueAmount EGP discount.
+  pointValueAmount           Decimal @default(1) @db.Decimal(10, 2)
+  minPointsToRedeem          Int     @default(50)
+  maxRedeemPercentageOfOrder Int     @default(50)
+
+  pointsExpireDays     Int?
+  earnOnPaidOrdersOnly Boolean @default(true)
+
+  // QR menu: require customer phone at checkout (enforced only while the
+  // loyalty program is enabled, so QR keeps working when loyalty is off).
+  customerPhoneRequiredForQr Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cafe Cafe @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+}
+
+// Append-only ledger of every points change.
+model LoyaltyTransaction {
+  id              String                 @id @default(cuid())
+  cafeId          String
+  customerId      String
+  orderId         String?
+  type            LoyaltyTransactionType
+  points          Int // positive = added to balance, negative = subtracted
+  amountValue     Decimal?               @db.Decimal(10, 2) // EGP value for EARN/REDEEM
+  note            String?
+  createdByUserId String? // null for automatic (order-driven) transactions
+  createdAt       DateTime               @default(now())
+
+  cafe      Cafe      @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  customer  Customer  @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  order     Order?    @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  createdBy User?     @relation("LoyaltyTxnCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([cafeId, createdAt])
+  @@index([customerId, createdAt])
+  @@index([orderId])
 }

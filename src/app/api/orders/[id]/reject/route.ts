@@ -7,6 +7,8 @@ import { audit } from "@/lib/audit";
 import { recomputeSessionTotals } from "@/lib/table-sessions";
 import { resolvePermissions } from "@/lib/perms/effective";
 import { canApproveOrder, getApprovalSettings } from "@/lib/qr-approval";
+import { reverseOrderLoyalty } from "@/lib/loyalty";
+import { unrecordCustomerOrder } from "@/lib/customers";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -51,6 +53,12 @@ export async function POST(request: NextRequest, { params }: Params) {
 
     // Rejected orders drop out of the table bill (session stays open).
     if (order.tableSessionId) await recomputeSessionTotals(order.tableSessionId);
+
+    // Rejected orders never count toward the customer's stats or points.
+    if (order.customerId) {
+      await reverseOrderLoyalty(order.id, session.id);
+      await unrecordCustomerOrder(order.customerId, Number(order.total));
+    }
 
     await audit({
       cafeId: order.cafeId,

@@ -42,6 +42,9 @@ const MANAGER_KEYS = [
   "audit.view",
   "excel.import", "excel.export",
   "handover.view", "handover.manage",
+  // Customers & loyalty (settings edits stay owner-only by default).
+  "customers.view", "customers.edit",
+  "loyalty.view", "loyalty.redeem_points",
 ];
 
 const CASHIER_KEYS = [
@@ -53,6 +56,9 @@ const CASHIER_KEYS = [
   "tables.collect_payment", "tables.partial_payment", "tables.item_payment",
   "menu.view",
   "shifts.view_current", "shifts.open", "shifts.close",
+  // Phone lookup during an order is gated by pos.create_order; redeeming
+  // points is explicit. No customers.view — cashiers can't browse the list.
+  "loyalty.redeem_points",
 ];
 
 const WAITER_KEYS = [

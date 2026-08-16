@@ -5,6 +5,7 @@ import { requireKey, handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { getActiveShift, recomputeShiftTotals } from "@/lib/shifts";
 import { recomputeSessionTotals } from "@/lib/table-sessions";
+import { maybeAwardLoyaltyPoints } from "@/lib/loyalty";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -182,6 +183,11 @@ export async function POST(request: NextRequest, { params }: Params) {
 
     if (shift) await recomputeShiftTotals(shift.id);
     const updated = await recomputeSessionTotals(ts.id);
+
+    // Loyalty: any order that just became fully paid earns its points.
+    for (const alloc of allocations) {
+      await maybeAwardLoyaltyPoints(alloc.orderId);
+    }
 
     const AUDIT_ACTION =
       data.mode === "FULL"

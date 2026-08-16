@@ -3,6 +3,7 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import {
   requirePermission,
+  requireKey,
   resolveCafeId,
   resolveBranchId,
   handleApiError,
@@ -13,6 +14,9 @@ import { unitPrice as computeUnitPrice } from "@/lib/pricing";
 import { getActiveShift, recomputeShiftTotals } from "@/lib/shifts";
 import { getBranchFinancialSettings, computeCharges } from "@/lib/financials";
 import { attachOrderToTableSession } from "@/lib/table-sessions";
+import { findOrCreateCustomerByPhone, recordCustomerOrder } from "@/lib/customers";
+import { getLoyaltySettings, loyaltyCalcSettings, maybeAwardLoyaltyPoints, recordRedemption } from "@/lib/loyalty";
+import { validateRedemption } from "@/lib/loyalty-calc";
 
 const orderInclude = {
   items: { include: { addOns: true } },
@@ -75,6 +79,8 @@ const createOrderSchema = z.object({
   tableNumber: z.string().optional(),
   notes: z.string().optional(),
   discountAmount: z.number().min(0).default(0),
+  // Loyalty: points the cashier redeems for this order (0 = none).
+  loyaltyPointsToRedeem: z.number().int().min(0).default(0),
   // Payment collection: NOW (pay full), PENDING (collect later), PARTIAL.
   collectionMode: z.enum(["NOW", "PENDING", "PARTIAL"]).default("NOW"),
   paidAmount: z.number().min(0).optional(), // required for PARTIAL
@@ -207,12 +213,48 @@ export async function POST(request: NextRequest) {
       };
     });
 
+    // ── Customer profile link (by phone) + loyalty redemption ──
+    // Invalid/absent phone just skips the link; redemption REQUIRES a
+    // known customer with sufficient balance.
+    let customer =
+      data.customerPhone?.trim()
+        ? await findOrCreateCustomerByPhone({
+            cafeId,
+            phone: data.customerPhone,
+            name: data.customerName,
+          })
+        : null;
+    if (customer && !customer.isActive) customer = null; // disabled profiles don't collect/redeem
+
+    let loyaltyDiscount = 0;
+    let redeemPoints = 0;
+    if (data.loyaltyPointsToRedeem > 0) {
+      await requireKey("loyalty.redeem_points", "ليس لديك صلاحية لاستخدام نقاط العملاء");
+      if (!customer) throw new ApiError(400, "اكتب رقم موبايل عميل مسجل لاستخدام النقاط");
+      const loyaltySettings = await getLoyaltySettings(cafeId);
+      const calc = loyaltyCalcSettings(loyaltySettings);
+      // Cap check uses the pre-loyalty total (after the manual discount).
+      const preFin = await getBranchFinancialSettings(branchId);
+      const preCharges = computeCharges({
+        subtotal, discount: data.discountAmount, orderType: data.type, settings: preFin,
+      });
+      const verdict = validateRedemption(
+        data.loyaltyPointsToRedeem,
+        customer.loyaltyPointsBalance,
+        preCharges.total,
+        calc
+      );
+      if (!verdict.ok) throw new ApiError(400, verdict.error);
+      loyaltyDiscount = verdict.amount;
+      redeemPoints = data.loyaltyPointsToRedeem;
+    }
+
     // Charges come from the branch's configurable tax/service settings,
     // snapshotted onto the order so later edits never rewrite history.
     const finSettings = await getBranchFinancialSettings(branchId);
     const charges = computeCharges({
       subtotal,
-      discount: data.discountAmount,
+      discount: data.discountAmount + loyaltyDiscount,
       orderType: data.type,
       settings: finSettings,
     });
@@ -285,6 +327,9 @@ export async function POST(request: NextRequest) {
           remainingAmount,
           taxRateSnapshot: charges.taxRateSnapshot,
           serviceRateSnapshot: charges.serviceRateSnapshot,
+          customerId: customer?.id ?? null,
+          loyaltyPointsRedeemed: redeemPoints,
+          loyaltyDiscountAmount: loyaltyDiscount,
           createdById: session.id,
           items: {
             create: itemRows.map((row) => ({
@@ -325,6 +370,25 @@ export async function POST(request: NextRequest) {
       },
       session.id
     );
+
+    // Loyalty side effects: ledger the redemption, bump customer stats,
+    // then award earn-points (no-ops unless the order is already eligible).
+    if (customer) {
+      if (redeemPoints > 0) {
+        await recordRedemption({
+          cafeId, customerId: customer.id, orderId: order.id,
+          orderNumber: order.orderNumber, points: redeemPoints,
+          amountValue: loyaltyDiscount, userId: session.id,
+        });
+      }
+      await recordCustomerOrder(customer.id, total);
+      await audit({
+        cafeId, userId: session.id, action: "CUSTOMER_LINKED_TO_ORDER",
+        entity: "Order", entityId: order.id,
+        details: { customerId: customer.id, orderId: order.id, orderNumber: order.orderNumber, newValue: { phone: customer.normalizedPhone } },
+      });
+      await maybeAwardLoyaltyPoints(order.id);
+    }
 
     await audit({
       cafeId, userId: session.id, action: "ORDER_CREATED", entity: "Order", entityId: order.id,

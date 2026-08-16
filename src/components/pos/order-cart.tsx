@@ -8,6 +8,7 @@ import {
   type CustomerDetails,
 } from "./order-type-selector";
 import { PaymentSummary, type MixedAmounts } from "./payment-summary";
+import { CustomerLoyalty, type LoyaltyRedeem } from "./customer-loyalty";
 import type { CartLine, CollectionMode, OrderType, PaymentMethod, SplitMethod } from "./types";
 
 export function OrderCart({
@@ -17,6 +18,9 @@ export function OrderCart({
   details,
   branchId,
   tableReloadKey,
+  totalBeforeLoyalty,
+  redeem,
+  onRedeemChange,
   subtotal,
   discountInput,
   discountAmount,
@@ -49,6 +53,9 @@ export function OrderCart({
   details: CustomerDetails;
   branchId?: string;
   tableReloadKey?: number;
+  totalBeforeLoyalty: number;
+  redeem: LoyaltyRedeem;
+  onRedeemChange: (redeem: LoyaltyRedeem) => void;
   subtotal: number;
   discountInput: string;
   discountAmount: number;
@@ -97,6 +104,19 @@ export function OrderCart({
           onTypeChange={onTypeChange}
           onDetailsChange={onDetailsChange}
         />
+
+        {/* Customer profile + loyalty (phone lookup, points redemption) */}
+        <div className="border-t pt-3">
+          <CustomerLoyalty
+            branchId={branchId}
+            phone={details.customerPhone}
+            customerName={details.customerName}
+            orderTotalBeforeLoyalty={totalBeforeLoyalty}
+            redeem={redeem}
+            onPhoneChange={(customerPhone) => onDetailsChange({ ...details, customerPhone })}
+            onRedeemChange={onRedeemChange}
+          />
+        </div>
 
         <div className="space-y-2 border-t pt-3">
           {cart.length === 0 ? (

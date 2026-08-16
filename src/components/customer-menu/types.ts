@@ -28,6 +28,15 @@ export type MenuData = {
   // get server-side — so the client total matches the server exactly.
   charges: ChargeSettings & { taxRate: number; serviceChargeRate: number; serviceChargeFixedAmount: number };
   orderType: ChargeOrderType;
+  // Loyalty program surface for the public menu: whether the phone field is
+  // mandatory and how many points the current cart would earn. QR can only
+  // EARN — redemption is POS-only until OTP verification exists.
+  loyalty: {
+    enabled: boolean;
+    phoneRequired: boolean;
+    earnPointsPerAmount: number;
+    earnAmountStep: number;
+  };
 };
 
 export type CustomerCartLine = {

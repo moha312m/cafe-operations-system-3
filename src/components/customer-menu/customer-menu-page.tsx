@@ -30,7 +30,26 @@ import {
   type MenuVariant,
 } from "./types";
 
-type PlacedOrder = { orderNumber: number; total: string; status?: string };
+type PlacedOrder = {
+  orderNumber: number;
+  total: string;
+  status?: string;
+  expectedPoints?: number;
+  loyaltyEnabled?: boolean;
+};
+
+// Client-side mirror of the server's Egyptian phone check (server stays
+// authoritative). Accepts 010/011/012/015 numbers with +2/002 prefixes.
+function isValidEgyptianPhone(raw: string): boolean {
+  let d = raw.replace(/[\s\-()]/g, "");
+  if (d.startsWith("+")) d = d.slice(1);
+  if (!/^\d+$/.test(d)) return false;
+  if (d.startsWith("0020")) d = d.slice(4);
+  else if (d.startsWith("002")) d = d.slice(3);
+  else if (d.startsWith("20") && d.length > 10) d = d.slice(2);
+  if (d.length === 10 && d.startsWith("1")) d = "0" + d;
+  return /^01[0125]\d{8}$/.test(d);
+}
 
 // Bottom-sheet styling shared by the cart and the product-config dialogs.
 // Overrides the centered dialog into a mobile sheet pinned to the bottom.
@@ -93,6 +112,11 @@ export function CustomerMenuPage({
     [subtotal, menu.orderType, menu.charges]
   );
   const total = charges.total;
+  // Points this cart would earn — same floor(total/step)*pts rule as the server.
+  const expectedPoints =
+    menu.loyalty.enabled && menu.loyalty.earnAmountStep > 0
+      ? Math.floor(total / menu.loyalty.earnAmountStep) * menu.loyalty.earnPointsPerAmount
+      : 0;
 
   function addToCart(
     product: MenuProduct,
@@ -163,6 +187,15 @@ export function CustomerMenuPage({
       setError("من فضلك اكتب اسمك");
       return;
     }
+    const phone = details.customerPhone.trim();
+    if (menu.loyalty.phoneRequired && !phone) {
+      setError("من فضلك اكتب رقم الموبايل");
+      return;
+    }
+    if (phone && !isValidEgyptianPhone(phone)) {
+      setError("رقم الموبايل غير صحيح");
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {
@@ -209,6 +242,12 @@ export function CustomerMenuPage({
           <p className="text-sm text-muted-foreground">
             الإجمالي {money(placed.total, currency)} — الدفع عند التسليم.
           </p>
+          {placed.loyaltyEnabled && (placed.expectedPoints ?? 0) > 0 && (
+            <div className="rounded-xl bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-400">
+              <p className="font-semibold">⭐ هتكسب {placed.expectedPoints} نقطة بعد إتمام الطلب</p>
+              <p className="text-xs">سيتم إضافة نقاطك بعد تأكيد الطلب والدفع.</p>
+            </div>
+          )}
           <Button
             variant="outline"
             className="h-12 w-full"
@@ -339,6 +378,7 @@ export function CustomerMenuPage({
               <CustomerOrderForm
                 details={details}
                 tableLocked={initialTable !== null}
+                phoneRequired={menu.loyalty.phoneRequired}
                 onChange={setDetails}
               />
             )}
@@ -372,6 +412,11 @@ export function CustomerMenuPage({
                   <span>الإجمالي</span>
                   <span className="tabular-nums">{money(total, currency)}</span>
                 </div>
+                {menu.loyalty.enabled && expectedPoints > 0 && (
+                  <p className="pt-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-400">
+                    ⭐ هتكسب {expectedPoints} نقطة بعد إتمام الطلب
+                  </p>
+                )}
               </div>
 
               {error && <p className="text-sm text-destructive">{error}</p>}

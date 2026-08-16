@@ -5,6 +5,8 @@ import { requirePermission, handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { deductStockForOrder, auditDeduction, StockError } from "@/lib/stock-deduction";
 import { recomputeSessionTotals } from "@/lib/table-sessions";
+import { reverseOrderLoyalty } from "@/lib/loyalty";
+import { unrecordCustomerOrder } from "@/lib/customers";
 import type { OrderStatus } from "@prisma/client";
 
 type Params = { params: Promise<{ id: string }> };
@@ -131,6 +133,13 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     // Cancellations change the table bill — keep the session totals fresh.
     if (order.tableSessionId) {
       await recomputeSessionTotals(order.tableSessionId);
+    }
+
+    // Cancelled orders give back redeemed points, claw back earned ones,
+    // and roll the customer's order stats back.
+    if (status === "CANCELLED" && order.customerId) {
+      await reverseOrderLoyalty(order.id, session.id);
+      await unrecordCustomerOrder(order.customerId, Number(order.total));
     }
 
     if (deduction) {
