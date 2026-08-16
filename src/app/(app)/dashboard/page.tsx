@@ -1,9 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { api, money } from "@/lib/client";
 import { t, formatWeekday, formatTime } from "@/lib/i18n";
 import { useApp } from "@/components/app-shell";
+import { normalizeRangeKey, type RangeKey } from "@/lib/date-range";
 import type { OrderStatus, OrderSource } from "@prisma/client";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -16,10 +18,12 @@ import {
   StatusBadge, SourceBadge, EmptyState, LoadingState,
 } from "@/components/cafe/ui";
 
-type Range = "today" | "7d" | "30d" | "month";
+// Applied date filter (mirrors URL query params).
+type DateFilter = { range: RangeKey; date?: string; from?: string; to?: string };
 
 type DashboardData = {
   range: string;
+  period: { from: string; to: string };
   todayRevenue: number;
   todayOrders: number;
   ordersAll: number;
@@ -71,36 +75,132 @@ type DashboardData = {
     lowMargin: number;
     topProduct: { name: string; profit: number; margin: number } | null;
   } | null;
-  purchases?: { todayTotal: number; monthTotal: number; unpaidCount: number } | null;
+  purchases?: { periodTotal: number; unpaidCount: number } | null;
 };
 
-const RANGES: { key: Range; label: string }[] = [
-  { key: "today", label: t.dashboard.range.today },
-  { key: "7d", label: t.dashboard.range.d7 },
-  { key: "30d", label: t.dashboard.range.d30 },
-  { key: "month", label: t.dashboard.range.month },
+const RANGES: { key: RangeKey; label: string }[] = [
+  { key: "today", label: "النهارده" },
+  { key: "yesterday", label: "أمس" },
+  { key: "last_3_days", label: "آخر 3 أيام" },
+  { key: "last_7_days", label: "آخر 7 أيام" },
+  { key: "last_30_days", label: "آخر 30 يوم" },
+  { key: "month", label: "هذا الشهر" },
+  { key: "custom_day", label: "تاريخ مخصص" },
+  { key: "custom_range", label: "مدة مخصصة" },
 ];
+const RANGE_LABEL = Object.fromEntries(RANGES.map((r) => [r.key, r.label]));
 
 const SOURCE_LABEL: Record<string, string> = {
   QR_MENU: "منيو QR", WAITER: "ويتر", CASHIER_POS: "الكاشير",
 };
 
+// "5 أغسطس 2026" from a local YYYY-MM-DD string.
+function arDate(dateStr: string): string {
+  return new Date(`${dateStr}T12:00:00`).toLocaleDateString("ar-EG", {
+    day: "numeric", month: "long", year: "numeric",
+  });
+}
+
+function periodLabel(filter: DateFilter, period?: { from: string; to: string }): string {
+  if (filter.range === "custom_day" && filter.date) return `الفترة: ${arDate(filter.date)}`;
+  if (filter.range === "custom_range" && filter.from && filter.to)
+    return `الفترة: من ${arDate(filter.from)} إلى ${arDate(filter.to)}`;
+  if (period && (filter.range === "last_3_days" || filter.range === "last_7_days" || filter.range === "last_30_days" || filter.range === "month"))
+    return `الفترة: ${RANGE_LABEL[filter.range]} (${arDate(period.from)} — ${arDate(period.to)})`;
+  return `الفترة: ${RANGE_LABEL[filter.range]}`;
+}
+
 export default function DashboardPage() {
+  // useSearchParams needs a Suspense boundary for prerendering.
+  return (
+    <Suspense fallback={<LoadingState label={t.common.loading} />}>
+      <DashboardInner />
+    </Suspense>
+  );
+}
+
+function DashboardInner() {
   const { cafe, user, branchName } = useApp();
   const currency = cafe?.currency ?? "EGP";
   const fmt = (v: number) => money(v, currency);
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
   const [data, setData] = useState<DashboardData | null>(null);
   const [branchId, setBranchId] = useState<string>("all");
-  const [range, setRange] = useState<Range>("today");
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+
+  // Applied filter — initialized from the URL so refresh/share keeps it.
+  const [filter, setFilter] = useState<DateFilter>(() => ({
+    range: normalizeRangeKey(searchParams.get("range")),
+    date: searchParams.get("date") ?? undefined,
+    from: searchParams.get("from") ?? undefined,
+    to: searchParams.get("to") ?? undefined,
+  }));
+  // Picker drafts (edited before تطبيق).
+  const [draftMode, setDraftMode] = useState<"custom_day" | "custom_range" | null>(
+    filter.range === "custom_day" || filter.range === "custom_range" ? filter.range : null
+  );
+  const [draftDate, setDraftDate] = useState(filter.date ?? "");
+  const [draftFrom, setDraftFrom] = useState(filter.from ?? "");
+  const [draftTo, setDraftTo] = useState(filter.to ?? "");
+  const [filterError, setFilterError] = useState<string | null>(null);
+
+  // Persist the applied filter in the URL (shareable / survives refresh).
+  const applyFilter = useCallback((next: DateFilter) => {
+    setFilter(next);
+    const qs = new URLSearchParams();
+    if (next.range !== "today") qs.set("range", next.range);
+    if (next.range === "custom_day" && next.date) qs.set("date", next.date);
+    if (next.range === "custom_range" && next.from && next.to) {
+      qs.set("from", next.from);
+      qs.set("to", next.to);
+    }
+    router.replace(`/dashboard${qs.size ? `?${qs}` : ""}`, { scroll: false });
+  }, [router]);
+
+  function pickQuickRange(key: RangeKey) {
+    setFilterError(null);
+    if (key === "custom_day" || key === "custom_range") {
+      setDraftMode(key); // pickers open; applied filter unchanged until تطبيق
+      return;
+    }
+    setDraftMode(null);
+    applyFilter({ range: key });
+  }
+
+  function applyCustom() {
+    if (draftMode === "custom_day") {
+      if (!draftDate) return setFilterError("من فضلك اختر اليوم");
+      setFilterError(null);
+      applyFilter({ range: "custom_day", date: draftDate });
+    } else if (draftMode === "custom_range") {
+      if (!draftFrom) return setFilterError("من فضلك اختر تاريخ البداية");
+      if (!draftTo) return setFilterError("من فضلك اختر تاريخ النهاية");
+      if (draftFrom > draftTo)
+        return setFilterError("تاريخ البداية لا يمكن أن يكون بعد تاريخ النهاية");
+      setFilterError(null);
+      applyFilter({ range: "custom_range", from: draftFrom, to: draftTo });
+    }
+  }
+
+  function resetFilter() {
+    setDraftMode(null);
+    setDraftDate(""); setDraftFrom(""); setDraftTo("");
+    setFilterError(null);
+    applyFilter({ range: "today" });
+  }
 
   const load = useCallback(async () => {
     try {
       setRefreshing(true);
       const qs = new URLSearchParams();
       if (branchId !== "all") qs.set("branchId", branchId);
-      qs.set("range", range);
+      qs.set("range", filter.range);
+      if (filter.date) qs.set("date", filter.date);
+      if (filter.from) qs.set("from", filter.from);
+      if (filter.to) qs.set("to", filter.to);
       setData(await api<DashboardData>(`/api/dashboard?${qs.toString()}`));
       setError(null);
     } catch (e) {
@@ -108,7 +208,7 @@ export default function DashboardPage() {
     } finally {
       setRefreshing(false);
     }
-  }, [branchId, range]);
+  }, [branchId, filter]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -132,15 +232,18 @@ export default function DashboardPage() {
     </>
   );
 
+  // The highlighted pill: the open picker mode wins; otherwise the applied range.
+  const activeKey = draftMode ?? filter.range;
+
   const controls = (
     <>
-      <div className="flex rounded-xl border border-border bg-card p-0.5 text-sm">
+      <div className="flex flex-wrap rounded-xl border border-border bg-card p-0.5 text-sm">
         {RANGES.map((r) => (
           <button
             key={r.key}
-            onClick={() => setRange(r.key)}
+            onClick={() => pickQuickRange(r.key)}
             className={`rounded-lg px-3 py-1.5 font-medium transition-colors ${
-              range === r.key ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground"
+              activeKey === r.key ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground"
             }`}
           >
             {r.label}
@@ -170,9 +273,71 @@ export default function DashboardPage() {
     </>
   );
 
+  // Custom day / range pickers + the current-period line.
+  const filterBar = (
+    <div className="mb-4 space-y-2">
+      {draftMode && (
+        <div className="flex flex-wrap items-end gap-2 rounded-xl border bg-card p-3">
+          {draftMode === "custom_day" ? (
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">اختر اليوم</label>
+              <input
+                type="date"
+                dir="ltr"
+                value={draftDate}
+                onChange={(e) => setDraftDate(e.target.value)}
+                className="h-9 rounded-lg border border-input bg-background px-3 text-sm"
+              />
+            </div>
+          ) : (
+            <>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">من تاريخ</label>
+                <input
+                  type="date"
+                  dir="ltr"
+                  value={draftFrom}
+                  onChange={(e) => setDraftFrom(e.target.value)}
+                  className="h-9 rounded-lg border border-input bg-background px-3 text-sm"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">إلى تاريخ</label>
+                <input
+                  type="date"
+                  dir="ltr"
+                  value={draftTo}
+                  onChange={(e) => setDraftTo(e.target.value)}
+                  className="h-9 rounded-lg border border-input bg-background px-3 text-sm"
+                />
+              </div>
+            </>
+          )}
+          <button
+            onClick={applyCustom}
+            className="h-9 rounded-lg bg-foreground px-4 text-sm font-semibold text-background"
+          >
+            تطبيق
+          </button>
+          <button
+            onClick={resetFilter}
+            className="h-9 rounded-lg border border-border bg-card px-4 text-sm font-medium text-muted-foreground hover:text-foreground"
+          >
+            إعادة ضبط
+          </button>
+          {filterError && <p className="w-full text-sm text-destructive">{filterError}</p>}
+        </div>
+      )}
+      <p className="text-sm font-medium text-muted-foreground">
+        📅 {periodLabel(filter, data?.period)}
+      </p>
+    </div>
+  );
+
   if (error) return (
     <>
       <PageHeader title={title} subtitle={subtitle}>{controls}</PageHeader>
+      {filterBar}
       <p className="text-destructive">{error}</p>
     </>
   );
@@ -180,6 +345,7 @@ export default function DashboardPage() {
     return (
       <>
         <PageHeader title={title} subtitle={subtitle}>{controls}</PageHeader>
+        {filterBar}
         <LoadingState label={t.common.loading} />
       </>
     );
@@ -197,6 +363,10 @@ export default function DashboardPage() {
   return (
     <>
       <PageHeader title={title} subtitle={subtitle}>{controls}</PageHeader>
+      {filterBar}
+
+      {/* Refreshing dims (no layout jump) while the new period loads. */}
+      <div className={refreshing ? "pointer-events-none opacity-60 transition-opacity" : "transition-opacity"}>
 
       {/* Primary KPI cards */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -249,8 +419,7 @@ export default function DashboardPage() {
         )}
         {data.purchases && (
           <>
-            <StatCard label="مشتريات النهارده" value={fmt(data.purchases.todayTotal)} icon="🛒" accent="blue" href="/purchases" />
-            <StatCard label="مشتريات الشهر" value={fmt(data.purchases.monthTotal)} icon="📅" accent="slate" href="/purchases" />
+            <StatCard label="مشتريات الفترة" value={fmt(data.purchases.periodTotal)} icon="🛒" accent="blue" href="/purchases" />
             <StatCard
               label="فواتير مشتريات غير مدفوعة"
               value={data.purchases.unpaidCount}
@@ -291,17 +460,25 @@ export default function DashboardPage() {
 
       {/* Charts */}
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
-        <Panel title={d.weekRevenue}>
-          <BarChart
-            data={data.revenueByDay.map((x) => ({ label: formatWeekday(`${x.date}T12:00:00`), value: x.revenue }))}
-            format={fmt}
-          />
+        <Panel title="المبيعات حسب الأيام (الطلبات المكتملة)">
+          {data.todayRevenue === 0 ? (
+            <EmptyState message="لا توجد مبيعات في هذه الفترة" icon="💵" />
+          ) : (
+            <BarChart
+              data={data.revenueByDay.map((x) => ({ label: dayLabel(x.date, data.revenueByDay.length), value: x.revenue }))}
+              format={fmt}
+            />
+          )}
         </Panel>
-        <Panel title="الطلبات — آخر ٧ أيام">
-          <BarChart
-            data={data.revenueByDay.map((x) => ({ label: formatWeekday(`${x.date}T12:00:00`), value: x.orders }))}
-            color="#2563eb"
-          />
+        <Panel title="الطلبات حسب الأيام">
+          {data.completedOrders === 0 ? (
+            <EmptyState message="لا توجد طلبات في هذه الفترة" icon="🧾" />
+          ) : (
+            <BarChart
+              data={data.revenueByDay.map((x) => ({ label: dayLabel(x.date, data.revenueByDay.length), value: x.orders }))}
+              color="#2563eb"
+            />
+          )}
         </Panel>
         <Panel title="المبيعات حسب طريقة الدفع">
           <Donut data={data.paymentSplit.map((p) => ({ label: pm[p.method as keyof typeof pm] ?? p.method, value: p.value }))} />
@@ -382,9 +559,9 @@ export default function DashboardPage() {
           )}
         </Panel>
 
-        <Panel title="آخر الطلبات" className="lg:col-span-2">
+        <Panel title="آخر الطلبات داخل الفترة" className="lg:col-span-2">
           {data.recentOrders.length === 0 ? (
-            <EmptyState message={d.noSales} icon="🧾" />
+            <EmptyState message="لا توجد طلبات في هذه الفترة" icon="🧾" />
           ) : (
             <div className="overflow-x-auto">
               <Table>
@@ -413,6 +590,7 @@ export default function DashboardPage() {
           )}
         </Panel>
 
+      {/* close refreshing-dim wrapper below, after all panels */}
         {data.lowStockItems.length > 0 && (
           <Panel title={d.stockAlerts} className="lg:col-span-2">
             <div className="overflow-x-auto">
@@ -444,8 +622,16 @@ export default function DashboardPage() {
           </Panel>
         )}
       </div>
+      </div>{/* end refreshing-dim wrapper */}
     </>
   );
+}
+
+// Weekday label for short ranges; "د/ش" date label once bars get dense.
+function dayLabel(dateStr: string, totalDays: number): string {
+  if (totalDays <= 7) return formatWeekday(`${dateStr}T12:00:00`);
+  const [, m, d] = dateStr.split("-");
+  return `${Number(d)}/${Number(m)}`;
 }
 
 function Insight({ label, value, sub }: { label: string; value: string; sub?: string }) {

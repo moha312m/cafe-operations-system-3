@@ -1,10 +1,13 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { requirePermission, resolveCafeId, handleApiError } from "@/lib/api";
+import { requirePermission, resolveCafeId, handleApiError, ApiError } from "@/lib/api";
 import { hasPermission } from "@/lib/permissions";
 import { productCost, profitFor } from "@/lib/costing";
 import { resolvePermissions } from "@/lib/perms/effective";
 import { getCafeSettings } from "@/lib/cafe-settings";
+import {
+  getDateRangeFromFilter, dayListForRange, dateStrInTz, DEFAULT_TZ,
+} from "@/lib/date-range";
 import type { SessionUser } from "@/lib/auth";
 
 // Purchases dashboard summary — only when the feature is on and the user
@@ -13,24 +16,22 @@ async function buildPurchaseSummary(
   session: SessionUser,
   cafeId: string,
   branchFilter: { branchId?: string },
-  startOfToday: Date
+  period: { gte: Date; lte: Date }
 ) {
   const settings = await getCafeSettings(cafeId);
   if (!settings.purchasesEnabled) return null;
   const { keys } = await resolvePermissions(session);
   if (!keys.has("purchases.view")) return null;
 
-  const startOfMonth = new Date(startOfToday);
-  startOfMonth.setDate(1);
   const scope = { cafeId, ...branchFilter, status: { not: "CANCELLED" as const } };
-  const [today, month, unpaid] = await Promise.all([
-    db.purchaseInvoice.aggregate({ where: { ...scope, invoiceDate: { gte: startOfToday } }, _sum: { totalAmount: true } }),
-    db.purchaseInvoice.aggregate({ where: { ...scope, invoiceDate: { gte: startOfMonth } }, _sum: { totalAmount: true } }),
+  const [inPeriod, unpaid] = await Promise.all([
+    // مشتريات الفترة — by invoiceDate, same window as the rest of the page.
+    db.purchaseInvoice.aggregate({ where: { ...scope, invoiceDate: period }, _sum: { totalAmount: true } }),
+    // Unpaid invoices are a current-state alert, not a period metric.
     db.purchaseInvoice.count({ where: { ...scope, paymentStatus: { in: ["UNPAID", "PARTIAL"] } } }),
   ]);
   return {
-    todayTotal: Number(today._sum.totalAmount ?? 0),
-    monthTotal: Number(month._sum.totalAmount ?? 0),
+    periodTotal: Number(inPeriod._sum.totalAmount ?? 0),
     unpaidCount: unpaid,
   };
 }
@@ -64,46 +65,22 @@ async function buildRecipeSummary(role: string, cafeId: string) {
   return { withoutRecipe, lowMargin, topProduct: top };
 }
 
-// Resolve the reporting window from ?range= (today|7d|30d|month|custom).
-function resolveWindow(range: string, fromParam: string | null, toParam: string | null) {
-  const now = new Date();
-  const startOfToday = new Date(now);
-  startOfToday.setHours(0, 0, 0, 0);
-  let from = startOfToday;
-  let to = now;
-  if (range === "7d") {
-    from = new Date(startOfToday);
-    from.setDate(from.getDate() - 6);
-  } else if (range === "30d") {
-    from = new Date(startOfToday);
-    from.setDate(from.getDate() - 29);
-  } else if (range === "month") {
-    from = new Date(now.getFullYear(), now.getMonth(), 1);
-  } else if (range === "custom" && fromParam) {
-    from = new Date(`${fromParam}T00:00:00`);
-    to = toParam ? new Date(`${toParam}T23:59:59`) : now;
-  }
-  // Previous same-length window (for "vs previous" comparison).
-  const len = to.getTime() - from.getTime();
-  const prevFrom = new Date(from.getTime() - len);
-  return { now, startOfToday, from, to, prevFrom, prevTo: from };
-}
-
 export async function GET(request: NextRequest) {
   try {
     const session = await requirePermission("dashboard:read");
     const params = request.nextUrl.searchParams;
     const cafeId = resolveCafeId(session, params.get("cafeId"));
     const branchId = session.branchId ?? params.get("branchId") ?? undefined;
-    const range = params.get("range") ?? "today";
 
-    const { now, startOfToday, from, to, prevFrom, prevTo } = resolveWindow(
-      range,
-      params.get("from"),
-      params.get("to")
-    );
-    const sevenDaysAgo = new Date(startOfToday);
-    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+    // Timezone-correct reporting window (Africa/Cairo day boundaries),
+    // shared with the other reports so numbers always agree.
+    const win = getDateRangeFromFilter(params.get("range"), {
+      date: params.get("date"),
+      from: params.get("from"),
+      to: params.get("to"),
+    });
+    if (win.error) throw new ApiError(400, win.error);
+    const { from, to, prevFrom, prevTo } = win;
 
     const branchFilter = branchId ? { branchId } : {};
     const period = { gte: from, lte: to };
@@ -111,10 +88,10 @@ export async function GET(request: NextRequest) {
 
     const [
       servedAgg, prevServedAgg, allOrdersCount, cancelledCount, openOrders,
-      weekOrders, topItems, leastItems, branches, inventoryItems,
+      periodOrders, topItems, leastItems, branches, inventoryItems,
       openShiftsCount, closedShiftsCount, cashPeriodAgg, paymentSplitRows,
       salesByBranch, cashiersRows, sourceRows, collectionRows,
-      recentOrders, recentShifts, latestClosed,
+      recentOrders, recentShifts, latestClosed, pendingOrdersRows,
     ] = await Promise.all([
       db.order.aggregate({
         where: servedInPeriod,
@@ -131,8 +108,10 @@ export async function GET(request: NextRequest) {
       }),
       db.order.count({ where: { cafeId, ...branchFilter, status: "CANCELLED", createdAt: period } }),
       db.order.count({ where: { cafeId, ...branchFilter, status: { in: ["CONFIRMED", "PREPARING", "READY"] } } }),
+      // Day-bucketed sales/orders chart data — the SELECTED period, not a
+      // hardcoded week.
       db.order.findMany({
-        where: { cafeId, ...branchFilter, status: "SERVED", createdAt: { gte: sevenDaysAgo } },
+        where: servedInPeriod,
         select: { total: true, createdAt: true },
       }),
       db.orderItem.groupBy({
@@ -189,8 +168,9 @@ export async function GET(request: NextRequest) {
         _sum: { remainingAmount: true },
         _count: true,
       }),
+      // آخر الطلبات داخل الفترة
       db.order.findMany({
-        where: { cafeId, ...branchFilter },
+        where: { cafeId, ...branchFilter, createdAt: period },
         orderBy: { createdAt: "desc" },
         take: 8,
         select: {
@@ -199,8 +179,9 @@ export async function GET(request: NextRequest) {
           createdAt: true, branch: { select: { name: true } },
         },
       }),
+      // آخر الشيفتات داخل الفترة (by openedAt)
       db.shift.findMany({
-        where: { cafeId, ...branchFilter },
+        where: { cafeId, ...branchFilter, openedAt: period },
         orderBy: { openedAt: "desc" },
         take: 6,
         select: {
@@ -209,12 +190,27 @@ export async function GET(request: NextRequest) {
           branch: { select: { name: true } },
         },
       }),
+      // آخر شيفت مغلق داخل الفترة
       db.shift.findFirst({
-        where: { cafeId, ...branchFilter, status: "CLOSED" },
+        where: { cafeId, ...branchFilter, status: "CLOSED", closedAt: period },
         orderBy: { closedAt: "desc" },
         select: {
           shiftNumber: true, closedAt: true, totalSales: true, cashDifference: true,
           cashier: { select: { name: true } }, branch: { select: { name: true } },
+        },
+      }),
+      // الطلبات في انتظار التحصيل داخل الفترة
+      db.order.findMany({
+        where: {
+          cafeId, ...branchFilter, createdAt: period,
+          paymentStatus: { in: ["PENDING_COLLECTION", "PARTIAL"] },
+          status: { notIn: ["CANCELLED", "REJECTED", "PENDING_WAITER_APPROVAL"] },
+        },
+        orderBy: { createdAt: "desc" },
+        take: 8,
+        select: {
+          id: true, orderNumber: true, total: true, remainingAmount: true,
+          branch: { select: { name: true } },
         },
       }),
     ]);
@@ -242,22 +238,20 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // 7-day trend (always the last 7 calendar days, independent of range).
-    const revenueByDay: { date: string; revenue: number; orders: number }[] = [];
-    for (let i = 0; i < 7; i++) {
-      const day = new Date(sevenDaysAgo);
-      day.setDate(day.getDate() + i);
-      revenueByDay.push({ date: day.toISOString().slice(0, 10), revenue: 0, orders: 0 });
-    }
-    for (const order of weekOrders) {
-      const local = new Date(order.createdAt);
-      local.setHours(0, 0, 0, 0);
-      const idx = Math.round((local.getTime() - sevenDaysAgo.getTime()) / 86_400_000);
-      if (revenueByDay[idx]) {
-        revenueByDay[idx].revenue += Number(order.total);
-        revenueByDay[idx].orders += 1;
+    // Sales/orders per local (Cairo) calendar day across the SELECTED range.
+    // Bucketing uses the cafe timezone so late-night orders land on the
+    // right day, never split by UTC boundaries.
+    const dayBuckets = new Map(
+      dayListForRange(win.fromDateStr, win.toDateStr).map((d) => [d, { date: d, revenue: 0, orders: 0 }])
+    );
+    for (const order of periodOrders) {
+      const bucket = dayBuckets.get(dateStrInTz(order.createdAt, DEFAULT_TZ));
+      if (bucket) {
+        bucket.revenue += Number(order.total);
+        bucket.orders += 1;
       }
     }
+    const revenueByDay = [...dayBuckets.values()];
 
     // Collection breakdown.
     const collRow = (s: string) => collectionRows.find((r) => r.paymentStatus === s);
@@ -278,7 +272,9 @@ export async function GET(request: NextRequest) {
       .map((r) => ({ name: cashierName.get(r.cashierId!) ?? "—", value: Number(r._sum.amount ?? 0) }));
 
     return NextResponse.json({
-      range,
+      range: win.range,
+      // Local-calendar bounds so the UI can label "الفترة: …" exactly.
+      period: { from: win.fromDateStr, to: win.toDateStr },
       // Headline KPIs (period-scoped)
       todayRevenue: revenue,
       todayOrders: servedCount,
@@ -331,16 +327,17 @@ export async function GET(request: NextRequest) {
         cashDifference: s.cashDifference == null ? null : Number(s.cashDifference),
         cashier: s.cashier.name, branch: s.branch.name,
       })),
-      pendingCollectionOrders: recentOrders
-        .filter((o) => o.paymentStatus === "PENDING_COLLECTION" || o.paymentStatus === "PARTIAL")
-        .map((o) => ({ id: o.id, orderNumber: o.orderNumber, total: Number(o.total), remaining: Number(o.remainingAmount), branch: o.branch.name })),
+      pendingCollectionOrders: pendingOrdersRows.map((o) => ({
+        id: o.id, orderNumber: o.orderNumber, total: Number(o.total),
+        remaining: Number(o.remainingAmount), branch: o.branch.name,
+      })),
       topProducts,
       leastProducts,
       lowStockItems: lowStockItems.slice(0, 6),
       branches,
       inventory: { lowStockCount, outOfStockCount },
       recipes: await buildRecipeSummary(session.role, cafeId),
-      purchases: await buildPurchaseSummary(session, cafeId, branchFilter, startOfToday),
+      purchases: await buildPurchaseSummary(session, cafeId, branchFilter, period),
     });
   } catch (error) {
     return handleApiError(error);
