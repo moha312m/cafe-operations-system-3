@@ -40,7 +40,10 @@ export async function GET(request: NextRequest) {
         db.customer.count({ where: { cafeId, totalOrders: { gte: 2 } } }),
         db.customer.aggregate({
           where: { cafeId },
-          _sum: { lifetimePointsEarned: true, lifetimePointsRedeemed: true, totalSpent: true },
+          _sum: {
+            lifetimePointsEarned: true, lifetimePointsRedeemed: true,
+            totalSpent: true, loyaltyPointsBalance: true,
+          },
         }),
         db.customer.findMany({
           where: { cafeId, totalSpent: { gt: 0 } },
@@ -58,6 +61,7 @@ export async function GET(request: NextRequest) {
         repeatCount,
         totalPointsIssued: pointsAgg._sum.lifetimePointsEarned ?? 0,
         totalPointsRedeemed: pointsAgg._sum.lifetimePointsRedeemed ?? 0,
+        currentPointsBalance: pointsAgg._sum.loyaltyPointsBalance ?? 0,
         avgSpend: totalCount > 0 ? Number(pointsAgg._sum.totalSpent ?? 0) / totalCount : 0,
         topSpenders: topSpenders.map((c) => ({
           ...c,

@@ -30,6 +30,7 @@ type Stats = {
   repeatCount: number;
   totalPointsIssued: number;
   totalPointsRedeemed: number;
+  currentPointsBalance: number;
   avgSpend: number;
   topSpenders: { id: string; name: string | null; normalizedPhone: string; totalSpent: number; totalOrders: number; loyaltyPointsBalance: number }[];
 };
@@ -69,6 +70,10 @@ export default function CustomersPage() {
   const [adjustDelta, setAdjustDelta] = useState("");
   const [adjustNote, setAdjustNote] = useState("");
   const [busy, setBusy] = useState(false);
+  // تعديل — edit name/notes dialog.
+  const [editing, setEditing] = useState<CustomerRow | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editNotes, setEditNotes] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -105,6 +110,24 @@ export default function CustomersPage() {
     }
   }
 
+  async function submitEdit() {
+    if (!editing) return;
+    setBusy(true);
+    try {
+      await api(`/api/customers/${editing.id}`, {
+        method: "PATCH",
+        body: { name: editName.trim(), notes: editNotes.trim() },
+      });
+      toast.success("تم حفظ بيانات العميل");
+      setEditing(null);
+      load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "فشل الحفظ");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function submitAdjust() {
     if (!adjusting) return;
     const delta = Math.trunc(Number(adjustDelta) || 0);
@@ -136,25 +159,32 @@ export default function CustomersPage() {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold">العملاء</h1>
-        <Input
-          placeholder="ابحث بالاسم أو رقم الموبايل…"
-          className="w-64"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
+        <h1 className="text-2xl font-semibold">العملاء وبرنامج الولاء</h1>
+        <div className="flex flex-wrap items-center gap-2">
+          {canKey("loyalty.settings_edit") && (
+            <Button variant="outline" size="sm" onClick={() => (window.location.href = "/settings")}>
+              ⚙️ إعدادات برنامج الولاء
+            </Button>
+          )}
+          <Input
+            placeholder="ابحث بالاسم أو رقم الموبايل…"
+            className="w-64"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
       </div>
 
       {/* Metrics */}
       {stats && (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
           {[
-            ["عدد العملاء", String(stats.totalCount)],
+            ["إجمالي العملاء", String(stats.totalCount)],
             ["عملاء جدد اليوم", String(stats.newToday)],
             ["عملاء متكررين", String(stats.repeatCount)],
-            ["نقاط مصدرة", String(stats.totalPointsIssued)],
+            ["إجمالي النقاط الحالية", String(stats.currentPointsBalance)],
             ["نقاط مستخدمة", String(stats.totalPointsRedeemed)],
-            ["متوسط إنفاق العميل", money(stats.avgSpend, currency)],
+            ["أفضل عميل", stats.topSpenders[0]?.name ?? stats.topSpenders[0]?.normalizedPhone ?? "—"],
           ].map(([label, value]) => (
             <Card key={label}>
               <CardContent className="p-3">
@@ -187,9 +217,12 @@ export default function CustomersPage() {
       {rows === null ? (
         <p className="text-sm text-muted-foreground">جاري التحميل…</p>
       ) : rows.length === 0 ? (
-        <p className="rounded-xl border bg-card p-8 text-center text-sm text-muted-foreground">
-          لا يوجد عملاء بعد — العملاء بيتسجلوا تلقائيًا من رقم الموبايل في الكاشير أو منيو QR.
-        </p>
+        <div className="space-y-1 rounded-xl border bg-card p-8 text-center">
+          <p className="text-sm font-medium">لا يوجد عملاء حتى الآن</p>
+          <p className="text-xs text-muted-foreground">
+            سيتم إضافة العملاء تلقائيًا عند تسجيل رقم الموبايل في POS أو QR
+          </p>
+        </div>
       ) : (
         <div className="overflow-x-auto rounded-xl border bg-card">
           <table className="w-full text-sm">
@@ -224,6 +257,13 @@ export default function CustomersPage() {
                       <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => openDetails(c.id)}>
                         عرض التفاصيل
                       </Button>
+                      {canEdit && (
+                        <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => {
+                          setEditing(c); setEditName(c.name ?? ""); setEditNotes("");
+                        }}>
+                          تعديل
+                        </Button>
+                      )}
                       {canAdjust && (
                         <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => setAdjusting(c)}>
                           تعديل النقاط
@@ -301,6 +341,30 @@ export default function CustomersPage() {
               </div>
             </div>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit customer */}
+      <Dialog open={editing !== null} onOpenChange={(o) => !o && !busy && setEditing(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>تعديل بيانات العميل</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <p className="rounded-lg bg-muted/40 p-2 text-sm" dir="ltr">{editing?.phone}</p>
+            <div className="space-y-1.5">
+              <Label>الاسم</Label>
+              <Input value={editName} onChange={(e) => setEditName(e.target.value)} placeholder="اسم العميل" />
+            </div>
+            <div className="space-y-1.5">
+              <Label>ملاحظات</Label>
+              <Input value={editNotes} onChange={(e) => setEditNotes(e.target.value)} placeholder="ملاحظات داخلية" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditing(null)} disabled={busy}>إلغاء</Button>
+            <Button onClick={submitEdit} disabled={busy}>حفظ</Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

@@ -64,6 +64,14 @@ export async function resolvePermissions(
     base = new Set(defaultKeysForRole(user.role));
   }
 
+  // Cafe owners are the tenant root: they always hold the FULL cafe key
+  // set, regardless of any assigned role's stored snapshot. This also
+  // future-proofs catalog growth — new keys reach existing owners
+  // immediately, with no reseed or re-login required.
+  if (user.role === "CAFE_OWNER") {
+    for (const k of CAFE_KEYS) base.add(k);
+  }
+
   // Per-user overrides win over the role.
   for (const o of user.permissionOverrides) {
     if (o.allowed) base.add(o.permissionKey);
