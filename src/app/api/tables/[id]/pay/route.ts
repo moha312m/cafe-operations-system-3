@@ -196,6 +196,8 @@ export async function POST(request: NextRequest, { params }: Params) {
       collected: totalCollected,
       paidAmount: Number(updated.paidAmount),
       remainingAmount: Number(updated.remainingAmount),
+      // For the receipt: the payment rows this operation created.
+      paymentIds,
     });
   } catch (error) {
     return handleApiError(error);

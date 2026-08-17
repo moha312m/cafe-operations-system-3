@@ -70,6 +70,8 @@ export function TableInvoices({
 
   // Collect dialog: either a single invoice (orderId) or the whole table.
   const [collect, setCollect] = useState<null | { kind: "invoice"; orderId: string; remaining: number; label: string } | { kind: "table-full"; remaining: number } | { kind: "table-partial"; remaining: number }>(null);
+  // Post-payment receipt actions (طباعة الريسيت / تحصيل دفعة أخرى).
+  const [receipt, setReceipt] = useState<null | { paymentId: string; scope: "order" | "table" }>(null);
   const [amount, setAmount] = useState("");
   const [payMethod, setPayMethod] = useState<"CASH" | "CARD" | "WALLET">("CASH");
 
@@ -113,18 +115,26 @@ export function TableInvoices({
     const amt = Number(amount) || 0;
     setBusy(true);
     try {
+      let paymentId = "";
+      let scope: "order" | "table" = "order";
       if (collect.kind === "invoice") {
         if (amt <= 0 || amt > collect.remaining + 0.001) { setBusy(false); return toast.error("مبلغ غير صحيح"); }
-        await api("/api/payments", { method: "POST", body: { orderId: collect.orderId, amount: amt, method: payMethod } });
+        const r = await api<{ payments: { id: string }[] }>("/api/payments", {
+          method: "POST", body: { orderId: collect.orderId, amount: amt, method: payMethod },
+        });
+        paymentId = r.payments[0]?.id ?? "";
       } else if (summary) {
         const mode = collect.kind === "table-full" ? "FULL" : "PARTIAL";
         const body: Record<string, unknown> = { mode, method: payMethod };
         if (mode === "PARTIAL") body.amount = amt;
         if (mode === "PARTIAL" && (amt <= 0 || amt > collect.remaining + 0.001)) { setBusy(false); return toast.error("مبلغ غير صحيح"); }
-        await api(`/api/tables/${summary.id}/pay`, { method: "POST", body });
+        const r = await api<{ paymentIds: string[] }>(`/api/tables/${summary.id}/pay`, { method: "POST", body });
+        paymentId = r.paymentIds?.[0] ?? "";
+        scope = "table";
       }
-      toast.success("تم تحصيل الدفعة");
+      toast.success("تم تحصيل الدفع بنجاح");
       setCollect(null); setAmount("");
+      if (paymentId) setReceipt({ paymentId, scope });
       await refresh();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "فشل التحصيل");
@@ -243,6 +253,50 @@ export function TableInvoices({
           )}
         </div>
       )}
+
+      {/* Post-payment receipt actions */}
+      <Dialog open={receipt !== null} onOpenChange={(o) => !o && setReceipt(null)}>
+        <DialogContent className="max-w-xs">
+          <DialogHeader>
+            <DialogTitle>تم تحصيل الدفع بنجاح ✅</DialogTitle>
+          </DialogHeader>
+          <div className="grid gap-2">
+            <Button
+              className="h-11 w-full"
+              onClick={() => {
+                if (!receipt) return;
+                const scopeQs = receipt.scope === "table" ? "&scope=table" : "";
+                window.open(`/receipts/payment/${receipt.paymentId}?print=1${scopeQs}`, "_blank");
+              }}
+            >
+              🖨️ طباعة الريسيت
+            </Button>
+            <Button
+              variant="outline"
+              className="h-11 w-full"
+              onClick={() => {
+                if (!receipt) return;
+                const scopeQs = receipt.scope === "table" ? "?scope=table" : "";
+                window.open(`/receipts/payment/${receipt.paymentId}${scopeQs}`, "_blank");
+              }}
+            >
+              عرض الريسيت
+            </Button>
+            {summary && summary.remainingAmount > 0.001 && (
+              <Button
+                variant="outline"
+                className="h-10 w-full text-sm"
+                onClick={() => setReceipt(null)}
+              >
+                تحصيل دفعة أخرى
+              </Button>
+            )}
+            <Button variant="ghost" className="h-10 w-full text-muted-foreground" onClick={() => setReceipt(null)}>
+              إغلاق
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* Collect dialog */}
       <Dialog open={collect !== null} onOpenChange={(o) => !o && !busy && setCollect(null)}>

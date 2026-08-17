@@ -51,6 +51,8 @@ export function CollectPaymentPanel({
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState<"CASH" | "CARD" | "WALLET">("CASH");
   const [busy, setBusy] = useState(false);
+  // Set after a successful collection → receipt actions view.
+  const [receipt, setReceipt] = useState<{ paymentId: string; amount: number } | null>(null);
 
   useEffect(() => {
     api<{ target: OrderTarget }>(`/api/payments/collect-info?orderId=${orderId}`)
@@ -72,12 +74,12 @@ export function CollectPaymentPanel({
       return toast.error("مبلغ الدفع أكبر من المتبقي على الطلب");
     setBusy(true);
     try {
-      await api("/api/payments", {
+      const r = await api<{ payments: { id: string }[] }>("/api/payments", {
         method: "POST",
         body: { orderId: target.orderId, amount: amt, method },
       });
-      toast.success(`تم تحصيل ${money(amt, currency)} — طلب #${target.orderNumber}`);
-      onDone();
+      toast.success("تم تحصيل الدفع بنجاح");
+      setReceipt({ paymentId: r.payments[0]?.id ?? "", amount: amt });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "فشل التحصيل");
       // Refresh so a duplicate attempt shows the settled state.
@@ -100,7 +102,36 @@ export function CollectPaymentPanel({
           </DialogTitle>
         </DialogHeader>
 
-        {error ? (
+        {receipt ? (
+          /* ── Post-payment success: receipt actions ── */
+          <div className="space-y-3 py-2 text-center">
+            <p className="text-4xl">✅</p>
+            <p className="text-base font-bold">تم تحصيل الدفع بنجاح</p>
+            <p className="text-sm text-muted-foreground">
+              {money(receipt.amount, currency)}{target ? ` — طلب #${target.orderNumber}` : ""}
+            </p>
+            <div className="grid gap-2">
+              <Button
+                className="h-11 w-full"
+                onClick={() =>
+                  window.open(`/receipts/payment/${receipt.paymentId}?print=1`, "_blank")
+                }
+              >
+                🖨️ طباعة الريسيت
+              </Button>
+              <Button
+                variant="outline"
+                className="h-11 w-full"
+                onClick={() => window.open(`/receipts/payment/${receipt.paymentId}`, "_blank")}
+              >
+                عرض الريسيت
+              </Button>
+              <Button variant="ghost" className="h-10 w-full text-muted-foreground" onClick={onDone}>
+                إغلاق
+              </Button>
+            </div>
+          </div>
+        ) : error ? (
           <p className="text-sm text-destructive">{error}</p>
         ) : !target ? (
           <p className="text-sm text-muted-foreground">جاري التحميل…</p>
@@ -138,12 +169,21 @@ export function CollectPaymentPanel({
                 <p className="text-xs font-semibold text-muted-foreground">الدفعات السابقة</p>
                 <div className="max-h-24 space-y-1 overflow-y-auto">
                   {target.payments.map((p) => (
-                    <div key={p.id} className="flex justify-between rounded-lg border px-2.5 py-1 text-xs">
+                    <div key={p.id} className="flex items-center justify-between gap-1.5 rounded-lg border px-2.5 py-1 text-xs">
                       <span>{METHOD_LABEL[p.method] ?? p.method}</span>
                       <span className="text-muted-foreground">
                         {new Date(p.createdAt).toLocaleTimeString("ar-EG", { hour: "2-digit", minute: "2-digit" })}
                       </span>
                       <b className="tabular-nums">{money(p.amount, currency)}</b>
+                      {/* إعادة طباعة — read-only, never re-collects */}
+                      <button
+                        type="button"
+                        title="إعادة طباعة الريسيت"
+                        className="text-muted-foreground hover:text-foreground"
+                        onClick={() => window.open(`/receipts/payment/${p.id}?print=1&reprint=1`, "_blank")}
+                      >
+                        🖨️
+                      </button>
                     </div>
                   ))}
                 </div>
@@ -191,16 +231,18 @@ export function CollectPaymentPanel({
           </div>
         )}
 
-        <DialogFooter>
-          <Button variant="outline" onClick={onClose} disabled={busy}>
-            رجوع لإنشاء طلب
-          </Button>
-          {target && !settled && !shiftBlocked && (
-            <Button onClick={collect} disabled={busy}>
-              {busy ? "جاري التحصيل…" : "تحصيل الدفع"}
+        {!receipt && (
+          <DialogFooter>
+            <Button variant="outline" onClick={onClose} disabled={busy}>
+              رجوع لإنشاء طلب
             </Button>
-          )}
-        </DialogFooter>
+            {target && !settled && !shiftBlocked && (
+              <Button onClick={collect} disabled={busy}>
+                {busy ? "جاري التحصيل…" : "تحصيل الدفع"}
+              </Button>
+            )}
+          </DialogFooter>
+        )}
       </DialogContent>
     </Dialog>
   );

@@ -195,6 +195,10 @@ export const PERMISSION_KEYS: PermKey[] = [
   // AI assistant
   { key: "ai.use", module: "AI_ASSISTANT", label: "استخدام المساعد الذكي" },
 
+  // Receipts (POS customer receipts)
+  { key: "receipts.print", module: "POS", label: "طباعة ريسيت العميل" },
+  { key: "receipts.reprint", module: "POS", label: "إعادة طباعة الريسيت" },
+
   // Customers & loyalty
   { key: "customers.lookup", module: "CUSTOMERS", label: "البحث عن عميل بالموبايل (الكاشير)" },
   { key: "customers.view", module: "CUSTOMERS", label: "عرض العملاء" },
@@ -270,6 +274,8 @@ export const LEGACY_TO_KEYS: Record<string, string[]> = {
   "payments:create": [
     "pos.collect_payment",
     "tables.collect_payment", "tables.partial_payment", "tables.item_payment", "tables.close",
+    // Whoever collects money prints its receipt.
+    "receipts.print", "receipts.reprint",
   ],
   "payments:read": ["pos.view_payments"],
   // Redeeming customer points rides with drawer operation (cashier/manager).
