@@ -273,8 +273,8 @@ export function TableInvoices({
           <div className="flex flex-wrap gap-1.5">
             {canCollect && summary.remainingAmount > 0.001 && (
               <>
-                <Button size="sm" className="h-7 px-2 text-xs" onClick={() => { setPayMethod("CASH"); setAmount(String(summary.remainingAmount)); setCollect({ kind: "table-full", remaining: summary.remainingAmount }); }}>تحصيل كامل الحساب</Button>
-                <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => { setPayMethod("CASH"); setAmount(""); setCollect({ kind: "table-partial", remaining: summary.remainingAmount }); }}>تحصيل جزئي</Button>
+                <Button size="sm" className="h-7 px-2 text-xs" onClick={() => { setPayMethod("CASH"); setAmount(String(summary.remainingAmount)); setCollect({ kind: "table-full", remaining: summary.remainingAmount }); }}>تحصيل كامل حساب الترابيزة</Button>
+                <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => { setPayMethod("CASH"); setAmount(""); setCollect({ kind: "table-partial", remaining: summary.remainingAmount }); }}>تحصيل جزئي من حساب الترابيزة</Button>
               </>
             )}
             {canClose && (
@@ -299,7 +299,9 @@ export function TableInvoices({
                 <Button
                   className="h-11 w-full"
                   onClick={() => {
-                    const scopeQs = receipt.scope === "table" ? "&scope=table" : "";
+                    // Table payments default to the unified bill; explicit
+                    // invoice collections force the single-order receipt.
+                    const scopeQs = receipt.scope === "table" ? "&scope=table" : "&scope=order";
                     window.open(`/receipts/payment/${receipt.paymentId}?print=1${scopeQs}`, "_blank");
                   }}
                 >
@@ -309,7 +311,7 @@ export function TableInvoices({
                   variant="outline"
                   className="h-11 w-full"
                   onClick={() => {
-                    const scopeQs = receipt.scope === "table" ? "?scope=table" : "";
+                    const scopeQs = receipt.scope === "table" ? "?scope=table" : "?scope=order";
                     window.open(`/receipts/payment/${receipt.paymentId}${scopeQs}`, "_blank");
                   }}
                 >

@@ -222,14 +222,14 @@ export function CollectPaymentPanel({
                 <>
                   <Button
                     className="h-11 w-full"
-                    onClick={() => window.open(`/receipts/payment/${receipt.paymentId}?print=1`, "_blank")}
+                    onClick={() => window.open(`/receipts/payment/${receipt.paymentId}?print=1&scope=order`, "_blank")}
                   >
                     🖨️ طباعة الريسيت
                   </Button>
                   <Button
                     variant="outline"
                     className="h-11 w-full"
-                    onClick={() => window.open(`/receipts/payment/${receipt.paymentId}`, "_blank")}
+                    onClick={() => window.open(`/receipts/payment/${receipt.paymentId}?scope=order`, "_blank")}
                   >
                     عرض الريسيت
                   </Button>
@@ -399,7 +399,7 @@ export function CollectPaymentPanel({
                         type="button"
                         title="إعادة طباعة الريسيت"
                         className="text-muted-foreground hover:text-foreground"
-                        onClick={() => window.open(`/receipts/payment/${p.id}?print=1&reprint=1`, "_blank")}
+                        onClick={() => window.open(`/receipts/payment/${p.id}?print=1&reprint=1&scope=order`, "_blank")}
                       >
                         🖨️
                       </button>

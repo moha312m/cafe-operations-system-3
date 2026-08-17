@@ -27,6 +27,7 @@ function sittingLabel(from: Date, to: Date): string {
   if (h === 0) return `${m} دقيقة`;
   return `${h} ساعة${m ? ` و ${m} دقيقة` : ""}`;
 }
+const round2 = (n: number) => Math.round(n * 100) / 100;
 
 // Simple centered message shell (no sidebar — this route prints).
 function Message({ text }: { text: string }) {
@@ -37,10 +38,42 @@ function Message({ text }: { text: string }) {
   );
 }
 
-// إيصال دفع — printable customer receipt for one payment. READ-ONLY:
-// this page never creates or mutates payments. scope=table renders the
-// table-settlement variant (all session invoices); default renders the
-// single-invoice receipt.
+type ReceiptItem = {
+  productName: string;
+  variantName: string | null;
+  quantity: number;
+  unitPrice: number;
+  lineTotal: number;
+  addOns: { addOnName: string }[];
+  notes: string | null;
+};
+
+// Merge identical lines across the table's orders: same product, variant,
+// unit price, add-ons and notes combine into one line with summed
+// quantities — different pricing/add-ons/notes stay separate so the math
+// is never wrong.
+function mergeItems(items: ReceiptItem[]): ReceiptItem[] {
+  const map = new Map<string, ReceiptItem>();
+  for (const it of items) {
+    const key = [
+      it.productName, it.variantName ?? "", it.unitPrice,
+      it.addOns.map((a) => a.addOnName).sort().join(","), it.notes ?? "",
+    ].join("|");
+    const prev = map.get(key);
+    if (prev) {
+      prev.quantity += it.quantity;
+      prev.lineTotal = round2(prev.lineTotal + it.lineTotal);
+    } else {
+      map.set(key, { ...it, addOns: [...it.addOns] });
+    }
+  }
+  return [...map.values()];
+}
+
+// إيصال دفع — printable customer receipt for one payment. READ-ONLY.
+// Payments on a table session default to the UNIFIED table bill (one
+// account, combined items, one totals block); ?scope=order forces the
+// single-invoice view (explicit invoice collection, takeaway, delivery).
 export default async function ReceiptPage({
   params,
   searchParams,
@@ -82,22 +115,29 @@ export default async function ReceiptPage({
   }
 
   const order = payment.order;
-  const tableScope = sp.scope === "table" && payment.tableSessionId;
+  // Table payments default to the unified table bill; ?scope=order forces
+  // the single-invoice receipt (explicitly-collected invoice).
+  const tableScope = !!payment.tableSessionId && sp.scope !== "order";
 
-  // Table settlement data: all live invoices + this operation's amount
-  // (sibling payment rows written by the same collection transaction).
+  // ── Unified table bill data ──
   let tableData: null | {
     tableNumber: string;
     startedAt: Date;
+    subtotal: number;
+    manualDiscount: number;
+    loyaltyDiscount: number;
+    service: number;
+    tax: number;
     totalAmount: number;
     paidAmount: number;
     remainingAmount: number;
     operationAmount: number;
-    orders: {
-      orderNumber: number;
-      total: number;
-      items: { productName: string; variantName: string | null; quantity: number; unitPrice: number; lineTotal: number; addOns: { addOnName: string }[]; notes: string | null }[];
-    }[];
+    previousPaid: number;
+    loyaltyPointsRedeemed: number;
+    loyaltyPointsEarned: number;
+    customer: { name: string | null; normalizedPhone: string; loyaltyPointsBalance: number } | null;
+    items: ReceiptItem[];
+    internalOrders: { orderNumber: number; total: number }[];
   } = null;
 
   if (tableScope) {
@@ -107,11 +147,16 @@ export default async function ReceiptPage({
         orders: {
           where: { status: { notIn: ["CANCELLED", "REJECTED"] } },
           orderBy: { createdAt: "asc" },
-          include: { items: { include: { addOns: true } } },
+          include: {
+            items: { include: { addOns: true } },
+            customer: { select: { name: true, normalizedPhone: true, loyaltyPointsBalance: true } },
+          },
         },
       },
     });
     if (ts) {
+      // "This operation" = sibling payment rows written by the same
+      // collection transaction (same session/cashier, ±5s).
       const windowMs = 5_000;
       const siblings = await db.payment.aggregate({
         where: {
@@ -125,17 +170,23 @@ export default async function ReceiptPage({
         },
         _sum: { amount: true },
       });
-      tableData = {
-        tableNumber: ts.tableNumber,
-        startedAt: ts.startedAt,
-        totalAmount: Number(ts.totalAmount),
-        paidAmount: Number(ts.paidAmount),
-        remainingAmount: Number(ts.remainingAmount),
-        operationAmount: Number(siblings._sum.amount ?? payment.amount),
-        orders: ts.orders.map((o) => ({
-          orderNumber: o.orderNumber,
-          total: Number(o.total),
-          items: o.items.map((it) => ({
+      const operationAmount = Number(siblings._sum.amount ?? payment.amount);
+
+      let subtotal = 0, manualDiscount = 0, loyaltyDiscount = 0, service = 0, tax = 0;
+      let pointsRedeemed = 0, pointsEarned = 0;
+      const allItems: ReceiptItem[] = [];
+      let customer = order.customer;
+      for (const o of ts.orders) {
+        subtotal = round2(subtotal + Number(o.subtotal));
+        loyaltyDiscount = round2(loyaltyDiscount + Number(o.loyaltyDiscountAmount));
+        manualDiscount = round2(manualDiscount + Number(o.discountAmount) - Number(o.loyaltyDiscountAmount));
+        service = round2(service + Number(o.serviceChargeAmount));
+        tax = round2(tax + Number(o.taxAmount));
+        pointsRedeemed += o.loyaltyPointsRedeemed;
+        pointsEarned += o.loyaltyPointsEarned;
+        if (!customer && o.customer) customer = o.customer;
+        for (const it of o.items) {
+          allItems.push({
             productName: it.productName,
             variantName: it.variantName,
             quantity: it.quantity,
@@ -143,29 +194,50 @@ export default async function ReceiptPage({
             lineTotal: Number(it.lineTotal),
             addOns: it.addOns,
             notes: it.notes,
-          })),
-        })),
+          });
+        }
+      }
+
+      tableData = {
+        tableNumber: ts.tableNumber,
+        startedAt: ts.startedAt,
+        subtotal,
+        manualDiscount: Math.max(manualDiscount, 0),
+        loyaltyDiscount,
+        service,
+        tax,
+        totalAmount: Number(ts.totalAmount),
+        paidAmount: Number(ts.paidAmount),
+        remainingAmount: Number(ts.remainingAmount),
+        operationAmount,
+        previousPaid: Math.max(round2(Number(ts.paidAmount) - operationAmount), 0),
+        loyaltyPointsRedeemed: pointsRedeemed,
+        loyaltyPointsEarned: pointsEarned,
+        customer,
+        items: mergeItems(allItems),
+        internalOrders: ts.orders.map((o) => ({ orderNumber: o.orderNumber, total: Number(o.total) })),
       };
     }
   }
 
   // Audit trail: viewing always; printing/reprinting when deep-linked.
-  const auditMeta = {
-    paymentId: payment.id,
-    orderId: payment.orderId,
-    tableSessionId: payment.tableSessionId,
-    branchId: payment.branchId,
-  };
   await audit({
     cafeId: payment.cafeId, userId: session.id,
     action: sp.print === "1" ? (isReprint ? "RECEIPT_REPRINTED" : "RECEIPT_PRINTED") : "RECEIPT_VIEWED",
     entity: "Payment", entityId: payment.id,
-    details: auditMeta,
+    details: {
+      paymentId: payment.id,
+      orderId: payment.orderId,
+      tableSessionId: payment.tableSessionId,
+      branchId: payment.branchId,
+    },
   });
 
-  const customer = order.customer;
-  const loyaltyRedeemed = order.loyaltyPointsRedeemed;
-  const loyaltyEarned = order.loyaltyPointsEarned;
+  // ── Loyalty + status lines (mode-aware) ──
+  const customer = tableData ? tableData.customer : order.customer;
+  const loyaltyRedeemed = tableData ? tableData.loyaltyPointsRedeemed : order.loyaltyPointsRedeemed;
+  const loyaltyEarned = tableData ? tableData.loyaltyPointsEarned : order.loyaltyPointsEarned;
+  const loyaltyDiscountValue = tableData ? tableData.loyaltyDiscount : Number(order.loyaltyDiscountAmount);
   const showLoyalty = !!customer && (loyaltyRedeemed > 0 || loyaltyEarned > 0 || customer.loyaltyPointsBalance > 0);
 
   const orderRemaining = Number(order.remainingAmount);
@@ -173,10 +245,20 @@ export default async function ReceiptPage({
   const settledLine = tableData
     ? tableData.remainingAmount <= 0.001
       ? "تم سداد الحساب بالكامل ✅"
-      : `دفعة جزئية — المتبقي: ${fmtMoney(tableData.remainingAmount)}`
+      : `متبقي على الترابيزة: ${fmtMoney(tableData.remainingAmount)}`
     : orderRemaining <= 0.001
       ? "مدفوع بالكامل ✅"
       : `مدفوع جزئيًا — المتبقي: ${fmtMoney(orderRemaining)}`;
+
+  const singleItems: ReceiptItem[] = order.items.map((it) => ({
+    productName: it.productName,
+    variantName: it.variantName,
+    quantity: it.quantity,
+    unitPrice: Number(it.unitPrice),
+    lineTotal: Number(it.lineTotal),
+    addOns: it.addOns,
+    notes: it.notes,
+  }));
 
   const dashed = { borderTop: "1px dashed #999", margin: "8px 0" } as const;
   const row = { display: "flex", justifyContent: "space-between", gap: 8 } as const;
@@ -218,7 +300,9 @@ export default async function ReceiptPage({
           {payment.branch && <div style={{ fontWeight: 600 }}>{payment.branch.name}</div>}
           {payment.branch?.address && <div style={{ color: "#555", fontSize: 11 }}>{payment.branch.address}</div>}
           {payment.branch?.phone && <div style={{ color: "#555", fontSize: 11 }} dir="ltr">{payment.branch.phone}</div>}
-          <div style={{ fontWeight: 700, marginTop: 4 }}>— إيصال دفع —</div>
+          <div style={{ fontWeight: 700, marginTop: 4 }}>
+            {tableData ? `— حساب الترابيزة رقم ${tableData.tableNumber} —` : "— إيصال دفع —"}
+          </div>
           <div style={{ color: "#555", fontSize: 11 }}>{fmtDateTime(new Date())}</div>
         </div>
 
@@ -227,15 +311,14 @@ export default async function ReceiptPage({
         {/* Main info */}
         <div style={row}><span>رقم الريسيت</span><b dir="ltr">{payment.id.slice(-8).toUpperCase()}</b></div>
         {!tableData && <div style={row}><span>رقم الطلب</span><b>#{order.orderNumber}</b></div>}
-        {(tableData?.tableNumber ?? order.tableNumber) && (
-          <div style={row}><span>رقم الترابيزة</span><b>{tableData?.tableNumber ?? order.tableNumber}</b></div>
+        {!tableData && order.tableNumber && (
+          <div style={row}><span>رقم الترابيزة</span><b>{order.tableNumber}</b></div>
         )}
         <div style={row}><span>الكاشير</span><b>{payment.receivedBy.name}</b></div>
         {customer?.name && <div style={row}><span>العميل</span><b>{customer.name}</b></div>}
         {customer?.normalizedPhone && (
           <div style={row}><span>رقم الموبايل</span><b dir="ltr">{customer.normalizedPhone}</b></div>
         )}
-
         {tableData && (
           <>
             <div style={row}><span>بداية الجلسة</span><b>{fmtDateTime(tableData.startedAt)}</b></div>
@@ -245,54 +328,71 @@ export default async function ReceiptPage({
 
         <div style={dashed} />
 
-        {/* Items */}
-        <div style={{ fontWeight: 700, marginBottom: 4 }}>الأصناف</div>
-        {(tableData ? tableData.orders : [{ orderNumber: order.orderNumber, total: Number(order.total), items: order.items.map((it) => ({ productName: it.productName, variantName: it.variantName, quantity: it.quantity, unitPrice: Number(it.unitPrice), lineTotal: Number(it.lineTotal), addOns: it.addOns, notes: it.notes })) }]).map((inv) => (
-          <div key={inv.orderNumber} style={{ marginBottom: 6 }}>
-            {tableData && (
-              <div style={{ ...row, fontWeight: 700, background: "#f4f4f5", padding: "2px 4px", borderRadius: 4 }}>
-                <span>فاتورة #{inv.orderNumber}</span>
-                <span>{fmtMoney(inv.total)}</span>
+        {/* ── Items: ONE unified list (no per-invoice headers) ── */}
+        <div style={{ fontWeight: 700, marginBottom: 4 }}>
+          {tableData ? "أصناف الترابيزة" : "الأصناف"}
+        </div>
+        {(tableData ? tableData.items : singleItems).map((it, i) => (
+          <div key={i}>
+            <div style={row}>
+              <span style={{ minWidth: 0 }}>
+                {it.quantity}× {it.productName}
+                {it.variantName ? ` (${it.variantName})` : ""}
+                {it.quantity > 1 && (
+                  <span style={{ color: "#777", fontSize: 10 }}> ({fmtMoney(it.unitPrice)})</span>
+                )}
+              </span>
+              <span style={{ whiteSpace: "nowrap" }}>{fmtMoney(it.lineTotal)}</span>
+            </div>
+            {it.addOns.length > 0 && (
+              <div style={{ color: "#555", fontSize: 11, paddingInlineStart: 12 }}>
+                + {it.addOns.map((a) => a.addOnName).join("، ")}
               </div>
             )}
-            {inv.items.map((it, i) => (
-              <div key={i}>
-                <div style={row}>
-                  <span style={{ minWidth: 0 }}>
-                    {it.quantity}× {it.productName}
-                    {it.variantName ? ` (${it.variantName})` : ""}
-                  </span>
-                  <span style={{ whiteSpace: "nowrap" }}>{fmtMoney(it.lineTotal)}</span>
-                </div>
-                {it.addOns.length > 0 && (
-                  <div style={{ color: "#555", fontSize: 11, paddingInlineStart: 12 }}>
-                    + {it.addOns.map((a) => a.addOnName).join("، ")}
-                  </div>
-                )}
-                {it.notes && (
-                  <div style={{ color: "#555", fontSize: 11, paddingInlineStart: 12 }}>📝 {it.notes}</div>
-                )}
-              </div>
-            ))}
+            {it.notes && (
+              <div style={{ color: "#555", fontSize: 11, paddingInlineStart: 12 }}>📝 {it.notes}</div>
+            )}
           </div>
         ))}
+        {tableData && (
+          <div style={{ color: "#777", fontSize: 10, marginTop: 2 }}>
+            يشمل هذا الحساب كل طلبات الترابيزة
+          </div>
+        )}
 
         <div style={dashed} />
 
-        {/* Totals */}
+        {/* ── ONE totals section ── */}
         {tableData ? (
           <>
-            <div style={row}><span>إجمالي الترابيزة</span><b>{fmtMoney(tableData.totalAmount)}</b></div>
+            <div style={row}><span>إجمالي الحساب</span><span>{fmtMoney(tableData.subtotal)}</span></div>
+            {tableData.manualDiscount > 0.001 && (
+              <div style={row}><span>الخصم</span><span>−{fmtMoney(tableData.manualDiscount)}</span></div>
+            )}
+            {tableData.loyaltyDiscount > 0.001 && (
+              <div style={row}><span>خصم نقاط الولاء</span><span>−{fmtMoney(tableData.loyaltyDiscount)}</span></div>
+            )}
+            {tableData.service > 0.001 && (
+              <div style={row}><span>السيرفيس</span><span>{fmtMoney(tableData.service)}</span></div>
+            )}
+            {tableData.tax > 0.001 && (
+              <div style={row}><span>الضريبة</span><span>{fmtMoney(tableData.tax)}</span></div>
+            )}
+            <div style={{ ...row, fontWeight: 800, fontSize: 14 }}>
+              <span>إجمالي المستحق</span><span>{fmtMoney(tableData.totalAmount)}</span>
+            </div>
+            {tableData.previousPaid > 0.001 && (
+              <div style={row}><span>المدفوع سابقًا</span><span>{fmtMoney(tableData.previousPaid)}</span></div>
+            )}
             <div style={row}><span>المدفوع في هذه العملية</span><b>{fmtMoney(tableData.operationAmount)}</b></div>
-            <div style={row}><span>إجمالي المدفوع</span><b>{fmtMoney(tableData.paidAmount)}</b></div>
-            <div style={{ ...row, fontWeight: 800 }}>
+            <div style={row}><span>إجمالي المدفوع</span><span>{fmtMoney(tableData.paidAmount)}</span></div>
+            <div style={{ ...row, fontWeight: 700 }}>
               <span>المتبقي</span><span>{fmtMoney(tableData.remainingAmount)}</span>
             </div>
           </>
         ) : (
           <>
             <div style={row}><span>الإجمالي قبل الخصم</span><span>{fmtMoney(order.subtotal)}</span></div>
-            {/* Manual discount only — the loyalty part has its own line. */}
             {Number(order.discountAmount) - Number(order.loyaltyDiscountAmount) > 0.001 && (
               <div style={row}><span>الخصم</span><span>−{fmtMoney(Number(order.discountAmount) - Number(order.loyaltyDiscountAmount))}</span></div>
             )}
@@ -319,7 +419,6 @@ export default async function ReceiptPage({
 
         {/* Payment */}
         <div style={row}><span>طريقة الدفع</span><b>{METHOD_LABEL[payment.method] ?? payment.method}</b></div>
-        <div style={row}><span>قيمة هذه الدفعة</span><b>{fmtMoney(payment.amount)}</b></div>
         <div style={row}><span>رقم عملية الدفع</span><b dir="ltr">{payment.id.slice(-8).toUpperCase()}</b></div>
         <div style={row}><span>وقت الدفع</span><b>{fmtDateTime(payment.paidAt)}</b></div>
         <div style={{ textAlign: "center", fontWeight: 700, marginTop: 4, color: remaining <= 0.001 ? "#047857" : "#b45309" }}>
@@ -334,7 +433,7 @@ export default async function ReceiptPage({
             {loyaltyRedeemed > 0 && (
               <>
                 <div style={row}><span>نقاط مستخدمة</span><span>{loyaltyRedeemed}</span></div>
-                <div style={row}><span>خصم النقاط</span><span>{fmtMoney(order.loyaltyDiscountAmount)}</span></div>
+                <div style={row}><span>خصم نقاط الولاء</span><span>{fmtMoney(loyaltyDiscountValue)}</span></div>
               </>
             )}
             {loyaltyEarned > 0 && (
@@ -353,6 +452,26 @@ export default async function ReceiptPage({
         <div style={{ textAlign: "center", fontWeight: 700 }}>شكرًا لزيارتكم 🌟</div>
         <div style={{ textAlign: "center", color: "#555", fontSize: 11 }}>نتمنى رؤيتكم مرة أخرى</div>
       </div>
+
+      {/* Internal order breakdown — screen only, never printed. */}
+      {tableData && tableData.internalOrders.length > 1 && (
+        <div
+          className="no-print"
+          style={{
+            width: "80mm", maxWidth: "100%", margin: "12px auto 0", background: "#fff",
+            border: "1px dashed #d4d4d8", borderRadius: 8, padding: "8px 10px",
+            fontSize: 11, color: "#555",
+          }}
+        >
+          <div style={{ fontWeight: 700, marginBottom: 2 }}>تفاصيل الطلبات الداخلية (لا تُطبع)</div>
+          {tableData.internalOrders.map((o) => (
+            <div key={o.orderNumber} style={row}>
+              <span>طلب #{o.orderNumber}</span>
+              <span>{fmtMoney(o.total)}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </main>
   );
 }
