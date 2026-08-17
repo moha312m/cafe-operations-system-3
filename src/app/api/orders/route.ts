@@ -229,8 +229,25 @@ export async function POST(request: NextRequest) {
     let loyaltyDiscount = 0;
     let redeemPoints = 0;
     if (data.loyaltyPointsToRedeem > 0) {
-      await requireKey("loyalty.redeem_points", "ليس لديك صلاحية لاستخدام نقاط العملاء");
-      if (!customer) throw new ApiError(400, "اكتب رقم موبايل عميل مسجل لاستخدام النقاط");
+      await requireKey("loyalty.redeem_points", "ليس لديك صلاحية لاستخدام نقاط الولاء");
+      // Rejected redemptions are audited (who tried, how many points, why).
+      const blockRedemption = async (reason: string): Promise<never> => {
+        await audit({
+          cafeId, userId: session.id, action: "LOYALTY_REDEMPTION_BLOCKED",
+          entity: "Customer", entityId: customer?.id ?? null,
+          details: {
+            customerId: customer?.id ?? null, branchId,
+            points: data.loyaltyPointsToRedeem, reason,
+          },
+        });
+        throw new ApiError(400, reason);
+      };
+      // MVP rule: points redeem only when money is collected NOW — no
+      // pending-collection reservations to reconcile later.
+      if (data.collectionMode !== "NOW") {
+        await blockRedemption("يمكن استخدام النقاط عند التحصيل الآن فقط");
+      }
+      if (!customer) await blockRedemption("يجب إدخال رقم موبايل العميل أولًا");
       // Safe fetch: if the loyalty tables are unreachable, settings resolve
       // to "disabled" and validation returns a clean Arabic error.
       const loyaltySettings = await getLoyaltySettingsSafe(cafeId);
@@ -242,13 +259,15 @@ export async function POST(request: NextRequest) {
       });
       const verdict = validateRedemption(
         data.loyaltyPointsToRedeem,
-        customer.loyaltyPointsBalance,
+        customer!.loyaltyPointsBalance,
         preCharges.total,
         calc
       );
-      if (!verdict.ok) throw new ApiError(400, verdict.error);
-      loyaltyDiscount = verdict.amount;
-      redeemPoints = data.loyaltyPointsToRedeem;
+      if (!verdict.ok) await blockRedemption(verdict.error);
+      else {
+        loyaltyDiscount = verdict.amount;
+        redeemPoints = data.loyaltyPointsToRedeem;
+      }
     }
 
     // Charges come from the branch's configurable tax/service settings,
@@ -381,6 +400,7 @@ export async function POST(request: NextRequest) {
           cafeId, customerId: customer.id, orderId: order.id,
           orderNumber: order.orderNumber, points: redeemPoints,
           amountValue: loyaltyDiscount, userId: session.id,
+          oldBalance: customer.loyaltyPointsBalance,
         });
       }
       await recordCustomerOrder(customer.id, total);

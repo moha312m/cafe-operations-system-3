@@ -34,6 +34,8 @@ export function PaymentSummary({
   subtotal,
   discountInput,
   discountAmount,
+  loyaltyPoints = 0,
+  loyaltyDiscount = 0,
   serviceCharge,
   taxRate,
   taxAmount,
@@ -56,6 +58,8 @@ export function PaymentSummary({
   subtotal: number;
   discountInput: string;
   discountAmount: number;
+  loyaltyPoints?: number;
+  loyaltyDiscount?: number;
   serviceCharge: number;
   taxRate: number;
   taxAmount: number;
@@ -184,6 +188,12 @@ export function PaymentSummary({
           <div className="flex items-center justify-between text-emerald-600">
             <span>{t.pos.discountApplied}</span>
             <span className="tabular-nums">−{money(discountAmount, currency)}</span>
+          </div>
+        )}
+        {loyaltyDiscount > 0 && (
+          <div className="flex items-center justify-between text-amber-600 dark:text-amber-400">
+            <span>⭐ خصم النقاط ({loyaltyPoints} نقطة)</span>
+            <span className="tabular-nums">−{money(loyaltyDiscount, currency)}</span>
           </div>
         )}
         {serviceCharge > 0 && (

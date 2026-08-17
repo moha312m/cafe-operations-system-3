@@ -286,7 +286,9 @@ export default function PosPage() {
     orderType,
     settings: effectiveSettings,
   });
-  const discountAmount = charges.discountAmount;
+  // Manual discount only — the loyalty discount is displayed as its own
+  // "خصم النقاط" row in the payment summary.
+  const discountAmount = preLoyaltyCharges.discountAmount;
   const serviceCharge = charges.serviceChargeAmount;
   const taxAmount = charges.taxAmount;
   const effectiveTaxRate = charges.taxRateSnapshot;
@@ -452,6 +454,14 @@ export default function PosPage() {
         branchId={branchId || undefined}
         tableReloadKey={tableReload}
         totalBeforeLoyalty={preLoyaltyCharges.total}
+        previewTotalAfterDiscount={(loyaltyDisc) =>
+          computeCharges({
+            subtotal,
+            discount: (Number(discountInput) || 0) + loyaltyDisc,
+            orderType,
+            settings: effectiveSettings,
+          }).total
+        }
         redeem={redeem}
         onRedeemChange={setRedeem}
         subtotal={subtotal}

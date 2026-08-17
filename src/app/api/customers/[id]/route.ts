@@ -29,7 +29,10 @@ export async function GET(_request: NextRequest, { params }: Params) {
         loyaltyTxns: {
           orderBy: { createdAt: "desc" },
           take: 30,
-          include: { createdBy: { select: { name: true } } },
+          include: {
+            createdBy: { select: { name: true } },
+            order: { select: { orderNumber: true } },
+          },
         },
       },
     });
@@ -44,6 +47,7 @@ export async function GET(_request: NextRequest, { params }: Params) {
         points: t.points,
         amountValue: t.amountValue === null ? null : Number(t.amountValue),
         note: t.note,
+        orderNumber: t.order?.orderNumber ?? null,
         createdBy: t.createdBy?.name ?? null,
         createdAt: t.createdAt,
       })),

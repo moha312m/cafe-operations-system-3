@@ -423,7 +423,7 @@ export function CustomerMenuPage({
                 </div>
                 {menu.loyalty.enabled && expectedPoints > 0 && (
                   <p className="pt-0.5 text-xs font-medium text-emerald-700 dark:text-emerald-400">
-                    ⭐ هتكسب {expectedPoints} نقطة بعد إتمام الطلب
+                    ⭐ هتكسب {expectedPoints} نقطة بعد تأكيد ودفع الطلب
                   </p>
                 )}
               </div>

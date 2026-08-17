@@ -19,6 +19,7 @@ export function OrderCart({
   branchId,
   tableReloadKey,
   totalBeforeLoyalty,
+  previewTotalAfterDiscount,
   redeem,
   onRedeemChange,
   subtotal,
@@ -54,6 +55,7 @@ export function OrderCart({
   branchId?: string;
   tableReloadKey?: number;
   totalBeforeLoyalty: number;
+  previewTotalAfterDiscount: (loyaltyDiscount: number) => number;
   redeem: LoyaltyRedeem;
   onRedeemChange: (redeem: LoyaltyRedeem) => void;
   subtotal: number;
@@ -112,6 +114,8 @@ export function OrderCart({
             phone={details.customerPhone}
             customerName={details.customerName}
             orderTotalBeforeLoyalty={totalBeforeLoyalty}
+            previewTotalAfterDiscount={previewTotalAfterDiscount}
+            collectionMode={collectionMode}
             redeem={redeem}
             onPhoneChange={(customerPhone) => onDetailsChange({ ...details, customerPhone })}
             onRedeemChange={onRedeemChange}
@@ -150,6 +154,8 @@ export function OrderCart({
           subtotal={subtotal}
           discountInput={discountInput}
           discountAmount={discountAmount}
+          loyaltyPoints={redeem.points}
+          loyaltyDiscount={redeem.discount}
           serviceCharge={serviceCharge}
           taxRate={taxRate}
           taxAmount={taxAmount}

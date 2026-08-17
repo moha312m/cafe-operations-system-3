@@ -141,10 +141,10 @@ async function awardLoyaltyPointsInner(orderId: string): Promise<number | null> 
 // Deducts redeemed points at order creation (already validated by the
 // caller) and writes the REDEEM ledger row.
 export async function recordRedemption({
-  cafeId, customerId, orderId, orderNumber, points, amountValue, userId,
+  cafeId, customerId, orderId, orderNumber, points, amountValue, userId, oldBalance,
 }: {
   cafeId: string; customerId: string; orderId: string; orderNumber: number;
-  points: number; amountValue: number; userId: string | null;
+  points: number; amountValue: number; userId: string | null; oldBalance: number;
 }) {
   await db.$transaction([
     db.loyaltyTransaction.create({
@@ -170,7 +170,12 @@ export async function recordRedemption({
     action: "LOYALTY_POINTS_REDEEMED",
     entity: "Customer",
     entityId: customerId,
-    details: { customerId, orderId, orderNumber, newValue: { points, amountValue } },
+    details: {
+      customerId, orderId, orderNumber,
+      points, amountValue,
+      oldValue: { balance: oldBalance },
+      newValue: { balance: oldBalance - points },
+    },
   });
 }
 

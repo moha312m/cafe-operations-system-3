@@ -38,7 +38,7 @@ type Stats = {
 type Details = {
   customer: CustomerRow & { notes: string | null; lifetimePointsEarned: number; lifetimePointsRedeemed: number };
   orders: { id: string; orderNumber: number; type: string; status: string; paymentStatus: string; total: number; loyaltyPointsEarned: number; loyaltyPointsRedeemed: number; createdAt: string }[];
-  transactions: { id: string; type: string; points: number; amountValue: number | null; note: string | null; createdBy: string | null; createdAt: string }[];
+  transactions: { id: string; type: string; points: number; amountValue: number | null; note: string | null; orderNumber: number | null; createdBy: string | null; createdAt: string }[];
 };
 
 const TXN_LABEL: Record<string, string> = {
@@ -322,20 +322,39 @@ export default function CustomersPage() {
               </div>
 
               <div>
-                <p className="mb-1.5 text-sm font-semibold">سجل النقاط</p>
+                <p className="mb-1.5 text-sm font-semibold">سجل معاملات النقاط</p>
                 {details.transactions.length === 0 ? (
                   <p className="text-xs text-muted-foreground">لا توجد معاملات نقاط</p>
                 ) : (
-                  <div className="max-h-44 space-y-1 overflow-y-auto">
-                    {details.transactions.map((tx) => (
-                      <div key={tx.id} className="flex items-center justify-between rounded-lg border px-2.5 py-1.5 text-xs">
-                        <span>{TXN_LABEL[tx.type] ?? tx.type}{tx.createdBy ? ` · ${tx.createdBy}` : ""}</span>
-                        <span className="text-muted-foreground">{dateLabel(tx.createdAt)}</span>
-                        <b className={`tabular-nums ${tx.points >= 0 ? "text-emerald-600" : "text-red-600"}`}>
-                          {tx.points > 0 ? `+${tx.points}` : tx.points}
-                        </b>
-                      </div>
-                    ))}
+                  <div className="max-h-52 overflow-auto rounded-lg border">
+                    <table className="w-full text-xs">
+                      <thead className="sticky top-0 border-b bg-muted/60 text-muted-foreground">
+                        <tr>
+                          <th className="p-2 text-start">التاريخ</th>
+                          <th className="p-2 text-start">النوع</th>
+                          <th className="p-2 text-start">النقاط</th>
+                          <th className="p-2 text-start">القيمة بالجنيه</th>
+                          <th className="p-2 text-start">الطلب</th>
+                          <th className="p-2 text-start">الموظف</th>
+                          <th className="p-2 text-start">ملاحظة</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {details.transactions.map((tx) => (
+                          <tr key={tx.id} className="border-b last:border-0">
+                            <td className="p-2 whitespace-nowrap text-muted-foreground">{dateLabel(tx.createdAt)}</td>
+                            <td className="p-2 whitespace-nowrap">{TXN_LABEL[tx.type] ?? tx.type}</td>
+                            <td className={`p-2 tabular-nums font-semibold ${tx.points >= 0 ? "text-emerald-600" : "text-red-600"}`}>
+                              {tx.points > 0 ? `+${tx.points}` : tx.points}
+                            </td>
+                            <td className="p-2 tabular-nums">{tx.amountValue !== null ? money(tx.amountValue, currency) : "—"}</td>
+                            <td className="p-2 tabular-nums">{tx.orderNumber ? `#${tx.orderNumber}` : "—"}</td>
+                            <td className="p-2">{tx.createdBy ?? "—"}</td>
+                            <td className="max-w-32 truncate p-2 text-muted-foreground">{tx.note ?? "—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 )}
               </div>

@@ -196,6 +196,7 @@ export const PERMISSION_KEYS: PermKey[] = [
   { key: "ai.use", module: "AI_ASSISTANT", label: "استخدام المساعد الذكي" },
 
   // Customers & loyalty
+  { key: "customers.lookup", module: "CUSTOMERS", label: "البحث عن عميل بالموبايل (الكاشير)" },
   { key: "customers.view", module: "CUSTOMERS", label: "عرض العملاء" },
   { key: "customers.edit", module: "CUSTOMERS", label: "تعديل بيانات العملاء" },
   { key: "customers.adjust_points", module: "CUSTOMERS", label: "تعديل نقاط الولاء يدويًا", sensitive: true },
@@ -256,7 +257,9 @@ export const LEGACY_TO_KEYS: Record<string, string[]> = {
     "menu.edit_prices", "menu.import_excel", "excel.import",
   ],
   "menu:read": ["menu.view"],
-  "orders:create": ["pos.view", "pos.create_order", "pos.collect_payment", "pos.view_payments", "tables.view", "tables.open", "pos.apply_discount"],
+  // customers.lookup rides with order creation: anyone taking an order can
+  // identify the customer in front of them (never browse the full list).
+  "orders:create": ["pos.view", "pos.create_order", "pos.collect_payment", "pos.view_payments", "tables.view", "tables.open", "pos.apply_discount", "customers.lookup"],
   "orders:read": ["orders.view"],
   "orders:update-status": ["orders.update_status", "kitchen.view", "kitchen.update_status"],
   "orders:cancel": ["orders.cancel", "orders.refund"],
