@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { api, money } from "@/lib/client";
 import { t, formatTime } from "@/lib/i18n";
@@ -97,6 +98,7 @@ function Duration({ since }: { since: string }) {
 }
 
 export default function TablesPage() {
+  const router = useRouter();
   const { cafe, user, canKey } = useApp();
   const currency = cafe?.currency ?? "EGP";
   const fmt = (v: number) => money(v, currency);
@@ -109,14 +111,6 @@ export default function TablesPage() {
   const [filter, setFilter] = useState<"ALL" | DisplayStatus>("ALL");
   const [detail, setDetail] = useState<Detail | null>(null);
   const [busy, setBusy] = useState(false);
-
-  // Payment dialog state
-  const [payMode, setPayMode] = useState<null | "FULL" | "PARTIAL" | "ITEMS">(null);
-  const [payMethod, setPayMethod] = useState<"CASH" | "CARD" | "WALLET">("CASH");
-  const [payAmount, setPayAmount] = useState("");
-  const [payerName, setPayerName] = useState("");
-  const [payNote, setPayNote] = useState("");
-  const [itemQty, setItemQty] = useState<Record<string, number>>({});
 
   const canCollect = canKey("tables.collect_payment");
   const canClose = canKey("tables.close");
@@ -175,45 +169,8 @@ export default function TablesPage() {
     try { setDetail(await api<Detail>(`/api/tables/${id}`)); } catch { setDetail(null); }
   }
 
-  function openPay(mode: "FULL" | "PARTIAL" | "ITEMS") {
-    setPayMethod("CASH");
-    setPayAmount("");
-    setPayerName("");
-    setPayNote("");
-    setItemQty({});
-    setPayMode(mode);
-  }
-
-  async function submitPay() {
-    if (!detail || !payMode) return;
-    setBusy(true);
-    try {
-      const body: Record<string, unknown> = { mode: payMode, method: payMethod };
-      if (payerName.trim()) body.payerName = payerName.trim();
-      if (payNote.trim()) body.note = payNote.trim();
-      if (payMode === "PARTIAL") body.amount = Number(payAmount) || 0;
-      if (payMode === "ITEMS") {
-        body.items = Object.entries(itemQty)
-          .filter(([, q]) => q > 0)
-          .map(([orderItemId, quantity]) => ({ orderItemId, quantity }));
-      }
-      const res = await api<{ collected: number; remainingAmount: number }>(
-        `/api/tables/${detail.session.id}/pay`,
-        { method: "POST", body }
-      );
-      toast.success(
-        payMode === "ITEMS" ? "تم تحصيل الأصناف المحددة"
-        : payMode === "PARTIAL" ? "تم تحصيل دفعة جزئية"
-        : `تم تحصيل ${fmt(res.collected)}`
-      );
-      setPayMode(null);
-      await refreshDetail(detail.session.id);
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "فشل التحصيل");
-    } finally {
-      setBusy(false);
-    }
-  }
+  // NOTE: money collection moved to the POS cashier screen — this page
+  // deep-links into /pos?collectTableSessionId=… ("تحصيل من الكاشير").
 
   async function closeTable() {
     if (!detail) return;
@@ -273,15 +230,6 @@ export default function TablesPage() {
   }
 
   const filtered = (sessions ?? []).filter((s) => filter === "ALL" || s.displayStatus === filter);
-  const selectedItemsTotal = detail
-    ? Object.entries(itemQty).reduce((sum, [itemId, qty]) => {
-        for (const o of detail.orders) {
-          const it = o.items.find((i) => i.id === itemId);
-          if (it) return sum + (it.lineTotal / it.quantity) * qty;
-        }
-        return sum;
-      }, 0)
-    : 0;
 
   return (
     <>
@@ -404,7 +352,7 @@ export default function TablesPage() {
       )}
 
       {/* ── Table detail dialog ── */}
-      <Dialog open={detail !== null && payMode === null} onOpenChange={(o) => !o && !busy && setDetail(null)}>
+      <Dialog open={detail !== null} onOpenChange={(o) => !o && !busy && setDetail(null)}>
         <DialogContent className="max-h-[88vh] max-w-3xl overflow-y-auto">
           {detail && (
             <>
@@ -423,14 +371,15 @@ export default function TablesPage() {
                 <span className="font-semibold text-amber-600 dark:text-amber-400">المتبقي: <span className="tabular-nums">{fmt(detail.session.remainingAmount)}</span></span>
               </div>
 
-              {/* Actions */}
+              {/* Actions — التحصيل يتم من شاشة الكاشير فقط */}
               <div className="flex flex-wrap gap-2">
                 {canCollect && detail.session.remainingAmount > 0 && (
-                  <>
-                    <Button size="sm" onClick={() => openPay("FULL")}>تحصيل كامل الحساب</Button>
-                    <Button size="sm" variant="outline" onClick={() => openPay("PARTIAL")}>تحصيل جزئي</Button>
-                    <Button size="sm" variant="outline" onClick={() => openPay("ITEMS")}>تحصيل أصناف محددة</Button>
-                  </>
+                  <Button
+                    size="sm"
+                    onClick={() => router.push(`/pos?collectTableSessionId=${detail.session.id}`)}
+                  >
+                    💵 تحصيل من الكاشير
+                  </Button>
                 )}
                 {canManage && (
                   <>
@@ -504,106 +453,6 @@ export default function TablesPage() {
         </DialogContent>
       </Dialog>
 
-      {/* ── Payment dialog ── */}
-      <Dialog open={payMode !== null} onOpenChange={(o) => !o && !busy && setPayMode(null)}>
-        <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto">
-          {detail && payMode && (
-            <>
-              <DialogHeader>
-                <DialogTitle>
-                  {payMode === "FULL" ? "تحصيل كامل الحساب" : payMode === "PARTIAL" ? "تحصيل جزئي" : "تحصيل أصناف محددة"}
-                  {" — ترابيزة "}{detail.session.tableNumber}
-                </DialogTitle>
-              </DialogHeader>
-
-              <div className="space-y-3">
-                <div className="rounded-lg bg-muted/40 p-2.5 text-sm">
-                  المبلغ المتبقي: <span className="font-bold tabular-nums">{fmt(detail.session.remainingAmount)}</span>
-                </div>
-
-                {payMode === "PARTIAL" && (
-                  <div className="space-y-1.5">
-                    <Label>المبلغ المدفوع</Label>
-                    <Input type="number" min="0" step="0.01" dir="ltr" placeholder="0.00"
-                      value={payAmount} onChange={(e) => setPayAmount(e.target.value)} />
-                  </div>
-                )}
-
-                {payMode === "ITEMS" && (
-                  <div className="space-y-1.5">
-                    <Label>اختار الأصناف</Label>
-                    <div className="max-h-64 space-y-1 overflow-y-auto rounded-lg border p-2">
-                      {detail.orders.flatMap((o) =>
-                        o.items
-                          .filter((it) => it.remainingQuantity > 0)
-                          .map((it) => {
-                            const qty = itemQty[it.id] ?? 0;
-                            const unit = it.lineTotal / it.quantity;
-                            return (
-                              <div key={it.id} className="flex items-center justify-between gap-2 text-sm">
-                                <span className="min-w-0 flex-1 truncate">
-                                  {it.productName}{it.variantName ? ` (${it.variantName})` : ""}
-                                  <span className="ms-1 text-xs text-muted-foreground">
-                                    {fmt(unit)} × متبقي {it.remainingQuantity}
-                                  </span>
-                                </span>
-                                <div className="flex items-center gap-1">
-                                  <Button size="sm" variant="outline" className="size-7 p-0"
-                                    onClick={() => setItemQty({ ...itemQty, [it.id]: Math.max(qty - 1, 0) })}>−</Button>
-                                  <span className="w-6 text-center tabular-nums">{qty}</span>
-                                  <Button size="sm" variant="outline" className="size-7 p-0"
-                                    onClick={() => setItemQty({ ...itemQty, [it.id]: Math.min(qty + 1, it.remainingQuantity) })}>+</Button>
-                                </div>
-                              </div>
-                            );
-                          })
-                      )}
-                    </div>
-                    {selectedItemsTotal > 0 && (
-                      <p className="text-sm font-semibold">إجمالي المحدد: <span className="tabular-nums">{fmt(selectedItemsTotal)}</span></p>
-                    )}
-                  </div>
-                )}
-
-                <div className="space-y-1.5">
-                  <Label>طريقة الدفع</Label>
-                  <div className="flex gap-2">
-                    {(["CASH", "CARD", "WALLET"] as const).map((m) => (
-                      <button key={m} onClick={() => setPayMethod(m)}
-                        className={`flex-1 rounded-lg border px-3 py-2 text-sm font-medium ${payMethod === m ? "border-foreground bg-foreground text-background" : "border-border"}`}>
-                        {METHOD_LABELS[m]}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1.5">
-                    <Label>اسم الشخص (اختياري)</Label>
-                    <Input value={payerName} onChange={(e) => setPayerName(e.target.value)} />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label>ملاحظة (اختياري)</Label>
-                    <Input value={payNote} onChange={(e) => setPayNote(e.target.value)} />
-                  </div>
-                </div>
-              </div>
-
-              <DialogFooter>
-                <Button variant="outline" onClick={() => setPayMode(null)} disabled={busy}>إلغاء</Button>
-                <Button onClick={submitPay}
-                  disabled={
-                    busy ||
-                    (payMode === "PARTIAL" && (Number(payAmount) <= 0 || Number(payAmount) > detail.session.remainingAmount + 0.001)) ||
-                    (payMode === "ITEMS" && selectedItemsTotal <= 0)
-                  }>
-                  {payMode === "FULL" ? "تأكيد التحصيل" : payMode === "PARTIAL" ? "تحصيل الدفعة" : "تحصيل المحدد"}
-                </Button>
-              </DialogFooter>
-            </>
-          )}
-        </DialogContent>
-      </Dialog>
     </>
   );
 }

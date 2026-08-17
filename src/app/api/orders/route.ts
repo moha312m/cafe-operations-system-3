@@ -308,9 +308,12 @@ export async function POST(request: NextRequest) {
     }
     // PENDING → paidAmount 0, status PENDING_COLLECTION.
 
-    // Cashiers collecting money must have an open shift.
+    // Creating an order WITH money attached is payment collection — same
+    // permission + shift gates as the POS collection panel. (Waiters can
+    // still place orders, but only as انتظار التحصيل.)
     let shift = null as Awaited<ReturnType<typeof getActiveShift>>;
     if (paySplits.length > 0) {
+      await requireKey("pos.collect_payment", "ليس لديك صلاحية لتحصيل الدفع");
       shift = await getActiveShift(branchId, session.id);
       if (session.role === "CASHIER" && !shift) {
         throw new ApiError(400, "لا يمكن تحصيل الدفع بدون شيفت مفتوح");

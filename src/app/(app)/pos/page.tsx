@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { api, money } from "@/lib/client";
 import { t } from "@/lib/i18n";
@@ -30,6 +30,7 @@ import { CategoryTabs } from "@/components/pos/category-tabs";
 import { ProductGrid } from "@/components/pos/product-grid";
 import { OrderCart } from "@/components/pos/order-cart";
 import { ShiftControls } from "@/components/pos/shift-controls";
+import { CollectPaymentPanel } from "@/components/pos/collect-payment-panel";
 import type { LoyaltyRedeem } from "@/components/pos/customer-loyalty";
 import type { CustomerDetails } from "@/components/pos/order-type-selector";
 import {
@@ -60,8 +61,18 @@ const EMPTY_DETAILS: CustomerDetails = {
 
 type PlacedOrder = { id: string; orderNumber: number; total: string };
 
+// useSearchParams (collection-mode deep links) needs a Suspense boundary.
 export default function PosPage() {
+  return (
+    <Suspense fallback={null}>
+      <PosPageInner />
+    </Suspense>
+  );
+}
+
+function PosPageInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { cafe, user } = useApp();
   const currency = cafe?.currency ?? "USD";
   const taxRate = cafe?.taxRate ?? 0;
@@ -91,6 +102,44 @@ export default function PosPage() {
   const [tableReload, setTableReload] = useState(0);
   // Loyalty points the cashier is redeeming for this order.
   const [redeem, setRedeem] = useState<LoyaltyRedeem>({ points: 0, discount: 0 });
+
+  // ── Collection mode (تحصيل دفع) — deep-linked from orders/tables ──
+  // /pos?collectOrderId=X   → single-order collection dialog
+  // /pos?collectTableSessionId=Y or /pos?table=6&mode=collect
+  //                         → select the table so فواتير الترابيزة opens
+  const [collectOrderId, setCollectOrderId] = useState<string | null>(null);
+  const [collectTableBanner, setCollectTableBanner] = useState<string | null>(null);
+
+  useEffect(() => {
+    const orderParam = searchParams.get("collectOrderId");
+    const sessionParam = searchParams.get("collectTableSessionId");
+    const tableParam = searchParams.get("table");
+    const modeParam = searchParams.get("mode");
+    if (orderParam) setCollectOrderId(orderParam);
+    if (tableParam && modeParam === "collect") {
+      setOrderType("DINE_IN");
+      setDetails((d) => ({ ...d, tableNumber: tableParam }));
+      setCollectTableBanner(tableParam);
+    } else if (sessionParam) {
+      // Resolve the session to its table, then open its invoice cards.
+      api<{ target: { tableNumber: string } }>(
+        `/api/payments/collect-info?tableSessionId=${sessionParam}`
+      )
+        .then((r) => {
+          setOrderType("DINE_IN");
+          setDetails((d) => ({ ...d, tableNumber: r.target.tableNumber }));
+          setCollectTableBanner(r.target.tableNumber);
+        })
+        .catch((e) => toast.error(e instanceof Error ? e.message : "فشل تحميل حساب الترابيزة"));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
+
+  function exitCollectionMode() {
+    setCollectOrderId(null);
+    setCollectTableBanner(null);
+    router.replace("/pos", { scroll: false });
+  }
 
   // ── Shift gate (cashiers must have an open shift) ────────────
   const [shiftActive, setShiftActive] = useState(false);
@@ -398,6 +447,34 @@ export default function PosPage() {
           onActiveChange={setShiftActive}
         />
       )}
+
+      {/* تحصيل دفع mode banner — deep-linked table collection */}
+      {collectTableBanner && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-500/50 bg-amber-500/10 px-4 py-2.5">
+          <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">
+            💵 وضع تحصيل الدفع — ترابيزة {collectTableBanner}
+            <span className="ms-2 font-normal text-amber-700/80 dark:text-amber-400/80">
+              فواتير الترابيزة والتحصيل في لوحة الكاشير الجانبية
+            </span>
+          </p>
+          <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={exitCollectionMode}>
+            رجوع لإنشاء طلب
+          </Button>
+        </div>
+      )}
+
+      {/* Single-order collection dialog (/pos?collectOrderId=…) */}
+      {collectOrderId && (
+        <CollectPaymentPanel
+          orderId={collectOrderId}
+          currency={currency}
+          needsShift={needsShift}
+          shiftActive={shiftActive}
+          onDone={exitCollectionMode}
+          onClose={exitCollectionMode}
+        />
+      )}
+
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
       {/* Main area: search, categories, product grid */}
       <div className="flex min-w-0 flex-1 flex-col gap-3 lg:h-[calc(100vh-5.5rem)] lg:overflow-hidden">

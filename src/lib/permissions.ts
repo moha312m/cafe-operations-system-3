@@ -63,14 +63,15 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "audit:read",
   ],
 
-  // Takes orders at the table and reviews QR menu orders.
+  // Takes orders at the table and reviews QR menu orders. Money collection
+  // is centralized in the POS cashier flow — waiters can SEE payment
+  // status (payments:read) but cannot collect by default.
   WAITER: [
     "menu:read",
     "orders:create",
     "orders:read",
     "orders:update-status",
     "orders:approve",
-    "payments:create",
     "payments:read",
   ],
 

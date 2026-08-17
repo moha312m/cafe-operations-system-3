@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { api, money } from "@/lib/client";
 import { t, formatTime } from "@/lib/i18n";
@@ -68,12 +69,10 @@ function paidAmount(order: Order): number {
 }
 
 export default function OrdersPage() {
+  const router = useRouter();
   const { cafe, can } = useApp();
   const currency = cafe?.currency ?? "USD";
   const [orders, setOrders] = useState<Order[]>([]);
-  const [paying, setPaying] = useState<Order | null>(null);
-  const [payMethod, setPayMethod] = useState("CASH");
-  const [payAmount, setPayAmount] = useState("");
   const [busy, setBusy] = useState(false);
   const [sourceFilter, setSourceFilter] = useState<string>("all");
   const [detail, setDetail] = useState<Order | null>(null);
@@ -108,32 +107,8 @@ export default function OrdersPage() {
     }
   }
 
-  async function recordPayment() {
-    if (!paying) return;
-    setBusy(true);
-    try {
-      const remaining = Number(paying.total) - paidAmount(paying);
-      // Amount defaults to the full remaining; a smaller amount is a partial.
-      const amount = payAmount.trim() ? Math.min(Number(payAmount) || 0, remaining) : remaining;
-      if (amount <= 0) {
-        toast.error(t.collection.validation.amountPositive);
-        setBusy(false);
-        return;
-      }
-      await api("/api/payments", {
-        method: "POST",
-        body: { orderId: paying.id, amount, method: payMethod },
-      });
-      toast.success(t.collection.collectedSuccess);
-      setPaying(null);
-      setPayAmount("");
-      await load();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "فشل تسجيل الدفع");
-    } finally {
-      setBusy(false);
-    }
-  }
+  // NOTE: money collection moved to the POS cashier screen — this page
+  // only shows payment status and deep-links into /pos?collectOrderId=…
 
   const finished = orders
     .filter((o) => o.status === "SERVED" || o.status === "CANCELLED")
@@ -271,18 +246,15 @@ export default function OrdersPage() {
                           >
                             تفاصيل
                           </Button>
+                          {/* التحصيل يتم من شاشة الكاشير فقط — navigate with context */}
                           {!isPaid && can("payments:create") && (
                             <Button
                               size="sm"
                               variant="outline"
                               disabled={busy}
-                              onClick={() => {
-                                setPayMethod("CASH");
-                                setPayAmount("");
-                                setPaying(order);
-                              }}
+                              onClick={() => router.push(`/pos?collectOrderId=${order.id}`)}
                             >
-                              {t.collection.collectPayment}
+                              💵 تحصيل من الكاشير
                             </Button>
                           )}
                           {can("orders:cancel") &&
@@ -395,57 +367,6 @@ export default function OrdersPage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={paying !== null} onOpenChange={(o) => !o && setPaying(null)}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>تحصيل — طلب رقم {paying?.orderNumber}</DialogTitle>
-          </DialogHeader>
-          {paying && (
-            <div className="space-y-3">
-              <dl className="space-y-1.5 rounded-lg border bg-muted/30 p-3 text-sm">
-                <div className="flex justify-between">
-                  <dt className="text-muted-foreground">{t.collection.orderTotal}</dt>
-                  <dd className="tabular-nums">{money(paying.total, currency)}</dd>
-                </div>
-                <div className="flex justify-between text-emerald-600">
-                  <dt>{t.collection.paid}</dt>
-                  <dd className="tabular-nums">{money(paidAmount(paying), currency)}</dd>
-                </div>
-                <div className="flex justify-between border-t pt-1.5 font-semibold text-amber-600">
-                  <dt>{t.collection.remaining}</dt>
-                  <dd className="tabular-nums">{money(Number(paying.total) - paidAmount(paying), currency)}</dd>
-                </div>
-              </dl>
-              <div className="space-y-1.5">
-                <Label>{t.collection.collectAmount}</Label>
-                <Input
-                  type="number" min="0" step="0.01" dir="ltr"
-                  placeholder={String(Number(paying.total) - paidAmount(paying))}
-                  value={payAmount}
-                  onChange={(e) => setPayAmount(e.target.value)}
-                />
-              </div>
-              <div className="flex gap-2">
-                {(["CASH", "CARD", "WALLET"] as const).map((m) => (
-                  <Button
-                    key={m}
-                    variant={payMethod === m ? "default" : "outline"}
-                    className="flex-1"
-                    onClick={() => setPayMethod(m)}
-                  >
-                    {t.paymentMethods[m]}
-                  </Button>
-                ))}
-              </div>
-            </div>
-          )}
-          <DialogFooter>
-            <Button onClick={recordPayment} disabled={busy}>
-              {busy ? "جاري التسجيل…" : t.collection.collectPayment}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

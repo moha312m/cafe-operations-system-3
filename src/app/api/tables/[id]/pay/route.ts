@@ -6,6 +6,7 @@ import { audit } from "@/lib/audit";
 import { getActiveShift, recomputeShiftTotals } from "@/lib/shifts";
 import { recomputeSessionTotals } from "@/lib/table-sessions";
 import { maybeAwardLoyaltyPoints } from "@/lib/loyalty";
+import { applyOrderPaymentInTx } from "@/lib/payments";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -128,24 +129,20 @@ export async function POST(request: NextRequest, { params }: Params) {
     const totalCollected = round2(allocations.reduce((s, a) => s + a.amount, 0));
 
     // ── Write payments + item rows + order state in one transaction ──
+    // Per-order math goes through the shared payment service so remaining
+    // rechecks / duplicate guards / status updates exist exactly once.
     const paymentIds: string[] = [];
     await db.$transaction(async (tx) => {
       for (const alloc of allocations) {
-        const payment = await tx.payment.create({
-          data: {
-            cafeId: ts.cafeId,
-            branchId: ts.branchId,
-            orderId: alloc.orderId,
-            shiftId: shift?.id ?? null,
-            cashierId: session.id,
-            amount: alloc.amount,
-            method: data.method,
-            status: "PAID",
-            receivedById: session.id,
-            tableSessionId: ts.id,
-            note,
-          },
+        const applied = await applyOrderPaymentInTx(tx, {
+          orderId: alloc.orderId,
+          splits: [{ method: data.method, amount: alloc.amount }],
+          cashierId: session.id,
+          shiftId: shift?.id ?? null,
+          tableSessionId: ts.id,
+          note,
         });
+        const payment = applied.payments[0];
         paymentIds.push(payment.id);
 
         if (alloc.items) {
@@ -165,19 +162,6 @@ export async function POST(request: NextRequest, { params }: Params) {
             });
           }
         }
-
-        // Sync the order's denormalised payment state.
-        const order = ts.orders.find((o) => o.id === alloc.orderId)!;
-        const newPaid = round2(Number(order.paidAmount) + alloc.amount);
-        const newRemaining = Math.max(round2(Number(order.total) - newPaid), 0);
-        await tx.order.update({
-          where: { id: alloc.orderId },
-          data: {
-            paidAmount: newPaid,
-            remainingAmount: newRemaining,
-            paymentStatus: newRemaining <= 0.001 ? "PAID" : "PARTIAL",
-          },
-        });
       }
     });
 

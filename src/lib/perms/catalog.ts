@@ -259,7 +259,10 @@ export const LEGACY_TO_KEYS: Record<string, string[]> = {
   "menu:read": ["menu.view"],
   // customers.lookup rides with order creation: anyone taking an order can
   // identify the customer in front of them (never browse the full list).
-  "orders:create": ["pos.view", "pos.create_order", "pos.collect_payment", "pos.view_payments", "tables.view", "tables.open", "pos.apply_discount", "customers.lookup"],
+  // NOTE: pos.collect_payment intentionally does NOT ride here — money
+  // collection is centralized behind payments:create (POS cashier flow),
+  // so order-takers (waiters) can place orders without touching the drawer.
+  "orders:create": ["pos.view", "pos.create_order", "pos.view_payments", "tables.view", "tables.open", "pos.apply_discount", "customers.lookup"],
   "orders:read": ["orders.view"],
   "orders:update-status": ["orders.update_status", "kitchen.view", "kitchen.update_status"],
   "orders:cancel": ["orders.cancel", "orders.refund"],
