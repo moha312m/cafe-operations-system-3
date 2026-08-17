@@ -16,13 +16,16 @@ export async function GET(_request: NextRequest, { params }: Params) {
     });
 
     const result = await loadCustomerMenu(branch);
-    if (result.status === "not-found") throw new ApiError(404, "المنيو ده مش متاح");
+    if (result.status === "not-found" || result.status === "invalid-qr") {
+      throw new ApiError(404, "المنيو ده مش متاح");
+    }
     if (result.status === "qr-disabled") {
-      throw new ApiError(403, "منيو QR غير متاح لهذا الكافيه حاليًا");
+      throw new ApiError(403, "منيو QR غير متاح حاليًا");
     }
     if (result.status === "disabled" || result.status === "suspended") {
       throw new ApiError(403, "المنيو غير متاح حاليًا");
     }
+    if (result.status !== "ok") throw new ApiError(500, "حصل خطأ مؤقت — جرب تاني");
 
     return NextResponse.json(result.menu);
   } catch (error) {

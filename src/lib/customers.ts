@@ -8,7 +8,23 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 // Finds (or creates) the cafe-scoped customer profile for a phone number.
 // Returns null when the phone doesn't normalize — callers treat that as
 // "no customer link" rather than an error, except where phone is required.
-export async function findOrCreateCustomerByPhone({
+// Never throws: profile linking is an enhancement — a customers-layer
+// failure (e.g. table missing before the migration runs) must never fail
+// the order being placed.
+export async function findOrCreateCustomerByPhone(args: {
+  cafeId: string;
+  phone: string;
+  name?: string | null;
+}): Promise<Customer | null> {
+  try {
+    return await findOrCreateCustomerInner(args);
+  } catch (e) {
+    console.error("customer link skipped", e);
+    return null;
+  }
+}
+
+async function findOrCreateCustomerInner({
   cafeId,
   phone,
   name,
@@ -67,27 +83,35 @@ export async function findOrCreateCustomerByPhone({
   }
 }
 
-// Bump the denormalised order stats after an order is linked.
+// Bump the denormalised order stats after an order is linked. Never throws.
 export async function recordCustomerOrder(customerId: string, orderTotal: number) {
-  await db.customer.update({
-    where: { id: customerId },
-    data: {
-      totalOrders: { increment: 1 },
-      totalSpent: { increment: round2(orderTotal) },
-      lastOrderAt: new Date(),
-    },
-  });
+  try {
+    await db.customer.update({
+      where: { id: customerId },
+      data: {
+        totalOrders: { increment: 1 },
+        totalSpent: { increment: round2(orderTotal) },
+        lastOrderAt: new Date(),
+      },
+    });
+  } catch (e) {
+    console.error("customer stats update skipped", e);
+  }
 }
 
-// Roll the stats back when a linked order is cancelled.
+// Roll the stats back when a linked order is cancelled. Never throws.
 export async function unrecordCustomerOrder(customerId: string, orderTotal: number) {
-  await db.customer.update({
-    where: { id: customerId },
-    data: {
-      totalOrders: { decrement: 1 },
-      totalSpent: { decrement: round2(orderTotal) },
-    },
-  });
+  try {
+    await db.customer.update({
+      where: { id: customerId },
+      data: {
+        totalOrders: { decrement: 1 },
+        totalSpent: { decrement: round2(orderTotal) },
+      },
+    });
+  } catch (e) {
+    console.error("customer stats rollback skipped", e);
+  }
 }
 
 // JSON-safe customer payload (Decimals → numbers, canonical phone).

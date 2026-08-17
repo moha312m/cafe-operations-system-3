@@ -10,7 +10,7 @@ import { attachOrderToTableSession } from "@/lib/table-sessions";
 import { getApprovalSettings, resolveRouting } from "@/lib/qr-approval";
 import { normalizeEgyptianPhone } from "@/lib/phone";
 import { findOrCreateCustomerByPhone, recordCustomerOrder } from "@/lib/customers";
-import { getLoyaltySettings, loyaltyCalcSettings, maybeAwardLoyaltyPoints } from "@/lib/loyalty";
+import { getLoyaltySettingsSafe, loyaltyCalcSettings, maybeAwardLoyaltyPoints } from "@/lib/loyalty";
 import { computeEarnedPoints } from "@/lib/loyalty-calc";
 
 type Params = { params: Promise<{ branchId: string }> };
@@ -86,7 +86,7 @@ export async function POST(request: NextRequest, { params }: Params) {
     // cafe requires it — QR checkout is untouched otherwise. NOTE: the QR
     // flow can only EARN points; redeeming requires the POS (no OTP yet,
     // so a phone number alone must never spend someone's balance).
-    const loyaltySettings = await getLoyaltySettings(cafeId);
+    const loyaltySettings = await getLoyaltySettingsSafe(cafeId);
     const phoneRequired = loyaltySettings.enabled && loyaltySettings.customerPhoneRequiredForQr;
     const rawPhone = data.customerPhone?.trim() ?? "";
     if (phoneRequired && !rawPhone) {

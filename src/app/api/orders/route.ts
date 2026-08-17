@@ -15,7 +15,7 @@ import { getActiveShift, recomputeShiftTotals } from "@/lib/shifts";
 import { getBranchFinancialSettings, computeCharges } from "@/lib/financials";
 import { attachOrderToTableSession } from "@/lib/table-sessions";
 import { findOrCreateCustomerByPhone, recordCustomerOrder } from "@/lib/customers";
-import { getLoyaltySettings, loyaltyCalcSettings, maybeAwardLoyaltyPoints, recordRedemption } from "@/lib/loyalty";
+import { getLoyaltySettingsSafe, loyaltyCalcSettings, maybeAwardLoyaltyPoints, recordRedemption } from "@/lib/loyalty";
 import { validateRedemption } from "@/lib/loyalty-calc";
 
 const orderInclude = {
@@ -231,7 +231,9 @@ export async function POST(request: NextRequest) {
     if (data.loyaltyPointsToRedeem > 0) {
       await requireKey("loyalty.redeem_points", "ليس لديك صلاحية لاستخدام نقاط العملاء");
       if (!customer) throw new ApiError(400, "اكتب رقم موبايل عميل مسجل لاستخدام النقاط");
-      const loyaltySettings = await getLoyaltySettings(cafeId);
+      // Safe fetch: if the loyalty tables are unreachable, settings resolve
+      // to "disabled" and validation returns a clean Arabic error.
+      const loyaltySettings = await getLoyaltySettingsSafe(cafeId);
       const calc = loyaltyCalcSettings(loyaltySettings);
       // Cap check uses the pre-loyalty total (after the manual discount).
       const preFin = await getBranchFinancialSettings(branchId);

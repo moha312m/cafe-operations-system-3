@@ -19,6 +19,38 @@ export async function getLoyaltySettings(cafeId: string): Promise<LoyaltySetting
   }
 }
 
+// In-memory defaults mirroring the schema defaults — used when the loyalty
+// tables are unreachable (e.g. migration not applied yet in production).
+function loyaltyDefaults(cafeId: string): LoyaltySettings {
+  const now = new Date();
+  return {
+    id: "loyalty-defaults",
+    cafeId,
+    enabled: false,
+    earnPointsPerAmount: 1,
+    earnAmountStep: 10 as unknown as LoyaltySettings["earnAmountStep"],
+    pointValueAmount: 1 as unknown as LoyaltySettings["pointValueAmount"],
+    minPointsToRedeem: 50,
+    maxRedeemPercentageOfOrder: 50,
+    pointsExpireDays: null,
+    earnOnPaidOrdersOnly: true,
+    customerPhoneRequiredForQr: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+// Never-throwing variant for PUBLIC pages and order-flow enhancers: any DB
+// failure degrades to "loyalty disabled" instead of crashing the request.
+export async function getLoyaltySettingsSafe(cafeId: string): Promise<LoyaltySettings> {
+  try {
+    return await getLoyaltySettings(cafeId);
+  } catch (e) {
+    console.error("loyalty settings unavailable — falling back to disabled", e);
+    return loyaltyDefaults(cafeId);
+  }
+}
+
 // Plain-number view for the pure calc helpers and client payloads.
 export function loyaltyCalcSettings(s: LoyaltySettings): LoyaltyCalcSettings {
   return {
@@ -37,7 +69,19 @@ export function loyaltyCalcSettings(s: LoyaltySettings): LoyaltyCalcSettings {
 // linked customer, loyalty enabled, not cancelled, and (when
 // earnOnPaidOrdersOnly) fully paid. The atomic updateMany claim on
 // loyaltyPointsAwardedAt is the double-earn guard.
+//
+// Never throws: awarding points is an enhancement — a loyalty-layer
+// failure must never fail the payment/order that triggered it.
 export async function maybeAwardLoyaltyPoints(orderId: string): Promise<number | null> {
+  try {
+    return await awardLoyaltyPointsInner(orderId);
+  } catch (e) {
+    console.error("loyalty award skipped", e);
+    return null;
+  }
+}
+
+async function awardLoyaltyPointsInner(orderId: string): Promise<number | null> {
   const order = await db.order.findUnique({
     where: { id: orderId },
     select: {
@@ -132,7 +176,16 @@ export async function recordRedemption({
 
 // On order cancellation: take back earned points and refund redeemed
 // points, once (guarded by an existing CANCELLED_REVERSAL row).
+// Never throws — a loyalty failure must not block the cancellation.
 export async function reverseOrderLoyalty(orderId: string, userId: string | null) {
+  try {
+    await reverseOrderLoyaltyInner(orderId, userId);
+  } catch (e) {
+    console.error("loyalty reversal skipped", e);
+  }
+}
+
+async function reverseOrderLoyaltyInner(orderId: string, userId: string | null) {
   const order = await db.order.findUnique({
     where: { id: orderId },
     select: {

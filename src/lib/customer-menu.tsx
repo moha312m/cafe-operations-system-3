@@ -4,20 +4,32 @@ import type { MenuData } from "@/components/customer-menu/types";
 import { branchShift, round2 } from "@/lib/pricing";
 import { getCafeSettings } from "@/lib/cafe-settings";
 import { getBranchFinancialSettings } from "@/lib/financials";
-import { getLoyaltySettings } from "@/lib/loyalty";
+import { getLoyaltySettingsSafe } from "@/lib/loyalty";
 
 export type CustomerMenuResult =
   | { status: "ok"; menu: MenuData }
   | { status: "disabled" }
   | { status: "qr-disabled" } // qrMenuEnabled feature flag off
   | { status: "suspended" }
-  | { status: "not-found" };
+  | { status: "not-found" }
+  | { status: "invalid-qr" } // /qr/[code] didn't resolve to a branch
+  | { status: "error" }; // unexpected server failure — friendly page, never a crash
 
-// Loads the public menu for a branch, exposing only customer-safe
-// fields. Prices are already branch-effective (base override applied,
-// variant prices shifted), so the client never does pricing math
-// beyond summing add-ons.
+// Loads the public menu for a branch, exposing only customer-safe fields.
+// NEVER throws: public QR pages must always render an Arabic message, so
+// any unexpected failure resolves to { status: "error" }.
 export async function loadCustomerMenu(
+  branch: (Branch & { cafe: Cafe }) | null
+): Promise<CustomerMenuResult> {
+  try {
+    return await loadCustomerMenuInner(branch);
+  } catch (e) {
+    console.error("customer menu load failed", e);
+    return { status: "error" };
+  }
+}
+
+async function loadCustomerMenuInner(
   branch: (Branch & { cafe: Cafe }) | null
 ): Promise<CustomerMenuResult> {
   if (!branch || !branch.isActive) {
@@ -74,7 +86,9 @@ export async function loadCustomerMenu(
     }),
     getBranchFinancialSettings(branch.id),
   ]);
-  const loyalty = await getLoyaltySettings(branch.cafeId);
+  // Never crashes the public page — falls back to "loyalty disabled" when
+  // the loyalty tables are unreachable (e.g. migration not applied yet).
+  const loyalty = await getLoyaltySettingsSafe(branch.cafeId);
 
   return {
     status: "ok",
@@ -143,32 +157,30 @@ export async function loadCustomerMenu(
   };
 }
 
+const UNAVAILABLE_COPY: Record<
+  "disabled" | "qr-disabled" | "suspended" | "not-found" | "invalid-qr" | "error",
+  { title: string; sub: string }
+> = {
+  disabled: { title: "المنيو غير متاح حاليًا", sub: "اسأل الويتر أو اطلب من الكاشير مباشرة." },
+  "qr-disabled": { title: "منيو QR غير متاح حاليًا", sub: "اطلب من الكاشير مباشرة." },
+  suspended: { title: "المنيو غير متاح حاليًا", sub: "الكافيه ده متوقف مؤقتًا." },
+  "not-found": { title: "الرابط ده مش صحيح", sub: "اتأكد من الكود اللي على الترابيزة." },
+  "invalid-qr": { title: "رابط QR غير صحيح أو غير مفعل", sub: "اتأكد من الكود اللي على الترابيزة أو اسأل الويتر." },
+  error: { title: "حصل خطأ مؤقت", sub: "جرب تاني بعد لحظات، أو اطلب من الكاشير مباشرة." },
+};
+
 export function MenuUnavailable({
   reason,
 }: {
-  reason: "disabled" | "qr-disabled" | "suspended" | "not-found";
+  reason: keyof typeof UNAVAILABLE_COPY;
 }) {
-  const notFound = reason === "not-found";
-  const title =
-    reason === "qr-disabled"
-      ? "منيو QR غير متاح حاليًا"
-      : notFound
-        ? "الرابط ده مش صحيح"
-        : "المنيو غير متاح حاليًا";
-  const sub =
-    reason === "disabled"
-      ? "اسأل الويتر أو اطلب من الكاشير مباشرة."
-      : reason === "suspended"
-        ? "الكافيه ده متوقف مؤقتًا."
-        : reason === "qr-disabled"
-          ? "اطلب من الكاشير مباشرة."
-          : "اتأكد من الكود اللي على الترابيزة.";
+  const copy = UNAVAILABLE_COPY[reason] ?? UNAVAILABLE_COPY.error;
   return (
-    <main className="flex min-h-screen items-center justify-center bg-muted/40 p-6">
+    <main className="flex min-h-dvh items-center justify-center bg-muted/40 p-6">
       <div className="max-w-sm space-y-2 rounded-2xl border bg-card p-8 text-center shadow-sm">
         <p className="text-4xl">☕</p>
-        <p className="text-lg font-semibold">{title}</p>
-        <p className="text-sm text-muted-foreground">{sub}</p>
+        <p className="text-lg font-semibold">{copy.title}</p>
+        <p className="text-sm text-muted-foreground">{copy.sub}</p>
       </div>
     </main>
   );

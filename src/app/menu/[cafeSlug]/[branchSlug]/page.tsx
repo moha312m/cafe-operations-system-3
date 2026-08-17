@@ -6,6 +6,7 @@ import { CustomerMenuPage } from "@/components/customer-menu/customer-menu-page"
 export const dynamic = "force-dynamic";
 
 // Public customer menu: /menu/[cafeSlug]/[branchSlug]?table=5
+// Must NEVER crash — every failure renders an Arabic message.
 export default async function PublicMenuPage({
   params,
   searchParams,
@@ -18,15 +19,21 @@ export default async function PublicMenuPage({
     searchParams,
   ]);
 
-  const branch = await db.branch.findFirst({
-    where: {
-      menuSlug: branchSlug,
-      cafe: { slug: cafeSlug }, // both slugs must match — no cross-tenant guessing
-    },
-    include: { cafe: true },
-  });
+  let branch = null;
+  try {
+    branch = await db.branch.findFirst({
+      where: {
+        menuSlug: branchSlug,
+        cafe: { slug: cafeSlug }, // both slugs must match — no cross-tenant guessing
+      },
+      include: { cafe: true },
+    });
+  } catch (e) {
+    console.error("menu branch lookup failed", e);
+    return <MenuUnavailable reason="error" />;
+  }
 
-  const result = await loadCustomerMenu(branch);
+  const result = await loadCustomerMenu(branch); // never throws
   if (result.status !== "ok") {
     return <MenuUnavailable reason={result.status} />;
   }
