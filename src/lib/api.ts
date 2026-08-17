@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
+import { Prisma } from "@prisma/client";
 import { getSession, type SessionUser } from "@/lib/auth";
 import { type Permission } from "@/lib/permissions";
 import { resolvePermissions } from "@/lib/perms/effective";
@@ -123,5 +124,23 @@ export function handleApiError(error: unknown): NextResponse {
     );
   }
   console.error(error);
+  // Schema drift (P2021 missing table / P2022 missing column) means the app
+  // was deployed without running the pending migration — tell the caller
+  // it's a temporary maintenance state, not a mystery.
+  if (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    (error.code === "P2021" || error.code === "P2022")
+  ) {
+    return NextResponse.json(
+      { error: "النظام بيتم تحديثه حاليًا — حاول تاني بعد دقيقة" },
+      { status: 503 }
+    );
+  }
+  if (error instanceof Prisma.PrismaClientInitializationError) {
+    return NextResponse.json(
+      { error: "في مشكلة مؤقتة في الاتصال — حاول تاني بعد لحظات" },
+      { status: 503 }
+    );
+  }
   return NextResponse.json({ error: "حصل خطأ غير متوقع — جرّب تاني" }, { status: 500 });
 }

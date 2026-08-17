@@ -37,7 +37,7 @@ const qrOrderSchema = z.object({
         notes: z.string().optional(),
       })
     )
-    .min(1)
+    .min(1, "من فضلك أضف صنف واحد على الأقل")
     .max(30),
 });
 
@@ -125,7 +125,7 @@ export async function POST(request: NextRequest, { params }: Params) {
     let subtotal = 0;
     const itemRows = data.items.map((item) => {
       const product = productMap.get(item.productId);
-      if (!product) throw new ApiError(400, "في منتج مش متاح دلوقتي");
+      if (!product) throw new ApiError(400, "المنتج غير متاح حاليًا");
       let variantName: string | null = null;
       let chosenVariant: { price: unknown } | null = null;
 
@@ -243,14 +243,22 @@ export async function POST(request: NextRequest, { params }: Params) {
 
     // First QR order for a table opens its session (timer starts at first
     // submission, even while the order awaits waiter approval).
-    await attachOrderToTableSession(
-      {
-        id: order.id, cafeId, branchId, type: order.type,
-        tableNumber: order.tableNumber, orderNumber: order.orderNumber,
-        customerName: data.customerName,
-      },
-      null // placed by the customer, no staff user
-    );
+    // ── Post-creation side effects are best-effort ──
+    // The order EXISTS from here on: throwing would show the customer an
+    // error for an order that was actually placed (and invite duplicate
+    // retries). Failures are logged for staff-side reconciliation instead.
+    try {
+      await attachOrderToTableSession(
+        {
+          id: order.id, cafeId, branchId, type: order.type,
+          tableNumber: order.tableNumber, orderNumber: order.orderNumber,
+          customerName: data.customerName,
+        },
+        null // placed by the customer, no staff user
+      );
+    } catch (e) {
+      console.error(`qr order #${order.orderNumber}: table session attach failed`, e);
+    }
 
     // Loyalty: link stats + (if eligible now) award. With the default
     // earnOnPaidOrdersOnly=true the award happens later, when the cashier

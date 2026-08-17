@@ -216,12 +216,18 @@ export function CustomerMenuPage({
           })),
         }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "فشل إرسال الطلب");
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.order) {
+        throw new Error(data?.error || "");
+      }
       setPlaced(data.order);
       setCartOpen(false);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "فشل إرسال الطلب — جرب تاني");
+      if (process.env.NODE_ENV === "development") console.error("qr submit failed", e);
+      // Server messages are Arabic and actionable; anything else (network
+      // failure, empty body) gets the friendly fallback.
+      const msg = e instanceof Error && e.message ? e.message : "";
+      setError(msg || "تعذر إرسال الطلب، من فضلك حاول مرة أخرى أو اطلب من الويتر");
     } finally {
       setSubmitting(false);
     }
@@ -239,6 +245,9 @@ export function CustomerMenuPage({
             {pending ? "طلبك في انتظار التأكيد" : "طلبك وصل للكافيه وجاري تجهيزه"}
           </p>
           <p className="text-3xl font-bold tabular-nums">#{placed.orderNumber}</p>
+          {details.tableNumber.trim() && (
+            <p className="text-sm font-medium">ترابيزة رقم {details.tableNumber.trim()}</p>
+          )}
           <p className="text-sm text-muted-foreground">
             الإجمالي {money(placed.total, currency)} — الدفع عند التسليم.
           </p>
