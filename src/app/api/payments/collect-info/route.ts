@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { requireKey, handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
+import { getLoyaltySettingsSafe, loyaltyCalcSettings } from "@/lib/loyalty";
 
 // GET /api/payments/collect-info?orderId=… | ?tableSessionId=…
 // Feeds the POS "تحصيل الدفع" panel: totals + payment history for the
@@ -24,6 +25,13 @@ export async function GET(request: NextRequest) {
             select: { id: true, amount: true, method: true, createdAt: true },
           },
           branch: { select: { id: true, name: true } },
+          customer: {
+            select: {
+              id: true, name: true, normalizedPhone: true,
+              loyaltyPointsBalance: true, totalOrders: true, totalSpent: true,
+              lastOrderAt: true, isActive: true,
+            },
+          },
         },
       });
       if (!order) throw new ApiError(404, "الطلب مش موجود");
@@ -41,7 +49,9 @@ export async function GET(request: NextRequest) {
         },
       });
 
+      const loyalty = loyaltyCalcSettings(await getLoyaltySettingsSafe(order.cafeId));
       return NextResponse.json({
+        loyalty,
         target: {
           kind: "order",
           orderId: order.id,
@@ -55,6 +65,19 @@ export async function GET(request: NextRequest) {
           paidAmount: Number(order.paidAmount),
           remainingAmount: Number(order.remainingAmount),
           paymentStatus: order.paymentStatus,
+          alreadyRedeemed: order.loyaltyPointsRedeemed > 0,
+          customer: order.customer
+            ? {
+                id: order.customer.id,
+                name: order.customer.name,
+                phone: order.customer.normalizedPhone,
+                loyaltyPointsBalance: order.customer.loyaltyPointsBalance,
+                totalOrders: order.customer.totalOrders,
+                totalSpent: Number(order.customer.totalSpent),
+                lastOrderAt: order.customer.lastOrderAt,
+                isActive: order.customer.isActive,
+              }
+            : null,
           payments: order.payments.map((p) => ({
             id: p.id, amount: Number(p.amount), method: p.method, createdAt: p.createdAt,
           })),
@@ -85,7 +108,9 @@ export async function GET(request: NextRequest) {
         },
       });
 
+      const loyalty = loyaltyCalcSettings(await getLoyaltySettingsSafe(session.cafeId ?? ""));
       return NextResponse.json({
+        loyalty,
         target: {
           kind: "table",
           tableSessionId: ts.id,

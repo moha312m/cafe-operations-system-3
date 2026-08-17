@@ -62,6 +62,7 @@ export function TableInvoices({
   const canCollect = canKey("tables.collect_payment") || canKey("pos.collect_payment");
   const canClose = canKey("tables.close");
   const canManage = canKey("tables.manage");
+  const canRedeem = canKey("loyalty.redeem_points");
   const [summary, setSummary] = useState<SessionSummary | null>(null);
   const [invoices, setInvoices] = useState<Invoice[] | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -71,7 +72,34 @@ export function TableInvoices({
   // Collect dialog: either a single invoice (orderId) or the whole table.
   const [collect, setCollect] = useState<null | { kind: "invoice"; orderId: string; remaining: number; label: string } | { kind: "table-full"; remaining: number } | { kind: "table-partial"; remaining: number }>(null);
   // Post-payment receipt actions (طباعة الريسيت / تحصيل دفعة أخرى).
-  const [receipt, setReceipt] = useState<null | { paymentId: string; scope: "order" | "table" }>(null);
+  const [receipt, setReceipt] = useState<null | { paymentId: string | null; scope: "order" | "table" }>(null);
+  // Loyalty redemption inside table settlement (بيانات العميل والنقاط).
+  const [tiPhone, setTiPhone] = useState("");
+  const [tiCustomer, setTiCustomer] = useState<null | { id: string; name: string | null; phone: string; loyaltyPointsBalance: number }>(null);
+  const [tiLoyalty, setTiLoyalty] = useState<null | { enabled: boolean; pointValueAmount: number; minPointsToRedeem: number; maxRedeemPercentageOfOrder: number }>(null);
+  const [tiPoints, setTiPoints] = useState("");
+  const tiTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Debounced customer lookup for the settlement dialog.
+  useEffect(() => {
+    setTiCustomer(null);
+    const digits = tiPhone.replace(/\D/g, "");
+    if (digits.length < 10) return;
+    if (tiTimer.current) clearTimeout(tiTimer.current);
+    tiTimer.current = setTimeout(async () => {
+      try {
+        const r = await api<{ customer: typeof tiCustomer; loyalty: NonNullable<typeof tiLoyalty> }>(
+          `/api/customers/lookup?phone=${encodeURIComponent(tiPhone)}`
+        );
+        setTiCustomer(r.customer);
+        setTiLoyalty(r.loyalty);
+      } catch { /* quiet */ }
+    }, 400);
+    return () => { if (tiTimer.current) clearTimeout(tiTimer.current); };
+  }, [tiPhone]);
+
+  const tiPointsNum = Math.floor(Number(tiPoints) || 0);
+  const tiDiscount = tiLoyalty ? Math.round(tiPointsNum * tiLoyalty.pointValueAmount * 100) / 100 : 0;
   const [amount, setAmount] = useState("");
   const [payMethod, setPayMethod] = useState<"CASH" | "CARD" | "WALLET">("CASH");
 
@@ -128,13 +156,18 @@ export function TableInvoices({
         const body: Record<string, unknown> = { mode, method: payMethod };
         if (mode === "PARTIAL") body.amount = amt;
         if (mode === "PARTIAL" && (amt <= 0 || amt > collect.remaining + 0.001)) { setBusy(false); return toast.error("مبلغ غير صحيح"); }
+        // Loyalty redemption against the table account (server re-validates).
+        if (tiPointsNum > 0 && tiCustomer) {
+          body.loyaltyPointsToRedeem = tiPointsNum;
+          body.customerPhone = tiCustomer.phone;
+        }
         const r = await api<{ paymentIds: string[] }>(`/api/tables/${summary.id}/pay`, { method: "POST", body });
         paymentId = r.paymentIds?.[0] ?? "";
         scope = "table";
       }
       toast.success("تم تحصيل الدفع بنجاح");
-      setCollect(null); setAmount("");
-      if (paymentId) setReceipt({ paymentId, scope });
+      setCollect(null); setAmount(""); setTiPhone(""); setTiPoints(""); setTiCustomer(null);
+      setReceipt({ paymentId: paymentId || null, scope });
       await refresh();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "فشل التحصيل");
@@ -261,27 +294,33 @@ export function TableInvoices({
             <DialogTitle>تم تحصيل الدفع بنجاح ✅</DialogTitle>
           </DialogHeader>
           <div className="grid gap-2">
-            <Button
-              className="h-11 w-full"
-              onClick={() => {
-                if (!receipt) return;
-                const scopeQs = receipt.scope === "table" ? "&scope=table" : "";
-                window.open(`/receipts/payment/${receipt.paymentId}?print=1${scopeQs}`, "_blank");
-              }}
-            >
-              🖨️ طباعة الريسيت
-            </Button>
-            <Button
-              variant="outline"
-              className="h-11 w-full"
-              onClick={() => {
-                if (!receipt) return;
-                const scopeQs = receipt.scope === "table" ? "?scope=table" : "";
-                window.open(`/receipts/payment/${receipt.paymentId}${scopeQs}`, "_blank");
-              }}
-            >
-              عرض الريسيت
-            </Button>
+            {receipt?.paymentId ? (
+              <>
+                <Button
+                  className="h-11 w-full"
+                  onClick={() => {
+                    const scopeQs = receipt.scope === "table" ? "&scope=table" : "";
+                    window.open(`/receipts/payment/${receipt.paymentId}?print=1${scopeQs}`, "_blank");
+                  }}
+                >
+                  🖨️ طباعة الريسيت
+                </Button>
+                <Button
+                  variant="outline"
+                  className="h-11 w-full"
+                  onClick={() => {
+                    const scopeQs = receipt.scope === "table" ? "?scope=table" : "";
+                    window.open(`/receipts/payment/${receipt.paymentId}${scopeQs}`, "_blank");
+                  }}
+                >
+                  عرض الريسيت
+                </Button>
+              </>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                تم سداد الحساب بخصم النقاط بالكامل — لا توجد دفعة نقدية لطباعتها.
+              </p>
+            )}
             {summary && summary.remainingAmount > 0.001 && (
               <Button
                 variant="outline"
@@ -308,7 +347,54 @@ export function TableInvoices({
           </DialogHeader>
           {collect && (
             <div className="space-y-3">
-              <div className="rounded-lg bg-muted/40 p-2 text-sm">المتبقي: <span className="font-bold tabular-nums">{fmt(collect.remaining)}</span></div>
+              <div className="rounded-lg bg-muted/40 p-2 text-sm">
+                المتبقي: <span className="font-bold tabular-nums">{fmt(collect.remaining)}</span>
+                {collect.kind !== "invoice" && tiDiscount > 0 && (
+                  <span className="block text-xs text-amber-700 dark:text-amber-400">
+                    خصم نقاط الولاء: −{fmt(tiDiscount)} · المطلوب تحصيله: <b className="tabular-nums">{fmt(Math.max(collect.remaining - tiDiscount, 0))}</b>
+                  </span>
+                )}
+              </div>
+
+              {/* بيانات العميل والنقاط — table settlement only (invoice
+                  collections use the order's linked customer via POS panel). */}
+              {collect.kind !== "invoice" && canRedeem && (
+                <div className="space-y-1.5 rounded-lg border p-2">
+                  <p className="text-xs font-semibold">بيانات العميل والنقاط</p>
+                  <Input
+                    dir="ltr" inputMode="tel" className="h-9"
+                    placeholder="رقم موبايل العميل — 01xx xxx xxxx"
+                    value={tiPhone}
+                    onChange={(e) => { setTiPhone(e.target.value); setTiPoints(""); }}
+                  />
+                  {tiCustomer && (
+                    <>
+                      <p className="rounded bg-blue-500/10 px-2 py-1 text-[11px] text-blue-800 dark:text-blue-300">
+                        عميل موجود{tiCustomer.name ? `: ${tiCustomer.name}` : ""} · رصيد النقاط:{" "}
+                        <b className="tabular-nums">{tiCustomer.loyaltyPointsBalance}</b> نقطة
+                      </p>
+                      {tiLoyalty?.enabled && tiCustomer.loyaltyPointsBalance >= (tiLoyalty?.minPointsToRedeem ?? 0) ? (
+                        <>
+                          <Input
+                            type="number" dir="ltr" className="h-9"
+                            placeholder={`عدد النقاط المستخدمة (أقل عدد ${tiLoyalty.minPointsToRedeem})`}
+                            value={tiPoints}
+                            onChange={(e) => setTiPoints(e.target.value)}
+                          />
+                          {tiPointsNum > 0 && (
+                            <p className="text-[11px] text-amber-700 dark:text-amber-400">
+                              سيتم استخدام نقاط هذا العميل كخصم على حساب الترابيزة
+                            </p>
+                          )}
+                        </>
+                      ) : (
+                        <p className="text-[11px] text-muted-foreground">لا يوجد رصيد نقاط كافي للاستخدام</p>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+
               <div className="space-y-1.5">
                 <Label>مبلغ التحصيل</Label>
                 <Input type="number" min="0" step="0.01" dir="ltr" value={amount} onChange={(e) => setAmount(e.target.value)}

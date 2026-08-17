@@ -18,6 +18,116 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 
 export type PaymentSplit = { method: Exclude<PaymentMethod, "MIXED">; amount: number };
 
+// A loyalty redemption applied during collection. `points` were validated
+// against the loyalty settings by the caller; the balance and per-order
+// state are re-validated INSIDE the transaction.
+export type CollectionRedemption = {
+  customerId: string;
+  points: number;
+  discount: number; // EGP value = points × pointValueAmount
+};
+
+// Applies a loyalty discount to orders FIFO (like money allocation) inside
+// a transaction: reduces each order's total, stamps its loyalty fields,
+// and writes one REDEEM ledger row per affected order — so every order's
+// fields always match its own ledger. Decrements the customer balance
+// once. Throws ApiError on any safety violation.
+export async function applyLoyaltyRedemptionInTx(
+  tx: Prisma.TransactionClient,
+  {
+    orderIds,
+    redemption,
+    pointValue,
+    cashierId,
+  }: {
+    orderIds: string[]; // FIFO order (oldest first)
+    redemption: CollectionRedemption;
+    pointValue: number;
+    cashierId: string;
+  }
+) {
+  // Re-read the customer inside the tx — concurrent redemptions serialize.
+  const customer = await tx.customer.findUnique({
+    where: { id: redemption.customerId },
+    select: { id: true, cafeId: true, isActive: true, loyaltyPointsBalance: true },
+  });
+  if (!customer || !customer.isActive) throw new ApiError(400, "يجب اختيار عميل أولًا");
+  if (customer.loyaltyPointsBalance < redemption.points) {
+    throw new ApiError(400, "لا يوجد رصيد نقاط كافي");
+  }
+
+  let discountLeft = redemption.discount;
+  let pointsLeft = redemption.points;
+  const applied: { orderId: string; orderNumber: number; share: number; points: number }[] = [];
+
+  for (const orderId of orderIds) {
+    if (discountLeft <= 0.001) break;
+    const order = await tx.order.findUnique({
+      where: { id: orderId },
+      select: {
+        id: true, cafeId: true, orderNumber: true, total: true, paidAmount: true,
+        discountAmount: true, loyaltyDiscountAmount: true, loyaltyPointsRedeemed: true,
+      },
+    });
+    if (!order) continue;
+    if (order.cafeId !== customer.cafeId) {
+      throw new ApiError(403, "لا يمكن استخدام نقاط عميل من كافيه آخر");
+    }
+    const remaining = round2(Number(order.total) - Number(order.paidAmount));
+    if (remaining <= 0.001) continue;
+
+    const share = round2(Math.min(discountLeft, remaining));
+    // Attribute points proportionally; the last affected order absorbs
+    // rounding so points always sum exactly.
+    const isLast = round2(discountLeft - share) <= 0.001;
+    const sharePoints = isLast ? pointsLeft : Math.min(Math.floor(share / pointValue), pointsLeft);
+    discountLeft = round2(discountLeft - share);
+    pointsLeft -= sharePoints;
+
+    const newTotal = round2(Number(order.total) - share);
+    const newRemaining = Math.max(round2(newTotal - Number(order.paidAmount)), 0);
+    await tx.order.update({
+      where: { id: order.id },
+      data: {
+        total: newTotal,
+        discountAmount: round2(Number(order.discountAmount) + share),
+        loyaltyDiscountAmount: round2(Number(order.loyaltyDiscountAmount) + share),
+        loyaltyPointsRedeemed: order.loyaltyPointsRedeemed + sharePoints,
+        remainingAmount: newRemaining,
+        paymentStatus: newRemaining <= 0.001 ? "PAID" : Number(order.paidAmount) > 0 ? "PARTIAL" : undefined,
+        customerId: redemption.customerId, // link (or keep) the redeeming customer
+      },
+    });
+    await tx.loyaltyTransaction.create({
+      data: {
+        cafeId: order.cafeId,
+        customerId: customer.id,
+        orderId: order.id,
+        type: "REDEEM",
+        points: -sharePoints,
+        amountValue: share,
+        note: `استخدام نقاط عند التحصيل — طلب #${order.orderNumber}`,
+        createdByUserId: cashierId,
+      },
+    });
+    applied.push({ orderId: order.id, orderNumber: order.orderNumber, share, points: sharePoints });
+  }
+
+  if (discountLeft > 0.001 || applied.length === 0) {
+    throw new ApiError(400, "قيمة خصم النقاط أكبر من المتبقي على الحساب");
+  }
+
+  await tx.customer.update({
+    where: { id: customer.id },
+    data: {
+      loyaltyPointsBalance: { decrement: redemption.points },
+      lifetimePointsRedeemed: { increment: redemption.points },
+    },
+  });
+
+  return { applied, oldBalance: customer.loyaltyPointsBalance };
+}
+
 // Applies one payment (possibly split across methods) to an order INSIDE
 // an existing transaction. Re-reads the order via the tx client so the
 // remaining amount is checked against committed state — the duplicate-
@@ -127,11 +237,16 @@ export async function collectOrderPayment({
   orderId,
   branchId,
   splits,
+  redemption,
+  pointValue,
 }: {
   session: SessionUser;
   orderId: string;
   branchId: string;
   splits: PaymentSplit[];
+  // Optional loyalty redemption, applied atomically with the payment.
+  redemption?: CollectionRedemption;
+  pointValue?: number;
 }) {
   // Cashiers must be on an open shift to touch the drawer.
   const shift = await getActiveShift(branchId, session.id);
@@ -139,16 +254,51 @@ export async function collectOrderPayment({
     throw new ApiError(400, "لا يمكن تحصيل الدفع بدون شيفت مفتوح");
   }
 
+  const moneyAmount = Math.round(splits.reduce((s, p) => s + p.amount, 0) * 100) / 100;
+
   let result;
+  let loyaltyResult: { applied: { orderId: string; orderNumber: number; share: number; points: number }[]; oldBalance: number } | null = null;
   try {
-    result = await db.$transaction((tx) =>
-      applyOrderPaymentInTx(tx, {
-        orderId,
-        splits,
-        cashierId: session.id,
-        shiftId: shift?.id ?? null,
-      })
-    );
+    result = await db.$transaction(async (tx) => {
+      // Loyalty discount first (reduces the order total), then real money
+      // against the reduced remaining — one atomic unit.
+      if (redemption) {
+        loyaltyResult = await applyLoyaltyRedemptionInTx(tx, {
+          orderIds: [orderId],
+          redemption,
+          pointValue: pointValue ?? 1,
+          cashierId: session.id,
+        });
+      }
+      if (moneyAmount > 0) {
+        return applyOrderPaymentInTx(tx, {
+          orderId,
+          splits,
+          cashierId: session.id,
+          shiftId: shift?.id ?? null,
+        });
+      }
+      // Points covered the whole remaining — no money rows to write.
+      const order = await tx.order.findUniqueOrThrow({
+        where: { id: orderId },
+        select: {
+          id: true, cafeId: true, branchId: true, orderNumber: true,
+          total: true, paidAmount: true, paymentStatus: true, tableSessionId: true,
+          remainingAmount: true,
+        },
+      });
+      const rem = Number(order.remainingAmount);
+      return {
+        order,
+        payments: [] as { id: string }[],
+        payAmount: 0,
+        oldRemaining: Math.round((rem + (redemption?.discount ?? 0)) * 100) / 100,
+        newRemaining: rem,
+        oldStatus: order.paymentStatus,
+        newStatus: order.paymentStatus,
+        tableSessionId: order.tableSessionId,
+      };
+    });
   } catch (e) {
     if (e instanceof DuplicatePaymentError) {
       await audit({
@@ -165,6 +315,23 @@ export async function collectOrderPayment({
   if (result.tableSessionId) await recomputeSessionTotals(result.tableSessionId);
   // Fully-paid orders earn their loyalty points exactly once (never throws).
   if (result.newStatus === "PAID") await maybeAwardLoyaltyPoints(orderId);
+
+  // (loyaltyResult is assigned inside the transaction callback — TS can't
+  // track that, so re-widen the type here.)
+  const lr = loyaltyResult as { applied: unknown; oldBalance: number } | null;
+  if (redemption && lr) {
+    await audit({
+      cafeId: result.order.cafeId, userId: session.id,
+      action: "LOYALTY_POINTS_REDEEMED",
+      entity: "Customer", entityId: redemption.customerId,
+      details: {
+        customerId: redemption.customerId, orderId, branchId,
+        points: redemption.points, amountValue: redemption.discount,
+        oldValue: { balance: lr.oldBalance },
+        newValue: { balance: lr.oldBalance - redemption.points },
+      },
+    });
+  }
 
   const meta = {
     branchId,
