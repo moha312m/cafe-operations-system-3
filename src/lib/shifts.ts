@@ -1,6 +1,26 @@
 import { db } from "@/lib/db";
+import { ApiError } from "@/lib/api";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
+
+// Cash custody gate for every transaction class that moves money into the
+// register: POS collection, payment attached to order creation, and table
+// settlement.
+//
+// Custody is deliberately NOT role-aware. Whether an actor MAY collect is
+// authorization (checked by the route, before this); whether there is an open
+// drawer to collect INTO is custody. Keying custody on `role === "CASHIER"`
+// let owners and managers write payments with no shift, leaving that cash
+// outside every drawer reconciliation (POS-001).
+//
+// Order creation without money is not a custody class and does not call this.
+export async function requireCashCustody(branchId: string, userId: string) {
+  const shift = await getActiveShift(branchId, userId);
+  if (!shift) {
+    throw new ApiError(400, "لا يمكن تحصيل الدفع بدون شيفت مفتوح");
+  }
+  return shift;
+}
 
 // The cashier's currently OPEN shift at a branch, or null. A cashier may
 // only ever have one open shift per branch (enforced on open).

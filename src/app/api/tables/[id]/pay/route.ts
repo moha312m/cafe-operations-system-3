@@ -3,7 +3,7 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { requireKey, handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
-import { getActiveShift, recomputeShiftTotals } from "@/lib/shifts";
+import { requireCashCustody, recomputeShiftTotals } from "@/lib/shifts";
 import { recomputeSessionTotals } from "@/lib/table-sessions";
 import { maybeAwardLoyaltyPoints, getLoyaltySettingsSafe, loyaltyCalcSettings } from "@/lib/loyalty";
 import { applyOrderPaymentInTx, applyLoyaltyRedemptionInTx } from "@/lib/payments";
@@ -67,11 +67,8 @@ export async function POST(request: NextRequest, { params }: Params) {
     const sessionRemaining = Number(ts.remainingAmount);
     if (sessionRemaining <= 0.001) throw new ApiError(400, "حساب الترابيزة متدفع بالكامل");
 
-    // A cashier collecting money must have an open shift (mirrors POS).
-    const shift = await getActiveShift(ts.branchId, session.id);
-    if (session.role === "CASHIER" && !shift) {
-      throw new ApiError(400, "لا يمكن تحصيل الدفع بدون شيفت مفتوح");
-    }
+    // Anyone collecting money must have an open shift (mirrors POS).
+    const shift = await requireCashCustody(ts.branchId, session.id);
 
     const note = [data.payerName?.trim(), data.note?.trim()].filter(Boolean).join(" — ") || null;
 

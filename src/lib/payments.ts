@@ -8,7 +8,7 @@
 import { db } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { ApiError } from "@/lib/api";
-import { getActiveShift, recomputeShiftTotals } from "@/lib/shifts";
+import { requireCashCustody, recomputeShiftTotals } from "@/lib/shifts";
 import { recomputeSessionTotals } from "@/lib/table-sessions";
 import { maybeAwardLoyaltyPoints } from "@/lib/loyalty";
 import type { Prisma, PaymentMethod } from "@prisma/client";
@@ -248,11 +248,9 @@ export async function collectOrderPayment({
   redemption?: CollectionRedemption;
   pointValue?: number;
 }) {
-  // Cashiers must be on an open shift to touch the drawer.
-  const shift = await getActiveShift(branchId, session.id);
-  if (session.role === "CASHIER" && !shift) {
-    throw new ApiError(400, "لا يمكن تحصيل الدفع بدون شيفت مفتوح");
-  }
+  // Anyone touching the drawer must be on an open shift — see
+  // requireCashCustody. The caller has already authorised the collection.
+  const shift = await requireCashCustody(branchId, session.id);
 
   const moneyAmount = Math.round(splits.reduce((s, p) => s + p.amount, 0) * 100) / 100;
 

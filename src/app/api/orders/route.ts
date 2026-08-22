@@ -11,7 +11,7 @@ import {
 } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { unitPrice as computeUnitPrice } from "@/lib/pricing";
-import { getActiveShift, recomputeShiftTotals } from "@/lib/shifts";
+import { getActiveShift, requireCashCustody, recomputeShiftTotals } from "@/lib/shifts";
 import { getBranchFinancialSettings, computeCharges } from "@/lib/financials";
 import { attachOrderToTableSession } from "@/lib/table-sessions";
 import { findOrCreateCustomerByPhone, recordCustomerOrder } from "@/lib/customers";
@@ -314,10 +314,7 @@ export async function POST(request: NextRequest) {
     let shift = null as Awaited<ReturnType<typeof getActiveShift>>;
     if (paySplits.length > 0) {
       await requireKey("pos.collect_payment", "ليس لديك صلاحية لتحصيل الدفع");
-      shift = await getActiveShift(branchId, session.id);
-      if (session.role === "CASHIER" && !shift) {
-        throw new ApiError(400, "لا يمكن تحصيل الدفع بدون شيفت مفتوح");
-      }
+      shift = await requireCashCustody(branchId, session.id);
     }
 
     const source = session.role === "WAITER" ? "WAITER" : "CASHIER_POS";
