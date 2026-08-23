@@ -14,11 +14,13 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 // outside every drawer reconciliation (POS-001).
 //
 // Order creation without money is not a custody class and does not call this.
-export async function requireCashCustody(branchId: string, userId: string) {
+export async function requireCashCustody(
+  branchId: string,
+  userId: string,
+  message = "لا يمكن تحصيل الدفع بدون شيفت مفتوح"
+) {
   const shift = await getActiveShift(branchId, userId);
-  if (!shift) {
-    throw new ApiError(400, "لا يمكن تحصيل الدفع بدون شيفت مفتوح");
-  }
+  if (!shift) throw new ApiError(400, message);
   return shift;
 }
 
@@ -35,15 +37,23 @@ export async function getActiveShift(branchId: string, cashierId: string) {
 // orders those payments belong to). Called after every payment / refund so
 // the drawer numbers are always consistent — cheap and idempotent.
 //
-//   expectedCash = openingCash + cashSales − cashRefunds
+//   expectedCash = openingCash + net cash movements
 //   totalSales   = cash + card + wallet (PAID only)
 export async function recomputeShiftTotals(shiftId: string) {
   const shift = await db.shift.findUnique({ where: { id: shiftId } });
   if (!shift) return null;
+  // An accepted close is a historical snapshot. Recomputing a CLOSED shift
+  // rewrote expectedCash while leaving the counted cash and stored
+  // difference frozen, leaving the record contradicting itself (SHIFT-002).
+  // Money moving after the close belongs to the current period instead.
+  if (shift.status === "CLOSED") return shift;
 
   const payments = await db.payment.findMany({
     where: { shiftId },
-    select: { amount: true, method: true, status: true, orderId: true },
+    select: {
+      amount: true, method: true, status: true, orderId: true,
+      reversalOfPaymentId: true,
+    },
   });
 
   let cash = 0,
@@ -58,7 +68,16 @@ export async function recomputeShiftTotals(shiftId: string) {
       if (p.method === "CASH") cash += amt;
       else if (p.method === "CARD") card += amt;
       else if (p.method === "WALLET") wallet += amt;
-      paidOrderIds.add(p.orderId);
+      if (p.reversalOfPaymentId) {
+        // A reversal of a payment taken in an earlier, already-closed shift.
+        // Its negative amount nets out of takings above; disclose it as a
+        // refund too, so this period shows the outflow rather than merely a
+        // shrunken sales figure. The order itself was sold in the earlier
+        // period, so it is deliberately not added to paidOrderIds here.
+        refunds += Math.abs(amt);
+      } else {
+        paidOrderIds.add(p.orderId);
+      }
     } else if (p.status === "REFUNDED") {
       // Disclosure only — deliberately NOT subtracted again below.
       refunds += amt;

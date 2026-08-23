@@ -785,6 +785,11 @@ model Payment {
   // جلسة الترابيزة اللي اتحصلت فيها الدفعة (لتقارير الترابيزات)
   tableSessionId String?
   note           String? // ملاحظة التحصيل (اسم الشخص، سبب الدفعة الجزئية…)
+  // Set on a reversal row that offsets an earlier payment whose shift was
+  // already closed. The original row stays untouched in its own (closed)
+  // period; the reversal carries the cash impact in the period where the
+  // money actually moved, and stays traceable back to the original.
+  reversalOfPaymentId String?
   paidAt       DateTime      @default(now())
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
@@ -796,6 +801,8 @@ model Payment {
   receivedBy User    @relation(fields: [receivedById], references: [id])
   tableSession TableSession? @relation(fields: [tableSessionId], references: [id], onDelete: SetNull)
   itemPayments OrderItemPayment[]
+  reversalOf   Payment?  @relation("PaymentReversal", fields: [reversalOfPaymentId], references: [id], onDelete: Restrict)
+  reversedBy   Payment[] @relation("PaymentReversal")
 
   @@index([cafeId, createdAt])
   @@index([branchId])
@@ -805,6 +812,7 @@ model Payment {
   @@index([method])
   @@index([status])
   @@index([tableSessionId])
+  @@index([reversalOfPaymentId])
 }
 
 // ─────────────────────────────── Shifts ──────────────────────────────
