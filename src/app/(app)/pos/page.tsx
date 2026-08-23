@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { api, money } from "@/lib/client";
@@ -61,18 +61,31 @@ const EMPTY_DETAILS: CustomerDetails = {
 
 type PlacedOrder = { id: string; orderNumber: number; total: string };
 
-// useSearchParams (collection-mode deep links) needs a Suspense boundary.
+// The POS tree must not sit inside the Suspense boundary that useSearchParams
+// requires. On a full page load React streams such a boundary as "queued"
+// ($~); its subtree is parked in a hidden container and never hydrates, so the
+// cashier gets a blank screen (POS-UI-001). Only the tiny param reader needs
+// the boundary — which is what the Next docs actually prescribe.
 export default function PosPage() {
-  return (
-    <Suspense fallback={null}>
-      <PosPageInner />
-    </Suspense>
-  );
+  return <PosPageInner />;
+}
+
+// Reads the collection-mode deep link inside its own (empty) boundary and
+// hands the params to the page. Renders nothing.
+function CollectionModeParams({
+  onParams,
+}: {
+  onParams: (sp: URLSearchParams) => void;
+}) {
+  const searchParams = useSearchParams();
+  useEffect(() => {
+    onParams(new URLSearchParams(searchParams.toString()));
+  }, [searchParams, onParams]);
+  return null;
 }
 
 function PosPageInner() {
   const router = useRouter();
-  const searchParams = useSearchParams();
   const { cafe, user } = useApp();
   const currency = cafe?.currency ?? "USD";
   const taxRate = cafe?.taxRate ?? 0;
@@ -110,11 +123,11 @@ function PosPageInner() {
   const [collectOrderId, setCollectOrderId] = useState<string | null>(null);
   const [collectTableBanner, setCollectTableBanner] = useState<string | null>(null);
 
-  useEffect(() => {
-    const orderParam = searchParams.get("collectOrderId");
-    const sessionParam = searchParams.get("collectTableSessionId");
-    const tableParam = searchParams.get("table");
-    const modeParam = searchParams.get("mode");
+  const applyCollectionParams = useCallback((sp: URLSearchParams) => {
+    const orderParam = sp.get("collectOrderId");
+    const sessionParam = sp.get("collectTableSessionId");
+    const tableParam = sp.get("table");
+    const modeParam = sp.get("mode");
     if (orderParam) setCollectOrderId(orderParam);
     if (tableParam && modeParam === "collect") {
       setOrderType("DINE_IN");
@@ -132,8 +145,7 @@ function PosPageInner() {
         })
         .catch((e) => toast.error(e instanceof Error ? e.message : "فشل تحميل حساب الترابيزة"));
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams]);
+  }, []);
 
   function exitCollectionMode() {
     setCollectOrderId(null);
@@ -440,6 +452,10 @@ function PosPageInner() {
   // ── Render ───────────────────────────────────────────────────
   return (
     <div className="flex flex-col gap-4">
+      <Suspense fallback={null}>
+        <CollectionModeParams onParams={applyCollectionParams} />
+      </Suspense>
+
       {canOperateShift && branchId && (
         <ShiftControls
           branchId={branchId}
