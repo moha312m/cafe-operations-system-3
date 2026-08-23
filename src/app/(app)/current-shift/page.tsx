@@ -43,7 +43,12 @@ export default function CurrentShiftPage() {
         { label: t.shifts.discounts, value: money(shift.totalDiscounts, currency), icon: "🏷️", accent: "amber" as const },
         { label: t.shifts.refunds, value: money(shift.totalRefunds, currency), icon: "↩️", accent: "red" as const },
         { label: t.shifts.orderCount, value: String(shift.orderCount), icon: "🧾", accent: "blue" as const },
-        { label: t.shifts.expectedCash, value: money(shift.expectedCashAmount, currency), icon: "🧮", accent: "emerald" as const },
+        // Expected cash is deliberately absent for the holder of an open
+        // shift — they are the one who will count the drawer (SHIFT-003).
+        // It is served (and shown) again once the count is committed.
+        ...(shift.expectedCashAmount
+          ? [{ label: t.shifts.expectedCash, value: money(shift.expectedCashAmount, currency), icon: "🧮", accent: "emerald" as const }]
+          : []),
       ]
     : [];
 

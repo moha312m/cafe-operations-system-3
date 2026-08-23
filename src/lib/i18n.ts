@@ -213,6 +213,7 @@ export const t = {
     openingCash: "رصيد بداية الشيفت",
     expectedCash: "الكاش المتوقع",
     expectedCashInDrawer: "الكاش المتوقع في الدرج",
+    blindCountHint: "اعدّ الكاش الفعلي في الدرج وسجّله. الفرق هيظهر بعد التسجيل.",
     actualCash: "الكاش الفعلي",
     actualCashInDrawer: "الكاش الفعلي في الدرج",
     difference: "الفرق",

@@ -24,6 +24,28 @@ export async function requireCashCustody(
   return shift;
 }
 
+// Withhold the reconciliation target from whoever will physically count the
+// drawer, so the count is independent evidence rather than a number typed to
+// match (SHIFT-003).
+//
+// Keyed on custody, not role: the holder of an OPEN shift cannot see its
+// expected cash. A supervisor looking at somebody else's shift is not the one
+// counting it and keeps full visibility, and a CLOSED shift is settled
+// history that stays readable to anyone authorised to read it.
+//
+// The count is revealed back to the holder by the close response, once the
+// server has persisted it.
+export function redactBlindCount<
+  T extends { status: string; cashierId: string; expectedCashAmount: unknown },
+>(shift: T, viewerId: string): T | Omit<T, "expectedCashAmount"> {
+  if (shift.status !== "OPEN" || shift.cashierId !== viewerId) return shift;
+  // Destructured off deliberately — the point is that the field never
+  // reaches the caller, so the binding is meant to go unused.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const { expectedCashAmount, ...rest } = shift;
+  return rest;
+}
+
 // The cashier's currently OPEN shift at a branch, or null. A cashier may
 // only ever have one open shift per branch (enforced on open).
 export async function getActiveShift(branchId: string, cashierId: string) {
