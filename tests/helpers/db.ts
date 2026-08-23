@@ -69,6 +69,22 @@ export async function sessionFor(email: string): Promise<SessionUser> {
   };
 }
 
+/**
+ * Establish the custody precondition explicitly. A custody test that relies
+ * on ambient shift state is not a test — leftover OPEN shifts from earlier
+ * runs or manual verification would otherwise silently invert the result.
+ */
+export async function clearOpenShifts(branchId: string, cashierId: string) {
+  const open = await db.shift.findMany({
+    where: { branchId, cashierId, status: "OPEN" },
+    select: { id: true },
+  });
+  for (const s of open) {
+    await db.payment.updateMany({ where: { shiftId: s.id }, data: { shiftId: null } });
+    await db.shift.delete({ where: { id: s.id } });
+  }
+}
+
 /** Open a shift directly, bypassing the HTTP route. */
 export async function openShift(
   fx: Fixture,
@@ -91,10 +107,19 @@ export async function openShift(
   });
 }
 
-/** Minimal unpaid order used as a payment target. */
-export async function makeOrder(fx: Fixture, marker: string, createdById: string) {
+/**
+ * Minimal unpaid order used as a payment target. `total` is explicit so cash
+ * arithmetic can be asserted against exact figures; it defaults to the
+ * product's base price.
+ */
+export async function makeOrder(
+  fx: Fixture,
+  marker: string,
+  createdById: string,
+  total?: number
+) {
   const product = await db.product.findUniqueOrThrow({ where: { id: fx.productId } });
-  const subtotal = Number(product.basePrice);
+  const subtotal = total ?? Number(product.basePrice);
   return db.order.create({
     data: {
       cafeId: fx.cafeId,

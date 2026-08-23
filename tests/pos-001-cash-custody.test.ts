@@ -11,6 +11,7 @@ import { collectOrderPayment } from "@/lib/payments";
 import { ApiError } from "@/lib/api";
 import {
   db, fixture, sessionFor, openShift, makeOrder, cleanup, cleanupShift,
+  clearOpenShifts,
 } from "./helpers/db";
 
 after(async () => { await db.$disconnect(); });
@@ -28,28 +29,32 @@ describe("POS-001 no active shift", () => {
       const session = await sessionFor(email);
       const marker = `PH1-POS001-noshift-${role}`;
       await cleanup(marker);
+      // Precondition: this actor holds no custody at this branch.
+      await clearOpenShifts(fx.branchId, session.id);
       const order = await makeOrder(fx, marker, session.id);
 
-      await assert.rejects(
-        () => collectOrderPayment({
-          session,
-          orderId: order.id,
-          branchId: fx.branchId,
-          splits: [{ method: "CASH", amount: fx.unitPrice }],
-        }),
-        (e: unknown) => e instanceof ApiError && e.status === 400,
-        `${role} was allowed to collect with no open shift`
-      );
+      try {
+        await assert.rejects(
+          () => collectOrderPayment({
+            session,
+            orderId: order.id,
+            branchId: fx.branchId,
+            splits: [{ method: "CASH", amount: fx.unitPrice }],
+          }),
+          (e: unknown) => e instanceof ApiError && e.status === 400,
+          `${role} was allowed to collect with no open shift`
+        );
 
-      // The database must agree: no payment row, order still unpaid.
-      const after = await db.order.findUniqueOrThrow({
-        where: { id: order.id },
-        include: { payments: true },
-      });
-      assert.equal(after.payments.length, 0, "a Payment row was written anyway");
-      assert.equal(Number(after.paidAmount), 0);
-
-      await cleanup(marker);
+        // The database must agree: no payment row, order still unpaid.
+        const settled = await db.order.findUniqueOrThrow({
+          where: { id: order.id },
+          include: { payments: true },
+        });
+        assert.equal(settled.payments.length, 0, "a Payment row was written anyway");
+        assert.equal(Number(settled.paidAmount), 0);
+      } finally {
+        await cleanup(marker);
+      }
     });
   }
 });
@@ -61,22 +66,26 @@ describe("POS-001 with an active shift", () => {
       const session = await sessionFor(email);
       const marker = `PH1-POS001-shift-${role}`;
       await cleanup(marker);
+      // Precondition: exactly one open shift, the one under test.
+      await clearOpenShifts(fx.branchId, session.id);
       const shift = await openShift(fx, session.id, 100);
       const order = await makeOrder(fx, marker, session.id);
 
-      const res = await collectOrderPayment({
-        session,
-        orderId: order.id,
-        branchId: fx.branchId,
-        splits: [{ method: "CASH", amount: fx.unitPrice }],
-      });
+      try {
+        const res = await collectOrderPayment({
+          session,
+          orderId: order.id,
+          branchId: fx.branchId,
+          splits: [{ method: "CASH", amount: fx.unitPrice }],
+        });
 
-      assert.equal(res.payments.length, 1);
-      const pay = await db.payment.findUniqueOrThrow({ where: { id: res.payments[0].id } });
-      assert.equal(pay.shiftId, shift.id, "payment was not attributed to the open shift");
-
-      await cleanup(marker);
-      await cleanupShift(shift.id);
+        assert.equal(res.payments.length, 1);
+        const pay = await db.payment.findUniqueOrThrow({ where: { id: res.payments[0].id } });
+        assert.equal(pay.shiftId, shift.id, "payment was not attributed to the open shift");
+      } finally {
+        await cleanup(marker);
+        await cleanupShift(shift.id);
+      }
     });
   }
 });

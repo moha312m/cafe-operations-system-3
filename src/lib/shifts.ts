@@ -49,8 +49,7 @@ export async function recomputeShiftTotals(shiftId: string) {
   let cash = 0,
     card = 0,
     wallet = 0,
-    refunds = 0,
-    cashRefunds = 0;
+    refunds = 0;
   const paidOrderIds = new Set<string>();
 
   for (const p of payments) {
@@ -61,8 +60,8 @@ export async function recomputeShiftTotals(shiftId: string) {
       else if (p.method === "WALLET") wallet += amt;
       paidOrderIds.add(p.orderId);
     } else if (p.status === "REFUNDED") {
+      // Disclosure only — deliberately NOT subtracted again below.
       refunds += amt;
-      if (p.method === "CASH") cashRefunds += amt;
     }
   }
 
@@ -76,7 +75,12 @@ export async function recomputeShiftTotals(shiftId: string) {
   const discounts = orders.reduce((s, o) => s + Number(o.discountAmount), 0);
 
   const totalSales = round2(cash + card + wallet);
-  const expectedCash = round2(Number(shift.openingCashAmount) + cash - cashRefunds);
+  // A refund is represented as a status flip (PAID → REFUNDED) on the
+  // original row, so a refunded payment has ALREADY dropped out of `cash`
+  // above. Subtracting cash refunds here as well removed the same reversal
+  // twice and understated the drawer by the refund amount, reporting a
+  // shortage the cashier never caused (SHIFT-001).
+  const expectedCash = round2(Number(shift.openingCashAmount) + cash);
 
   return db.shift.update({
     where: { id: shiftId },
