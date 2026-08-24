@@ -52,7 +52,8 @@ export async function GET() {
       }),
       db.payment.groupBy({
         by: ["method"],
-        where: { status: "PAID", createdAt: { gte: startOfMonth } },
+        // Money received: a refund also carries status PAID (REFUND-005).
+        where: { type: "COLLECTION", status: "PAID", createdAt: { gte: startOfMonth } },
         _sum: { amount: true },
       }),
       db.cafe.findMany({

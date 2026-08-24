@@ -6,6 +6,7 @@ import { audit } from "@/lib/audit";
 import { deductStockForOrder, auditDeduction, StockError } from "@/lib/stock-deduction";
 import { recomputeSessionTotals } from "@/lib/table-sessions";
 import { reverseOrderLoyalty } from "@/lib/loyalty";
+import { isOrderFullyPaid } from "@/lib/order-payments";
 import { unrecordCustomerOrder } from "@/lib/customers";
 import type { OrderStatus } from "@prisma/client";
 
@@ -36,7 +37,10 @@ export async function PATCH(request: NextRequest, { params }: Params) {
 
     const order = await db.order.findUnique({
       where: { id },
-      include: { payments: { where: { status: "PAID" } } },
+      // Every payment row on the order, because "how much is collected" is
+      // collections less refunds — filtering to status PAID alone would count
+      // a refund as money received (REFUND-005).
+      include: { payments: true },
     });
     if (!order) throw new ApiError(404, "الطلب مش موجود");
     if (session.role !== "SUPER_ADMIN" && order.cafeId !== session.cafeId) {
@@ -54,8 +58,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     }
     // An order can only be served once fully paid.
     if (status === "SERVED") {
-      const paid = order.payments.reduce((sum, p) => sum + Number(p.amount), 0);
-      if (paid + 0.001 < Number(order.total)) {
+      if (!isOrderFullyPaid({ total: order.total, payments: order.payments })) {
         throw new ApiError(400, "لازم الطلب يتدفع بالكامل قبل التسليم");
       }
     }

@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { api, money } from "@/lib/client";
 import { t, formatTime } from "@/lib/i18n";
+import { collectedAmount } from "@/lib/order-payments";
 import { handledBy } from "@/lib/order-staff";
 import { useApp } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
@@ -63,9 +64,8 @@ const COLUMNS = [
 ] as const;
 
 function paidAmount(order: Order): number {
-  return order.payments
-    .filter((p) => p.status === "PAID")
-    .reduce((s, p) => s + Number(p.amount), 0);
+  // Collections less refunds — see @/lib/order-payments (REFUND-005).
+  return collectedAmount(order.payments);
 }
 
 export default function OrdersPage() {

@@ -162,6 +162,8 @@ export default async function ReceiptPage({
         where: {
           tableSessionId: ts.id,
           cashierId: payment.cashierId,
+          // The receipt shows what was taken; a refund is not part of it.
+          type: "COLLECTION",
           status: "PAID",
           createdAt: {
             gte: new Date(payment.createdAt.getTime() - windowMs),

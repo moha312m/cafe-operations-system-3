@@ -209,13 +209,10 @@ describe("REFUND-003 reporting definitions", () => {
     const marker = "PH15-R003-E";
     await purge(marker);
     const now = new Date();
-    const sale = await seedSale(marker, 120, now, { method: "CARD" });
-    await seedRefund(
-      { ...sale.payment, method: "CARD", branchId: sale.fx.branchId },
-      120, now
-    );
-    try {
-      const r = await as<{ financials?: Figures & { cashCollections?: number; cashRefunds?: number; cardRefunds?: number } }>(
+    // Measured as a delta so an unrelated cash refund elsewhere in the day
+    // cannot decide this assertion.
+    const readMethods = async () => {
+      const r = await as<{ financials?: { cashRefunds?: number; cardRefunds?: number } }>(
         OWNER, `/api/reports/daily?date=${localDay(now)}`
       );
       const f = r.body.financials!;
@@ -223,8 +220,24 @@ describe("REFUND-003 reporting definitions", () => {
         typeof f.cashRefunds === "number" && typeof f.cardRefunds === "number",
         "reporting must preserve payment method for refunds"
       );
-      assert.equal(f.cashRefunds, 0, "a card refund must never appear as cash leaving the drawer");
-      assert.ok((f.cardRefunds ?? 0) >= 120, "the card refund must be reported against card");
+      return { cash: f.cashRefunds!, card: f.cardRefunds! };
+    };
+    const beforeM = await readMethods();
+    const sale = await seedSale(marker, 120, now, { method: "CARD" });
+    await seedRefund(
+      { ...sale.payment, method: "CARD", branchId: sale.fx.branchId },
+      120, now
+    );
+    try {
+      const afterM = await readMethods();
+      assert.equal(
+        afterM.cash - beforeM.cash, 0,
+        "a card refund must never appear as cash leaving the drawer"
+      );
+      assert.equal(
+        afterM.card - beforeM.card, 120,
+        "the card refund must be reported against card"
+      );
     } finally {
       await purge(marker);
     }

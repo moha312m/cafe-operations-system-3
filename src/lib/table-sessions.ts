@@ -21,7 +21,11 @@ export async function recomputeSessionTotals(sessionId: string) {
       where: { tableSessionId: sessionId, status: { notIn: [...INACTIVE_ORDER_STATUSES] } },
       _sum: { total: true },
     }),
-    db.payment.aggregate({
+    // Collections and refunds are summed separately: a refund carries
+    // status PAID too, so one aggregate would report money returned as
+    // money collected (REFUND-005).
+    db.payment.groupBy({
+      by: ["type"],
       where: {
         status: "PAID",
         order: { tableSessionId: sessionId, status: { notIn: [...INACTIVE_ORDER_STATUSES] } },
@@ -30,7 +34,13 @@ export async function recomputeSessionTotals(sessionId: string) {
     }),
   ]);
   const total = round2(Number(orderAgg._sum.total ?? 0));
-  const paid = round2(Number(payAgg._sum.amount ?? 0));
+  const collected = payAgg
+    .filter((r) => r.type !== "REFUND")
+    .reduce((s, r) => s + Number(r._sum.amount ?? 0), 0);
+  const returned = payAgg
+    .filter((r) => r.type === "REFUND")
+    .reduce((s, r) => s + Number(r._sum.amount ?? 0), 0);
+  const paid = Math.max(round2(collected - returned), 0);
   return db.tableSession.update({
     where: { id: sessionId },
     data: {

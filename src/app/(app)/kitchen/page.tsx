@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { api, money } from "@/lib/client";
 import { t, formatTime } from "@/lib/i18n";
+import { isOrderFullyPaid } from "@/lib/order-payments";
 import { handledBy } from "@/lib/order-staff";
 import { useApp } from "@/components/app-shell";
 import { FeatureGate } from "@/components/feature-gate";
@@ -80,10 +81,9 @@ function waitLabel(minutes: number): string {
 }
 
 function isPaid(order: KitchenOrder): boolean {
-  const paid = order.payments
-    .filter((p) => p.status === "PAID")
-    .reduce((s, p) => s + Number(p.amount), 0);
-  return paid + 0.001 >= Number(order.total);
+  // Collections less refunds — a refund row also carries status PAID, so
+  // summing by status alone marked a refunded order as paid (REFUND-005).
+  return isOrderFullyPaid({ total: order.total, payments: order.payments });
 }
 
 // Short two-tone chime via WebAudio — no asset files needed.

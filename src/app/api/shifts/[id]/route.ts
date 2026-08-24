@@ -73,7 +73,9 @@ export async function GET(_request: NextRequest, { params }: Params) {
       shift,
       orders: [...orderMap.values()],
       payments,
-      refunds: payments.filter((p) => p.status === "REFUNDED"),
+      // Both shapes count as a refund: a REFUND row, and the legacy
+      // in-period reversal that flipped the collection to REFUNDED.
+      refunds: payments.filter((p) => p.type === "REFUND" || p.status === "REFUNDED"),
       auditLogs,
     });
   } catch (error) {
