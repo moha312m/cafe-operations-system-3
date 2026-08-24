@@ -73,7 +73,7 @@ export async function recomputeShiftTotals(shiftId: string) {
   const payments = await db.payment.findMany({
     where: { shiftId },
     select: {
-      amount: true, method: true, status: true, orderId: true,
+      amount: true, method: true, type: true, status: true, orderId: true,
       reversalOfPaymentId: true,
     },
   });
@@ -86,22 +86,26 @@ export async function recomputeShiftTotals(shiftId: string) {
 
   for (const p of payments) {
     const amt = Number(p.amount);
-    if (p.status === "PAID") {
+    if (p.type === "REFUND") {
+      // Money handed back out of this drawer. Amounts are magnitudes now, so
+      // the outflow is subtracted explicitly rather than relying on a
+      // negative value happening to be added.
+      if (p.method === "CASH") cash -= amt;
+      else if (p.method === "CARD") card -= amt;
+      else if (p.method === "WALLET") wallet -= amt;
+      refunds += amt;
+      // The sale itself belongs to whichever period collected it, so a
+      // refund never counts towards this period's order count.
+    } else if (p.status === "PAID") {
       if (p.method === "CASH") cash += amt;
       else if (p.method === "CARD") card += amt;
       else if (p.method === "WALLET") wallet += amt;
-      if (p.reversalOfPaymentId) {
-        // A reversal of a payment taken in an earlier, already-closed shift.
-        // Its negative amount nets out of takings above; disclose it as a
-        // refund too, so this period shows the outflow rather than merely a
-        // shrunken sales figure. The order itself was sold in the earlier
-        // period, so it is deliberately not added to paidOrderIds here.
-        refunds += Math.abs(amt);
-      } else {
-        paidOrderIds.add(p.orderId);
-      }
+      paidOrderIds.add(p.orderId);
     } else if (p.status === "REFUNDED") {
-      // Disclosure only — deliberately NOT subtracted again below.
+      // Legacy shape: a collection reversed in period before refunds became
+      // their own transaction. It never entered `cash` above, so it must not
+      // be subtracted again — that double subtraction was SHIFT-001.
+      // Disclosed as a refund only.
       refunds += amt;
     }
   }
@@ -115,12 +119,11 @@ export async function recomputeShiftTotals(shiftId: string) {
     : [];
   const discounts = orders.reduce((s, o) => s + Number(o.discountAmount), 0);
 
+  // `cash` is already net of refunds posted to this shift — a REFUND row
+  // subtracts once, above. Subtracting `refunds` here as well would remove the
+  // same reversal twice and report a shortage the cashier never caused
+  // (SHIFT-001).
   const totalSales = round2(cash + card + wallet);
-  // A refund is represented as a status flip (PAID → REFUNDED) on the
-  // original row, so a refunded payment has ALREADY dropped out of `cash`
-  // above. Subtracting cash refunds here as well removed the same reversal
-  // twice and understated the drawer by the refund amount, reporting a
-  // shortage the cashier never caused (SHIFT-001).
   const expectedCash = round2(Number(shift.openingCashAmount) + cash);
 
   return db.shift.update({

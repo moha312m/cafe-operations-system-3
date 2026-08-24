@@ -35,7 +35,10 @@ describe("SHIFT-002 closed-shift integrity", () => {
     const marker = "PH1-SHIFT002-open";
     await cleanup(marker);
     await clearOpenShifts(fx.branchId, session.id);
+    await clearOpenShifts(fx.branchId, owner.id);
     const shift = await openShift(fx, session.id, 100);
+    // Handing cash back requires holding a drawer, manager or not.
+    const ownerShift = await openShift(fx, owner.id, 0);
     const order = await makeOrder(fx, marker, session.id, 30);
 
     try {
@@ -51,8 +54,12 @@ describe("SHIFT-002 closed-shift integrity", () => {
         "an open shift must still absorb its own refund"
       );
     } finally {
+      await db.payment.deleteMany({
+        where: { orderId: order.id, reversalOfPaymentId: { not: null } },
+      });
       await cleanup(marker);
       await cleanupShift(shift.id);
+      await cleanupShift(ownerShift.id);
     }
   });
 
@@ -156,16 +163,25 @@ describe("SHIFT-002 closed-shift integrity", () => {
         where: { reversalOfPaymentId: originalId },
       });
       assert.equal(reversal.shiftId, ownerShift.id);
-      assert.equal(Number(reversal.amount), -12, "reversal must offset the original");
+      assert.equal(reversal.type, "REFUND", "the reversal must be typed as returned money");
+      assert.equal(
+        Number(reversal.amount), 12,
+        "a refund carries a positive magnitude; direction lives in `type`"
+      );
       assert.equal(reversal.method, original.method);
       assert.equal(reversal.orderId, original.orderId, "reversal must stay on the same order");
 
-      // Reporting reconstructable: net cash across both periods is zero.
-      const net = await db.payment.aggregate({
+      // Reporting reconstructable: collections less refunds nets to zero
+      // across both periods, without reading meaning from the sign.
+      const rows = await db.payment.findMany({
         where: { orderId: original.orderId, method: "CASH" },
-        _sum: { amount: true },
+        select: { amount: true, type: true },
       });
-      assert.equal(Number(net._sum.amount), 0, "sale and reversal must net to zero");
+      const net = rows.reduce(
+        (s, r) => s + (r.type === "REFUND" ? -Number(r.amount) : Number(r.amount)),
+        0
+      );
+      assert.equal(net, 0, "sale and reversal must net to zero");
 
       await cleanupShift(ownerShift.id);
     } finally {

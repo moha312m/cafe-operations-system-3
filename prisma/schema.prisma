@@ -65,6 +65,15 @@ enum PaymentMethod {
   MIXED // دفع مقسّم — بيتسجّل كأكتر من Payment
 }
 
+// What a payment row MEANS, kept separate from where it is in its lifecycle
+// (PaymentStatus). Money returned is its own transaction rather than a
+// collection carrying a negative amount, so reporting can group by intent
+// instead of by the sign of a column (REFUND-001).
+enum PaymentType {
+  COLLECTION // money received
+  REFUND // money returned
+}
+
 enum PaymentStatus {
   UNPAID // غير مدفوع
   PENDING_COLLECTION // في انتظار التحصيل
@@ -778,9 +787,13 @@ model Payment {
   orderId      String
   shiftId      String? // شيفت الكاشير — بيتربط لطلبات الـ POS
   cashierId    String? // الكاشير اللي حصّل — = receivedById لطلبات الـ POS
+  // Always a positive magnitude. Direction comes from `type`, never the sign.
   amount       Decimal       @db.Decimal(10, 2)
   method       PaymentMethod
+  type         PaymentType   @default(COLLECTION)
   status       PaymentStatus @default(PAID)
+  // Why the money was returned. Required by the API on a REFUND row.
+  refundReason String?
   receivedById String
   // جلسة الترابيزة اللي اتحصلت فيها الدفعة (لتقارير الترابيزات)
   tableSessionId String?
@@ -805,11 +818,13 @@ model Payment {
   reversedBy   Payment[] @relation("PaymentReversal")
 
   @@index([cafeId, createdAt])
+  @@index([cafeId, type, createdAt])
   @@index([branchId])
   @@index([orderId])
   @@index([shiftId])
   @@index([cashierId])
   @@index([method])
+  @@index([type])
   @@index([status])
   @@index([tableSessionId])
   @@index([reversalOfPaymentId])
