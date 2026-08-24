@@ -46,6 +46,8 @@ export async function GET(_request: NextRequest, { params }: Params) {
             total: true,
             discountAmount: true,
             status: true,
+            // Drives whether a refund is still offered on this order.
+            paymentStatus: true,
           },
         },
       },

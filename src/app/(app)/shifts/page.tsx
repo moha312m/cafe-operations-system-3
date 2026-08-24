@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { api, money } from "@/lib/client";
 import { t } from "@/lib/i18n";
 import { useApp } from "@/components/app-shell";
+import { RefundOrderDialog, type RefundTarget } from "@/components/refund-order-dialog";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import {
@@ -56,7 +57,10 @@ type ShiftDetail = {
     orderCount: number;
     notes: string | null;
   };
-  orders: { id: string; orderNumber: number; total: string; status: string }[];
+  orders: {
+    id: string; orderNumber: number; total: string; status: string;
+    paymentStatus: string;
+  }[];
   payments: {
     id: string;
     amount: string;
@@ -92,6 +96,12 @@ function diffBadge(diff: string | null) {
 export default function ShiftReportsPage() {
   const { cafe, user } = useApp();
   const currency = cafe?.currency ?? "USD";
+  // Mirrors the server's rule (shifts:read). Presentation only — the request
+  // is authorised again on arrival.
+  const canManage =
+    user.role === "CAFE_OWNER" ||
+    user.role === "BRANCH_MANAGER" ||
+    user.role === "SUPER_ADMIN";
 
   const [shifts, setShifts] = useState<ShiftRow[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -99,6 +109,7 @@ export default function ShiftReportsPage() {
   const [status, setStatus] = useState("ALL");
   const [branchId, setBranchId] = useState("ALL");
   const [detail, setDetail] = useState<ShiftDetail | null>(null);
+  const [refundTarget, setRefundTarget] = useState<RefundTarget | null>(null);
 
   useEffect(() => {
     if (!user.branchId) {
@@ -283,6 +294,18 @@ export default function ShiftReportsPage() {
       </div>
 
       {/* Detail dialog */}
+      <RefundOrderDialog
+        target={refundTarget}
+        currency={currency}
+        onClose={() => setRefundTarget(null)}
+        onRefunded={async () => {
+          // Re-read the shift so the row, the totals and the audit trail all
+          // come back from the server rather than from local guesswork.
+          if (detail) setDetail(await api<ShiftDetail>(`/api/shifts/${detail.shift.id}`));
+          await load();
+        }}
+      />
+
       <Dialog open={detail !== null} onOpenChange={(o) => !o && setDetail(null)}>
         <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
           {detail && (
@@ -328,12 +351,48 @@ export default function ShiftReportsPage() {
                 )}
 
                 <Section title={`${t.shifts.ordersInShift} (${detail.orders.length})`}>
-                  {detail.orders.map((o) => (
-                    <div key={o.id} className="flex justify-between">
-                      <span>طلب #{o.orderNumber}</span>
-                      <span className="tabular-nums">{money(o.total, currency)}</span>
-                    </div>
-                  ))}
+                  {detail.orders.map((o) => {
+                    const refunded = o.paymentStatus === "REFUNDED";
+                    // Only money that is actually still collected can be
+                    // returned. The server re-checks this either way.
+                    const refundable =
+                      canManage && !refunded &&
+                      (o.paymentStatus === "PAID" || o.paymentStatus === "PARTIAL");
+                    return (
+                      <div key={o.id} className="flex items-center justify-between gap-2">
+                        <span>
+                          طلب #{o.orderNumber}
+                          {refunded && (
+                            <span className="ms-1 text-xs text-red-600 dark:text-red-400">
+                              (مرتجع)
+                            </span>
+                          )}
+                        </span>
+                        <span className="flex items-center gap-2">
+                          <span className="tabular-nums">{money(o.total, currency)}</span>
+                          {refundable && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-8"
+                              onClick={() =>
+                                setRefundTarget({
+                                  id: o.id,
+                                  orderNumber: o.orderNumber,
+                                  total: o.total,
+                                  methods: detail.payments
+                                    .filter((p) => p.order?.orderNumber === o.orderNumber)
+                                    .map((p) => p.method),
+                                })
+                              }
+                            >
+                              استرجاع
+                            </Button>
+                          )}
+                        </span>
+                      </div>
+                    );
+                  })}
                 </Section>
 
                 <Section title={`${t.shifts.payments} (${detail.payments.length})`}>
