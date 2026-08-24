@@ -32,6 +32,18 @@ type Report = {
     revenue: number;
     avgOrderValue: number;
   };
+  financials: {
+    grossSales: number;
+    refunds: number;
+    netSales: number;
+    collections: number;
+    cashRefunds: number;
+    cardRefunds: number;
+  };
+  salesByStaff?: {
+    userId: string; name: string;
+    grossSales: number; refunds: number; netSales: number; orders: number;
+  }[];
   collection: {
     paidTotal: number;
     uncollectedTotal: number;
@@ -103,7 +115,10 @@ export default function ReportsPage() {
         <>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             {[
-              { label: "مبيعات اليوم", value: money(report.totals.revenue, currency) },
+              { label: "المبيعات قبل المرتجعات", value: money(report.financials.grossSales, currency) },
+              { label: "المرتجعات", value: money(report.financials.refunds, currency) },
+              { label: "صافي المبيعات", value: money(report.financials.netSales, currency) },
+              { label: "اللي اتحصّل فعليًا", value: money(report.financials.collections, currency) },
               { label: "عدد الطلبات", value: String(report.totals.orders) },
               { label: "متوسط قيمة الطلب", value: money(report.totals.avgOrderValue, currency) },
               { label: "الخصومات", value: money(report.totals.discounts, currency) },
