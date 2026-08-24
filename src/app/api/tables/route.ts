@@ -64,6 +64,12 @@ export async function GET(request: NextRequest) {
         // Pending-approval orders count as activity but not billing.
         orderCount: s.orders.filter((o) => o.status !== "REJECTED" && o.status !== "CANCELLED").length,
         lastOrderAt: s.orders[0]?.createdAt ?? null,
+        // Orders that have not reached the customer yet. A table is only
+        // finished when the bill is settled AND nothing is still on the pass,
+        // so the screen needs both numbers to offer closing (POLICY-003).
+        unservedOrders: s.orders.filter(
+          (o) => o.status === "CONFIRMED" || o.status === "PREPARING" || o.status === "READY"
+        ).length,
       })),
       closedToday: closedToday.map((s) => ({
         id: s.id,

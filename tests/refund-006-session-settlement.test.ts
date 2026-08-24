@@ -134,6 +134,12 @@ describe("REFUND-006 table-session settlement", () => {
         session: cashier, orderId: order.id, branchId: fx.branchId,
         splits: [{ method: "CASH", amount: 120 }],
       });
+      // Served first, then refunded — the order a café actually refunds is one
+      // the customer already received and complained about. Since POLICY-003
+      // the close also checks the kitchen, and an order left unserved blocks on
+      // its own merits; this test is about the *financial* blocker, so the
+      // preparation side is taken out of the picture deliberately.
+      await markServed(order.id);
       await refundOrder(order.id, manager, "اختبار القفل");
 
       // The cashier holds tables.close but NOT tables.manage, so this only
