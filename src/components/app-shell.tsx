@@ -59,6 +59,9 @@ const NAV: NavItem[] = [
   // Approvals shows when waiter approval is on OR QR orders route to a waiter.
   { href: "/approvals", label: t.nav.approvals, icon: "📱", permission: "orders:approve", key: "qr_orders.view", feature: (f) => f.qrMenuEnabled },
   { href: "/menu", label: t.nav.menu, icon: "📖", permission: "menu:manage" },
+  // Recipe accuracy sits beside the menu: it is about how the menu is made,
+  // and it exposes ingredient cost, so it rides the same cost permission.
+  { href: "/recipe-review", label: "دقة الوصفات", icon: "🧪", permission: "cost:read" },
   { href: "/branches", label: t.nav.branches, icon: "🏬", permission: "branches:manage", feature: (f) => f.branchManagementEnabled },
   { href: "/staff", label: t.nav.staff, icon: "👥", permission: "users:manage", feature: (f) => f.staffManagementEnabled },
   { href: "/inventory", label: t.nav.inventory, icon: "📦", permission: "inventory:read", feature: (f) => f.inventoryEnabled },
