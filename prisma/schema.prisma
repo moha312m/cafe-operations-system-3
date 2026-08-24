@@ -118,6 +118,13 @@ enum CafeWorkflowMode {
   RESTAURANT // مطعم
 }
 
+// Whether an order may be handed to the customer before it is paid.
+// Set per order type, by the owner — never chosen per order by staff.
+enum ServingPaymentPolicy {
+  ALLOW_BEFORE_PAYMENT // serve/hand over now, collect later
+  REQUIRE_PAYMENT_FIRST // must be settled before SERVED
+}
+
 // Where a QR-menu order goes the moment the customer submits it.
 enum QrOrderRoutingMode {
   WAITER_APPROVAL // يذهب لموافقة الويتر (PENDING_WAITER_APPROVAL)
@@ -232,6 +239,13 @@ model CafeSettings {
   branchManagementEnabled Boolean @default(true)
   purchasesEnabled       Boolean @default(true)
 
+  // Payment & serving policy, per order type. The column defaults are what a
+  // NEW café gets; existing cafés are pinned to REQUIRE_PAYMENT_FIRST by the
+  // migration so this feature cannot silently switch anyone to pay-later.
+  // DELIVERY is deliberately not configurable yet and stays payment-first.
+  dineInServingPolicy   ServingPaymentPolicy @default(ALLOW_BEFORE_PAYMENT)
+  takeawayServingPolicy ServingPaymentPolicy @default(REQUIRE_PAYMENT_FIRST)
+
   // Extra workflow switches
   requireShiftForQrOrders     Boolean @default(false)
   allowCashierToPrepareOrders Boolean @default(false)
@@ -260,6 +274,12 @@ model Branch {
   // Customer QR menu settings: /menu/[cafe.slug]/[menuSlug]
   menuSlug          String? // latin slug for the public URL
   publicMenuEnabled Boolean @default(true)
+
+  // Serving policy overrides. NULL means "inherit the café setting", which is
+  // why these are nullable rather than a separate settings row: a branch that
+  // has never been configured is indistinguishable from one that inherits.
+  dineInServingPolicyOverride   ServingPaymentPolicy?
+  takeawayServingPolicyOverride ServingPaymentPolicy?
 
   cafe           Cafe                 @relation(fields: [cafeId], references: [id], onDelete: Cascade)
   users          User[]
