@@ -37,9 +37,10 @@ export async function GET(request: NextRequest) {
       include: showCost
         ? {
             ...productInclude,
-            recipeItems: {
+            recipes: {
+              where: { variantId: null, addOnId: null },
               include: {
-                inventoryItem: { select: { unit: true, costPerUnit: true } },
+                items: { include: { inventoryItem: { select: { unit: true, costPerUnit: true } } } },
               },
             },
           }
@@ -51,12 +52,14 @@ export async function GET(request: NextRequest) {
 
     // Attach cost/profit and strip the raw recipe rows from the payload.
     const enriched = products.map((p) => {
-      const recipe = (p as typeof p & { recipeItems: Parameters<typeof productCost>[0] })
-        .recipeItems;
+      const withRecipes = p as typeof p & {
+        recipes: { items: Parameters<typeof productCost>[0] }[];
+      };
+      const recipe = withRecipes.recipes[0]?.items ?? [];
       const hasRecipe = recipe.length > 0;
       const cost = productCost(recipe);
       const profit = profitFor(Number(p.basePrice), cost, hasRecipe);
-      const { recipeItems: _drop, ...rest } = p as typeof p & { recipeItems: unknown };
+      const { recipes: _drop, ...rest } = withRecipes;
       void _drop;
       return { ...rest, hasRecipe, ...profit };
     });

@@ -45,8 +45,11 @@ async function buildRecipeSummary(role: string, cafeId: string) {
     select: {
       name: true,
       basePrice: true,
-      recipeItems: {
-        include: { inventoryItem: { select: { unit: true, costPerUnit: true } } },
+      // The product's default recipe; variant recipes are costed per size in
+      // the recipe review screen rather than rolled into one product figure.
+      recipes: {
+        where: { variantId: null, addOnId: null },
+        include: { items: { include: { inventoryItem: { select: { unit: true, costPerUnit: true } } } } },
       },
     },
   });
@@ -54,11 +57,12 @@ async function buildRecipeSummary(role: string, cafeId: string) {
   let lowMargin = 0;
   let top: { name: string; profit: number; margin: number } | null = null;
   for (const p of products) {
-    if (p.recipeItems.length === 0) {
+    const items = p.recipes[0]?.items ?? [];
+    if (items.length === 0) {
       withoutRecipe++;
       continue;
     }
-    const cost = productCost(p.recipeItems);
+    const cost = productCost(items);
     const { profit, margin, tier } = profitFor(Number(p.basePrice), cost, true);
     if (tier === "loss") lowMargin++;
     if (!top || profit > top.profit) top = { name: p.name, profit, margin };

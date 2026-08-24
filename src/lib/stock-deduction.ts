@@ -1,6 +1,7 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
 import { audit } from "@/lib/audit";
-import { convertQuantity, round2, round3 } from "@/lib/costing";
+import { round2, round3 } from "@/lib/costing";
+import { theoreticalConsumption } from "@/lib/recipes";
 
 type Tx = Prisma.TransactionClient | PrismaClient;
 
@@ -29,7 +30,14 @@ export async function deductStockForOrder(
     where: { id: orderId },
     include: {
       cafe: { select: { allowNegativeStock: true } },
-      items: { select: { productId: true, productName: true, quantity: true } },
+      // variantId and the chosen add-ons decide what was actually made: a
+      // large latte is not a small one, and an extra shot is more beans.
+      items: {
+        select: {
+          productId: true, variantId: true, productName: true, variantName: true,
+          quantity: true, addOns: { select: { addOnId: true } },
+        },
+      },
     },
   });
   if (!order) throw new StockError("الطلب مش موجود");
@@ -41,63 +49,50 @@ export async function deductStockForOrder(
   const cafeId = order.cafeId;
   const allowNegative = order.cafe.allowNegativeStock;
 
-  // Aggregate required raw amount per (product) → recipe, scaled by the
-  // ordered item quantity. Recipes reference cafe-level inventory items;
-  // stock is deducted from the ORDER'S BRANCH copy matched by name+unit.
-  const productIds = [...new Set(order.items.map((i) => i.productId).filter(Boolean))] as string[];
-  const recipes = await tx.productRecipeItem.findMany({
-    where: { productId: { in: productIds } },
-    include: {
-      inventoryItem: { select: { name: true, unit: true } },
-    },
-  });
-  const recipeByProduct = new Map<string, typeof recipes>();
-  for (const r of recipes) {
-    const arr = recipeByProduct.get(r.productId) ?? [];
-    arr.push(r);
-    recipeByProduct.set(r.productId, arr);
-  }
-
+  // What each line theoretically consumes, resolved from the exact sold
+  // configuration — product, size, and add-ons — rather than from the product
+  // alone. Recipes name cafe-level inventory items; stock comes off the
+  // ORDER'S BRANCH copy, matched by name+unit.
   const productsWithoutRecipe: string[] = [];
-  // Map of "branch inventory item id" → total raw quantity to remove
-  // (expressed in that item's own storage unit).
   const need = new Map<string, { name: string; unit: string; qty: number }>();
 
   for (const item of order.items) {
     if (!item.productId) continue;
-    const recipe = recipeByProduct.get(item.productId);
-    if (!recipe || recipe.length === 0) {
-      if (!productsWithoutRecipe.includes(item.productName)) {
-        productsWithoutRecipe.push(item.productName);
-      }
+    const consumption = await theoreticalConsumption({
+      productId: item.productId,
+      variantId: item.variantId ?? null,
+      addOnIds: item.addOns.map((a) => a.addOnId).filter(Boolean) as string[],
+      quantity: item.quantity,
+    });
+
+    // A configuration we cannot resolve is recorded and skipped, exactly as
+    // before: an unconfigured recipe must never stop a customer being served.
+    // It is reported so the gap is visible rather than silently absorbed.
+    if (consumption.lines.length === 0) {
+      const label = item.variantName ? `${item.productName} (${item.variantName})` : item.productName;
+      if (!productsWithoutRecipe.includes(label)) productsWithoutRecipe.push(label);
       continue;
     }
-    for (const r of recipe) {
-      // Find the branch's stock row for this ingredient (by name+unit).
+
+    for (const line of consumption.lines) {
+      const cafeItem = await tx.inventoryItem.findUnique({ where: { id: line.inventoryItemId } });
+      if (!cafeItem) continue;
       const branchItem = await tx.inventoryItem.findFirst({
         where: {
-          cafeId,
-          branchId,
-          name: r.inventoryItem.name,
-          unit: r.inventoryItem.unit,
-          archivedAt: null,
+          cafeId, branchId, name: cafeItem.name, unit: cafeItem.unit, archivedAt: null,
         },
       });
       if (!branchItem) {
         if (!allowNegative) {
-          throw new StockError(`الخامة «${r.inventoryItem.name}» غير متوفرة في الفرع`);
+          throw new StockError(`الخامة «${cafeItem.name}» غير متوفرة في الفرع`);
         }
-        continue; // allowNegative + no branch row → nothing to deduct
+        continue;
       }
-      const perUnitInItemUnit = convertQuantity(
-        Number(r.quantity) * (1 + Number(r.wastePercentage) / 100),
-        r.unit,
-        branchItem.unit
-      );
-      const totalRaw = round3(perUnitInItemUnit * item.quantity);
       const cur = need.get(branchItem.id);
-      if (cur) cur.qty = round3(cur.qty + totalRaw);
-      else need.set(branchItem.id, { name: branchItem.name, unit: branchItem.unit, qty: totalRaw });
+      if (cur) cur.qty = round3(cur.qty + line.quantityInStockUnit);
+      else need.set(branchItem.id, {
+        name: branchItem.name, unit: branchItem.unit, qty: line.quantityInStockUnit,
+      });
     }
   }
 

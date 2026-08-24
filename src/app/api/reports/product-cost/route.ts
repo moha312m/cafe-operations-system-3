@@ -16,16 +16,18 @@ export async function GET(request: NextRequest) {
       where: { cafeId, isActive: true, ...(categoryId ? { categoryId } : {}) },
       include: {
         category: { select: { id: true, name: true } },
-        recipeItems: {
-          include: { inventoryItem: { select: { unit: true, costPerUnit: true } } },
+        recipes: {
+          where: { variantId: null, addOnId: null },
+          include: { items: { include: { inventoryItem: true } } },
         },
       },
       orderBy: [{ name: "asc" }],
     });
 
     const rows = products.map((p) => {
-      const hasRecipe = p.recipeItems.length > 0;
-      const cost = productCost(p.recipeItems);
+      const items = p.recipes[0]?.items ?? [];
+      const hasRecipe = items.length > 0;
+      const cost = productCost(items);
       const profit = profitFor(Number(p.basePrice), cost, hasRecipe);
       return {
         id: p.id,

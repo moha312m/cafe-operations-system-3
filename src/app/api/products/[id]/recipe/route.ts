@@ -25,8 +25,12 @@ export async function GET(_request: NextRequest, { params }: Params) {
     const { id } = await params;
     const product = await findOwnedProduct(id, session);
 
-    const items = await db.productRecipeItem.findMany({
-      where: { productId: id },
+    const defaultRecipe = await db.recipe.findFirst({
+      where: { productId: id, variantId: null, addOnId: null },
+      select: { id: true },
+    });
+    const items = await db.recipeItem.findMany({
+      where: { recipeId: defaultRecipe?.id ?? "__none__" },
       include: {
         inventoryItem: {
           select: { id: true, name: true, unit: true, costPerUnit: true },
@@ -90,15 +94,29 @@ export async function PUT(request: NextRequest, { params }: Params) {
       throw new ApiError(400, "في خامة مكررة في الوصفة");
     }
 
-    const beforeCount = await db.productRecipeItem.count({ where: { productId: id } });
+    // The editor still edits the product's DEFAULT recipe; sizes are
+    // configured from the recipe review screen, which knows about variants.
+    const defaultRecipe = await db.recipe.upsert({
+      where: { id: (await db.recipe.findFirst({
+        where: { productId: id, variantId: null, addOnId: null }, select: { id: true },
+      }))?.id ?? "__create__" },
+      create: { cafeId: product.cafeId, productId: id, createdById: session.id },
+      update: { updatedById: session.id },
+    });
+    const beforeCount = await db.recipeItem.count({ where: { recipeId: defaultRecipe.id } });
 
     await db.$transaction(async (tx) => {
-      await tx.productRecipeItem.deleteMany({ where: { productId: id } });
+      await tx.recipeItem.deleteMany({ where: { recipeId: defaultRecipe.id } });
+      // Any edit retires the previous confirmation: it described a different
+      // recipe (RECIPE-002).
+      await tx.recipe.update({
+        where: { id: defaultRecipe.id },
+        data: { verifiedById: null, verifiedAt: null, verifiedFingerprint: null, updatedById: session.id },
+      });
       if (data.items.length > 0) {
-        await tx.productRecipeItem.createMany({
+        await tx.recipeItem.createMany({
           data: data.items.map((row) => ({
-            cafeId: product.cafeId,
-            productId: id,
+            recipeId: defaultRecipe.id,
             inventoryItemId: row.inventoryItemId,
             quantity: row.quantity,
             unit: row.unit,
@@ -109,8 +127,8 @@ export async function PUT(request: NextRequest, { params }: Params) {
     });
 
     // Recompute & persist the product's costPrice for reports.
-    const fresh = await db.productRecipeItem.findMany({
-      where: { productId: id },
+    const fresh = await db.recipeItem.findMany({
+      where: { recipeId: defaultRecipe.id },
       include: { inventoryItem: { select: { unit: true, costPerUnit: true } } },
     });
     const cost = productCost(fresh);
