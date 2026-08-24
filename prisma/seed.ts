@@ -476,15 +476,24 @@ async function main() {
   for (const [prodName, items] of Object.entries(recipeDefs)) {
     const product = prodByName.get(prodName);
     if (!product) continue;
+    // Seeded recipes are the product's DEFAULT recipe. They are intentionally
+    // left unconfirmed and not declared to cover variants: nobody has stated
+    // what a large actually uses, and pretending otherwise would hand the
+    // recipe gate a confidence it was never given.
+    const seededRecipe = await db.recipe.upsert({
+      where: { id: `seed_${product.id}` },
+      create: { id: `seed_${product.id}`, cafeId: cafe.id, productId: product.id },
+      update: {},
+    });
     for (const [ingName, qty, unit] of items) {
       const inv = invByName.get(ingName);
       if (!inv) continue;
-      await db.productRecipeItem.create({
-        data: { cafeId: cafe.id, productId: product.id, inventoryItemId: inv.id, quantity: qty, unit },
+      await db.recipeItem.create({
+        data: { recipeId: seededRecipe.id, inventoryItemId: inv.id, quantity: qty, unit },
       });
     }
-    const rows = await db.productRecipeItem.findMany({
-      where: { productId: product.id },
+    const rows = await db.recipeItem.findMany({
+      where: { recipeId: seededRecipe.id },
       include: { inventoryItem: { select: { unit: true, costPerUnit: true } } },
     });
     let cost = 0;
