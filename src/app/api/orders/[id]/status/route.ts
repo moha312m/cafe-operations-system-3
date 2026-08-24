@@ -7,6 +7,7 @@ import { deductStockForOrder, auditDeduction, StockError } from "@/lib/stock-ded
 import { recomputeSessionTotals } from "@/lib/table-sessions";
 import { reverseOrderLoyalty } from "@/lib/loyalty";
 import { isOrderFullyPaid } from "@/lib/order-payments";
+import { requiresPaymentBeforeServing } from "@/lib/serving-policy";
 import { unrecordCustomerOrder } from "@/lib/customers";
 import type { OrderStatus } from "@prisma/client";
 
@@ -56,9 +57,13 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     if (status === "CANCELLED") {
       await requirePermission("orders:cancel");
     }
-    // An order can only be served once fully paid.
+    // Whether an unpaid order may reach the customer is the owner's decision,
+    // set per order type and resolved from the branch's effective policy —
+    // never from anything the caller sends. A café with table service serves
+    // first and bills after; a takeaway counter does not.
     if (status === "SERVED") {
-      if (!isOrderFullyPaid({ total: order.total, payments: order.payments })) {
+      const mustBePaid = await requiresPaymentBeforeServing(order.branchId, order.type);
+      if (mustBePaid && !isOrderFullyPaid({ total: order.total, payments: order.payments })) {
         throw new ApiError(400, "لازم الطلب يتدفع بالكامل قبل التسليم");
       }
     }
