@@ -12,14 +12,28 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 const INACTIVE_ORDER_STATUSES = ["CANCELLED", "REJECTED", "PENDING_WAITER_APPROVAL"] as const;
 
 // Recompute a session's denormalised totals from its orders/payments.
-// totalAmount   = active orders' totals
-// paidAmount    = PAID payments on those orders (refunds drop out)
-// remaining     = total - paid (clamped at 0)
+//
+// The three figures answer different questions and must not be derived from
+// each other:
+//
+// totalAmount     historical — what the table's active orders came to.
+//                 Reporting reads this, so a refunded bill stays counted.
+// paidAmount      money movement — collected minus returned, i.e. what the
+//                 café is still holding against this table.
+// remainingAmount current receivable — what the customer still owes.
+//
+// remaining is the sum of each order's own remainingAmount rather than
+// `total - paid`. Only the order knows whether its balance is live: a full
+// refund is terminal and settles the order at 0, a part-refund leaves the
+// balance owed, and loyalty may have moved the total. Deriving it from a
+// historical total against a net cash figure reopened refunded bills as a
+// phantom balance and forced a manager override to close the table
+// (REFUND-006).
 export async function recomputeSessionTotals(sessionId: string) {
   const [orderAgg, payAgg] = await Promise.all([
     db.order.aggregate({
       where: { tableSessionId: sessionId, status: { notIn: [...INACTIVE_ORDER_STATUSES] } },
-      _sum: { total: true },
+      _sum: { total: true, remainingAmount: true },
     }),
     // Collections and refunds are summed separately: a refund carries
     // status PAID too, so one aggregate would report money returned as
@@ -41,12 +55,13 @@ export async function recomputeSessionTotals(sessionId: string) {
     .filter((r) => r.type === "REFUND")
     .reduce((s, r) => s + Number(r._sum.amount ?? 0), 0);
   const paid = Math.max(round2(collected - returned), 0);
+  const receivable = Math.max(round2(Number(orderAgg._sum.remainingAmount ?? 0)), 0);
   return db.tableSession.update({
     where: { id: sessionId },
     data: {
       totalAmount: total,
       paidAmount: paid,
-      remainingAmount: Math.max(round2(total - paid), 0),
+      remainingAmount: receivable,
     },
   });
 }
