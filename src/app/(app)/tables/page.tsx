@@ -36,6 +36,8 @@ type SessionCard = {
   customerName: string | null;
   orderCount: number;
   lastOrderAt: string | null;
+  /** Orders not yet handed to the customer; a table with any is unfinished. */
+  unservedOrders: number;
 };
 
 type ClosedCard = {
@@ -169,6 +171,35 @@ export default function TablesPage() {
     try { setDetail(await api<Detail>(`/api/tables/${id}`)); } catch { setDetail(null); }
   }
 
+  // "Keep open" has to stick, but only until the table changes. Keying the
+  // dismissal on a fingerprint of the state it was dismissed in means a new
+  // round, a payment or a status change brings the question back on its own,
+  // with no timers and nothing to clean up.
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+  const closeKey = (c: SessionCard) =>
+    `${c.id}:${c.orderCount}:${c.remainingAmount}:${c.unservedOrders}:${c.lastOrderAt ?? ""}`;
+  const readyToClose = (c: SessionCard) =>
+    c.totalAmount > 0 &&
+    c.remainingAmount <= 0.001 &&
+    c.unservedOrders === 0 &&
+    !dismissed.has(closeKey(c));
+
+  async function closeFromPrompt(c: SessionCard) {
+    setBusy(true);
+    try {
+      await api(`/api/tables/${c.id}/close`, { method: "POST" });
+      toast.success("تم قفل الترابيزة بنجاح");
+      await load();
+    } catch (e) {
+      // The server revalidates; if a round landed meanwhile it refuses and the
+      // table simply stays open.
+      toast.error(e instanceof Error ? e.message : "فشل القفل");
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // NOTE: money collection moved to the POS cashier screen — this page
   // deep-links into /pos?collectTableSessionId=… ("تحصيل من الكاشير").
 
@@ -299,6 +330,40 @@ export default function TablesPage() {
                     <p className="mt-2 text-xs text-muted-foreground">
                       {s.orderCount} طلب{s.lastOrderAt ? ` · آخر طلب ${formatTime(s.lastOrderAt)}` : ""}
                     </p>
+
+                    {/* Settled and fully served: offer to close, but never
+                        close on the staff's behalf. */}
+                    {readyToClose(s) && (
+                      <div
+                        className="mt-3 space-y-2 rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-2.5"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <p className="text-xs font-medium text-emerald-800 dark:text-emerald-300">
+                          {t.servingPolicy.closePromptBody}
+                        </p>
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            className="flex-1"
+                            disabled={busy}
+                            onClick={() => closeFromPrompt(s)}
+                          >
+                            {t.servingPolicy.closeTable}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="flex-1"
+                            disabled={busy}
+                            onClick={() =>
+                              setDismissed((prev) => new Set(prev).add(closeKey(s)))
+                            }
+                          >
+                            {t.servingPolicy.keepOpen}
+                          </Button>
+                        </div>
+                      </div>
+                    )}
                   </button>
                 );
               })}

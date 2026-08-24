@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ServingPolicyCard } from "@/components/settings/serving-policy-card";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
@@ -280,6 +281,10 @@ export default function SettingsPage() {
           <Button onClick={save} disabled={busy}>{t.finance.save}</Button>
 
           {/* Loyalty program (cafe-level; hidden without permission) */}
+          {/* Payment & serving policy — café default, with a branch
+              override only where more than one branch exists. */}
+          <ServingPolicyCard branchId={branchId} showBranchOverride={branches.length > 1} />
+
           <LoyaltySettingsCard />
         </>
       )}
