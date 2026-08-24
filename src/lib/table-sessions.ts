@@ -125,13 +125,59 @@ export async function attachOrderToTableSession(order: {
   return session;
 }
 
-// Derived display status for a session card.
-export function sessionDisplayStatus(s: { totalAmount: unknown; paidAmount: unknown; remainingAmount: unknown }) {
+// Orders that still owe the customer something: confirmed, being made, or
+// made and sitting on the pass. CANCELLED and REJECTED are finished with;
+// PENDING_WAITER_APPROVAL has not joined the bill yet and is already outside
+// the session's totals.
+//
+// Exported because closing a table and labelling one are the same question
+// asked twice, and they must not drift apart.
+export const BLOCKING_ORDER_STATUSES = ["CONFIRMED", "PREPARING", "READY"] as const;
+
+export type SessionDisplayStatus =
+  | "CLOSED"
+  | "PENDING_COLLECTION"
+  | "PARTIAL"
+  | "AWAITING_HANDOVER"
+  | "READY_TO_CLOSE"
+  | "OCCUPIED";
+
+// What the table's badge should say.
+//
+// This asks exactly what closing asks — is the bill settled, and has
+// everything reached the customer — so the badge cannot promise something the
+// close endpoint then refuses. `unservedOrders` is a required argument rather
+// than an optional one precisely so a caller cannot quietly fall back to the
+// money-only answer that caused a settled-but-still-cooking table to advertise
+// itself as ready to close (POLICY-004).
+//
+// Nothing here is persisted: it is derived per request.
+export function sessionDisplayStatus(
+  s: { status?: string; totalAmount: unknown; paidAmount: unknown; remainingAmount: unknown },
+  unservedOrders: number
+): SessionDisplayStatus {
+  if (s.status && s.status !== "OPEN") return "CLOSED";
+
   const total = Number(s.totalAmount);
   const paid = Number(s.paidAmount);
   const remaining = Number(s.remainingAmount);
-  if (total > 0 && remaining <= 0.001) return "READY_TO_CLOSE" as const;
-  if (paid > 0 && remaining > 0) return "PARTIAL" as const;
-  if (total > 0) return "PENDING_COLLECTION" as const;
-  return "OCCUPIED" as const;
+
+  // Money outstanding is the louder problem and is reported first, even when
+  // the kitchen is also still busy — it is the one that stops the customer
+  // leaving.
+  if (remaining > 0.001) {
+    return paid > 0 ? "PARTIAL" : "PENDING_COLLECTION";
+  }
+  if (total > 0) {
+    return unservedOrders > 0 ? "AWAITING_HANDOVER" : "READY_TO_CLOSE";
+  }
+  return "OCCUPIED";
+}
+
+/** Whether a table may be closed on the normal (non-override) path. */
+export function isReadyToClose(
+  s: { status?: string; totalAmount: unknown; paidAmount: unknown; remainingAmount: unknown },
+  unservedOrders: number
+): boolean {
+  return sessionDisplayStatus(s, unservedOrders) === "READY_TO_CLOSE";
 }

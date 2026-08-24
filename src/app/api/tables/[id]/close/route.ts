@@ -3,15 +3,9 @@ import { db } from "@/lib/db";
 import { requireKey, handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { resolvePermissions } from "@/lib/perms/effective";
-import { recomputeSessionTotals } from "@/lib/table-sessions";
+import { recomputeSessionTotals, BLOCKING_ORDER_STATUSES } from "@/lib/table-sessions";
 
 type Params = { params: Promise<{ id: string }> };
-
-// Orders that still owe the customer something. CANCELLED and REJECTED are
-// finished with; PENDING_WAITER_APPROVAL has not joined the bill yet and is
-// already excluded from the session's totals, so it is not treated as
-// kitchen work here.
-const BLOCKING_ORDER_STATUSES = ["CONFIRMED", "PREPARING", "READY"] as const;
 
 // POST /api/tables/[id]/close — close a fully-settled table. Managers with
 // tables.manage may override and close with an outstanding balance.

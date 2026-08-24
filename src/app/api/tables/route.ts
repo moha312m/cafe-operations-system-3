@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { requireKey, resolveCafeId, handleApiError } from "@/lib/api";
-import { sessionDisplayStatus } from "@/lib/table-sessions";
+import { sessionDisplayStatus, BLOCKING_ORDER_STATUSES } from "@/lib/table-sessions";
 
 // GET /api/tables — open table sessions (+ today's closed) for the table
 // board. ?branchId= for owners; pinned staff are locked to their branch.
@@ -50,12 +50,16 @@ export async function GET(request: NextRequest) {
     ]);
 
     return NextResponse.json({
-      sessions: open.map((s) => ({
+      sessions: open.map((s) => {
+        const unservedOrders = s.orders.filter((o) =>
+          (BLOCKING_ORDER_STATUSES as readonly string[]).includes(o.status)
+        ).length;
+        return {
         id: s.id,
         tableNumber: s.tableNumber,
         branch: s.branch.name,
         status: s.status,
-        displayStatus: sessionDisplayStatus(s),
+        displayStatus: sessionDisplayStatus(s, unservedOrders),
         startedAt: s.startedAt,
         totalAmount: Number(s.totalAmount),
         paidAmount: Number(s.paidAmount),
@@ -67,10 +71,9 @@ export async function GET(request: NextRequest) {
         // Orders that have not reached the customer yet. A table is only
         // finished when the bill is settled AND nothing is still on the pass,
         // so the screen needs both numbers to offer closing (POLICY-003).
-        unservedOrders: s.orders.filter(
-          (o) => o.status === "CONFIRMED" || o.status === "PREPARING" || o.status === "READY"
-        ).length,
-      })),
+        unservedOrders,
+      };
+      }),
       closedToday: closedToday.map((s) => ({
         id: s.id,
         tableNumber: s.tableNumber,
