@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { requireKey, resolveCafeId, handleApiError } from "@/lib/api";
-import { productCost, profitFor } from "@/lib/costing";
+import { configurationFinancials } from "@/lib/recipes";
 
 // تقرير تكلفة المنتجات — cost, profit, margin, and profitability tier for
 // every product, with the recipe status. Gated by cost:read.
@@ -16,36 +16,40 @@ export async function GET(request: NextRequest) {
       where: { cafeId, isActive: true, ...(categoryId ? { categoryId } : {}) },
       include: {
         category: { select: { id: true, name: true } },
-        recipes: {
-          where: { variantId: null, addOnId: null },
-          include: { items: { include: { inventoryItem: true } } },
-        },
+        variants: { where: { isActive: true }, orderBy: [{ sortOrder: "asc" }, { price: "asc" }] },
       },
       orderBy: [{ name: "asc" }],
     });
 
-    const rows = products.map((p) => {
-      const items = p.recipes[0]?.items ?? [];
-      const hasRecipe = items.length > 0;
-      const cost = productCost(items);
-      const profit = profitFor(Number(p.basePrice), cost, hasRecipe);
-      return {
-        id: p.id,
-        name: p.name,
-        category: p.category.name,
-        sellingPrice: Number(p.basePrice),
-        hasRecipe,
-        ...profit,
-      };
-    });
+    const rows = (await Promise.all(products.flatMap((p) => {
+      const configurations = p.variants.length > 0 ? p.variants : [null];
+      return configurations.map(async (variant) => {
+        const sellingPrice = Number(variant?.price ?? p.basePrice);
+        const financials = await configurationFinancials({
+          productId: p.id, variantId: variant?.id ?? null, sellingPrice,
+        });
+        return {
+          id: variant ? `${p.id}:${variant.id}` : p.id,
+          productId: p.id,
+          variantId: variant?.id ?? null,
+          name: variant ? `${p.name} — ${variant.name}` : p.name,
+          productName: p.name,
+          variantName: variant?.name ?? null,
+          category: p.category.name,
+          sellingPrice,
+          hasRecipe: financials.costStatus === "AVAILABLE",
+          ...financials,
+        };
+      });
+    }))).flat();
 
-    const withRecipe = rows.filter((r) => r.hasRecipe);
+    const costable = rows.filter((r) => r.costStatus === "AVAILABLE");
     const summary = {
       total: rows.length,
-      withoutRecipe: rows.filter((r) => !r.hasRecipe).length,
-      lowMargin: withRecipe.filter((r) => r.tier === "loss").length,
-      topProfit: [...withRecipe].sort((a, b) => b.profit - a.profit).slice(0, 5),
-      lowestProfit: [...withRecipe].sort((a, b) => a.margin - b.margin).slice(0, 5),
+      withoutRecipe: rows.filter((r) => r.costStatus === "RECIPE_INCOMPLETE").length,
+      lowMargin: costable.filter((r) => r.tier === "loss").length,
+      topProfit: [...costable].sort((a, b) => (b.profit ?? 0) - (a.profit ?? 0)).slice(0, 5),
+      lowestProfit: [...costable].sort((a, b) => (a.margin ?? 0) - (b.margin ?? 0)).slice(0, 5),
     };
 
     return NextResponse.json({ rows, summary });

@@ -111,9 +111,10 @@ export function RecipeEditor({
     });
   }
 
-  const total = round2(rows.reduce((s, r) => s + (rowCost(r) ?? 0), 0));
+  const hasInvalidRow = rows.some((r) => rowCost(r) === null);
+  const total = hasInvalidRow ? null : round2(rows.reduce((s, r) => s + (rowCost(r) ?? 0), 0));
   const hasRows = rows.length > 0;
-  const profit = profitFor(sellingPrice, total, hasRows);
+  const profit = total === null ? null : profitFor(sellingPrice, total, hasRows);
 
   function addRow() {
     const firstUnused = inventory.find(
@@ -293,7 +294,7 @@ export function RecipeEditor({
       <div className="grid grid-cols-2 gap-2 rounded-lg border p-3 text-sm sm:grid-cols-4">
         <div>
           <p className="text-xs text-muted-foreground">إجمالي تكلفة المنتج</p>
-          <p className="font-bold tabular-nums">{money(total, currency)}</p>
+          <p className="font-bold tabular-nums">{total === null ? "التكلفة غير متاحة" : money(total, currency)}</p>
         </div>
         <div>
           <p className="text-xs text-muted-foreground">سعر البيع</p>
@@ -301,13 +302,13 @@ export function RecipeEditor({
         </div>
         <div>
           <p className="text-xs text-muted-foreground">الربح المتوقع</p>
-          <p className="font-bold tabular-nums">{hasRows ? money(profit.profit, currency) : "—"}</p>
+          <p className="font-bold tabular-nums">{hasRows && profit ? money(profit.profit, currency) : "—"}</p>
         </div>
         <div>
           <p className="text-xs text-muted-foreground">هامش الربح</p>
           <p className="flex items-center gap-1 font-bold tabular-nums">
-            {hasRows ? `${profit.margin}٪` : "—"}
-            {hasRows && (
+            {hasRows && profit ? `${profit.margin}٪` : "—"}
+            {hasRows && profit && (
               <Badge className={TIER_STYLE[profit.tier]}>{PROFIT_LABEL[profit.tier]}</Badge>
             )}
           </p>

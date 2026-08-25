@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { requirePermission, resolveCafeId, handleApiError, ApiError } from "@/lib/api";
 import { hasPermission } from "@/lib/permissions";
-import { productCost, profitFor } from "@/lib/costing";
+import { configurationFinancials } from "@/lib/recipes";
 import { resolvePermissions } from "@/lib/perms/effective";
 import { getCafeSettings } from "@/lib/cafe-settings";
 import { periodFinancials, salesByStaff, refundsByActor } from "@/lib/reporting";
@@ -43,29 +43,34 @@ async function buildRecipeSummary(role: string, cafeId: string) {
   const products = await db.product.findMany({
     where: { cafeId, isActive: true },
     select: {
+      id: true,
       name: true,
       basePrice: true,
-      // The product's default recipe; variant recipes are costed per size in
-      // the recipe review screen rather than rolled into one product figure.
-      recipes: {
-        where: { variantId: null, addOnId: null },
-        include: { items: { include: { inventoryItem: { select: { unit: true, costPerUnit: true } } } } },
-      },
+      variants: { where: { isActive: true }, orderBy: [{ sortOrder: "asc" }, { price: "asc" }] },
     },
   });
   let withoutRecipe = 0;
   let lowMargin = 0;
   let top: { name: string; profit: number; margin: number } | null = null;
   for (const p of products) {
-    const items = p.recipes[0]?.items ?? [];
-    if (items.length === 0) {
-      withoutRecipe++;
-      continue;
+    const configurations = p.variants.length > 0 ? p.variants : [null];
+    for (const variant of configurations) {
+      const financials = await configurationFinancials({
+        productId: p.id,
+        variantId: variant?.id ?? null,
+        sellingPrice: Number(variant?.price ?? p.basePrice),
+      });
+      if (financials.costStatus !== "AVAILABLE") {
+        withoutRecipe++;
+        continue;
+      }
+      const { profit, margin, tier } = financials;
+      if (tier === "loss") lowMargin++;
+      const name = variant ? `${p.name} — ${variant.name}` : p.name;
+      if (profit !== null && margin !== null && (!top || profit > top.profit)) {
+        top = { name, profit, margin };
+      }
     }
-    const cost = productCost(items);
-    const { profit, margin, tier } = profitFor(Number(p.basePrice), cost, true);
-    if (tier === "loss") lowMargin++;
-    if (!top || profit > top.profit) top = { name: p.name, profit, margin };
   }
   return { withoutRecipe, lowMargin, topProduct: top };
 }

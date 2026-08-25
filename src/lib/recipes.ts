@@ -20,7 +20,7 @@
 import { db } from "@/lib/db";
 import {
   convertQuantity, unitsCompatible, round2, round3,
-  RecipeIssue, productCostStrict,
+  RecipeIssue, productCostStrict, profitFor,
 } from "@/lib/costing";
 import type { InventoryUnit, Prisma } from "@prisma/client";
 import { createHash } from "node:crypto";
@@ -274,13 +274,7 @@ export type GateResult = {
   verifiedAt: Date | null;
 };
 
-/** The gate for one sellable configuration, ignoring add-ons. */
-export async function sellableGate(
-  productId: string,
-  variantId: string | null
-): Promise<GateResult> {
-  const r = await resolveEffectiveRecipe(productId, variantId);
-
+function gateForResolvedRecipe(r: ResolvedRecipe): GateResult {
   if (r.source === "NOT_APPLICABLE") {
     return {
       status: "NOT_APPLICABLE", source: r.source, structurallyValid: true,
@@ -290,32 +284,87 @@ export async function sellableGate(
   }
 
   const issues = new Set<RecipeIssue>(r.issues);
-  // Costing a recipe that does not exist adds nothing but noise: "no
-  // ingredients" is not a second problem alongside "no recipe", it is the
-  // same one restated. The reason list is what someone reads to know what to
-  // fix, so it only carries reasons they can act on.
-  const cost =
-    r.source === "NONE"
-      ? ({ ok: false, total: null, issues: [] } as const)
-      : productCostStrict(r.items);
-  if (!cost.ok) cost.issues.forEach((i) => issues.add(i));
+  // A missing recipe already has the actionable missing-recipe reason; adding
+  // "no ingredients" would only restate the same problem.
+  const cost = r.source === "NONE"
+    ? ({ ok: false, total: null, issues: [] } as const)
+    : productCostStrict(r.items);
+  if (!cost.ok) cost.issues.forEach((issue) => issues.add(issue));
 
   const structurallyValid = r.source !== "NONE" && issues.size === 0;
-  // A sound recipe nobody has confirmed is still only a proposal.
   if (structurallyValid && !r.confirmed) {
     issues.add(r.verifiedAt ? RecipeIssue.STALE_CONFIRMATION : RecipeIssue.NOT_CONFIRMED);
   }
-
   return {
     status: structurallyValid && r.confirmed ? "VERIFIED" : "INCOMPLETE",
-    source: r.source,
-    structurallyValid,
-    confirmed: r.confirmed,
-    costAvailable: cost.ok,
-    issues: [...issues],
-    verifiedById: r.verifiedById,
-    verifiedAt: r.verifiedAt,
+    source: r.source, structurallyValid, confirmed: r.confirmed,
+    costAvailable: cost.ok, issues: [...issues],
+    verifiedById: r.verifiedById, verifiedAt: r.verifiedAt,
   };
+}
+
+export type ConfigurationFinancials = {
+  costStatus: "AVAILABLE" | "RECIPE_INCOMPLETE" | "NOT_APPLICABLE";
+  recipeSource: RecipeSource;
+  issues: RecipeIssue[];
+  cost: number | null;
+  profit: number | null;
+  margin: number | null;
+  tier: ReturnType<typeof profitFor>["tier"] | null;
+};
+
+/**
+ * Honest cost/profit for one thing a customer can actually buy.
+ *
+ * Financial screens must not use a product-default estimate as though it
+ * described a size. Resolution and trust therefore come from the same gate
+ * used by inventory/variance work. If the exact configuration is incomplete,
+ * the absence of a number is deliberate: a made-up margin is worse than no
+ * margin.
+ */
+export async function configurationFinancials(args: {
+  productId: string;
+  variantId: string | null;
+  sellingPrice: number;
+}): Promise<ConfigurationFinancials> {
+  const resolved = await resolveEffectiveRecipe(args.productId, args.variantId);
+  const gate = gateForResolvedRecipe(resolved);
+
+  if (gate.status === "NOT_APPLICABLE") {
+    return {
+      costStatus: "NOT_APPLICABLE", recipeSource: resolved.source,
+      issues: gate.issues, cost: null, profit: null, margin: null, tier: null,
+    };
+  }
+  if (gate.status !== "VERIFIED") {
+    return {
+      costStatus: "RECIPE_INCOMPLETE", recipeSource: resolved.source,
+      issues: gate.issues, cost: null, profit: null, margin: null, tier: null,
+    };
+  }
+
+  const strict = productCostStrict(resolved.items);
+  if (!strict.ok) {
+    return {
+      costStatus: "RECIPE_INCOMPLETE", recipeSource: resolved.source,
+      issues: strict.issues, cost: null, profit: null, margin: null, tier: null,
+    };
+  }
+  const profitability = profitFor(args.sellingPrice, strict.total, true);
+  return {
+    costStatus: "AVAILABLE", recipeSource: resolved.source, issues: [],
+    cost: profitability.cost, profit: profitability.profit,
+    margin: profitability.margin, tier: profitability.tier,
+  };
+}
+
+/** The gate for one sellable configuration, ignoring add-ons. */
+export async function sellableGate(
+  productId: string,
+  variantId: string | null
+): Promise<GateResult> {
+  const r = await resolveEffectiveRecipe(productId, variantId);
+  return gateForResolvedRecipe(r);
 }
 
 /**

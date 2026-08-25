@@ -3,7 +3,7 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { requirePermission, requireFeature, handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
-import { unitsCompatible, productCost, profitFor } from "@/lib/costing";
+import { unitsCompatible, productCostStrict, profitFor } from "@/lib/costing";
 import type { SessionUser } from "@/lib/auth";
 
 type Params = { params: Promise<{ id: string }> };
@@ -39,13 +39,18 @@ export async function GET(_request: NextRequest, { params }: Params) {
       orderBy: { createdAt: "asc" },
     });
 
-    const cost = productCost(items);
-    const profit = profitFor(Number(product.basePrice), cost, items.length > 0);
+    const strict = productCostStrict(items);
+    const profit = strict.ok ? profitFor(Number(product.basePrice), strict.total, true) : null;
 
     return NextResponse.json({
       recipe: items,
       sellingPrice: Number(product.basePrice),
-      ...profit, // { cost, profit, margin, tier }
+      costStatus: strict.ok ? "AVAILABLE" : "RECIPE_INCOMPLETE",
+      issues: strict.ok ? [] : strict.issues,
+      cost: profit?.cost ?? null,
+      profit: profit?.profit ?? null,
+      margin: profit?.margin ?? null,
+      tier: profit?.tier ?? null,
     });
   } catch (error) {
     return handleApiError(error);
@@ -131,10 +136,13 @@ export async function PUT(request: NextRequest, { params }: Params) {
       where: { recipeId: defaultRecipe.id },
       include: { inventoryItem: { select: { unit: true, costPerUnit: true } } },
     });
-    const cost = productCost(fresh);
+    const strict = productCostStrict(fresh);
+    const cost = strict.ok ? strict.total : null;
+    const scope = await db.recipe.findUniqueOrThrow({ where: { id: defaultRecipe.id } });
+    const variantCount = await db.productVariant.count({ where: { productId: id } });
     await db.product.update({
       where: { id },
-      data: { costPrice: fresh.length > 0 ? cost : null },
+      data: { costPrice: strict.ok && (variantCount === 0 || scope.appliesToAllVariants) ? strict.total : null },
     });
 
     await audit({
@@ -156,11 +164,18 @@ export async function PUT(request: NextRequest, { params }: Params) {
       action: "PRODUCT_COST_RECALCULATED",
       entity: "Product",
       entityId: id,
-      details: { productName: product.name, cost },
+      details: { productName: product.name, cost, costIssues: strict.ok ? [] : strict.issues },
     });
 
-    const profit = profitFor(Number(product.basePrice), cost, fresh.length > 0);
-    return NextResponse.json({ ...profit }); // { cost, profit, margin, tier }
+    const profit = strict.ok ? profitFor(Number(product.basePrice), strict.total, true) : null;
+    return NextResponse.json({
+      costStatus: strict.ok ? "AVAILABLE" : "RECIPE_INCOMPLETE",
+      issues: strict.ok ? [] : strict.issues,
+      cost: profit?.cost ?? null,
+      profit: profit?.profit ?? null,
+      margin: profit?.margin ?? null,
+      tier: profit?.tier ?? null,
+    });
   } catch (error) {
     return handleApiError(error);
   }

@@ -29,10 +29,11 @@ type Row = {
   category: string;
   sellingPrice: number;
   hasRecipe: boolean;
-  cost: number;
-  profit: number;
-  margin: number;
-  tier: Profitability;
+  costStatus: "AVAILABLE" | "RECIPE_INCOMPLETE" | "NOT_APPLICABLE";
+  cost: number | null;
+  profit: number | null;
+  margin: number | null;
+  tier: Profitability | null;
 };
 type ReportData = {
   rows: Row[];
@@ -81,8 +82,8 @@ export function ProductCostReport({ currency = "EGP" }: { currency?: string }) {
     if (!data) return [];
     return data.rows.filter((r) => {
       if (categoryFilter !== "all" && r.category !== categoryFilter) return false;
-      if (profitFilter === "no-recipe") return !r.hasRecipe;
-      if (profitFilter !== "all") return r.hasRecipe && r.tier === profitFilter;
+      if (profitFilter === "no-recipe") return r.costStatus !== "AVAILABLE";
+      if (profitFilter !== "all") return r.costStatus === "AVAILABLE" && r.tier === profitFilter;
       return true;
     });
   }, [data, profitFilter, categoryFilter]);
@@ -169,11 +170,15 @@ export function ProductCostReport({ currency = "EGP" }: { currency?: string }) {
               <TableCell className="font-medium">{r.name}</TableCell>
               <TableCell className="text-sm text-muted-foreground">{r.category}</TableCell>
               <TableCell className="tabular-nums">{money(r.sellingPrice, currency)}</TableCell>
-              <TableCell className="tabular-nums">{r.hasRecipe ? money(r.cost, currency) : "—"}</TableCell>
-              <TableCell className="tabular-nums">{r.hasRecipe ? money(r.profit, currency) : "—"}</TableCell>
-              <TableCell className="tabular-nums">{r.hasRecipe ? `${r.margin}٪` : "—"}</TableCell>
+              <TableCell className="tabular-nums">{r.cost !== null ? money(r.cost, currency) : "التكلفة غير متاحة"}</TableCell>
+              <TableCell className="tabular-nums">{r.profit !== null ? money(r.profit, currency) : "—"}</TableCell>
+              <TableCell className="tabular-nums">{r.margin !== null ? `${r.margin}٪` : "—"}</TableCell>
               <TableCell>
-                <Badge className={TIER_STYLE[r.tier]}>{PROFIT_LABEL[r.tier]}</Badge>
+                {r.tier ? (
+                  <Badge className={TIER_STYLE[r.tier]}>{PROFIT_LABEL[r.tier]}</Badge>
+                ) : (
+                  <Badge variant="outline">{r.costStatus === "NOT_APPLICABLE" ? "غير منطبق" : "الوصفة غير مكتملة"}</Badge>
+                )}
               </TableCell>
               <TableCell>
                 {r.hasRecipe ? (
