@@ -3,7 +3,8 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { requirePermission, requireFeature, handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
-import { unitsCompatible, productCostStrict, profitFor } from "@/lib/costing";
+import { unitsCompatible, productCostStrict } from "@/lib/costing";
+import { configurationFinancials, resolveEffectiveRecipe } from "@/lib/recipes";
 import type { SessionUser } from "@/lib/auth";
 
 type Params = { params: Promise<{ id: string }> };
@@ -24,33 +25,39 @@ export async function GET(_request: NextRequest, { params }: Params) {
     await requireFeature(session, "recipeCostingEnabled");
     const { id } = await params;
     const product = await findOwnedProduct(id, session);
+    const variantId = _request.nextUrl.searchParams.get("variantId");
+    const variant = variantId
+      ? await db.productVariant.findFirst({ where: { id: variantId, productId: id } })
+      : null;
+    if (variantId && !variant) throw new ApiError(400, "الحجم لا يتبع هذا المنتج");
 
-    const defaultRecipe = await db.recipe.findFirst({
-      where: { productId: id, variantId: null, addOnId: null },
-      select: { id: true },
-    });
-    const items = await db.recipeItem.findMany({
-      where: { recipeId: defaultRecipe?.id ?? "__none__" },
-      include: {
-        inventoryItem: {
-          select: { id: true, name: true, unit: true, costPerUnit: true },
-        },
-      },
-      orderBy: { createdAt: "asc" },
-    });
+    // Open the recipe that actually governs this size. A size covered by an
+    // all-variant default must show that default's ingredients: the board
+    // called such a row trusted because of them, so presenting an empty form
+    // would invite someone to "fix" a recipe that was already right — and the
+    // save would silently create an override that shadowed it.
+    const resolved = await resolveEffectiveRecipe(id, variantId ?? null);
+    const items = resolved.items;
 
-    const strict = productCostStrict(items);
-    const profit = strict.ok ? profitFor(Number(product.basePrice), strict.total, true) : null;
+    const sellingPrice = Number(variant?.price ?? product.basePrice);
+    // Money comes from the same gate the board uses, so a structurally tidy
+    // but unconfirmed recipe reports no cost here either.
+    const financials = await configurationFinancials({
+      productId: id,
+      variantId: variantId ?? null,
+      sellingPrice,
+    });
 
     return NextResponse.json({
       recipe: items,
-      sellingPrice: Number(product.basePrice),
-      costStatus: strict.ok ? "AVAILABLE" : "RECIPE_INCOMPLETE",
-      issues: strict.ok ? [] : strict.issues,
-      cost: profit?.cost ?? null,
-      profit: profit?.profit ?? null,
-      margin: profit?.margin ?? null,
-      tier: profit?.tier ?? null,
+      recipeSource: resolved.source,
+      sellingPrice,
+      costStatus: financials.costStatus,
+      issues: financials.issues,
+      cost: financials.cost,
+      profit: financials.profit,
+      margin: financials.margin,
+      tier: financials.tier,
     });
   } catch (error) {
     return handleApiError(error);
@@ -78,6 +85,11 @@ export async function PUT(request: NextRequest, { params }: Params) {
     const { id } = await params;
     const product = await findOwnedProduct(id, session);
     const data = recipeSchema.parse(await request.json());
+    const variantId = request.nextUrl.searchParams.get("variantId");
+    const variant = variantId
+      ? await db.productVariant.findFirst({ where: { id: variantId, productId: id } })
+      : null;
+    if (variantId && !variant) throw new ApiError(400, "الحجم لا يتبع هذا المنتج");
 
     // Validate every ingredient: same cafe + unit compatible with the item.
     const ids = data.items.map((i) => i.inventoryItemId);
@@ -99,29 +111,32 @@ export async function PUT(request: NextRequest, { params }: Params) {
       throw new ApiError(400, "في خامة مكررة في الوصفة");
     }
 
-    // The editor still edits the product's DEFAULT recipe; sizes are
-    // configured from the recipe review screen, which knows about variants.
-    const defaultRecipe = await db.recipe.upsert({
+    const selectedRecipe = await db.recipe.upsert({
       where: { id: (await db.recipe.findFirst({
-        where: { productId: id, variantId: null, addOnId: null }, select: { id: true },
+        where: { productId: id, variantId: variantId ?? null, addOnId: null }, select: { id: true },
       }))?.id ?? "__create__" },
-      create: { cafeId: product.cafeId, productId: id, createdById: session.id },
+      create: {
+        cafeId: product.cafeId,
+        productId: id,
+        variantId: variantId ?? null,
+        createdById: session.id,
+      },
       update: { updatedById: session.id },
     });
-    const beforeCount = await db.recipeItem.count({ where: { recipeId: defaultRecipe.id } });
+    const beforeCount = await db.recipeItem.count({ where: { recipeId: selectedRecipe.id } });
 
     await db.$transaction(async (tx) => {
-      await tx.recipeItem.deleteMany({ where: { recipeId: defaultRecipe.id } });
+      await tx.recipeItem.deleteMany({ where: { recipeId: selectedRecipe.id } });
       // Any edit retires the previous confirmation: it described a different
       // recipe (RECIPE-002).
       await tx.recipe.update({
-        where: { id: defaultRecipe.id },
+        where: { id: selectedRecipe.id },
         data: { verifiedById: null, verifiedAt: null, verifiedFingerprint: null, updatedById: session.id },
       });
       if (data.items.length > 0) {
         await tx.recipeItem.createMany({
           data: data.items.map((row) => ({
-            recipeId: defaultRecipe.id,
+            recipeId: selectedRecipe.id,
             inventoryItemId: row.inventoryItemId,
             quantity: row.quantity,
             unit: row.unit,
@@ -133,16 +148,22 @@ export async function PUT(request: NextRequest, { params }: Params) {
 
     // Recompute & persist the product's costPrice for reports.
     const fresh = await db.recipeItem.findMany({
-      where: { recipeId: defaultRecipe.id },
+      where: { recipeId: selectedRecipe.id },
       include: { inventoryItem: { select: { unit: true, costPerUnit: true } } },
     });
     const strict = productCostStrict(fresh);
     const cost = strict.ok ? strict.total : null;
-    const scope = await db.recipe.findUniqueOrThrow({ where: { id: defaultRecipe.id } });
+    const scope = await db.recipe.findUniqueOrThrow({ where: { id: selectedRecipe.id } });
     const variantCount = await db.productVariant.count({ where: { productId: id } });
     await db.product.update({
       where: { id },
-      data: { costPrice: strict.ok && (variantCount === 0 || scope.appliesToAllVariants) ? strict.total : null },
+      data: {
+        costPrice: variantId
+          ? null
+          : strict.ok && (variantCount === 0 || scope.appliesToAllVariants)
+            ? strict.total
+            : null,
+      },
     });
 
     await audit({
@@ -167,14 +188,21 @@ export async function PUT(request: NextRequest, { params }: Params) {
       details: { productName: product.name, cost, costIssues: strict.ok ? [] : strict.issues },
     });
 
-    const profit = strict.ok ? profitFor(Number(product.basePrice), strict.total, true) : null;
+    const sellingPrice = Number(variant?.price ?? product.basePrice);
+    // A save always retires the confirmation above, so the honest answer here
+    // is "not trusted yet" until someone confirms the new numbers.
+    const savedFinancials = await configurationFinancials({
+      productId: id,
+      variantId: variantId ?? null,
+      sellingPrice,
+    });
     return NextResponse.json({
-      costStatus: strict.ok ? "AVAILABLE" : "RECIPE_INCOMPLETE",
-      issues: strict.ok ? [] : strict.issues,
-      cost: profit?.cost ?? null,
-      profit: profit?.profit ?? null,
-      margin: profit?.margin ?? null,
-      tier: profit?.tier ?? null,
+      costStatus: savedFinancials.costStatus,
+      issues: savedFinancials.issues,
+      cost: savedFinancials.cost,
+      profit: savedFinancials.profit,
+      margin: savedFinancials.margin,
+      tier: savedFinancials.tier,
     });
   } catch (error) {
     return handleApiError(error);

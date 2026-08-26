@@ -303,6 +303,34 @@ function gateForResolvedRecipe(r: ResolvedRecipe): GateResult {
   };
 }
 
+/**
+ * Re-point recipe lines at a branch's own stock rows.
+ *
+ * Matching is by name + unit, deliberately the same rule stock deduction
+ * uses, so the number on the board is the number that will leave the shelf.
+ * A branch that does not carry an ingredient keeps the café row rather than
+ * silently costing it at zero — the gate still reports MISSING_COST if that
+ * row has no price.
+ */
+async function withBranchIngredientCosts(
+  items: ItemWithStock[],
+  branchId: string
+): Promise<ItemWithStock[]> {
+  if (items.length === 0) return items;
+  const branchRows = await db.inventoryItem.findMany({
+    where: {
+      branchId,
+      archivedAt: null,
+      OR: items.map((i) => ({ name: i.inventoryItem.name, unit: i.inventoryItem.unit })),
+    },
+  });
+  const byKey = new Map(branchRows.map((r) => [`${r.name}|${r.unit}`, r]));
+  return items.map((i) => {
+    const match = byKey.get(`${i.inventoryItem.name}|${i.inventoryItem.unit}`);
+    return match ? { ...i, inventoryItem: match } : i;
+  });
+}
+
 export type ConfigurationFinancials = {
   costStatus: "AVAILABLE" | "RECIPE_INCOMPLETE" | "NOT_APPLICABLE";
   recipeSource: RecipeSource;
@@ -326,6 +354,14 @@ export async function configurationFinancials(args: {
   productId: string;
   variantId: string | null;
   sellingPrice: number;
+  /**
+   * Cost the recipe against one branch's own stock. Recipes name café-level
+   * ingredients, but each branch holds its own copy at its own price, and
+   * that copy is what stock deduction actually draws down. Costing against
+   * the café row while deducting from the branch row would let the board and
+   * the shelf disagree about the same cup.
+   */
+  branchId?: string | null;
 }): Promise<ConfigurationFinancials> {
   const resolved = await resolveEffectiveRecipe(args.productId, args.variantId);
   const gate = gateForResolvedRecipe(resolved);
@@ -343,7 +379,10 @@ export async function configurationFinancials(args: {
     };
   }
 
-  const strict = productCostStrict(resolved.items);
+  const items = args.branchId
+    ? await withBranchIngredientCosts(resolved.items, args.branchId)
+    : resolved.items;
+  const strict = productCostStrict(items);
   if (!strict.ok) {
     return {
       costStatus: "RECIPE_INCOMPLETE", recipeSource: resolved.source,

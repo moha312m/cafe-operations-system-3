@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { api, money } from "@/lib/client";
@@ -36,7 +37,6 @@ import {
 } from "@/components/ui/table";
 import { MenuImportDialog } from "@/components/menu-import/menu-import-dialog";
 import { RecipeEditor } from "@/components/menu/recipe-editor";
-import { ProductCostReport } from "@/components/menu/product-cost-report";
 
 // ─────────────────────────── Types ───────────────────────────
 
@@ -759,7 +759,9 @@ export default function MenuPage() {
                 التكلفة محسوبة من وصفات المنتجات وأسعار الخامات في المخزون.
               </p>
             </div>
-            <ProductCostReport currency={currency} />
+            <Button nativeButton={false} render={<Link href="/recipe-review" />}>
+              فتح شاشة دقة وتكلفة المنتجات
+            </Button>
           </TabsContent>
         )}
       </Tabs>

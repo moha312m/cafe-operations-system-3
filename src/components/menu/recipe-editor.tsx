@@ -52,24 +52,31 @@ const TIER_STYLE: Record<Profitability, string> = {
 // وصفة والتكلفة — recipe editor + live cost/profit for one product.
 export function RecipeEditor({
   productId,
+  variantId = null,
   sellingPrice,
   currency = "EGP",
+  onSaved,
 }: {
   productId: string;
+  variantId?: string | null;
   sellingPrice: number;
   currency?: string;
+  onSaved?: () => void | Promise<void>;
 }) {
   const [inventory, setInventory] = useState<InvItem[]>([]);
   const [rows, setRows] = useState<Row[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const recipeUrl = `/api/products/${productId}/recipe${
+    variantId ? `?variantId=${encodeURIComponent(variantId)}` : ""
+  }`;
 
   const load = useCallback(async () => {
     try {
       const [inv, rec] = await Promise.all([
         api<{ items: InvItem[] }>("/api/inventory"),
         api<{ recipe: { inventoryItemId: string; quantity: string; unit: InventoryUnit; wastePercentage: string }[] }>(
-          `/api/products/${productId}/recipe`
+          recipeUrl
         ),
       ]);
       // Unique inventory items by name (recipes reference cafe-level items;
@@ -90,7 +97,7 @@ export function RecipeEditor({
     } finally {
       setLoading(false);
     }
-  }, [productId]);
+  }, [recipeUrl]);
 
   useEffect(() => {
     load();
@@ -141,7 +148,7 @@ export function RecipeEditor({
     }
     setBusy(true);
     try {
-      await api(`/api/products/${productId}/recipe`, {
+      await api(recipeUrl, {
         method: "PUT",
         body: {
           items: rows
@@ -154,6 +161,7 @@ export function RecipeEditor({
             })),
         },
       });
+      await onSaved?.();
       toast.success("اتحفظت الوصفة");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "فشل حفظ الوصفة");
