@@ -9,6 +9,7 @@ import {
 } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { round2 } from "@/lib/inventory";
+import { round3 } from "@/lib/costing";
 
 const transferSchema = z.object({
   inventoryItemId: z.string(), // the source-branch item being transferred
@@ -46,7 +47,7 @@ export async function POST(request: NextRequest) {
     });
     if (!toBranch) throw new ApiError(400, "الفرع المستلم مش موجود");
 
-    const qty = round2(data.quantity);
+    const qty = round3(data.quantity);
     if (Number(source.currentStock) < qty) {
       throw new ApiError(400, "لا توجد كمية كافية للتحويل");
     }
@@ -55,7 +56,7 @@ export async function POST(request: NextRequest) {
       // Source: decrement + TRANSFER_OUT
       await tx.inventoryItem.update({
         where: { id: source.id },
-        data: { currentStock: round2(Number(source.currentStock) - qty) },
+        data: { currentStock: round3(Number(source.currentStock) - qty) },
       });
       await tx.inventoryTransaction.create({
         data: {
@@ -98,7 +99,7 @@ export async function POST(request: NextRequest) {
       }
       await tx.inventoryItem.update({
         where: { id: dest.id },
-        data: { currentStock: round2(Number(dest.currentStock) + qty) },
+        data: { currentStock: round3(Number(dest.currentStock) + qty) },
       });
       await tx.inventoryTransaction.create({
         data: {

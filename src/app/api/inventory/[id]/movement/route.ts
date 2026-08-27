@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { requireKey, handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { round2, signedDelta, TXN_AUDIT_ACTION } from "@/lib/inventory";
+import { round3 } from "@/lib/costing";
 import { findScopedItem } from "../route";
 
 type Params = { params: Promise<{ id: string }> };
@@ -32,9 +33,9 @@ export async function POST(request: NextRequest, { params }: Params) {
       throw new ApiError(400, "التسوية لازم تكون بقيمة موجبة أو سالبة");
     }
 
-    const delta = round2(signedDelta(data.type, data.quantity));
+    const delta = round3(signedDelta(data.type, data.quantity));
     const current = Number(item.currentStock);
-    const newStock = round2(current + delta);
+    const newStock = round3(current + delta);
     if (newStock < 0) {
       throw new ApiError(400, "لا توجد كمية كافية في المخزون");
     }
