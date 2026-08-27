@@ -13,17 +13,32 @@
 
 import { test, after, before, describe } from "node:test";
 import assert from "node:assert/strict";
-import { db, fixture, sessionFor, openShift, clearOpenShifts, cleanup, cleanupShift } from "./helpers/db";
+import {
+  db, fixture, sessionFor, openShift, clearOpenShifts, cleanup, cleanupShift,
+  policyProduct, cleanupProduct,
+} from "./helpers/db";
 import { requireServer, login, as } from "./helpers/http";
 import type { ServingPaymentPolicy } from "@prisma/client";
 
 const CASHIER = "cashier@demo.com", OWNER = "owner@demo.com";
 
-after(async () => { await db.$disconnect(); });
+/**
+ * The product every order in this suite is built from.
+ *
+ * These tests are about when an order may be handed over, not about what it is
+ * made of. Reaching for "the first variant-free product on the menu" made them
+ * depend on café data: after a real menu was imported that product carried a
+ * recipe whose beans the branch had no stock of, and the inventory guard —
+ * correctly — refused the handover, failing tests that had asked nothing about
+ * inventory. The suite now brings a recipe-free product of its own.
+ */
+let productId: string;
+after(async () => { await cleanupProduct(productId); await db.$disconnect(); });
 before(async () => {
   await requireServer();
   await login(CASHIER, "cashier123");
   await login(OWNER, "owner1234");
+  productId = (await policyProduct(await fixture(), "POL2")).id;
 });
 
 async function setCafePolicy(
@@ -55,8 +70,6 @@ async function ensureDrawer(fx: Awaited<ReturnType<typeof fixture>>) {
 async function unpaidReadyOrder(
   branchId: string, marker: string, opts: { table?: string } = {}
 ) {
-  const products = (await as(CASHIER, "/api/products")).body as { products: { id: string; variants: unknown[] }[] };
-  const product = products.products.find((p) => p.variants.length === 0)!;
   const created = await as<{ order: { id: string } }>(CASHIER, "/api/orders", {
     method: "POST",
     body: JSON.stringify({
@@ -65,7 +78,7 @@ async function unpaidReadyOrder(
       ...(opts.table ? { tableNumber: opts.table } : {}),
       customerName: marker,
       collectionMode: "PENDING",
-      items: [{ productId: product.id, quantity: 1, addOnIds: [] }],
+      items: [{ productId, quantity: 1, addOnIds: [] }],
     }),
   });
   assert.ok(created.status < 300, `order setup failed: ${created.text.slice(0, 160)}`);

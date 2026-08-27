@@ -18,16 +18,29 @@ import assert from "node:assert/strict";
 import { refundOrder } from "@/lib/refunds";
 import {
   db, fixture, sessionFor, openShift, clearOpenShifts, cleanup, cleanupShift,
+  policyProduct, cleanupProduct,
 } from "./helpers/db";
 import { requireServer, login, as } from "./helpers/http";
 
 const CASHIER = "cashier@demo.com", MANAGER = "manager@demo.com";
 
-after(async () => { await db.$disconnect(); });
+/**
+ * The product every order in this suite is built from.
+ *
+ * These tests are about when an order may be handed over, not about what it is
+ * made of. Reaching for "the first variant-free product on the menu" made them
+ * depend on café data: after a real menu was imported that product carried a
+ * recipe whose beans the branch had no stock of, and the inventory guard —
+ * correctly — refused the handover, failing tests that had asked nothing about
+ * inventory. The suite now brings a recipe-free product of its own.
+ */
+let productId: string;
+after(async () => { await cleanupProduct(productId); await db.$disconnect(); });
 before(async () => {
   await requireServer();
   await login(CASHIER, "cashier123");
   await login(MANAGER, "manager123");
+  productId = (await policyProduct(await fixture(), "POL3")).id;
 });
 
 async function drawer(fx: Awaited<ReturnType<typeof fixture>>, who = CASHIER, opening = 200) {
@@ -41,15 +54,13 @@ async function dineIn(
   branchId: string, marker: string, table: string,
   { paid = true, stopAt = "READY" as "CONFIRMED" | "PREPARING" | "READY" | "SERVED" } = {}
 ) {
-  const products = (await as(CASHIER, "/api/products")).body as { products: { id: string; variants: unknown[] }[] };
-  const product = products.products.find((p) => p.variants.length === 0)!;
   const created = await as<{ order: { id: string } }>(CASHIER, "/api/orders", {
     method: "POST",
     body: JSON.stringify({
       branchId, type: "DINE_IN", tableNumber: table, customerName: marker,
       collectionMode: paid ? "NOW" : "PENDING",
       ...(paid ? { method: "CASH" } : {}),
-      items: [{ productId: product.id, quantity: 1, addOnIds: [] }],
+      items: [{ productId, quantity: 1, addOnIds: [] }],
     }),
   });
   assert.ok(created.status < 300, `setup failed: ${created.text.slice(0, 160)}`);

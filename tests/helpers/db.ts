@@ -177,6 +177,48 @@ export async function cleanupShift(shiftId: string) {
   await db.shift.deleteMany({ where: { id: shiftId } });
 }
 
+/**
+ * A product this test owns outright, with no recipe and no variants.
+ *
+ * Suites that exercise ordering, serving or table-close policy used to reach
+ * for "the first variant-free product on the menu". That made them depend on
+ * whichever café data happened to be loaded: once a real menu was imported,
+ * the first such product was a coffee whose recipe wants beans the branch has
+ * no stock of, so the stock guard refused the handover and thirteen tests
+ * about *payment policy* failed for reasons of *inventory*.
+ *
+ * Deliberately recipe-free: a missing recipe is reported and skipped rather
+ * than blocking service, so this product can always be served and the only
+ * thing left governing the outcome is the policy under test.
+ */
+export async function policyProduct(fx: Fixture, marker: string) {
+  const category = await db.menuCategory.findFirstOrThrow({
+    where: { cafeId: fx.cafeId },
+    orderBy: { createdAt: "asc" },
+  });
+  return db.product.create({
+    data: {
+      cafeId: fx.cafeId,
+      categoryId: category.id,
+      name: `${marker} test item`,
+      basePrice: 75,
+    },
+  });
+}
+
+/**
+ * Drop a product created by `policyProduct`, once its orders are gone.
+ *
+ * The guard is not defensive padding. Prisma reads `undefined` in a `where` as
+ * "no filter", so if a suite's `before` throws before the product exists, an
+ * unguarded `deleteMany` here would match every row and empty the menu.
+ */
+export async function cleanupProduct(productId: string | undefined) {
+  if (!productId) return;
+  await db.recipe.deleteMany({ where: { productId } });
+  await db.product.deleteMany({ where: { id: productId } });
+}
+
 export type TestIngredients = Awaited<ReturnType<typeof testIngredients>>;
 
 /**
