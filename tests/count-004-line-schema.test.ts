@@ -27,7 +27,7 @@
 
 import { test, after, before, describe } from "node:test";
 import assert from "node:assert/strict";
-import { db, tag } from "./helpers/db";
+import { db, tag, teardownTaggedCafe } from "./helpers/db";
 import {
   TERMINAL_DISPOSITIONS, isTerminal, DISPOSITION_TRANSITIONS,
 } from "@/lib/count-disposition";
@@ -74,14 +74,11 @@ before(async () => {
   })).id;
 });
 
-after(async () => {
-  await db.stockCountLine.deleteMany({ where: { session: { cafeId } } });
-  await db.stockCountSession.deleteMany({ where: { cafeId } });
-  await db.inventoryItem.deleteMany({ where: { cafeId } });
-  await db.user.deleteMany({ where: { cafeId } });
-  await db.cafe.deleteMany({ where: { id: cafeId } });
-  await db.$disconnect();
-});
+// `StockCountLine.inventoryItem` is Restrict, so the order above was not
+// decoration — it was the only order that worked. The purge rediscovers that
+// order from the live catalogue instead, which also means it survives the RED
+// run where the line model does not exist yet. See TOOLING-003.
+after(() => teardownTaggedCafe(cafeId, [], { disconnect: true }));
 
 function line(data: Record<string, unknown> = {}) {
   return db.stockCountLine.create({

@@ -25,7 +25,7 @@
 
 import { test, after, before, describe } from "node:test";
 import assert from "node:assert/strict";
-import { db, fixture, tag, TAG_PREFIX, type Fixture } from "./helpers/db";
+import { db, fixture, tag, TAG_PREFIX, type Fixture, teardownTaggedCafe } from "./helpers/db";
 
 const MARKER = tag("COUNT001");
 let fx: Fixture;
@@ -34,11 +34,16 @@ const itemIds: string[] = [];
 
 before(async () => { fx = await fixture(); });
 
-after(async () => {
-  if (itemIds.length) await db.inventoryItem.deleteMany({ where: { id: { in: itemIds } } });
-  if (cafeIds.length) await db.cafe.deleteMany({ where: { id: { in: cafeIds } } });
-  await db.$disconnect();
-});
+// The ingredients are the exception: they belong to the SEEDED café, which
+// the purge must never go near. They are a step; the tagged cafés are the
+// guarantee.
+after(() =>
+  teardownTaggedCafe(
+    cafeIds,
+    [() => db.inventoryItem.deleteMany({ where: { id: { in: itemIds } } })],
+    { disconnect: true }
+  )
+);
 
 describe("COUNT-001 count configuration", () => {
   test("a reason code persists, and (cafeId, domain, code) rejects a duplicate", async () => {

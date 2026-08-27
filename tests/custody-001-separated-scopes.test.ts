@@ -17,7 +17,7 @@
 
 import { test, after, before, describe } from "node:test";
 import assert from "node:assert/strict";
-import { db, tag } from "./helpers/db";
+import { db, tag, teardownTaggedCafe } from "./helpers/db";
 
 const MARKER = tag("CUSTODY001");
 let cafeId: string;
@@ -64,12 +64,7 @@ before(async () => {
   shiftId = shift.id;
 });
 
-after(async () => {
-  await db.shift.deleteMany({ where: { cafeId } });
-  await db.user.deleteMany({ where: { cafeId } });
-  await db.cafe.deleteMany({ where: { id: cafeId } });
-  await db.$disconnect();
-});
+after(() => teardownTaggedCafe(cafeId, [], { disconnect: true }));
 
 /** A custody period this test owns, cleaned up by café cascade. */
 async function period(scope: "CASH" | "STOCK", data: Record<string, unknown> = {}) {

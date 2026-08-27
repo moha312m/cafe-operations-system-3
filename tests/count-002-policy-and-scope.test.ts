@@ -19,7 +19,7 @@
 import { test, after, before, describe } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { db, tag } from "./helpers/db";
+import { db, tag, teardownTaggedCafe } from "./helpers/db";
 import {
   resolveStockCountPolicy,
   countRequiredForHandover,
@@ -74,11 +74,10 @@ before(async () => {
   await make("b-critical", branchB, { isCritical: true });
 });
 
-after(async () => {
-  await db.inventoryItem.deleteMany({ where: { cafeId } });
-  await db.cafe.deleteMany({ where: { id: cafeId } });
-  await db.$disconnect();
-});
+// Everything this suite creates hangs off its own tagged café, so the purge
+// is the whole teardown — see TOOLING-003 for why the hand-written sequence
+// this replaces could be vetoed by its own first line.
+after(() => teardownTaggedCafe(cafeId, [], { disconnect: true }));
 
 /** Set the café's policy columns for one assertion. */
 async function setCafe(data: Record<string, unknown>) {

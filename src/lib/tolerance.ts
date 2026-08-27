@@ -21,6 +21,7 @@
 import type { PaymentMethod, ToleranceScope } from "@prisma/client";
 import { db } from "@/lib/db";
 import { round3 } from "@/lib/costing";
+import { assertTenderToleranceMethod } from "@/lib/tender";
 
 export type ResolvedTolerance = {
   quantityTolerance: number | null;
@@ -102,12 +103,23 @@ export async function resolveStockTolerance(args: {
   return NO_TOLERANCE;
 }
 
-/** The tolerance governing one non-cash tender method at a branch. */
+/**
+ * The tolerance governing one tender method at a branch.
+ *
+ * MIXED is refused rather than returning `NO_TOLERANCE`, because the two
+ * answers mean different things and only one of them is true. `NO_TOLERANCE`
+ * says "nobody has configured a bound", which a caller may reasonably read as
+ * exact-match; a MIXED lookup is instead a question that should never have
+ * been asked, since a mixed payment is already recorded as its parts. Letting
+ * it resolve quietly is how a MIXED reconciliation channel gets built by
+ * accident.
+ */
 export async function resolveTenderTolerance(args: {
   cafeId: string;
   branchId: string;
   method: PaymentMethod;
 }): Promise<ResolvedTolerance> {
+  assertTenderToleranceMethod(args.method);
   const rule = await db.toleranceRule.findFirst({
     where: {
       cafeId: args.cafeId,
@@ -125,6 +137,34 @@ export async function resolveTenderTolerance(args: {
     },
   });
   return shape(rule);
+}
+
+/**
+ * What a tolerance rule may say before it is written.
+ *
+ * The same rule the `ToleranceRule_tender_scope_method_valid` check enforces
+ * in the database, stated here so a misconfiguration comes back as a sentence
+ * an owner can act on rather than as a Postgres constraint name. The database
+ * keeps its copy regardless: a constraint that only exists in the service is
+ * a constraint that a script, a seed or a later migration can walk around.
+ */
+export function assertValidToleranceRule(rule: {
+  scope: ToleranceScope;
+  tenderMethod?: PaymentMethod | null;
+}): void {
+  if (rule.scope === "TENDER") {
+    if (!rule.tenderMethod) {
+      throw new Error("A TENDER-scoped tolerance rule must name a tender method.");
+    }
+    assertTenderToleranceMethod(rule.tenderMethod);
+    return;
+  }
+  if (rule.tenderMethod) {
+    throw new Error(
+      `A ${rule.scope}-scoped tolerance rule governs stock, so it cannot name ` +
+        `the tender method ${rule.tenderMethod}.`
+    );
+  }
 }
 
 /**

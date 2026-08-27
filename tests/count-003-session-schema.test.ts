@@ -19,7 +19,7 @@
 
 import { test, after, before, describe } from "node:test";
 import assert from "node:assert/strict";
-import { db, tag } from "./helpers/db";
+import { db, tag, teardownTaggedCafe } from "./helpers/db";
 
 const MARKER = tag("COUNT003");
 let cafeId: string;
@@ -51,14 +51,11 @@ before(async () => {
   })).id;
 });
 
-after(async () => {
-  await db.stockCountSession.deleteMany({ where: { cafeId } });
-  await db.custodyParticipant.deleteMany({ where: { custodyPeriod: { branchId } } });
-  await db.custodyPeriod.deleteMany({ where: { branchId } });
-  await db.user.deleteMany({ where: { cafeId } });
-  await db.cafe.deleteMany({ where: { id: cafeId } });
-  await db.$disconnect();
-});
+// This teardown used to open with `db.stockCountSession.deleteMany(...)` —
+// the model the RED run existed to prove absent. The delegate was undefined,
+// the hook threw on its first line, and the tagged café stayed behind. The
+// purge names no model at all; see TOOLING-003.
+after(() => teardownTaggedCafe(cafeId, [], { disconnect: true }));
 
 /** A session this suite owns. */
 function session(data: Record<string, unknown> = {}) {

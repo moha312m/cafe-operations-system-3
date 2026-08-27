@@ -20,7 +20,7 @@
 
 import { test, after, before, describe } from "node:test";
 import assert from "node:assert/strict";
-import { db, tag } from "./helpers/db";
+import { db, tag, teardownTaggedCafe } from "./helpers/db";
 import type { Prisma } from "@prisma/client";
 import {
   resolveStockTolerance, resolveTenderTolerance, resolveCashTolerance, withinTolerance,
@@ -55,12 +55,7 @@ before(async () => {
   otherItemId = await mkItem("milk", "ألبان");
 });
 
-after(async () => {
-  await db.toleranceRule.deleteMany({ where: { cafeId } });
-  await db.inventoryItem.deleteMany({ where: { cafeId } });
-  await db.cafe.deleteMany({ where: { id: cafeId } });
-  await db.$disconnect();
-});
+after(() => teardownTaggedCafe(cafeId, [], { disconnect: true }));
 
 const clearRules = () => db.toleranceRule.deleteMany({ where: { cafeId } });
 

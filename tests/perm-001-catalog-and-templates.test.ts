@@ -26,7 +26,7 @@
 import { test, after, before, describe } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { db, sessionFor, tag } from "./helpers/db";
+import { db, sessionFor, tag, teardownTaggedCafe } from "./helpers/db";
 import { resolvePermissions } from "@/lib/perms/effective";
 import {
   ALL_KEYS, CAFE_KEYS, KEY_MAP, LEGACY_TO_KEYS, MODULE_MAP, MODULES,
@@ -143,11 +143,9 @@ before(async () => {
   gatedManagerId = await scratchCafe("gated", "BRANCH_MANAGER", false);
 });
 
-after(async () => {
-  if (userIds.length) await db.user.deleteMany({ where: { id: { in: userIds } } });
-  if (cafeIds.length) await db.cafe.deleteMany({ where: { id: { in: cafeIds } } });
-  await db.$disconnect();
-});
+// Every account this suite makes belongs to one of its own tagged cafés, so
+// purging the cafés takes the users with them.
+after(() => teardownTaggedCafe(cafeIds, [], { disconnect: true }));
 
 /** Effective keys for a seeded account, through the real resolver. */
 async function keysFor(email: string): Promise<Set<string>> {

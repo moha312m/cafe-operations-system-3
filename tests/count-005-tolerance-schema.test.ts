@@ -22,7 +22,7 @@
 
 import { test, after, before, describe } from "node:test";
 import assert from "node:assert/strict";
-import { db, tag } from "./helpers/db";
+import { db, tag, teardownTaggedCafe } from "./helpers/db";
 
 const MARKER = tag("COUNT005");
 let cafeId: string;
@@ -80,18 +80,10 @@ before(async () => {
   })).id;
 });
 
-after(async () => {
-  await db.stockCountCorrection.deleteMany({ where: { line: { session: { cafeId } } } });
-  await db.stockCountRecount.deleteMany({ where: { line: { session: { cafeId } } } });
-  await db.toleranceRule.deleteMany({ where: { cafeId } });
-  await db.stockCountLine.deleteMany({ where: { session: { cafeId } } });
-  await db.stockCountSession.deleteMany({ where: { cafeId } });
-  await db.reasonCode.deleteMany({ where: { cafeId } });
-  await db.inventoryItem.deleteMany({ where: { cafeId } });
-  await db.user.deleteMany({ where: { cafeId } });
-  await db.cafe.deleteMany({ where: { id: cafeId } });
-  await db.$disconnect();
-});
+// Three of the nine deletes this replaces named models that did not exist
+// during the RED run, and the first of them was enough to abandon the other
+// eight and strand the café. See TOOLING-003.
+after(() => teardownTaggedCafe(cafeId, [], { disconnect: true }));
 
 describe("COUNT-005 tolerance, recount and correction schema", () => {
   test("a rule persists at each of the five scopes, with the right columns filled", async () => {

@@ -18,7 +18,7 @@
 
 import { test, after, before, describe } from "node:test";
 import assert from "node:assert/strict";
-import { db, tag } from "./helpers/db";
+import { db, tag, teardownTaggedCafe } from "./helpers/db";
 import {
   openCustodyPeriod, transferCustody, activeCustody, linkShiftCustody,
 } from "@/lib/custody";
@@ -64,21 +64,12 @@ before(async () => {
   shiftB = await shift(2, userB);
 });
 
-after(async () => {
-  // Custody first, and deliberately so. `CustodyParticipant.userId` is
-  // Restrict, not Cascade: a custody record names who was answerable, and
-  // deleting a staff account must not erase the evidence of what they held.
-  // The teardown has to unwind in that order, which is the schema working.
-  await db.shiftCustody.deleteMany({ where: { custodyPeriod: { branchId } } });
-  await db.custodyPeriod.updateMany({ where: { branchId }, data: { previousPeriodId: null } });
-  await db.custodyParticipant.deleteMany({ where: { custodyPeriod: { branchId } } });
-  await db.custodyPeriod.deleteMany({ where: { branchId } });
-  await db.auditLog.deleteMany({ where: { cafeId } });
-  await db.shift.deleteMany({ where: { cafeId } });
-  await db.user.deleteMany({ where: { cafeId } });
-  await db.cafe.deleteMany({ where: { id: cafeId } });
-  await db.$disconnect();
-});
+// Custody before staff, and deliberately so. `CustodyParticipant.userId` is
+// Restrict, not Cascade: a custody record names who was answerable, and
+// deleting a staff account must not erase the evidence of what they held. The
+// order is the schema working — it is just no longer written out here. The
+// purge retries what a Restrict key blocks until the layer above it is gone.
+after(() => teardownTaggedCafe(cafeId, [], { disconnect: true }));
 
 /** Remove every custody row at this branch, between assertions. */
 async function clearCustody() {

@@ -261,3 +261,138 @@ export async function cleanupIngredients(ing: Partial<TestIngredients>) {
   if (ids.length === 0) return;
   await db.inventoryItem.deleteMany({ where: { id: { in: ids } } });
 }
+
+// ───────────────────────── Tagged-café teardown ──────────────────────
+//
+// A suite that creates its own café used to unwind it by hand: delete the
+// leaf tables, then the trunk, then the café, in one straight-line `after`.
+// That reads well and fails badly. Two of the T9–T15 schema suites ran RED
+// on purpose — the point of the run was that a model did NOT exist yet — and
+// their teardown opened with `db.<newModel>.deleteMany(...)`. Reading a
+// property off an absent Prisma delegate throws a TypeError, the rest of the
+// hook never ran, and the tagged café stayed behind in the owner's working
+// database. The RED test proved its point and left litter proving it.
+//
+// So teardown is split into two halves with different guarantees:
+//
+//   * the caller's steps are best-effort and independent — one throwing is
+//     reported and does not stop the next, because a cleanup step is a
+//     convenience, not the contract;
+//   * the root purge is the contract, always runs, and is expressed against
+//     the live database catalogue rather than the generated Prisma client,
+//     so it cannot be broken by the absence of the very model a RED test is
+//     there to prove absent.
+//
+// In a GREEN run nothing throws and the observable behaviour is exactly what
+// the hand-written sequence did.
+
+/** Postgres identifiers we are willing to interpolate into raw SQL. */
+const SAFE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * Delete a café and everything scoped to it, without naming a single model.
+ *
+ * The table list comes from `information_schema` — every base table in the
+ * current schema carrying a `cafeId` column — so a table that does not exist
+ * yet is simply never discovered, and a table added by a later migration is
+ * covered without editing this helper.
+ *
+ * Deletion order is discovered rather than declared. Several foreign keys are
+ * deliberately `Restrict` (a custody record naming who was answerable must
+ * outlive the staff account, a counted line must outlive the ingredient), so
+ * a single pass in catalogue order will block. Blocked tables are retried on
+ * the next pass; each pass that removes anything unblocks the next layer, and
+ * the loop stops as soon as a pass makes no progress.
+ *
+ * Throws only if the café itself survives — the one condition that means
+ * litter is left in the working database.
+ */
+export async function purgeCafe(cafeId: string): Promise<void> {
+  if (!cafeId) {
+    throw new Error("purgeCafe needs a café id — refusing to run an unscoped delete");
+  }
+
+  const scoped = await db.$queryRaw<{ table_name: string }[]>`
+    SELECT c.table_name
+      FROM information_schema.columns c
+      JOIN information_schema.tables t
+        ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+     WHERE c.table_schema = current_schema()
+       AND t.table_type = 'BASE TABLE'
+       AND c.column_name = 'cafeId'
+  `;
+
+  let pending = scoped.map((r) => r.table_name).filter((n) => SAFE_IDENTIFIER.test(n));
+  let lastFailure: unknown;
+
+  while (pending.length > 0) {
+    const blocked: string[] = [];
+    for (const table of pending) {
+      try {
+        await db.$executeRawUnsafe(`DELETE FROM "${table}" WHERE "cafeId" = $1`, cafeId);
+      } catch (e) {
+        lastFailure = e;
+        blocked.push(table);
+      }
+    }
+    if (blocked.length === pending.length) break; // no progress — stop retrying
+    pending = blocked;
+  }
+
+  try {
+    await db.$executeRawUnsafe(`DELETE FROM "Cafe" WHERE "id" = $1`, cafeId);
+  } catch (e) {
+    lastFailure = e;
+  }
+
+  const survivors = await db.cafe.count({ where: { id: cafeId } });
+  if (survivors > 0) {
+    throw new Error(
+      `Tagged café ${cafeId} survived teardown and is now litter in the working ` +
+        `database. Last failure: ${describeError(lastFailure)}`
+    );
+  }
+}
+
+function describeError(e: unknown): string {
+  if (e instanceof Error) return `${e.name}: ${e.message}`;
+  return String(e);
+}
+
+/**
+ * The `after` hook for a suite that owns its café.
+ *
+ * `steps` run first, in order, each isolated from the next: a step that
+ * throws is reported to stderr and the remaining steps still run. They exist
+ * for records the purge cannot reach — anything hanging off the SEEDED café
+ * rather than the tagged one. Nothing that lives under the tagged café needs
+ * a step at all; the purge takes it.
+ *
+ * The purge then runs unconditionally and is what actually guarantees the
+ * café is gone.
+ */
+export async function teardownTaggedCafe(
+  cafeIds: string | string[] | undefined,
+  steps: Array<() => Promise<unknown>> = [],
+  options: { disconnect?: boolean } = {}
+): Promise<void> {
+  const ids = (Array.isArray(cafeIds) ? cafeIds : [cafeIds]).filter(
+    (id): id is string => typeof id === "string" && id.length > 0
+  );
+
+  try {
+    for (const step of steps) {
+      try {
+        await step();
+      } catch (e) {
+        // Deliberately swallowed. A cleanup step is best-effort; the café
+        // purge below is the guarantee, and it must not be skipped because
+        // an optional step referred to a model that is not there yet.
+        console.warn(`[teardown] cleanup step failed, continuing: ${describeError(e)}`);
+      }
+    }
+    for (const id of ids) await purgeCafe(id);
+  } finally {
+    if (options.disconnect) await db.$disconnect();
+  }
+}
