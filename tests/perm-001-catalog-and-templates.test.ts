@@ -29,9 +29,11 @@ import { readFileSync } from "node:fs";
 import { db, sessionFor, tag } from "./helpers/db";
 import { resolvePermissions } from "@/lib/perms/effective";
 import {
-  ALL_KEYS, CAFE_KEYS, KEY_MAP, MODULE_MAP, MODULES,
+  ALL_KEYS, CAFE_KEYS, KEY_MAP, LEGACY_TO_KEYS, MODULE_MAP, MODULES,
   PERMISSION_KEYS, SENSITIVE_KEYS, keysForModule,
 } from "@/lib/perms/catalog";
+import { SYSTEM_ROLE_MAP } from "@/lib/perms/templates";
+import { ROLE_PERMISSIONS } from "@/lib/permissions";
 
 // The eighteen, with the module each belongs to and whether it is sensitive.
 // Written out rather than derived from the catalog: a table derived from the
@@ -64,8 +66,9 @@ const MANAGER_COLUMN = NEW_KEYS
 
 const CASHIER_COLUMN = [
   "stock_count.view", "stock_count.start", "stock_count.submit",
-  // `handover.view` is pre-existing, not one of the eighteen, but the
-  // cashier must reach the page whose two new keys they now hold.
+  // `handover.view` is pre-existing, not one of the eighteen. It is granted
+  // explicitly alongside submit/accept by the `handover:participate` bridge,
+  // never inherited from shift operation — see the dedicated test below.
   "handover.view", "handover.submit", "handover.accept",
   "tender_reconciliation.view", "tender_reconciliation.submit",
   "shifts.reconcile_cash",
@@ -259,6 +262,68 @@ describe("PERM-001 catalog, templates, and nav", () => {
         assert.equal(SENSITIVE_KEYS.has(key), false, `${key} must not be marked sensitive`);
       }
     }
+  });
+
+  test("handover participation is its own grant, not a side-effect of operating a shift", () => {
+    // The permission model stays granular on purpose. Taking part in a
+    // custody handover is not a consequence of opening a drawer: a store
+    // keeper hands over a stock room without ever touching one. So the three
+    // participant keys ride `handover:participate`, and `shifts:operate`
+    // carries none of them — a reader of the catalog can see who may hand
+    // over without tracing it through an unrelated bridge.
+    const participate = LEGACY_TO_KEYS["handover:participate"];
+    assert.deepEqual(
+      participate, ["handover.view", "handover.submit", "handover.accept"],
+      "the participant set is stated in one place, view included"
+    );
+
+    for (const key of participate) {
+      assert.equal(
+        LEGACY_TO_KEYS["shifts:operate"].includes(key), false,
+        `${key} must NOT ride shifts:operate`
+      );
+      assert.equal(
+        LEGACY_TO_KEYS["inventory:manage"].includes(key) && key !== "handover.view", false,
+        `${key} must NOT ride inventory:manage`
+      );
+    }
+
+    // The sensitive manager action is not part of participating.
+    assert.equal(
+      participate.includes("handover.exception"), false,
+      "waving a handover through is oversight, not participation"
+    );
+    assert.ok(
+      LEGACY_TO_KEYS["shifts:read"].includes("handover.exception"),
+      "it rides the oversight bridge instead"
+    );
+  });
+
+  test("the roles that hand over hold the participation permission explicitly", () => {
+    // Asserted at the legacy-role level too, because `defaultKeysForRole`
+    // resolves a user with no custom CafeRole through ROLE_PERMISSIONS —
+    // a template grant alone would never reach the seeded cashier.
+    for (const role of ["BRANCH_MANAGER", "CASHIER", "INVENTORY_MANAGER"] as const) {
+      assert.ok(
+        ROLE_PERMISSIONS[role].includes("handover:participate"),
+        `${role} must hold handover:participate explicitly`
+      );
+    }
+    for (const role of ["WAITER", "BARISTA"] as const) {
+      assert.equal(
+        ROLE_PERMISSIONS[role].includes("handover:participate"), false,
+        `${role} does not hold custody and must not take part in a handover`
+      );
+    }
+    // And the templates say the same thing, for custom roles built from them.
+    const cashierTemplate = SYSTEM_ROLE_MAP.CASHIER.keys;
+    for (const key of ["handover.view", "handover.submit", "handover.accept"]) {
+      assert.ok(cashierTemplate.includes(key), `CASHIER template must list ${key}`);
+    }
+    assert.equal(
+      cashierTemplate.includes("handover.exception"), false,
+      "and must not list the manager exception"
+    );
   });
 
   test("every new nav entry declares a granular key", () => {

@@ -317,19 +317,24 @@ export const LEGACY_TO_KEYS: Record<string, string[]> = {
   // Redeeming customer points rides with drawer operation (cashier/manager).
   //
   // Whoever operates the drawer is a custodian: they count what they hold,
-  // hand it over, take one over, settle their own card/wallet totals, and
-  // reconcile their own cash. None of that includes confirming, approving or
-  // resolving — those ride shifts:read below, which a cashier does not have.
+  // settle their own card/wallet totals, and reconcile their own cash. None
+  // of that includes confirming, approving or resolving — those ride
+  // shifts:read below, which a cashier does not have. Handover is NOT here
+  // either: it has its own permission, because taking part in one is not a
+  // consequence of operating a shift.
   "shifts:operate": [
     "shifts.view_current", "shifts.open", "shifts.close", "loyalty.redeem_points",
     "stock_count.view", "stock_count.start", "stock_count.submit",
-    // `handover.view` rides along because participation implies sight: a
-    // cashier who may submit and accept a handover but cannot open the page
-    // holds two keys they can never reach.
-    "handover.view", "handover.submit", "handover.accept",
     "tender_reconciliation.view", "tender_reconciliation.submit",
     "shifts.reconcile_cash",
   ],
+  // Taking part in a custody handover, as one explicit grant. `handover.view`
+  // is stated here rather than inherited from anywhere: a role that may
+  // submit and accept a handover must be able to open the page, and that
+  // should be visible in the catalog rather than inferred. The sensitive
+  // manager action (handover.exception) is deliberately absent — it rides
+  // shifts:read, the oversight bridge.
+  "handover:participate": ["handover.view", "handover.submit", "handover.accept"],
   // Oversight of other people's shifts. This is the supervisory bridge, so
   // it carries every "sign off on somebody else's work" key.
   "shifts:read": [
@@ -347,10 +352,10 @@ export const LEGACY_TO_KEYS: Record<string, string[]> = {
     "purchases.cancel", "purchases.record_payment", "purchases.view_cost", "purchases.manage",
     "suppliers.view", "suppliers.create", "suppliers.edit", "suppliers.deactivate",
     "handover.view", "handover.manage",
-    // Stock custody: whoever manages the store room counts it, recounts it,
-    // and hands it over. Recount is a store-keeper's judgement, not a
-    // cashier's, so it rides here rather than on shifts:operate.
-    "stock_count.recount", "handover.submit", "handover.accept",
+    // Recount is a store-keeper's judgement, not a cashier's, so it rides
+    // here rather than on shifts:operate. Handover submit/accept do NOT —
+    // they come with handover:participate, which this role also holds.
+    "stock_count.recount",
   ],
   "inventory:read": [
     "inventory.view",
