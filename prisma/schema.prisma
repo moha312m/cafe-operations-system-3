@@ -217,6 +217,7 @@ model Cafe {
   custodyPeriods   CustodyPeriod[]
   stockCountSessions StockCountSession[]
   toleranceRules   ToleranceRule[]
+  tenderReconciliations TenderReconciliation[]
 }
 
 // Per-cafe module flags + workflow, controlled ONLY by SUPER_ADMIN.
@@ -318,6 +319,7 @@ model Branch {
   custodyPeriods CustodyPeriod[]
   stockCountSessions StockCountSession[]
   toleranceRules ToleranceRule[]
+  tenderReconciliations TenderReconciliation[]
 
   @@unique([cafeId, menuSlug])
   @@index([cafeId])
@@ -504,6 +506,8 @@ model User {
   recountsPerformed StockCountRecount[]
   correctionsMade   StockCountCorrection[] @relation("CorrectionActor")
   correctionsApproved StockCountCorrection[] @relation("CorrectionApprover")
+  tendersSubmitted  TenderReconciliation[] @relation("TenderSubmitter")
+  tendersApproved   TenderReconciliation[] @relation("TenderApprover")
 
   @@index([cafeId])
   @@index([branchId])
@@ -958,6 +962,16 @@ model Shift {
   expectedCashAmount Decimal     @default(0) @db.Decimal(10, 2)
   actualCashAmount   Decimal? @db.Decimal(10, 2)
   cashDifference     Decimal? @db.Decimal(10, 2)
+
+  // Cash reconciliation, extending the columns above rather than replacing
+  // them: the close path already writes this row, and these four say what it
+  // could not. All nullable — a shift closed before this existed truthfully
+  // has no verdict, and backfilling a default would invent a reconciliation
+  // nobody performed. `cashVarianceCaseId` ships with VarianceCase itself.
+  cashWithinTolerance Boolean?
+  cashToleranceAmount Decimal? @db.Decimal(10, 2)
+  cashReasonCodeId    String?
+  cashReasonNote      String?
   totalSales         Decimal     @default(0) @db.Decimal(10, 2)
   totalCashSales     Decimal     @default(0) @db.Decimal(10, 2)
   totalCardSales     Decimal     @default(0) @db.Decimal(10, 2)
@@ -976,6 +990,8 @@ model Shift {
   payments Payment[]
   custodyLinks ShiftCustody[]
   stockCountSessions StockCountSession[]
+  cashReasonCode ReasonCode? @relation(fields: [cashReasonCodeId], references: [id], onDelete: SetNull)
+  tenderReconciliations TenderReconciliation[]
 
   @@unique([branchId, shiftNumber])
   @@index([cafeId])
@@ -985,6 +1001,7 @@ model Shift {
   @@index([openedAt])
   @@index([closedAt])
   @@index([branchId, status])
+  @@index([cashReasonCodeId])
 }
 
 // ───────────────────────────── Inventory ─────────────────────────────
@@ -1140,6 +1157,8 @@ model ReasonCode {
   cafe      Cafe             @relation(fields: [cafeId], references: [id], onDelete: Cascade)
   countLines  StockCountLine[]
   corrections StockCountCorrection[]
+  tenderReconciliations TenderReconciliation[]
+  cashShifts            Shift[]
 
   @@unique([cafeId, domain, code])
   @@index([cafeId, domain])
@@ -1389,6 +1408,82 @@ model StockCountCorrection {
 
   @@index([lineId])
   @@index([status])
+}
+
+// ─────────────────── Tender reconciliation (T16) ─────────────────────
+// Cash keeps one home, and the other channels get their own.
+//
+// An earlier revision gave CASH a row here alongside `Shift.actualCashAmount`,
+// which put the same money in two places free to disagree and demoted the
+// existing, tested close path to a second opinion. The split below follows
+// how the money actually arrives instead: CASH is counted in a drawer at the
+// end of a shift and lives on `Shift`, which gains the tolerance applied, a
+// reason code and a note — while `actualCashAmount` and `cashDifference` stay
+// exactly as they were. CARD and WALLET settle through a processor on the
+// processor's schedule, which is a different record with its own lifecycle.
+//
+// MIXED is excluded for a third reason again: it is not a channel at all. It
+// marks an order paid across more than one method, and each part is already a
+// Payment row under its real method — reconciling MIXED would count the same
+// money twice under a label no processor ever settles.
+//
+// The exclusion is a CHECK constraint in the migration, not a convention,
+// because a convention is a comment that a later migration or a data fix can
+// walk straight past.
+enum TenderReconStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+}
+
+/// One electronic settlement channel on one shift: CARD or WALLET only.
+/// Cash is reconciled on Shift — see `TenderReconciliation_no_cash_check`.
+model TenderReconciliation {
+  id       String        @id @default(cuid())
+  cafeId   String
+  branchId String
+  shiftId  String
+  method   PaymentMethod
+
+  /// What the till says was taken on this channel.
+  expectedAmount Decimal  @db.Decimal(10, 2)
+  /// What the processor says settled. NULL until somebody reads the terminal
+  /// report, which is not the same as zero.
+  actualAmount   Decimal? @db.Decimal(10, 2)
+  varianceAmount Decimal? @db.Decimal(10, 2)
+  /// The bound actually applied, kept so a settlement can be replayed after
+  /// the rule behind it has been edited.
+  toleranceAmount Decimal? @db.Decimal(10, 2)
+
+  reasonCodeId String?
+  reasonNote   String?
+
+  status        TenderReconStatus @default(DRAFT)
+  submittedById String?
+  submittedAt   DateTime?
+  approvedById  String?
+  approvedAt    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cafe   Cafe   @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  shift  Shift  @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+
+  /// SetNull: retiring the vocabulary an owner once used must not delete the
+  /// settlement it explained.
+  reasonCode  ReasonCode? @relation(fields: [reasonCodeId], references: [id], onDelete: SetNull)
+  submittedBy User?       @relation("TenderSubmitter", fields: [submittedById], references: [id], onDelete: SetNull)
+  approvedBy  User?       @relation("TenderApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+
+  // `varianceCase` arrives with the VarianceCase table it names, so the
+  // foreign key is created alongside its target rather than pointing at
+  // nothing in the meantime.
+
+  @@unique([shiftId, method])
+  @@index([cafeId, status])
+  @@index([shiftId])
 }
 
 enum InventoryUnit {

@@ -203,14 +203,23 @@ describe("COUNT-007 tender channels", () => {
     assert.equal(item.tenderMethod, null, "a stock rule names no method, and says so with null");
   });
 
-  test("no TenderReconciliation model exists yet, so no CASH or MIXED row can", () => {
-    // Stated as a fact about today rather than as an aspiration: T16 builds
-    // the model, and it inherits the refusals above rather than re-deciding
-    // which methods get a channel.
+  test("TenderReconciliation exists and inherited these refusals rather than re-deciding", async () => {
+    // This test used to assert the model was absent, as a tripwire for the
+    // task that would build it. T16 built it, so the tripwire is spent and
+    // the claim becomes the one it was guarding: the new table refuses the
+    // same two methods this suite refuses, at the database level.
     const delegates = db as unknown as Record<string, unknown>;
-    assert.equal(
-      delegates.tenderReconciliation, undefined,
-      "when this fails, T16 has landed — check it routes through assertReconcilableTender"
-    );
+    assert.notEqual(delegates.tenderReconciliation, undefined, "T16 has landed");
+
+    const check = await db.$queryRaw<{ definition: string }[]>`
+      SELECT pg_get_constraintdef(oid) AS definition
+        FROM pg_constraint
+       WHERE conname = 'TenderReconciliation_no_cash_check'
+    `;
+    assert.equal(check.length, 1, "the channel restriction is a constraint, not a comment");
+    assert.match(check[0].definition, /CARD/);
+    assert.match(check[0].definition, /WALLET/);
+    assert.doesNotMatch(check[0].definition, /'CASH'/, "CASH is not an allowed channel");
+    assert.doesNotMatch(check[0].definition, /'MIXED'/, "and neither is MIXED");
   });
 });
