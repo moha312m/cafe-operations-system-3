@@ -13,6 +13,8 @@
 
 import { test, after, describe } from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import {
   resolveEffectiveRecipe, theoreticalConsumption, RecipeIssue,
 } from "@/lib/recipes";
@@ -71,10 +73,29 @@ describe("RECIPE-001 variant-aware recipe architecture", () => {
   // written, so it failed on every clean database and on any café whose menu
   // had moved on since.
   //
-  // What is worth guarding is not the row count but the restraint: wherever
-  // migrated rows do exist, they must still claim no more than the old model
-  // could express.
+  // What is worth guarding is not the row count but the restraint: the
+  // carry-across must claim no more than the old model could express.
+  //
+  // Checking only the rows would leave nothing asserted wherever none exist —
+  // which is every clean database — so the statement that produces them is
+  // read directly. That holds the migration to its restraint everywhere,
+  // including where it has nothing to carry.
   test("A+D: migrated recipes claim no more than the old model could express", async () => {
+    const sql = await readFile(
+      join(process.cwd(), "prisma/migrations/20260825090000_variant_aware_recipes/migration.sql"),
+      "utf8"
+    );
+    const insert = sql.slice(sql.indexOf('INSERT INTO "Recipe"'));
+    const columns = insert.slice(0, insert.indexOf(")"));
+    assert.ok(columns.includes('"productId"'), "the carry-across still lands on Recipe");
+    for (const claim of ["variantId", "verifiedAt", "verifiedById", "appliesToAllVariants"]) {
+      assert.ok(
+        !columns.includes(`"${claim}"`),
+        `the migration must not stamp ${claim} — the old model could not express it`
+      );
+    }
+
+    // And wherever migrated rows survive, they must still show that restraint.
     const migrated = await db.recipe.findMany({
       where: { id: { startsWith: "mig_" } },
       include: { items: true },
