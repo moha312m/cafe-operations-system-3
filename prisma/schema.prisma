@@ -214,6 +214,7 @@ model Cafe {
   loyaltySettings  LoyaltySettings?
   loyaltyTxns      LoyaltyTransaction[]
   reasonCodes      ReasonCode[]
+  custodyPeriods   CustodyPeriod[]
 }
 
 // Per-cafe module flags + workflow, controlled ONLY by SUPER_ADMIN.
@@ -312,6 +313,7 @@ model Branch {
   purchaseInvoices PurchaseInvoice[]
   tables         CafeTable[]
   qrApprovalSettings QrOrderApprovalSettings?
+  custodyPeriods CustodyPeriod[]
 
   @@unique([cafeId, menuSlug])
   @@index([cafeId])
@@ -490,6 +492,7 @@ model User {
   purchaseInvoices PurchaseInvoice[]
   purchasePayments PurchasePayment[]
   loyaltyTxnsCreated LoyaltyTransaction[] @relation("LoyaltyTxnCreatedBy")
+  custodyParticipations CustodyParticipant[]
 
   @@index([cafeId])
   @@index([branchId])
@@ -960,6 +963,7 @@ model Shift {
   branch   Branch    @relation(fields: [branchId], references: [id], onDelete: Cascade)
   cashier  User      @relation(fields: [cashierId], references: [id])
   payments Payment[]
+  custodyLinks ShiftCustody[]
 
   @@unique([branchId, shiftNumber])
   @@index([cafeId])
@@ -974,6 +978,103 @@ model Shift {
 // ───────────────────────────── Inventory ─────────────────────────────
 // Minimal stock tracking so the INVENTORY_MANAGER role has a surface;
 // recipe-level depletion is post-MVP.
+
+// ────────────────────────────── Custody ──────────────────────────────
+// Who is answerable for what, and for how long.
+//
+// CASH and STOCK are separate scopes because they are separately held: the
+// ordinary case is the cashier holding the drawer while the barista holds the
+// store room. A single BOTH scope could not express that, and neither could a
+// custody column on Shift — it could only ever name one. So a shift links to
+// custody through ShiftCustody, and may hold one of each scope at once.
+//
+// Shift is deliberately untouched: `cashierId` still governs the existing POS
+// cash path, and nothing here moves it.
+enum CustodyScope {
+  CASH
+  STOCK
+}
+
+enum CustodyRole {
+  PRIMARY // principally answerable
+  SHARED // alongside, per spec §22
+}
+
+enum CustodyStatus {
+  OPEN
+  TRANSFERRED
+  CLOSED
+}
+
+model CustodyPeriod {
+  id       String        @id @default(cuid())
+  cafeId   String
+  branchId String
+  scope    CustodyScope
+  status   CustodyStatus @default(OPEN)
+
+  startedAt DateTime  @default(now())
+  endedAt   DateTime?
+
+  /// CASH scope only — a stock custody has no drawer.
+  openingCashAmount Decimal? @db.Decimal(10, 2)
+  closingCashAmount Decimal? @db.Decimal(10, 2)
+
+  /// The custody this one took over from. Unique, so one period cannot be
+  /// claimed as the predecessor of two successors.
+  previousPeriodId String? @unique
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cafe           Cafe           @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  branch         Branch         @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  previousPeriod CustodyPeriod? @relation("CustodyChain", fields: [previousPeriodId], references: [id], onDelete: SetNull)
+  nextPeriod     CustodyPeriod? @relation("CustodyChain")
+
+  participants CustodyParticipant[]
+  shiftLinks   ShiftCustody[]
+
+  // Consumers created by later tasks (count sessions, variance cases,
+  // handovers, opening exceptions) add their back-relations in the migration
+  // that creates them — a relation cannot name a model that does not exist.
+
+  @@index([cafeId, status])
+  @@index([branchId, scope, status])
+}
+
+model CustodyParticipant {
+  id              String      @id @default(cuid())
+  custodyPeriodId String
+  userId          String
+  role            CustodyRole @default(PRIMARY)
+  joinedAt        DateTime    @default(now())
+  leftAt          DateTime?
+
+  custodyPeriod CustodyPeriod @relation(fields: [custodyPeriodId], references: [id], onDelete: Cascade)
+  user          User          @relation(fields: [userId], references: [id])
+
+  @@unique([custodyPeriodId, userId])
+  @@index([userId])
+}
+
+/// A shift may hold one CASH and one STOCK period at once, and a period may
+/// span shifts. Neither owns the other, so this is a join, not a column.
+model ShiftCustody {
+  id              String       @id @default(cuid())
+  shiftId         String
+  custodyPeriodId String
+  /// Denormalised from the period so the per-shift unique can exist.
+  scope           CustodyScope
+  linkedAt        DateTime     @default(now())
+
+  shift         Shift         @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  custodyPeriod CustodyPeriod @relation(fields: [custodyPeriodId], references: [id], onDelete: Cascade)
+
+  @@unique([shiftId, scope])
+  @@unique([shiftId, custodyPeriodId])
+  @@index([custodyPeriodId])
+}
 
 // ─────────────────────── Count configuration ─────────────────────────
 // Owner business configuration for physical counting. CYCLE is a POLICY a
