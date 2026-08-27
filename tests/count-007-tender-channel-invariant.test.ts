@@ -23,6 +23,15 @@
 // The invariant is asserted at both levels it is enforced at. The service
 // refusal is what an owner sees; the database constraint is what stops a
 // seed, a script or a later migration walking around the service.
+//
+// The representation is the approved plan's, not a local choice. Revision 3
+// fixes `enum ToleranceScope { CAFE BRANCH CATEGORY ITEM TENDER }` — there is
+// no CASH scope — and states the resolver's contract as "`resolveCashTolerance`
+// returns the `CASH`-method rule". So a cash tolerance IS a TENDER-scoped rule
+// whose method is CASH, and the line this suite draws is between a tolerance
+// (which cash has) and a reconciliation channel (which cash must not have,
+// because T16 says "`Shift` stays the one place cash is reconciled"). Anyone
+// tempted to add a CASH scope should change the plan first.
 
 import { test, after, before, describe } from "node:test";
 import assert from "node:assert/strict";

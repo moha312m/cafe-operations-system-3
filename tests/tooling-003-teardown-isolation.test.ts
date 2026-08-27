@@ -230,11 +230,15 @@ describe("TOOLING-003 teardown survives a cleanup step that cannot run", () => {
     assert.equal(await db.cafe.count(), before, "no café was touched");
   });
 
-  test("purging an id that was never there is quiet, not an error", async () => {
-    // The teardown runs on every suite, including ones whose `before` never
-    // got as far as creating anything. Nothing to remove is not a failure —
-    // only something left behind is.
-    await purgeCafe(`missing-${tag("TOOL003F")}`);
+  test("purging an id that matches nothing is refused, not absorbed", async () => {
+    // Fail-closed. An id that matches no row is a bug in the suite that
+    // produced it, and a teardown that shrugs at one is a teardown that will
+    // shrug at the id being wrong in the other direction too. Suites whose
+    // `before` never created a café pass `undefined`, which is handled above.
+    await assert.rejects(
+      () => purgeCafe(`missing-${tag("TOOL003F")}`),
+      /no such café/
+    );
   });
 
   test("no café this suite created outlived it", async () => {

@@ -290,7 +290,85 @@ export async function cleanupIngredients(ing: Partial<TestIngredients>) {
 const SAFE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
- * Delete a café and everything scoped to it, without naming a single model.
+ * The persisted mark that makes a café a test fixture.
+ *
+ * Not a new convention — `tag()` already produces `PH1-…` and every café
+ * factory in `tests/` lower-cases that marker into the slug. The prefix is
+ * derived from `TAG_PREFIX` rather than written out again so the two cannot
+ * drift apart.
+ */
+export const TEST_CAFE_SLUG_PREFIX = `${TAG_PREFIX.toLowerCase()}-`;
+
+/**
+ * Whether we are inside the repository's own test runner.
+ *
+ * `node --test` sets NODE_TEST_CONTEXT in every file it runs, and `npm test`
+ * is `node --test`, so this is the runner's own signal rather than a flag
+ * somebody has to remember to set. Absence is treated as "not a test", which
+ * is the fail-closed reading: an ad-hoc script that imports this helper gets
+ * no destructive power from it.
+ */
+function inTestRunner(): boolean {
+  return Boolean(process.env.NODE_TEST_CONTEXT) && process.env.NODE_ENV !== "production";
+}
+
+/**
+ * The gate on `purgeCafe`, and the reason it can be trusted at all.
+ *
+ * `purgeCafe` discovers its own table list and deletes a whole café graph.
+ * That is the right shape for a teardown and a catastrophic shape for a
+ * typo: these suites run against the working database, which also holds the
+ * owner's real café, so "the caller passed the right id" is not something
+ * worth relying on. Refusing an empty id is not enough — a real id is not
+ * empty.
+ *
+ * So the decision is taken from the DATABASE, not from the caller: load the
+ * row and require the mark that only a test factory writes. Everything else
+ * is refused, including a café that does not exist, because an id matching
+ * nothing is a bug being reported rather than a no-op to absorb quietly.
+ *
+ * Returns the row so the caller has proof of what it is about to delete.
+ */
+export async function assertPurgeableTestCafe(
+  cafeId: string
+): Promise<{ id: string; name: string; slug: string }> {
+  if (!inTestRunner()) {
+    throw new Error(
+      "purgeCafe is a test-only teardown and refuses to run outside the test " +
+        "runner (NODE_TEST_CONTEXT is unset, or NODE_ENV is production)."
+    );
+  }
+  if (typeof cafeId !== "string" || cafeId.length === 0) {
+    throw new Error("purgeCafe needs a café id — refusing to run an unscoped delete");
+  }
+
+  const cafe = await db.cafe.findUnique({
+    where: { id: cafeId },
+    select: { id: true, name: true, slug: true },
+  });
+
+  if (!cafe) {
+    throw new Error(
+      `purgeCafe refuses café ${cafeId}: no such café. An id that matches ` +
+        `nothing is a bug in the suite, not an empty teardown.`
+    );
+  }
+  if (!cafe.slug.startsWith(TEST_CAFE_SLUG_PREFIX)) {
+    throw new Error(
+      `purgeCafe refuses café ${cafeId} ("${cafe.name}", slug "${cafe.slug}"): ` +
+        `it carries no ${TAG_PREFIX} test marker, so it is somebody's real café. ` +
+        `No test cleanup helper may delete a non-test café.`
+    );
+  }
+  return cafe;
+}
+
+/**
+ * Delete a TEST café and everything scoped to it, without naming a model.
+ *
+ * `assertPurgeableTestCafe` runs first and unconditionally, before the table
+ * list is even read: nothing here reaches a DELETE until the database itself
+ * has confirmed the target carries a test marker.
  *
  * The table list comes from `information_schema` — every base table in the
  * current schema carrying a `cafeId` column — so a table that does not exist
@@ -308,9 +386,7 @@ const SAFE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
  * litter is left in the working database.
  */
 export async function purgeCafe(cafeId: string): Promise<void> {
-  if (!cafeId) {
-    throw new Error("purgeCafe needs a café id — refusing to run an unscoped delete");
-  }
+  await assertPurgeableTestCafe(cafeId);
 
   const scoped = await db.$queryRaw<{ table_name: string }[]>`
     SELECT c.table_name
