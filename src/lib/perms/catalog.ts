@@ -16,7 +16,8 @@ export type ModuleCode =
   | "QR_ORDERS" | "MENU" | "INVENTORY" | "PURCHASES" | "SUPPLIERS" | "EXPENSES"
   | "SHIFTS" | "FINANCE" | "USERS" | "EDIT_CENTER" | "AUDIT"
   | "SETTINGS" | "CUSTOMER_ORDERS" | "EXCEL" | "HANDOVER" | "REPORTS"
-  | "AI_ASSISTANT" | "BRANCHES" | "CUSTOMERS";
+  | "AI_ASSISTANT" | "BRANCHES" | "CUSTOMERS"
+  | "STOCK_COUNT" | "VARIANCE";
 
 export type PermModule = {
   code: ModuleCode;
@@ -44,6 +45,12 @@ export const MODULES: PermModule[] = [
   { code: "TABLES", label: "الترابيزات", icon: "🍽️", feature: "enableTables" },
   { code: "MENU", label: "المنيو والمنتجات", icon: "📖" },
   { code: "INVENTORY", label: "المخزون", icon: "📦", feature: "inventoryEnabled" },
+  // Counting is an inventory activity: a café with no inventory module has
+  // nothing to count, so the whole module goes with the flag.
+  { code: "STOCK_COUNT", label: "جرد المخزون", icon: "📋", feature: "inventoryEnabled" },
+  // A variance case is opened at a shift boundary (count confirmation, cash
+  // close, tender settlement, handover), so it rides shift management.
+  { code: "VARIANCE", label: "الفروقات والعُهد", icon: "⚖️", feature: "shiftManagementEnabled" },
   { code: "PURCHASES", label: "المشتريات", icon: "🛒", feature: "purchasesEnabled" },
   { code: "SUPPLIERS", label: "الموردين", icon: "🚚", feature: "purchasesEnabled" },
   { code: "EXPENSES", label: "المصاريف", icon: "💸" },
@@ -138,10 +145,33 @@ export const PERMISSION_KEYS: PermKey[] = [
   { key: "shifts.close", module: "SHIFTS", label: "قفل شيفت" },
   { key: "shifts.view_reports", module: "SHIFTS", label: "تقارير الشيفتات" },
   { key: "shifts.close_others", module: "SHIFTS", label: "قفل شيفت موظف آخر", sensitive: true },
+  { key: "shifts.reconcile_cash", module: "SHIFTS", label: "تسوية كاش الشيفت", sensitive: true },
 
   // Finance
   { key: "finance.view_revenue", module: "FINANCE", label: "عرض الإيرادات" },
   { key: "finance.view_profit", module: "FINANCE", label: "عرض الأرباح", sensitive: true },
+  { key: "tender_reconciliation.view", module: "FINANCE", label: "عرض تسويات الكارت والمحفظة" },
+  { key: "tender_reconciliation.submit", module: "FINANCE", label: "تسجيل تسوية كارت/محفظة", sensitive: true },
+  { key: "tender_reconciliation.approve", module: "FINANCE", label: "اعتماد تسوية الدفع", sensitive: true },
+
+  // Stock count — physical counting, recount, and confirmation.
+  // `confirm`, `correct` and `approve_correction` are withheld from the
+  // custodian on purpose: nobody confirms their own count.
+  { key: "stock_count.view", module: "STOCK_COUNT", label: "عرض الجرد" },
+  { key: "stock_count.start", module: "STOCK_COUNT", label: "بدء جرد" },
+  { key: "stock_count.submit", module: "STOCK_COUNT", label: "تسجيل الكميات المعدودة" },
+  { key: "stock_count.recount", module: "STOCK_COUNT", label: "طلب إعادة عد" },
+  { key: "stock_count.confirm", module: "STOCK_COUNT", label: "تأكيد الجرد", sensitive: true },
+  { key: "stock_count.correct", module: "STOCK_COUNT", label: "تصحيح كمية معدودة", sensitive: true },
+  { key: "stock_count.approve_correction", module: "STOCK_COUNT", label: "اعتماد التصحيح", sensitive: true },
+  // Business configuration (policy, tolerance, critical items), not a floor
+  // operation — owner-only, and deliberately absent from every template.
+  { key: "stock_count.configure", module: "STOCK_COUNT", label: "إعدادات الجرد والأصناف الحرجة", sensitive: true },
+
+  // Variance cases
+  { key: "variance.view", module: "VARIANCE", label: "عرض حالات الفروقات" },
+  { key: "variance.investigate", module: "VARIANCE", label: "التحقيق في الفروقات", sensitive: true },
+  { key: "variance.resolve", module: "VARIANCE", label: "إغلاق حالة فرق", sensitive: true },
 
   // Sales
   { key: "sales.view", module: "SALES", label: "عرض المبيعات" },
@@ -176,6 +206,9 @@ export const PERMISSION_KEYS: PermKey[] = [
   // Handover
   { key: "handover.view", module: "HANDOVER", label: "عرض التسليم" },
   { key: "handover.manage", module: "HANDOVER", label: "تسليم واستلام" },
+  { key: "handover.submit", module: "HANDOVER", label: "تسليم العهدة (الطرف المُسلِّم)" },
+  { key: "handover.accept", module: "HANDOVER", label: "استلام العهدة (الطرف المُستلِم)" },
+  { key: "handover.exception", module: "HANDOVER", label: "تسليم استثنائي بموافقة المدير", sensitive: true },
 
   // Tables
   { key: "tables.view", module: "TABLES", label: "عرض الترابيزات" },
@@ -244,6 +277,9 @@ export const LEGACY_TO_KEYS: Record<string, string[]> = {
     // Customers & loyalty: full control comes with cafe management (owner).
     "customers.view", "customers.edit", "customers.adjust_points",
     "loyalty.view", "loyalty.settings_edit", "loyalty.redeem_points",
+    // Count policy, tolerance and the critical-item list are business
+    // configuration, so they ride cafe management and reach nobody below it.
+    "stock_count.configure",
   ],
   "branches:manage": [
     "branches.view", "branches.manage",
@@ -279,8 +315,30 @@ export const LEGACY_TO_KEYS: Record<string, string[]> = {
   ],
   "payments:read": ["pos.view_payments"],
   // Redeeming customer points rides with drawer operation (cashier/manager).
-  "shifts:operate": ["shifts.view_current", "shifts.open", "shifts.close", "loyalty.redeem_points"],
-  "shifts:read": ["shifts.view_reports"],
+  //
+  // Whoever operates the drawer is a custodian: they count what they hold,
+  // hand it over, take one over, settle their own card/wallet totals, and
+  // reconcile their own cash. None of that includes confirming, approving or
+  // resolving — those ride shifts:read below, which a cashier does not have.
+  "shifts:operate": [
+    "shifts.view_current", "shifts.open", "shifts.close", "loyalty.redeem_points",
+    "stock_count.view", "stock_count.start", "stock_count.submit",
+    // `handover.view` rides along because participation implies sight: a
+    // cashier who may submit and accept a handover but cannot open the page
+    // holds two keys they can never reach.
+    "handover.view", "handover.submit", "handover.accept",
+    "tender_reconciliation.view", "tender_reconciliation.submit",
+    "shifts.reconcile_cash",
+  ],
+  // Oversight of other people's shifts. This is the supervisory bridge, so
+  // it carries every "sign off on somebody else's work" key.
+  "shifts:read": [
+    "shifts.view_reports",
+    "stock_count.confirm", "stock_count.correct", "stock_count.approve_correction",
+    "variance.investigate", "variance.resolve",
+    "handover.exception",
+    "tender_reconciliation.approve",
+  ],
   "dashboard:read": ["dashboard.view"],
   "reports:read": ["reports.view", "sales.view", "reports.export", "excel.export"],
   "inventory:manage": [
@@ -289,8 +347,17 @@ export const LEGACY_TO_KEYS: Record<string, string[]> = {
     "purchases.cancel", "purchases.record_payment", "purchases.view_cost", "purchases.manage",
     "suppliers.view", "suppliers.create", "suppliers.edit", "suppliers.deactivate",
     "handover.view", "handover.manage",
+    // Stock custody: whoever manages the store room counts it, recounts it,
+    // and hands it over. Recount is a store-keeper's judgement, not a
+    // cashier's, so it rides here rather than on shifts:operate.
+    "stock_count.recount", "handover.submit", "handover.accept",
   ],
-  "inventory:read": ["inventory.view"],
+  "inventory:read": [
+    "inventory.view",
+    // Reading the store implies seeing and taking part in its count, and
+    // seeing the variance that count produced.
+    "stock_count.view", "stock_count.start", "stock_count.submit", "variance.view",
+  ],
   "recipe:manage": ["menu.manage_recipes"],
   "cost:read": ["finance.view_revenue", "finance.view_profit", "sales.view"],
   "audit:read": ["audit.view"],

@@ -35,13 +35,21 @@ const MANAGER_KEYS = [
   "suppliers.view", "suppliers.create", "suppliers.edit", "suppliers.deactivate",
   "expenses.view", "expenses.manage",
   "shifts.view_current", "shifts.open", "shifts.close", "shifts.view_reports",
+  "shifts.reconcile_cash",
   "finance.view_revenue", "finance.view_profit",
+  "tender_reconciliation.view", "tender_reconciliation.submit", "tender_reconciliation.approve",
+  // Everything a count can need except its configuration: policy, tolerance
+  // and the critical-item list stay owner business configuration.
+  "stock_count.view", "stock_count.start", "stock_count.submit", "stock_count.recount",
+  "stock_count.confirm", "stock_count.correct", "stock_count.approve_correction",
+  "variance.view", "variance.investigate", "variance.resolve",
   "sales.view", "reports.view", "reports.export",
   "users.view", "users.create", "users.edit",
   "settings.view",
   "audit.view",
   "excel.import", "excel.export",
-  "handover.view", "handover.manage",
+  "handover.view", "handover.manage", "handover.submit", "handover.accept",
+  "handover.exception",
   // Customers & loyalty (settings edits stay owner-only by default).
   "customers.lookup", "customers.view", "customers.edit",
   "loyalty.view", "loyalty.redeem_points",
@@ -57,6 +65,13 @@ const CASHIER_KEYS = [
   "tables.collect_payment", "tables.partial_payment", "tables.item_payment",
   "menu.view",
   "shifts.view_current", "shifts.open", "shifts.close",
+  // A cashier is a custodian: they count, hand over, take over, settle their
+  // own card/wallet totals and reconcile their own cash — and confirm,
+  // approve or resolve none of it.
+  "shifts.reconcile_cash",
+  "stock_count.view", "stock_count.start", "stock_count.submit",
+  "handover.view", "handover.submit", "handover.accept",
+  "tender_reconciliation.view", "tender_reconciliation.submit",
   // Cashiers identify the customer in front of them and redeem points.
   // No customers.view — they can't browse the full customer list.
   "customers.lookup",
@@ -87,6 +102,11 @@ const ACCOUNTANT_KEYS = [
   "expenses.view", "expenses.manage",
   "shifts.view_reports",
   "orders.view", "pos.view_payments",
+  // Accounting reviews what the floor recorded: it sees counts and variance
+  // and signs off on tender settlement, but never counts or hands over.
+  "stock_count.view",
+  "variance.view", "variance.investigate",
+  "tender_reconciliation.view", "tender_reconciliation.approve",
   "audit.view",
   "excel.export",
   // Accounting sees purchases and settles supplier balances.
@@ -100,7 +120,11 @@ const INVENTORY_KEYS = [
   "purchases.view", "purchases.create", "purchases.edit", "purchases.confirm",
   "purchases.cancel", "purchases.record_payment", "purchases.view_cost", "purchases.manage",
   "suppliers.view", "suppliers.create", "suppliers.edit", "suppliers.deactivate",
-  "handover.view", "handover.manage",
+  "handover.view", "handover.manage", "handover.submit", "handover.accept",
+  // The store keeper counts and recounts the room they hold, and sees the
+  // variance it produced. Confirmation is somebody else's signature.
+  "stock_count.view", "stock_count.start", "stock_count.submit", "stock_count.recount",
+  "variance.view",
 ];
 
 export const SYSTEM_ROLES: SystemRole[] = [

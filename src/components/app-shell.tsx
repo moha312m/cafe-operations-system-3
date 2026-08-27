@@ -68,6 +68,12 @@ const NAV: NavItem[] = [
   { href: "/purchases", label: "المشتريات", icon: "🛒", permission: "inventory:read", key: "purchases.view", feature: (f) => f.purchasesEnabled },
   { href: "/suppliers", label: "الموردين", icon: "🚚", permission: "inventory:read", key: "suppliers.view", feature: (f) => f.purchasesEnabled },
   { href: "/customers", label: "العملاء", icon: "💳", permission: "orders:read", key: "customers.view" },
+  // Counting, its variance cases, and custody handover. Each gates on its own
+  // granular key rather than the legacy bridge: the pages are new, so there is
+  // no legacy permission that means "may see this" without over-granting.
+  { href: "/stock-counts", label: "جرد المخزون", icon: "📋", permission: "inventory:read", key: "stock_count.view", feature: (f) => f.inventoryEnabled },
+  { href: "/variances", label: "الفروقات", icon: "⚖️", permission: "shifts:read", key: "variance.view", feature: (f) => f.shiftManagementEnabled },
+  { href: "/handovers", label: "التسليم والاستلام", icon: "🤝", permission: "shifts:operate", key: "handover.view", feature: (f) => f.shiftManagementEnabled },
   { href: "/reports", label: t.nav.reports, icon: "📈", permission: "reports:read" },
   { href: "/shifts", label: t.nav.shiftReports, icon: "🧮", permission: "shifts:read", feature: (f) => f.shiftManagementEnabled },
   { href: "/settings", label: "الإعدادات", icon: "⚙️", permission: "branches:manage" },
