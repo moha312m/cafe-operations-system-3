@@ -25,6 +25,7 @@ export async function deductStockForOrder(
 ): Promise<{
   deducted: { name: string; quantity: number }[];
   productsWithoutRecipe: string[];
+  configurationsWithIncompleteRecipe: { label: string; issues: string[] }[];
 }> {
   const order = await tx.order.findUnique({
     where: { id: orderId },
@@ -54,6 +55,7 @@ export async function deductStockForOrder(
   // alone. Recipes name cafe-level inventory items; stock comes off the
   // ORDER'S BRANCH copy, matched by name+unit.
   const productsWithoutRecipe: string[] = [];
+  const configurationsWithIncompleteRecipe: { label: string; issues: string[] }[] = [];
   const need = new Map<string, { name: string; unit: string; qty: number }>();
 
   for (const item of order.items) {
@@ -64,14 +66,23 @@ export async function deductStockForOrder(
       addOnIds: item.addOns.map((a) => a.addOnId).filter(Boolean) as string[],
       quantity: item.quantity,
     });
+    const label = item.variantName ? `${item.productName} (${item.variantName})` : item.productName;
 
     // A configuration we cannot resolve is recorded and skipped, exactly as
     // before: an unconfigured recipe must never stop a customer being served.
     // It is reported so the gap is visible rather than silently absorbed.
     if (consumption.lines.length === 0) {
-      const label = item.variantName ? `${item.productName} (${item.variantName})` : item.productName;
       if (!productsWithoutRecipe.includes(label)) productsWithoutRecipe.push(label);
       continue;
+    }
+
+    // Half-resolved is its own gap, and the same rule covers it. What did
+    // resolve is deducted below; what did not contributes nothing, so leaving
+    // it undisclosed would let a zero-by-omission stand as a measured figure
+    // and be read later as somebody's stock shortage. No quantity is guessed
+    // for the missing part — only the fact that it is missing, and why.
+    if (!consumption.complete && !configurationsWithIncompleteRecipe.some((c) => c.label === label)) {
+      configurationsWithIncompleteRecipe.push({ label, issues: consumption.issues });
     }
 
     for (const line of consumption.lines) {
@@ -128,7 +139,7 @@ export async function deductStockForOrder(
     deducted.push({ name: req.name, quantity: req.qty });
   }
 
-  return { deducted, productsWithoutRecipe };
+  return { deducted, productsWithoutRecipe, configurationsWithIncompleteRecipe };
 }
 
 // Post-transaction audit writes (called after commit).
@@ -138,7 +149,11 @@ export async function auditDeduction(
   userId: string | null,
   orderId: string,
   orderNumber: number,
-  result: { deducted: { name: string; quantity: number }[]; productsWithoutRecipe: string[] }
+  result: {
+    deducted: { name: string; quantity: number }[];
+    productsWithoutRecipe: string[];
+    configurationsWithIncompleteRecipe?: { label: string; issues: string[] }[];
+  }
 ) {
   if (result.deducted.length > 0) {
     await audit({
@@ -158,6 +173,19 @@ export async function auditDeduction(
       entity: "Order",
       entityId: orderId,
       details: { orderNumber, productName: name },
+    });
+  }
+  // Recorded separately from a missing recipe: this one DID deduct, so the
+  // distinction a reconciliation needs is not "was there a recipe" but "was
+  // the figure it produced complete".
+  for (const c of result.configurationsWithIncompleteRecipe ?? []) {
+    await audit({
+      cafeId,
+      userId,
+      action: "PRODUCT_WITH_INCOMPLETE_RECIPE_SERVED",
+      entity: "Order",
+      entityId: orderId,
+      details: { orderNumber, branchId, productName: c.label, issues: c.issues },
     });
   }
 }
