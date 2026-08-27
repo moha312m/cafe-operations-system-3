@@ -216,6 +216,7 @@ model Cafe {
   reasonCodes      ReasonCode[]
   custodyPeriods   CustodyPeriod[]
   stockCountSessions StockCountSession[]
+  toleranceRules   ToleranceRule[]
 }
 
 // Per-cafe module flags + workflow, controlled ONLY by SUPER_ADMIN.
@@ -316,6 +317,7 @@ model Branch {
   qrApprovalSettings QrOrderApprovalSettings?
   custodyPeriods CustodyPeriod[]
   stockCountSessions StockCountSession[]
+  toleranceRules ToleranceRule[]
 
   @@unique([cafeId, menuSlug])
   @@index([cafeId])
@@ -499,6 +501,9 @@ model User {
   countsFirstCounted StockCountSession[] @relation("CountFirstCounter")
   countsConfirmed  StockCountSession[] @relation("CountConfirmer")
   countLinesCounted StockCountLine[] @relation("CountLineCounter")
+  recountsPerformed StockCountRecount[]
+  correctionsMade   StockCountCorrection[] @relation("CorrectionActor")
+  correctionsApproved StockCountCorrection[] @relation("CorrectionApprover")
 
   @@index([cafeId])
   @@index([branchId])
@@ -1133,7 +1138,8 @@ model ReasonCode {
   updatedAt DateTime     @updatedAt
 
   cafe      Cafe             @relation(fields: [cafeId], references: [id], onDelete: Cascade)
-  countLines StockCountLine[]
+  countLines  StockCountLine[]
+  corrections StockCountCorrection[]
 
   @@unique([cafeId, domain, code])
   @@index([cafeId, domain])
@@ -1269,12 +1275,120 @@ model StockCountLine {
   counter       User?             @relation("CountLineCounter", fields: [counterId], references: [id], onDelete: SetNull)
   reasonCode    ReasonCode?       @relation(fields: [reasonCodeId], references: [id], onDelete: SetNull)
 
-  // Recounts, corrections, variance case and rebase attach in their own tasks.
+  recounts    StockCountRecount[]
+  corrections StockCountCorrection[]
+
+  // Variance case and rebase attach in their own tasks.
 
   @@unique([sessionId, inventoryItemId])
   @@index([sessionId])
   @@index([inventoryItemId])
   @@index([disposition])
+}
+
+// ────────────────── Tolerance, recounts and corrections ──────────────
+enum ToleranceScope {
+  CAFE
+  BRANCH
+  CATEGORY
+  ITEM
+  TENDER
+}
+
+enum RecountKind {
+  INDEPENDENT // a different person counts again
+  SELF_RECOUNT // the same person counts again
+}
+
+enum CorrectionStatus {
+  PENDING_APPROVAL
+  APPROVED
+  REJECTED
+}
+
+/// How close is close enough. Narrowest configured scope wins (T15); the
+/// tolerance columns are nullable so "not set" stays distinguishable from
+/// "set to zero", which is a demand for an exact match.
+model ToleranceRule {
+  id              String         @id @default(cuid())
+  cafeId          String
+  scope           ToleranceScope
+  branchId        String?
+  category        String?
+  inventoryItemId String?
+  tenderMethod    PaymentMethod?
+
+  quantityTolerance Decimal? @db.Decimal(12, 3)
+  percentTolerance  Decimal? @db.Decimal(5, 2)
+  amountTolerance   Decimal? @db.Decimal(10, 2)
+
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cafe          Cafe           @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  branch        Branch?        @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  inventoryItem InventoryItem? @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
+
+  @@index([cafeId, scope])
+  @@index([branchId])
+  @@index([inventoryItemId])
+}
+
+/// A second look, kept as its own record. It captures its OWN expectation at
+/// its OWN count point: the shelf may have moved between the two counts, and
+/// measuring a recount against the original figure would invent a variance.
+model StockCountRecount {
+  id      String      @id @default(cuid())
+  lineId  String
+  attempt Int
+  kind    RecountKind
+
+  countedQuantity  Decimal @db.Decimal(12, 3)
+  expectedQuantity Decimal @db.Decimal(12, 3)
+  itemVersion      BigInt
+  varianceQuantity Decimal @db.Decimal(12, 3)
+
+  countedAt DateTime @default(now())
+  counterId String
+  resolved  Boolean  @default(false)
+
+  line    StockCountLine @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  counter User           @relation(fields: [counterId], references: [id])
+
+  @@unique([lineId, attempt])
+  @@index([lineId])
+}
+
+/// Somebody altering a recorded observation. Requires a reason code and a
+/// second signature — it defaults to PENDING_APPROVAL rather than taking
+/// effect on write.
+model StockCountCorrection {
+  id                 String  @id @default(cuid())
+  lineId             String
+  oldCountedQuantity Decimal @db.Decimal(12, 3)
+  newCountedQuantity Decimal @db.Decimal(12, 3)
+  reasonCodeId       String
+  note               String?
+  actorId            String
+
+  status         CorrectionStatus @default(PENDING_APPROVAL)
+  approvedById   String?
+  approvedAt     DateTime?
+  rejectedReason String?
+
+  /// True when the correction post-dates a custody transfer (T30).
+  postCustodyTransfer Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  line       StockCountLine @relation(fields: [lineId], references: [id], onDelete: Cascade)
+  reasonCode ReasonCode     @relation(fields: [reasonCodeId], references: [id])
+  actor      User           @relation("CorrectionActor", fields: [actorId], references: [id])
+  approvedBy User?          @relation("CorrectionApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+
+  @@index([lineId])
+  @@index([status])
 }
 
 enum InventoryUnit {
@@ -1332,6 +1446,7 @@ model InventoryItem {
   transactions InventoryTransaction[]
   recipeItems  RecipeItem[]
   countLines   StockCountLine[]
+  toleranceRules ToleranceRule[]
   purchaseItems PurchaseInvoiceItem[]
 
   @@index([cafeId])
