@@ -21,20 +21,32 @@
 // writer's re-read); redacting on the way out keeps one rule in one place
 // and leaves the internal shapes untouched.
 
+/**
+ * Drop one key from an object without naming a variable for the value.
+ *
+ * The obvious `const { x: _drop, ...rest }` reads well but leaves an unused
+ * binding, which the project's lint config reports — and this milestone is
+ * held to "no new lint findings". Deleting from a shallow copy says the same
+ * thing with nothing left over.
+ */
+function without<T extends object, K extends keyof T>(source: T, key: K): Omit<T, K> {
+  const copy = { ...source };
+  delete copy[key];
+  return copy;
+}
+
 /** An inventory item as the API presents it: no internal version counter. */
 export function publicInventoryItem<T extends { ledgerVersion?: unknown }>(
   item: T
 ): Omit<T, "ledgerVersion"> {
-  const { ledgerVersion: _internal, ...rest } = item;
-  return rest;
+  return without(item, "ledgerVersion");
 }
 
 /** A ledger row as the API presents it: no internal version stamp. */
 export function publicInventoryTransaction<T extends { itemVersion?: unknown }>(
   txn: T
 ): Omit<T, "itemVersion"> {
-  const { itemVersion: _internal, ...rest } = txn;
-  return rest;
+  return without(txn, "itemVersion");
 }
 
 /**
