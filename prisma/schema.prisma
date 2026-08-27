@@ -213,6 +213,7 @@ model Cafe {
   customers        Customer[]
   loyaltySettings  LoyaltySettings?
   loyaltyTxns      LoyaltyTransaction[]
+  reasonCodes      ReasonCode[]
 }
 
 // Per-cafe module flags + workflow, controlled ONLY by SUPER_ADMIN.
@@ -245,6 +246,14 @@ model CafeSettings {
   // DELIVERY is deliberately not configurable yet and stays payment-first.
   dineInServingPolicy   ServingPaymentPolicy @default(ALLOW_BEFORE_PAYMENT)
   takeawayServingPolicy ServingPaymentPolicy @default(REQUIRE_PAYMENT_FIRST)
+
+  // Count configuration. The DEFAULTs are what a NEW café gets; the
+  // migration pins every EXISTING café to NO_SHIFT_COUNT, so no shop is
+  // silently signed up for handover counting it never agreed to.
+  stockCountPolicy  StockCountPolicy @default(HYBRID)
+  handoverCountType StockCountType   @default(CRITICAL)
+  periodicCountType StockCountType   @default(FULL)
+  stockCountMode    StockCountMode   @default(BLIND)
 
   // Extra workflow switches
   requireShiftForQrOrders     Boolean @default(false)
@@ -280,6 +289,15 @@ model Branch {
   // has never been configured is indistinguishable from one that inherits.
   dineInServingPolicyOverride   ServingPaymentPolicy?
   takeawayServingPolicyOverride ServingPaymentPolicy?
+
+  // Count configuration overrides. NULL means inherit, for the same reason
+  // the serving overrides above are nullable: a branch that has never been
+  // configured must stay distinguishable from one deliberately set to the
+  // same value as its café.
+  stockCountPolicyOverride  StockCountPolicy?
+  handoverCountTypeOverride StockCountType?
+  periodicCountTypeOverride StockCountType?
+  stockCountModeOverride    StockCountMode?
 
   cafe           Cafe                 @relation(fields: [cafeId], references: [id], onDelete: Cascade)
   users          User[]
@@ -957,6 +975,60 @@ model Shift {
 // Minimal stock tracking so the INVENTORY_MANAGER role has a surface;
 // recipe-level depletion is post-MVP.
 
+// ─────────────────────── Count configuration ─────────────────────────
+// Owner business configuration for physical counting. CYCLE is a POLICY a
+// café may express, but deliberately NOT a startable TYPE: no cycle engine
+// exists, so the resolver refuses it rather than running a FULL count and
+// calling it a cycle.
+enum StockCountPolicy {
+  CRITICAL // count the critical list at every shift handover
+  FULL // count everything at every handover
+  CYCLE // intent only — not startable, see StockCountType
+  HYBRID // critical at handover, full periodically
+  NO_SHIFT_COUNT // no counting tied to the shift boundary
+}
+
+enum StockCountType {
+  CRITICAL
+  FULL
+}
+
+enum StockCountMode {
+  BLIND // the counter does not see the expected figure
+  OPEN // the expected figure is shown
+}
+
+enum ReasonDomain {
+  STOCK
+  CASH
+  TENDER
+  HANDOVER
+}
+
+// Owner-defined vocabulary for why a figure differs from its expectation.
+// Scoped by domain because the same word means different things in different
+// places: a "SHORT" in CASH is not a "SHORT" in STOCK.
+//
+// Consumers (count lines, corrections, tender reconciliation, handover
+// rejections and opening exceptions) add their own back-relations in the
+// migrations that create them — a relation cannot be declared to a model
+// that does not exist yet.
+model ReasonCode {
+  id        String       @id @default(cuid())
+  cafeId    String
+  domain    ReasonDomain
+  code      String
+  label     String
+  isActive  Boolean      @default(true)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  cafe Cafe @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+
+  @@unique([cafeId, domain, code])
+  @@index([cafeId, domain])
+}
+
 enum InventoryUnit {
   GRAM // جرام
   KG // كيلو
@@ -996,6 +1068,11 @@ model InventoryItem {
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 
+  /// Owner-chosen: does this ingredient go into the short handover count?
+  /// Opt-in, per item, never backfilled true — a café must not acquire a
+  /// critical list it did not select.
+  isCritical   Boolean       @default(false)
+
   /// Item-local monotonic counter. Advanced ONLY under this row's FOR UPDATE
   /// lock, in the same transaction as the stock change and the ledger row.
   /// Not a sequence: a sequence numbers at INSERT, not at COMMIT, so it
@@ -1013,6 +1090,7 @@ model InventoryItem {
   @@index([cafeId, isActive])
   @@index([currentStock])
   @@index([minimumStock])
+  @@index([branchId, isCritical, archivedAt])
 }
 
 // Immutable ledger of every stock change. currentStock on the item is
