@@ -498,6 +498,7 @@ model User {
   countsInitiated  StockCountSession[] @relation("CountInitiator")
   countsFirstCounted StockCountSession[] @relation("CountFirstCounter")
   countsConfirmed  StockCountSession[] @relation("CountConfirmer")
+  countLinesCounted StockCountLine[] @relation("CountLineCounter")
 
   @@index([cafeId])
   @@index([branchId])
@@ -1131,7 +1132,8 @@ model ReasonCode {
   createdAt DateTime     @default(now())
   updatedAt DateTime     @updatedAt
 
-  cafe Cafe @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  cafe      Cafe             @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  countLines StockCountLine[]
 
   @@unique([cafeId, domain, code])
   @@index([cafeId, domain])
@@ -1191,12 +1193,88 @@ model StockCountSession {
   firstCounter User? @relation("CountFirstCounter", fields: [firstCounterId], references: [id], onDelete: SetNull)
   confirmedBy  User? @relation("CountConfirmer", fields: [confirmedById], references: [id], onDelete: SetNull)
 
+  lines StockCountLine[]
+
   // lockedByHandoverId ships in M8, with the HandoverSession it points at.
-  // Lines, rebases and handovers add their back-relations in their own tasks.
+  // Rebases and handovers add their back-relations in their own tasks.
 
   @@index([cafeId, createdAt])
   @@index([branchId, status])
   @@index([custodyPeriodId])
+}
+
+// ───────────────────────────── Count lines ───────────────────────────
+enum CountLineDisposition {
+  PENDING
+  COUNTED
+  WITHIN_TOLERANCE // terminal
+  OUTSIDE_TOLERANCE
+  RECOUNT_REQUIRED
+  RESOLVED_WITHIN_TOLERANCE // terminal
+  VARIANCE_CONFIRMED // terminal
+}
+
+enum TheoreticalConfidence {
+  VERIFIED
+  PARTIAL
+  UNVERIFIABLE
+}
+
+/// One counted shelf. Keeps the original evidence, the working figure, and
+/// the ledger version the expectation was captured at — three things that
+/// must never collapse into fewer columns.
+model StockCountLine {
+  id              String        @id @default(cuid())
+  sessionId       String
+  inventoryItemId String
+  unit            InventoryUnit
+
+  expectedQuantity Decimal? @db.Decimal(12, 3)
+  /// Original evidence. Written once at capture; never updated thereafter.
+  countedQuantity  Decimal? @db.Decimal(12, 3)
+  /// What the business acts on. Equals countedQuantity until an APPROVED
+  /// correction supersedes it. Consumed by rebase, variance and export.
+  effectiveCountedQuantity Decimal? @db.Decimal(12, 3)
+  varianceQuantity Decimal? @db.Decimal(12, 3)
+
+  countedAt DateTime?
+  counterId String?
+
+  /// The atomic count point. Provenance, not decoration.
+  itemVersion   BigInt?
+  expectedBasis String?
+
+  confidence           TheoreticalConfidence @default(UNVERIFIABLE)
+  confidenceIssues     Json?
+  confidenceWindowFrom DateTime?
+
+  disposition CountLineDisposition @default(PENDING)
+
+  /// NULL means "we could not value this", which is NOT zero. The paired
+  /// boolean and reason keep an unknown from reading as an exoneration.
+  costImpact            Decimal? @db.Decimal(12, 2)
+  costImpactAvailable   Boolean  @default(false)
+  costUnavailableReason String?
+
+  reasonCodeId String?
+  reasonNote   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  session       StockCountSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  /// Restrict: a confirmed count is evidence, so deleting an ingredient must
+  /// not erase the record of it having been counted.
+  inventoryItem InventoryItem     @relation(fields: [inventoryItemId], references: [id], onDelete: Restrict)
+  counter       User?             @relation("CountLineCounter", fields: [counterId], references: [id], onDelete: SetNull)
+  reasonCode    ReasonCode?       @relation(fields: [reasonCodeId], references: [id], onDelete: SetNull)
+
+  // Recounts, corrections, variance case and rebase attach in their own tasks.
+
+  @@unique([sessionId, inventoryItemId])
+  @@index([sessionId])
+  @@index([inventoryItemId])
+  @@index([disposition])
 }
 
 enum InventoryUnit {
@@ -1253,6 +1331,7 @@ model InventoryItem {
   branch       Branch                 @relation(fields: [branchId], references: [id], onDelete: Cascade)
   transactions InventoryTransaction[]
   recipeItems  RecipeItem[]
+  countLines   StockCountLine[]
   purchaseItems PurchaseInvoiceItem[]
 
   @@index([cafeId])
