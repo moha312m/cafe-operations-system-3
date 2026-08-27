@@ -21,7 +21,7 @@ import {
   resolveAddOnRecipe, theoreticalConsumption,
   sellableGate, isEligibleForVarianceCosting, recipeFingerprint, RecipeIssue,
 } from "@/lib/recipes";
-import { db, fixture } from "./helpers/db";
+import { db, fixture, testIngredients, cleanupIngredients } from "./helpers/db";
 import { requireServer, login, as } from "./helpers/http";
 
 const OWNER = "owner@demo.com", MANAGER = "manager@demo.com", BARISTA = "kitchen@demo.com";
@@ -37,8 +37,9 @@ before(async () => {
 async function scaffold(tag: string) {
   const fx = await fixture();
   const cat = await db.menuCategory.findFirstOrThrow({ where: { cafeId: fx.cafeId } });
-  const beans = await db.inventoryItem.findFirstOrThrow({ where: { cafeId: fx.cafeId, name: "بن" } });
-  const milk = await db.inventoryItem.findFirstOrThrow({ where: { cafeId: fx.cafeId, name: "لبن" } });
+  // Ingredients the test owns, so verification is exercised against quantities
+  // it declared rather than against whatever the café happens to stock.
+  const { beans, milk } = await testIngredients(fx, tag);
   const product = await db.product.create({
     data: {
       cafeId: fx.cafeId, categoryId: cat.id, name: `${tag} drink`, basePrice: 50,
@@ -56,6 +57,7 @@ async function teardown(c: Ctx) {
   await db.recipe.deleteMany({ where: { OR: [{ productId: c.product.id }, { addOnId: c.addOn.id }] } });
   await db.product.delete({ where: { id: c.product.id } });
   await db.addOn.delete({ where: { id: c.addOn.id } });
+  await cleanupIngredients({ beans: c.beans, milk: c.milk });
 }
 
 /** A recipe plus a confirmation that matches it — i.e. genuinely VERIFIED. */

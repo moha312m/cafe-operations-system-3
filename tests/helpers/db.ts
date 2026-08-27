@@ -176,3 +176,46 @@ export async function cleanupShift(shiftId: string) {
   await db.payment.deleteMany({ where: { shiftId } });
   await db.shift.deleteMany({ where: { id: shiftId } });
 }
+
+export type TestIngredients = Awaited<ReturnType<typeof testIngredients>>;
+
+/**
+ * Two ingredients the test creates for itself: a mass stocked in KG and a
+ * liquid stocked in LITER.
+ *
+ * The recipe suites used to pin the seeded «بن» and «لبن» by name and inherit
+ * their prices, so every conversion and costing assertion silently depended on
+ * one café's ingredient list never changing. Importing a real menu renamed
+ * «بن» to «بن إسبريسو» and twenty-five tests stopped at the fixture lookup.
+ *
+ * The unit prices below are the ones the assertions have always used; stating
+ * them here makes the expected costs derivable from the test itself instead of
+ * from data it does not control.
+ */
+export async function testIngredients(fx: Fixture, marker: string) {
+  const mass = await db.inventoryItem.create({
+    data: {
+      cafeId: fx.cafeId, branchId: fx.branchId,
+      name: `${marker} beans`, unit: "KG", costPerUnit: 450, currentStock: 12,
+    },
+  });
+  const liquid = await db.inventoryItem.create({
+    data: {
+      cafeId: fx.cafeId, branchId: fx.branchId,
+      name: `${marker} milk`, unit: "LITER", costPerUnit: 38, currentStock: 30,
+    },
+  });
+  return { beans: mass, milk: liquid };
+}
+
+/**
+ * Remove ingredients created by `testIngredients`, once recipes are gone.
+ *
+ * Ids are collected before the query for the same reason as `cleanupProduct`:
+ * a `where` that resolves to `undefined` would match the café's whole store.
+ */
+export async function cleanupIngredients(ing: Partial<TestIngredients>) {
+  const ids = [ing.beans?.id, ing.milk?.id].filter((id): id is string => !!id);
+  if (ids.length === 0) return;
+  await db.inventoryItem.deleteMany({ where: { id: { in: ids } } });
+}

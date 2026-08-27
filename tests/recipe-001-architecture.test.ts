@@ -17,7 +17,7 @@ import {
   resolveEffectiveRecipe, theoreticalConsumption, RecipeIssue,
 } from "@/lib/recipes";
 import { productCostStrict } from "@/lib/costing";
-import { db, fixture } from "./helpers/db";
+import { db, fixture, testIngredients, cleanupIngredients } from "./helpers/db";
 
 after(async () => { await db.$disconnect(); });
 
@@ -27,10 +27,10 @@ type Ctx = Awaited<ReturnType<typeof scaffold>>;
 async function scaffold(tag: string) {
   const fx = await fixture();
   const cat = await db.menuCategory.findFirstOrThrow({ where: { cafeId: fx.cafeId } });
-  // Pinned by name: the branch stocks several LITER items and picking
-  // "whichever comes first" made the expected cost depend on row order.
-  const beans = await db.inventoryItem.findFirstOrThrow({ where: { cafeId: fx.cafeId, name: "بن" } });
-  const milk = await db.inventoryItem.findFirstOrThrow({ where: { cafeId: fx.cafeId, name: "لبن" } });
+  // The test brings its own ingredients. Pinning the café's «بن» and «لبن» by
+  // name tied every conversion and cost below to one menu's spelling, and the
+  // costs the assertions expect to prices nothing here declared.
+  const { beans, milk } = await testIngredients(fx, tag);
   const product = await db.product.create({
     data: {
       cafeId: fx.cafeId, categoryId: cat.id, name: `${tag} drink`, basePrice: 50,
@@ -43,6 +43,7 @@ async function scaffold(tag: string) {
 async function teardown(c: Ctx) {
   await db.recipe.deleteMany({ where: { productId: c.product.id } });
   await db.product.delete({ where: { id: c.product.id } });
+  await cleanupIngredients({ beans: c.beans, milk: c.milk });
 }
 const addRecipe = (
   c: Ctx,
