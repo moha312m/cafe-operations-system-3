@@ -62,15 +62,25 @@ const addRecipe = (
 
 describe("RECIPE-001 variant-aware recipe architecture", () => {
   // ── A + D: what the migration did, and did not, claim ──
-  test("A+D: migrated recipes survive as product defaults and claim nothing more", async () => {
+  //
+  // The carry-across in 20260825090000 reads ProductRecipeItem and then drops
+  // it, so it can only ever produce rows on a database that predates the
+  // migration. A fresh install has nothing to carry and legitimately ends up
+  // with none — this test used to demand at least one, and to demand exactly
+  // the fifteen ingredient rows one café happened to hold on the day it was
+  // written, so it failed on every clean database and on any café whose menu
+  // had moved on since.
+  //
+  // What is worth guarding is not the row count but the restraint: wherever
+  // migrated rows do exist, they must still claim no more than the old model
+  // could express.
+  test("A+D: migrated recipes claim no more than the old model could express", async () => {
     const migrated = await db.recipe.findMany({
       where: { id: { startsWith: "mig_" } },
       include: { items: true },
     });
-    assert.ok(migrated.length > 0, "the existing recipes must have been carried across");
-    const itemCount = migrated.reduce((n, r) => n + r.items.length, 0);
-    assert.equal(itemCount, 15, "all 15 original ingredient rows survive");
     for (const r of migrated) {
+      assert.ok(r.items.length > 0, "a carried-across recipe kept its ingredient rows");
       assert.equal(r.variantId, null, "migrated rows are product defaults");
       assert.equal(r.verifiedAt, null, "nobody has confirmed these — the old model could not express sizes");
       assert.equal(r.appliesToAllVariants, false, "and nobody has said one size fits all");
