@@ -12,7 +12,8 @@
     "postinstall": "prisma generate",
     "db:migrate": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts",
-    "db:scratch": "node scripts/scratch-db.mjs"
+    "db:scratch": "node scripts/scratch-db.mjs",
+    "baseline": "node scripts/baseline.mjs"
   },
   "engines": {
     "node": ">=20 <=22"
