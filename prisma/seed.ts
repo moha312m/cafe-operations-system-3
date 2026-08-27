@@ -438,10 +438,14 @@ async function main() {
   ] as const;
 
   for (const item of inventorySeed) {
+    // The opening balance is this item's first and only ledger row, so it is
+    // written at version 1 and the item's counter starts there. Seeding is
+    // single-threaded setup, not a concurrent mutation path, so it states the
+    // version directly rather than going through the guarded writer — but it
+    // must state one: an unnumbered row is invisible to a count point.
     const created = await db.inventoryItem.create({
-      data: { cafeId: cafe.id, branchId: tagamo3.id, ...item },
+      data: { cafeId: cafe.id, branchId: tagamo3.id, ...item, ledgerVersion: 1 },
     });
-    // Opening balance recorded as an initial PURCHASE in the ledger.
     await db.inventoryTransaction.create({
       data: {
         cafeId: cafe.id,
@@ -453,6 +457,7 @@ async function main() {
         totalCost: Math.round(item.currentStock * item.costPerUnit * 100) / 100,
         note: "رصيد افتتاحي",
         createdById: owner.id,
+        itemVersion: 1,
       },
     });
   }

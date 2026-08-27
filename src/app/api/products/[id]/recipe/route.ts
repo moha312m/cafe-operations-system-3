@@ -5,6 +5,7 @@ import { requirePermission, requireFeature, handleApiError, ApiError } from "@/l
 import { audit } from "@/lib/audit";
 import { unitsCompatible, productCostStrict } from "@/lib/costing";
 import { configurationFinancials, resolveEffectiveRecipe } from "@/lib/recipes";
+import { publicRecipeItems } from "@/lib/public-shape";
 import type { SessionUser } from "@/lib/auth";
 
 type Params = { params: Promise<{ id: string }> };
@@ -49,7 +50,7 @@ export async function GET(_request: NextRequest, { params }: Params) {
     });
 
     return NextResponse.json({
-      recipe: items,
+      recipe: publicRecipeItems(items),
       recipeSource: resolved.source,
       sellingPrice,
       costStatus: financials.costStatus,

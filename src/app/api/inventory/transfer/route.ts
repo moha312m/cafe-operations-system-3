@@ -10,6 +10,7 @@ import {
 import { audit } from "@/lib/audit";
 import { round2 } from "@/lib/inventory";
 import { round3 } from "@/lib/costing";
+import { applyStockMutation } from "@/lib/ledger";
 
 const transferSchema = z.object({
   inventoryItemId: z.string(), // the source-branch item being transferred
@@ -53,23 +54,18 @@ export async function POST(request: NextRequest) {
     }
 
     await db.$transaction(async (tx) => {
-      // Source: decrement + TRANSFER_OUT
-      await tx.inventoryItem.update({
-        where: { id: source.id },
-        data: { currentStock: round3(Number(source.currentStock) - qty) },
-      });
-      await tx.inventoryTransaction.create({
-        data: {
-          cafeId,
-          branchId: source.branchId,
-          inventoryItemId: source.id,
-          type: "TRANSFER_OUT",
-          quantity: -qty,
-          unitCost: source.costPerUnit,
-          totalCost: round2(qty * Number(source.costPerUnit)),
-          note: `تحويل لفرع ${toBranch.name}${data.note ? ` — ${data.note}` : ""}`,
-          createdById: session.id,
-        },
+      // Source: decrement + TRANSFER_OUT, under the source item's lock.
+      await applyStockMutation(tx, {
+        inventoryItemId: source.id,
+        cafeId,
+        branchId: source.branchId,
+        type: "TRANSFER_OUT",
+        quantity: -qty,
+        unitCost: Number(source.costPerUnit),
+        totalCost: round2(qty * Number(source.costPerUnit)),
+        note: `تحويل لفرع ${toBranch.name}${data.note ? ` — ${data.note}` : ""}`,
+        createdById: session.id,
+        insufficientMessage: "لا توجد كمية كافية للتحويل",
       });
 
       // Destination: find matching item or create one, then increment + TRANSFER_IN
@@ -97,22 +93,18 @@ export async function POST(request: NextRequest) {
           },
         });
       }
-      await tx.inventoryItem.update({
-        where: { id: dest.id },
-        data: { currentStock: round3(Number(dest.currentStock) + qty) },
-      });
-      await tx.inventoryTransaction.create({
-        data: {
-          cafeId,
-          branchId: data.toBranchId,
-          inventoryItemId: dest.id,
-          type: "TRANSFER_IN",
-          quantity: qty,
-          unitCost: source.costPerUnit,
-          totalCost: round2(qty * Number(source.costPerUnit)),
-          note: `تحويل من فرع ${(await tx.branch.findUnique({ where: { id: source.branchId } }))?.name ?? ""}${data.note ? ` — ${data.note}` : ""}`,
-          createdById: session.id,
-        },
+      const fromName =
+        (await tx.branch.findUnique({ where: { id: source.branchId } }))?.name ?? "";
+      await applyStockMutation(tx, {
+        inventoryItemId: dest.id,
+        cafeId,
+        branchId: data.toBranchId,
+        type: "TRANSFER_IN",
+        quantity: qty,
+        unitCost: Number(source.costPerUnit),
+        totalCost: round2(qty * Number(source.costPerUnit)),
+        note: `تحويل من فرع ${fromName}${data.note ? ` — ${data.note}` : ""}`,
+        createdById: session.id,
       });
     });
 

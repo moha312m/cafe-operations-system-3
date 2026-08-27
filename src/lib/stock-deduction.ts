@@ -2,6 +2,7 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 import { audit } from "@/lib/audit";
 import { round2, round3 } from "@/lib/costing";
 import { theoreticalConsumption } from "@/lib/recipes";
+import { applyStockMutation, lockItemForUpdate } from "@/lib/ledger";
 
 type Tx = Prisma.TransactionClient | PrismaClient;
 
@@ -110,31 +111,31 @@ export async function deductStockForOrder(
   // Verify sufficiency first (unless negative allowed), then apply.
   const deducted: { name: string; quantity: number }[] = [];
   for (const [itemId, req] of need) {
-    const item = await tx.inventoryItem.findUnique({ where: { id: itemId } });
+    // The locked read is what makes the sufficiency check meaningful: without
+    // it, two concurrent orders could both see enough stock for the last
+    // portion and both serve it.
+    const item = await lockItemForUpdate(tx, itemId).catch(() => null);
     if (!item) continue;
-    const after = round3(Number(item.currentStock) - req.qty);
+    const after = round3(item.currentStock - req.qty);
     if (after < 0 && !allowNegative) {
       throw new StockError(
-        `لا توجد كمية كافية من الخامة «${req.name}» (المتاح ${Number(item.currentStock)}، المطلوب ${req.qty})`
+        `لا توجد كمية كافية من الخامة «${req.name}» (المتاح ${item.currentStock}، المطلوب ${req.qty})`
       );
     }
-    await tx.inventoryItem.update({
-      where: { id: itemId },
-      data: { currentStock: after },
-    });
-    await tx.inventoryTransaction.create({
-      data: {
-        cafeId,
-        branchId,
-        inventoryItemId: itemId,
-        orderId,
-        type: "USAGE",
-        quantity: -req.qty,
-        unitCost: item.costPerUnit,
-        totalCost: round2(req.qty * Number(item.costPerUnit)),
-        note: `خصم تلقائي بسبب الطلب رقم ${order.orderNumber}`,
-        createdById: userId,
-      },
+    await applyStockMutation(tx, {
+      inventoryItemId: itemId,
+      cafeId,
+      branchId,
+      orderId,
+      type: "USAGE",
+      quantity: -req.qty,
+      unitCost: item.costPerUnit,
+      totalCost: round2(req.qty * item.costPerUnit),
+      note: `خصم تلقائي بسبب الطلب رقم ${order.orderNumber}`,
+      createdById: userId,
+      // The sufficiency decision is made above, with the café's own policy
+      // and its own message; the writer must not second-guess it.
+      allowNegative: true,
     });
     deducted.push({ name: req.name, quantity: req.qty });
   }

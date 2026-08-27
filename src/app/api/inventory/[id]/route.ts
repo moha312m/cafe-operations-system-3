@@ -3,6 +3,7 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { requirePermission, handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
+import { publicInventoryItem } from "@/lib/public-shape";
 import type { SessionUser } from "@/lib/auth";
 import type { Prisma } from "@prisma/client";
 
@@ -71,7 +72,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       details: { name: updated.name, branchId: item.branchId },
     });
 
-    return NextResponse.json({ item: updated });
+    return NextResponse.json({ item: publicInventoryItem(updated) });
   } catch (error) {
     return handleApiError(error);
   }

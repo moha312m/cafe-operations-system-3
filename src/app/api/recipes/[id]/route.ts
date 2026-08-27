@@ -3,6 +3,7 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { handleApiError } from "@/lib/api";
 import { loadRecipeForWrite } from "@/lib/recipe-access";
+import { publicRecipeItems } from "@/lib/public-shape";
 import { audit } from "@/lib/audit";
 import { validateItems, recipeFingerprint } from "@/lib/recipes";
 
@@ -23,7 +24,9 @@ export async function GET(_req: NextRequest, { params }: Params) {
   try {
     const { id } = await params;
     const { recipe } = await loadRecipeForWrite(id);
-    return NextResponse.json({ recipe });
+    return NextResponse.json({
+      recipe: { ...recipe, items: publicRecipeItems(recipe.items) },
+    });
   } catch (error) {
     return handleApiError(error);
   }
@@ -80,7 +83,7 @@ export async function PUT(request: NextRequest, { params }: Params) {
     }
 
     return NextResponse.json({
-      recipe: updated,
+      recipe: { ...updated, items: publicRecipeItems(updated.items) },
       issues: validateItems(updated.items),
       confirmationInvalidated: changed && recipe.verifiedAt !== null,
     });

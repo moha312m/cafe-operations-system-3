@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { requirePermission, resolveCafeId, handleApiError } from "@/lib/api";
 import { round2 } from "@/lib/inventory";
+import { publicInventoryTransaction } from "@/lib/public-shape";
 import type { Prisma } from "@prisma/client";
 
 // GET /api/inventory/report — value, low/out lists, movement history, waste.
@@ -78,7 +79,7 @@ export async function GET(request: NextRequest) {
       lowStock,
       outOfStock,
       wasteTotal: round2(Number(wasteAgg._sum.totalCost ?? 0)),
-      movements,
+      movements: movements.map(publicInventoryTransaction),
     });
   } catch (error) {
     return handleApiError(error);

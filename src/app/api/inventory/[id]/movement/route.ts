@@ -4,6 +4,8 @@ import { db } from "@/lib/db";
 import { requireKey, handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { round2, signedDelta, TXN_AUDIT_ACTION } from "@/lib/inventory";
+import { applyStockMutation } from "@/lib/ledger";
+import { publicInventoryItem } from "@/lib/public-shape";
 import { round3 } from "@/lib/costing";
 import { findScopedItem } from "../route";
 
@@ -51,31 +53,27 @@ export async function POST(request: NextRequest, { params }: Params) {
     const totalCost =
       unitCost !== undefined ? round2(Math.abs(delta) * unitCost) : null;
 
-    const [, updated] = await db.$transaction([
-      db.inventoryTransaction.create({
-        data: {
-          cafeId: item.cafeId,
-          branchId: item.branchId,
-          inventoryItemId: id,
-          type: data.type,
-          quantity: delta,
-          unitCost: unitCost ?? null,
-          totalCost,
-          note: data.note || null,
-          createdById: session.id,
-        },
-      }),
-      db.inventoryItem.update({
-        where: { id },
-        data: {
-          currentStock: newStock,
-          // A purchase refreshes the reference cost per unit.
-          ...(data.type === "PURCHASE" && data.unitCost !== undefined
-            ? { costPerUnit: data.unitCost }
-            : {}),
-        },
-      }),
-    ]);
+    // Interactive form, not the array form this route used to use: an array
+    // `$transaction` cannot hold `SELECT … FOR UPDATE` across statements, so
+    // it could never satisfy the ledger contract.
+    const updated = await db.$transaction(async (tx) => {
+      await applyStockMutation(tx, {
+        inventoryItemId: id,
+        cafeId: item.cafeId,
+        branchId: item.branchId,
+        type: data.type,
+        quantity: delta,
+        unitCost: unitCost ?? null,
+        totalCost,
+        note: data.note || null,
+        createdById: session.id,
+        // A purchase refreshes the reference cost per unit.
+        newCostPerUnit:
+          data.type === "PURCHASE" && data.unitCost !== undefined ? data.unitCost : null,
+        insufficientMessage: "لا توجد كمية كافية في المخزون",
+      });
+      return tx.inventoryItem.findUniqueOrThrow({ where: { id } });
+    });
 
     await audit({
       cafeId: item.cafeId,
@@ -93,7 +91,7 @@ export async function POST(request: NextRequest, { params }: Params) {
       },
     });
 
-    return NextResponse.json({ item: updated });
+    return NextResponse.json({ item: publicInventoryItem(updated) });
   } catch (error) {
     return handleApiError(error);
   }

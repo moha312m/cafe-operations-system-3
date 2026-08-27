@@ -996,6 +996,12 @@ model InventoryItem {
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 
+  /// Item-local monotonic counter. Advanced ONLY under this row's FOR UPDATE
+  /// lock, in the same transaction as the stock change and the ledger row.
+  /// Not a sequence: a sequence numbers at INSERT, not at COMMIT, so it
+  /// cannot express commit order and cannot serve as a count point.
+  ledgerVersion BigInt @default(0)
+
   cafe         Cafe                   @relation(fields: [cafeId], references: [id], onDelete: Cascade)
   branch       Branch                 @relation(fields: [branchId], references: [id], onDelete: Cascade)
   transactions InventoryTransaction[]
@@ -1024,6 +1030,10 @@ model InventoryTransaction {
   orderId         String? // set for automatic USAGE deductions on SERVED
   createdById     String?
   createdAt       DateTime                 @default(now())
+  /// The item's ledgerVersion at which this row was written. Everything at
+  /// or below a captured version is committed; nothing above it has been
+  /// assigned.
+  itemVersion     BigInt
 
   cafe          Cafe          @relation(fields: [cafeId], references: [id], onDelete: Cascade)
   branch        Branch        @relation(fields: [branchId], references: [id], onDelete: Cascade)
@@ -1038,6 +1048,10 @@ model InventoryTransaction {
   @@index([createdAt])
   @@index([cafeId, createdAt])
   @@index([orderId])
+  // Database-enforced proof that one item never holds a version twice. The
+  // unique index also serves every (item, version) lookup, so no separate
+  // plain index is declared.
+  @@unique([inventoryItemId, itemVersion])
 }
 
 // ─────────────────────────── Purchases ───────────────────────────────
