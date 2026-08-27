@@ -11,7 +11,8 @@
     "test": "node --env-file-if-exists=.env --import tsx --test-concurrency=1 --test \"tests/**/*.test.ts\"",
     "postinstall": "prisma generate",
     "db:migrate": "prisma migrate deploy",
-    "db:seed": "tsx prisma/seed.ts"
+    "db:seed": "tsx prisma/seed.ts",
+    "db:scratch": "node scripts/scratch-db.mjs"
   },
   "engines": {
     "node": ">=20 <=22"
