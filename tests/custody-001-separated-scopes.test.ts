@@ -22,7 +22,6 @@ import { db, tag } from "./helpers/db";
 const MARKER = tag("CUSTODY001");
 let cafeId: string;
 let branchId: string;
-let otherBranchId: string;
 let userA: string;
 let userB: string;
 let shiftId: string;
@@ -38,9 +37,9 @@ before(async () => {
     include: { branches: { orderBy: { name: "asc" } } },
   });
   cafeId = cafe.id;
-  // "main" sorts before "other".
+  // "main" sorts before "other". The second branch exists so the partial
+  // unique index is exercised against a café that has more than one.
   branchId = cafe.branches[0].id;
-  otherBranchId = cafe.branches[1].id;
 
   const mk = async (suffix: string) =>
     (await db.user.create({
