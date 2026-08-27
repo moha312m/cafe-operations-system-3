@@ -151,9 +151,16 @@ describe("LEDGER-002 the single guarded stock writer", () => {
     assert.equal(await versionOf(item.id), before, "and so is the counter");
   });
 
-  test("no file outside src/lib/ledger.ts writes the ledger or currentStock", async () => {
+  test("no RUNTIME path outside src/lib/ledger.ts writes the ledger or currentStock", async () => {
     // The structural assertion. A convention degrades; a test that reads the
     // source tree does not — a seventh writer cannot be added silently.
+    //
+    // Scope is deliberately `src/`: the invariant is about RUNTIME stock
+    // mutation. `prisma/seed.ts` writes opening rows too, but it is bootstrap
+    // code that runs against an empty database with nothing to race, and it
+    // states its versions explicitly (verified on the scratch database:
+    // ledgerVersion == MAX(itemVersion) for every seeded item). Counting it
+    // as a writer would blur the thing this test exists to protect.
     const offenders: string[] = [];
     const allowed = join("src", "lib", "ledger.ts");
 

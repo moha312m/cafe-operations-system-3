@@ -113,7 +113,11 @@ function main() {
   console.log(`Resetting scratch database "${databaseName(scratch)}"…`);
   run(["prisma", "migrate", "reset", "--force", "--skip-seed"], scratch);
   run(["prisma", "migrate", "deploy"], scratch);
-  run(["prisma", "db", "seed"], scratch);
+  // `prisma db seed` is not usable here: it requires a `prisma.seed` entry in
+  // package.json, and this repository has none — it seeds through its own
+  // `db:seed` script. Calling the seed file directly keeps the scratch
+  // rebuild identical to what a developer runs by hand.
+  run(["tsx", "prisma/seed.ts"], scratch);
   console.log("Scratch database rebuilt from migrations.");
 }
 
