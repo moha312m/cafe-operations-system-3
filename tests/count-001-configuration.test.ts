@@ -25,7 +25,7 @@
 
 import { test, after, before, describe } from "node:test";
 import assert from "node:assert/strict";
-import { db, fixture, tag, type Fixture } from "./helpers/db";
+import { db, fixture, tag, TAG_PREFIX, type Fixture } from "./helpers/db";
 
 const MARKER = tag("COUNT001");
 let fx: Fixture;
@@ -89,8 +89,17 @@ describe("COUNT-001 count configuration", () => {
 
   test("every pre-existing café reads NO_SHIFT_COUNT", async () => {
     // The backfill's whole point: nobody is newly required to count.
+    //
+    // Scoped to real cafés. Other suites create their own tenants, which are
+    // NEW cafés and therefore correctly get the HYBRID column default — they
+    // are not evidence about the backfill either way. Asserting over every
+    // row would make this test fail for a reason that has nothing to do with
+    // what it checks, and it did exactly that once.
     const forced = await db.cafeSettings.findMany({
-      where: { stockCountPolicy: { not: "NO_SHIFT_COUNT" } },
+      where: {
+        stockCountPolicy: { not: "NO_SHIFT_COUNT" },
+        cafe: { name: { not: { startsWith: TAG_PREFIX } } },
+      },
       select: { cafeId: true, stockCountPolicy: true },
     });
     assert.deepEqual(
@@ -116,8 +125,13 @@ describe("COUNT-001 count configuration", () => {
   });
 
   test("every pre-existing inventory item reads isCritical = false", async () => {
+    // Scoped for the same reason as the policy assertion above: a suite that
+    // creates its own critical ingredient is exercising the flag, not
+    // evidence that the backfill set one.
     const [{ count }] = await db.$queryRaw<{ count: bigint }[]>`
-      SELECT COUNT(*)::bigint AS count FROM "InventoryItem" WHERE "isCritical" = true
+      SELECT COUNT(*)::bigint AS count
+        FROM "InventoryItem"
+       WHERE "isCritical" = true AND "name" NOT LIKE ${`${TAG_PREFIX}%`}
     `;
     assert.equal(
       Number(count), 0,

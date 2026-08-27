@@ -215,6 +215,7 @@ model Cafe {
   loyaltyTxns      LoyaltyTransaction[]
   reasonCodes      ReasonCode[]
   custodyPeriods   CustodyPeriod[]
+  stockCountSessions StockCountSession[]
 }
 
 // Per-cafe module flags + workflow, controlled ONLY by SUPER_ADMIN.
@@ -314,6 +315,7 @@ model Branch {
   tables         CafeTable[]
   qrApprovalSettings QrOrderApprovalSettings?
   custodyPeriods CustodyPeriod[]
+  stockCountSessions StockCountSession[]
 
   @@unique([cafeId, menuSlug])
   @@index([cafeId])
@@ -493,6 +495,9 @@ model User {
   purchasePayments PurchasePayment[]
   loyaltyTxnsCreated LoyaltyTransaction[] @relation("LoyaltyTxnCreatedBy")
   custodyParticipations CustodyParticipant[]
+  countsInitiated  StockCountSession[] @relation("CountInitiator")
+  countsFirstCounted StockCountSession[] @relation("CountFirstCounter")
+  countsConfirmed  StockCountSession[] @relation("CountConfirmer")
 
   @@index([cafeId])
   @@index([branchId])
@@ -964,6 +969,7 @@ model Shift {
   cashier  User      @relation(fields: [cashierId], references: [id])
   payments Payment[]
   custodyLinks ShiftCustody[]
+  stockCountSessions StockCountSession[]
 
   @@unique([branchId, shiftNumber])
   @@index([cafeId])
@@ -1034,6 +1040,7 @@ model CustodyPeriod {
 
   participants CustodyParticipant[]
   shiftLinks   ShiftCustody[]
+  countSessions StockCountSession[]
 
   // Consumers created by later tasks (count sessions, variance cases,
   // handovers, opening exceptions) add their back-relations in the migration
@@ -1128,6 +1135,68 @@ model ReasonCode {
 
   @@unique([cafeId, domain, code])
   @@index([cafeId, domain])
+}
+
+// ──────────────────────── Stock count sessions ───────────────────────
+// A physical count is its own session, not an ADJUSTMENT. Reporting has to
+// tell a physical recount from a manager's tweak, and it cannot if both are
+// recorded the same way.
+enum StockCountStatus {
+  DRAFT
+  IN_PROGRESS
+  SUBMITTED
+  RECOUNT_REQUIRED
+  CONFIRMED
+  LOCKED
+}
+
+model StockCountSession {
+  id              String @id @default(cuid())
+  cafeId          String
+  branchId        String
+  shiftId         String?
+  /// The STOCK custody this count was taken under. A real foreign key: it is
+  /// what lets a shortage be attributed to whoever actually held the room.
+  custodyPeriodId String?
+
+  type   StockCountType
+  status StockCountStatus @default(DRAFT)
+  mode   StockCountMode   @default(BLIND)
+
+  /// "ALL_ELIGIBLE" | "CRITICAL_ONLY" — how scope was derived, recorded so a
+  /// count can be audited without re-deriving it from today's configuration.
+  scopeDerivation String
+
+  startedAt   DateTime?
+  submittedAt DateTime?
+  confirmedAt DateTime?
+  lockedAt    DateTime?
+
+  initiatedById  String
+  firstCounterId String?
+  confirmedById  String?
+
+  idempotencyKey String? @unique
+  notes          String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cafe          Cafe           @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  branch        Branch         @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  shift         Shift?         @relation(fields: [shiftId], references: [id], onDelete: SetNull)
+  custodyPeriod CustodyPeriod? @relation(fields: [custodyPeriodId], references: [id], onDelete: SetNull)
+
+  initiatedBy  User  @relation("CountInitiator", fields: [initiatedById], references: [id])
+  firstCounter User? @relation("CountFirstCounter", fields: [firstCounterId], references: [id], onDelete: SetNull)
+  confirmedBy  User? @relation("CountConfirmer", fields: [confirmedById], references: [id], onDelete: SetNull)
+
+  // lockedByHandoverId ships in M8, with the HandoverSession it points at.
+  // Lines, rebases and handovers add their back-relations in their own tasks.
+
+  @@index([cafeId, createdAt])
+  @@index([branchId, status])
+  @@index([custodyPeriodId])
 }
 
 enum InventoryUnit {
