@@ -9,11 +9,13 @@
 //
 // Roles are chosen for what they prove rather than for realism:
 //
-//   manager  — BRANCH_MANAGER: holds every stock-count key including confirm
-//   cashier  — CASHIER: view/start/submit only; no recount, no confirm
-//   waiter   — WAITER: no stock-count key at all, so a 403 is about the key
-//              rather than about the café or the branch
-//   owner    — CAFE_OWNER, pinned to no branch, so it must name one
+//   manager    — BRANCH_MANAGER: every stock-count key, confirm included
+//   cashier    — CASHIER: view/start/submit only; no recount, no confirm
+//   storekeeper— INVENTORY_MANAGER: recount, but NOT confirm — the role that
+//                proves recounting and signing off are different powers
+//   waiter     — WAITER: no stock-count key at all, so a 403 is about the key
+//                rather than about the café or the branch
+//   owner      — CAFE_OWNER, pinned to no branch, so it must name one
 //
 // Two branches, because "cross-branch access is rejected" is not testable
 // against a café that has one.
@@ -35,6 +37,7 @@ export type CountCafe = {
   otherBranchId: string;
   manager: CountActor;
   cashier: CountActor;
+  storekeeper: CountActor;
   waiter: CountActor;
   owner: CountActor;
 };
@@ -42,7 +45,7 @@ export type CountCafe = {
 async function actor(
   marker: string,
   suffix: string,
-  role: "BRANCH_MANAGER" | "CASHIER" | "WAITER" | "CAFE_OWNER",
+  role: "BRANCH_MANAGER" | "CASHIER" | "WAITER" | "CAFE_OWNER" | "INVENTORY_MANAGER",
   cafeId: string,
   branchId: string | null,
   passwordHash: string
@@ -56,7 +59,7 @@ async function actor(
 }
 
 /**
- * Create the café, its two branches and its four accounts, and sign them all
+ * Create the café, its two branches and its five accounts, and sign them all
  * in so `as(email, …)` works for any of them.
  */
 export async function countCafe(finding: string): Promise<CountCafe> {
@@ -78,14 +81,20 @@ export async function countCafe(finding: string): Promise<CountCafe> {
   const hash = await bcrypt.hash(COUNT_PASSWORD, 10);
   const manager = await actor(marker, "manager", "BRANCH_MANAGER", cafeId, branchId, hash);
   const cashier = await actor(marker, "cashier", "CASHIER", cafeId, branchId, hash);
+  const storekeeper = await actor(
+    marker, "store", "INVENTORY_MANAGER", cafeId, branchId, hash
+  );
   const waiter = await actor(marker, "waiter", "WAITER", cafeId, branchId, hash);
   const owner = await actor(marker, "owner", "CAFE_OWNER", cafeId, null, hash);
 
-  for (const a of [manager, cashier, waiter, owner]) {
+  for (const a of [manager, cashier, storekeeper, waiter, owner]) {
     await login(a.email, COUNT_PASSWORD);
   }
 
-  return { marker, cafeId, branchId, otherBranchId, manager, cashier, waiter, owner };
+  return {
+    marker, cafeId, branchId, otherBranchId,
+    manager, cashier, storekeeper, waiter, owner,
+  };
 }
 
 /**

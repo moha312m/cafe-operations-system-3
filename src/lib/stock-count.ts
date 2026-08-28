@@ -24,6 +24,7 @@
 // states are blind under a BLIND mode, so nothing is disclosed in between.
 
 import type {
+  CountLineDisposition,
   Prisma,
   StockCountMode,
   StockCountStatus,
@@ -35,6 +36,9 @@ import { audit } from "@/lib/audit";
 import { round3 } from "@/lib/costing";
 import { captureCountPoint } from "@/lib/count-point";
 import { activeCustody } from "@/lib/custody";
+import { isTerminal } from "@/lib/count-disposition";
+import { resolveRecountPolicy } from "@/lib/variance-case";
+import { resolveStockTolerance, withinTolerance } from "@/lib/tolerance";
 import {
   resolveCountScope,
   resolveStockCountPolicy,
@@ -658,4 +662,168 @@ export async function recordCountLine(args: {
     itemVersion: result.updated.itemVersion!,
     disposition: "COUNTED",
   };
+}
+
+// ────────────────────────── Submitting a count ───────────────────────
+//
+// Submission is where a pile of observations becomes a set of verdicts. Each
+// counted line is measured against the tolerance governing its item (T15,
+// narrowest scope wins) and lands either settled or contested.
+//
+// COMPLETENESS IS SERVER-VERIFIED. A line whose `countedQuantity` is NULL is
+// not a zero — it is a shelf nobody looked at, and the two must never
+// collapse. Submitting with one outstanding is refused rather than treated
+// as a total loss on that item, which is what reading NULL as 0 would report.
+//
+// The dispositions set here follow `DISPOSITION_TRANSITIONS` (T13) exactly.
+// An outside-tolerance line becomes `OUTSIDE_TOLERANCE` first and only then
+// `RECOUNT_REQUIRED`, when the owner requires a recount — there is no
+// COUNTED → RECOUNT_REQUIRED edge, so the reason a recount was demanded is
+// always a state the line actually occupied.
+
+export type SubmitCountResult = {
+  status: "SUBMITTED" | "RECOUNT_REQUIRED";
+  within: number;
+  outside: number;
+};
+
+/** Sessions that may still be submitted. CONFIRMED and LOCKED may not. */
+const SUBMITTABLE: readonly StockCountStatus[] = [
+  "DRAFT",
+  "IN_PROGRESS",
+  "SUBMITTED",
+  "RECOUNT_REQUIRED",
+];
+
+export const COUNT_SUBMITTED_AUDIT_ACTION = "COUNT_SUBMITTED";
+
+/**
+ * Close the counting phase and give every line a verdict.
+ *
+ * Lines already in a terminal disposition are left alone: a recount that
+ * resolved a line before submission has already answered it, and re-judging
+ * it against today's tolerance would let a settled question reopen.
+ */
+export async function submitCountSession(args: {
+  sessionId: string;
+  submittedById: string;
+  cafeId?: string;
+  viewerBranchId?: string | null;
+}): Promise<SubmitCountResult> {
+  const session = await db.stockCountSession.findUnique({
+    where: { id: args.sessionId },
+    select: {
+      id: true,
+      cafeId: true,
+      branchId: true,
+      status: true,
+      lines: {
+        select: {
+          id: true,
+          inventoryItemId: true,
+          disposition: true,
+          countedQuantity: true,
+          effectiveCountedQuantity: true,
+          expectedQuantity: true,
+          varianceQuantity: true,
+          inventoryItem: { select: { name: true, category: true } },
+        },
+      },
+    },
+  });
+  if (!session || (args.cafeId !== undefined && session.cafeId !== args.cafeId)) {
+    throw new ApiError(404, "جلسة الجرد غير موجودة");
+  }
+  if (args.viewerBranchId && session.branchId !== args.viewerBranchId) {
+    throw new ApiError(403, "ليس لديك صلاحية على فرع تاني");
+  }
+  if (!SUBMITTABLE.includes(session.status)) {
+    throw new ApiError(409, "الجرد ده اتقفل خلاص");
+  }
+
+  const uncounted = session.lines.filter((l) => l.countedQuantity === null);
+  if (uncounted.length > 0) {
+    const names = uncounted.map((l) => l.inventoryItem.name).slice(0, 5).join("، ");
+    throw new ApiError(
+      400,
+      `في أصناف لسه ما اتعدتش (${uncounted.length}): ${names}`
+    );
+  }
+
+  const policy = await resolveRecountPolicy(session.cafeId);
+
+  let within = 0;
+  let outside = 0;
+  const verdicts: { id: string; disposition: CountLineDisposition }[] = [];
+
+  for (const line of session.lines) {
+    if (isTerminal(line.disposition)) {
+      // Already answered — by a recount, or by an accepted variance.
+      if (line.disposition === "VARIANCE_CONFIRMED") outside += 1;
+      else within += 1;
+      continue;
+    }
+
+    const tolerance = await resolveStockTolerance({
+      cafeId: session.cafeId,
+      branchId: session.branchId,
+      inventoryItemId: line.inventoryItemId,
+      category: line.inventoryItem.category,
+    });
+    const ok = withinTolerance({
+      varianceQuantity: Number(line.varianceQuantity ?? 0),
+      expectedQuantity: Number(line.expectedQuantity ?? 0),
+      tolerance,
+    });
+
+    if (ok) {
+      within += 1;
+      verdicts.push({ id: line.id, disposition: "WITHIN_TOLERANCE" });
+      continue;
+    }
+
+    outside += 1;
+    // Through OUTSIDE_TOLERANCE, always — see the note above.
+    verdicts.push({
+      id: line.id,
+      disposition: policy.required ? "RECOUNT_REQUIRED" : "OUTSIDE_TOLERANCE",
+    });
+  }
+
+  const needsRecount = verdicts.some((v) => v.disposition === "RECOUNT_REQUIRED");
+  const status: SubmitCountResult["status"] = needsRecount ? "RECOUNT_REQUIRED" : "SUBMITTED";
+  const submittedAt = new Date();
+
+  // One transaction: a submission that gave half the lines a verdict and then
+  // failed would leave the count in a state nobody chose.
+  await db.$transaction(async (tx) => {
+    for (const v of verdicts) {
+      await tx.stockCountLine.update({
+        where: { id: v.id },
+        data: { disposition: v.disposition },
+      });
+    }
+    await tx.stockCountSession.update({
+      where: { id: session.id },
+      data: { status, submittedAt },
+    });
+  });
+
+  await audit({
+    cafeId: session.cafeId,
+    userId: args.submittedById,
+    action: COUNT_SUBMITTED_AUDIT_ACTION,
+    entity: "StockCountSession",
+    entityId: session.id,
+    details: {
+      branchId: session.branchId,
+      status,
+      within,
+      outside,
+      recountRequired: needsRecount,
+      lineCount: session.lines.length,
+    },
+  });
+
+  return { status, within, outside };
 }
