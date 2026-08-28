@@ -32,6 +32,8 @@ import type {
 import { db } from "@/lib/db";
 import { ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
+import { round3 } from "@/lib/costing";
+import { captureCountPoint } from "@/lib/count-point";
 import { activeCustody } from "@/lib/custody";
 import {
   resolveCountScope,
@@ -440,4 +442,220 @@ export async function getCountSessionForViewer(args: {
 
   const blind = countIsBlindTo(session, args.viewerId);
   return { ...redactCountTargets(session, args.viewerId), blind };
+}
+
+// ─────────────────────────── Recording a count ───────────────────────
+//
+// One transaction, one lock, three consequences.
+//
+// `captureCountPoint` takes the item's FOR UPDATE lock — the identical lock
+// every stock mutation takes — and reads `currentStock` and `ledgerVersion`
+// together under it. That is what makes the pair trustworthy: a concurrent
+// mutator must hold the same lock to assign version N+1, so at capture time
+// everything at or below the captured version is committed AND reflected in
+// the balance. A movement posted while the counter walks the floor is
+// therefore neither an error nor silently absorbed — it is assigned a version
+// ABOVE the captured one, excluded from this line's expected figure, and
+// replayed onto the rebase (T23) so the balance ends correct.
+//
+// The client supplies ONE number: what they saw on the shelf. Everything
+// else on the row — the expected figure, the version, the basis, the
+// variance, the disposition — is the server's conclusion, and a request that
+// names any of them is refused rather than obeyed. Obeying would let the
+// person being measured write their own result; ignoring would let them
+// believe they had.
+//
+// Capture writes NO stock. The shelf is changed to match a count only after
+// confirmation, through `applyStockMutation`, as an audited COUNT_REBASE.
+// Recording evidence and acting on evidence are different acts, and this is
+// the first one.
+//
+// The audit row here is fire-and-forget, unlike the rebase's. The difference
+// is not laziness: a rebase MOVES stock, so a rebase with no record is stock
+// changing for reasons nobody can reconstruct. A capture's own evidence is
+// the line row itself — counted quantity, counter, time and version all
+// persist in the write — so losing the note would be worse than losing the
+// count it describes, which is exactly the case `audit` is for.
+
+/**
+ * Fields on a count line that are the server's conclusions.
+ *
+ * Refused by name, like `SCOPE_KEYS`. `counterId` and `countedAt` are here
+ * too: who counted and when are observations about the request, not values
+ * for it to assert.
+ */
+const SERVER_FIGURE_KEYS = [
+  "expectedQuantity",
+  "expectedBasis",
+  "itemVersion",
+  "varianceQuantity",
+  "effectiveCountedQuantity",
+  "confidence",
+  "theoreticalConfidence",
+  "confidenceWindowFrom",
+  "confidenceIssues",
+  "disposition",
+  "costImpact",
+  "costImpactAvailable",
+  "costUnavailableReason",
+  "counterId",
+  "countedAt",
+];
+
+export const CLIENT_FIGURE_REFUSAL =
+  "الكمية المتوقعة وإصدار الحركة بيتحسبوا في السيرفر، مش من الطلب";
+
+/** 400 if the body tries to write a figure the server is responsible for. */
+export function assertNoClientFigures(body: unknown): void {
+  if (!body || typeof body !== "object") return;
+  const named = SERVER_FIGURE_KEYS.filter((k) => k in (body as Record<string, unknown>));
+  if (named.length > 0) {
+    throw new ApiError(400, `${CLIENT_FIGURE_REFUSAL} (${named.join("، ")})`);
+  }
+}
+
+/** The one audit action a capture writes. */
+export const ITEM_COUNTED_AUDIT_ACTION = "ITEM_COUNTED";
+
+/** Statuses whose evidence is settled: a count against them is refused. */
+const CLOSED_TO_CAPTURE: readonly StockCountStatus[] = ["CONFIRMED", "LOCKED"];
+
+/**
+ * Load a line for writing, having proved it is this caller's to write.
+ *
+ * A line reached through the wrong session id is `404` rather than being
+ * looked up by id alone: the session in the URL is part of what the caller
+ * claimed, and honouring a mismatch would let one session's id address
+ * another's evidence.
+ */
+async function lineForWrite(args: {
+  sessionId: string;
+  lineId: string;
+  cafeId: string;
+  viewerBranchId: string | null;
+}) {
+  const line = await db.stockCountLine.findUnique({
+    where: { id: args.lineId },
+    select: {
+      id: true,
+      sessionId: true,
+      inventoryItemId: true,
+      disposition: true,
+      session: {
+        select: {
+          id: true,
+          cafeId: true,
+          branchId: true,
+          status: true,
+          startedAt: true,
+          firstCounterId: true,
+        },
+      },
+    },
+  });
+  if (!line || line.sessionId !== args.sessionId || line.session.cafeId !== args.cafeId) {
+    throw new ApiError(404, "سطر الجرد غير موجود");
+  }
+  if (args.viewerBranchId && line.session.branchId !== args.viewerBranchId) {
+    throw new ApiError(403, "ليس لديك صلاحية على فرع تاني");
+  }
+  return line;
+}
+
+export type RecordCountLineResult = {
+  lineId: string;
+  countedAt: Date;
+  itemVersion: bigint;
+  disposition: "COUNTED";
+};
+
+/**
+ * Record what somebody saw on one shelf.
+ *
+ * Re-recording an uncounted line re-captures IN PLACE — at a new count
+ * point, because the shelf has moved on and reusing the first capture would
+ * recreate exactly the staleness the lock exists to prevent. It never adds a
+ * second line: one session asks about one item once.
+ */
+export async function recordCountLine(args: {
+  sessionId: string;
+  lineId: string;
+  countedQuantity: number;
+  counterId: string;
+  cafeId: string;
+  viewerBranchId: string | null;
+}): Promise<RecordCountLineResult> {
+  if (!Number.isFinite(args.countedQuantity) || args.countedQuantity < 0) {
+    throw new ApiError(400, "الكمية المعدودة لازم تكون رقم مش سالب");
+  }
+
+  const line = await lineForWrite(args);
+  if (CLOSED_TO_CAPTURE.includes(line.session.status)) {
+    throw new ApiError(409, "الجرد ده اتقفل خلاص — مينفعش تسجل كمية عليه");
+  }
+
+  const counted = round3(args.countedQuantity);
+
+  const result = await db.$transaction(async (tx) => {
+    // The lock is held from here to commit, which is what makes the balance
+    // and the version below describe the same instant.
+    const point = await captureCountPoint(tx, line.inventoryItemId);
+
+    const updated = await tx.stockCountLine.update({
+      where: { id: line.id },
+      data: {
+        expectedQuantity: point.expectedQuantity,
+        itemVersion: point.itemVersion,
+        expectedBasis: point.basis,
+        countedAt: point.capturedAt,
+        counterId: args.counterId,
+        countedQuantity: counted,
+        // The working figure equals the observation until an APPROVED
+        // correction (T29) supersedes it. Never the other way round.
+        effectiveCountedQuantity: counted,
+        varianceQuantity: round3(counted - point.expectedQuantity),
+        disposition: "COUNTED",
+      },
+      select: { id: true, countedAt: true, itemVersion: true },
+    });
+
+    // A count that has begun says so, and says who began it.
+    if (line.session.status === "DRAFT" || line.session.firstCounterId === null) {
+      await tx.stockCountSession.update({
+        where: { id: line.session.id },
+        data: {
+          ...(line.session.status === "DRAFT" ? { status: "IN_PROGRESS" as const } : {}),
+          startedAt: line.session.startedAt ?? point.capturedAt,
+          firstCounterId: line.session.firstCounterId ?? args.counterId,
+        },
+      });
+    }
+
+    return { updated, point };
+  });
+
+  await audit({
+    cafeId: args.cafeId,
+    userId: args.counterId,
+    action: ITEM_COUNTED_AUDIT_ACTION,
+    entity: "StockCountLine",
+    entityId: line.id,
+    details: {
+      sessionId: line.session.id,
+      branchId: line.session.branchId,
+      inventoryItemId: line.inventoryItemId,
+      // Stringified: `itemVersion` is BigInt, which JSON cannot carry.
+      itemVersion: String(result.point.itemVersion),
+      expectedBasis: result.point.basis,
+      countedQuantity: counted,
+      previousDisposition: line.disposition,
+    },
+  });
+
+  return {
+    lineId: result.updated.id,
+    countedAt: result.updated.countedAt!,
+    itemVersion: result.updated.itemVersion!,
+    disposition: "COUNTED",
+  };
 }
