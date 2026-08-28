@@ -5,7 +5,29 @@
 // Credentials are the local seed fixtures from prisma/seed.ts — no secret is
 // introduced here that the repository does not already contain.
 
-export const BASE = process.env.TEST_BASE_URL ?? "http://localhost:3000";
+/**
+ * The server these tests drive.
+ *
+ * There is no default. It used to fall back to `http://localhost:3000`, which
+ * is the developer's own dev server — connected to the developer's own
+ * database. A suite that reached that fallback would create fixtures in the
+ * test database and then exercise the API against real café data, which is
+ * the split-brain failure TOOLING-005 exists to prevent.
+ *
+ * `npm test` sets this to the test server on :3100. Anything else refuses.
+ */
+export const BASE = (() => {
+  const url = process.env.TEST_BASE_URL;
+  if (!url) {
+    throw new Error(
+      "TEST_BASE_URL is not set, and there is no default: falling back to " +
+        "localhost:3000 would point HTTP tests at the developer's dev server " +
+        "and their own database. Run `npm test`, which starts the suite " +
+        "against the isolated test server. See TESTING.md."
+    );
+  }
+  return url;
+})();
 
 const jars = new Map<string, string>();
 

@@ -21,7 +21,7 @@
 // against a café that has one.
 
 import bcrypt from "bcryptjs";
-import { db, tag } from "./db";
+import { assertTestDatabase, db, tag } from "./db";
 import { login } from "./http";
 
 /** Written down on purpose: these accounts exist only inside a test run. */
@@ -63,6 +63,8 @@ async function actor(
  * in so `as(email, …)` works for any of them.
  */
 export async function countCafe(finding: string): Promise<CountCafe> {
+  // Writing starts here for the suites that own their café outright.
+  await assertTestDatabase();
   const marker = tag(finding);
   const cafe = await db.cafe.create({
     data: {

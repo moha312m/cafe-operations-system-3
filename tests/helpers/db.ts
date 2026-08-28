@@ -1,17 +1,51 @@
 // Shared harness for Phase 1 (Cash Integrity) regression tests.
 //
-// These are integration tests: they run against the real local Postgres
-// configured in .env, exercising the actual Prisma client and service layer
-// rather than mocks — a cash-custody invariant is only meaningful if the
-// database agrees with it.
+// These are integration tests: they run against a real local Postgres,
+// exercising the actual Prisma client and service layer rather than mocks —
+// a cash-custody invariant is only meaningful if the database agrees with it.
+//
+// That "real" database used to be whichever one `.env` named, which in
+// practice was the developer's own — the one holding the owner's live café.
+// It is now a DEDICATED DISPOSABLE TEST DATABASE, and this module refuses to
+// load if pointed at anything else (TOOLING-005).
 //
 // Every record created here is tagged "PH1-…" so remediation data is
 // distinguishable from audit data and can be removed independently.
 
 import { PrismaClient, type Role } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth";
+import {
+  assertTestDatabaseUrl,
+  assertTestDatabaseMarker,
+} from "../../scripts/test-db.mjs";
+
+// Fail closed at IMPORT, before a client exists and therefore before any
+// query can be issued. This is the cheap half of the guard, and it catches
+// the accident that actually happened: the harness inheriting the owner's
+// DATABASE_URL out of .env. Synchronous on purpose — an async check here
+// could not stop the module from finishing loading.
+assertTestDatabaseUrl(process.env.DATABASE_URL);
 
 export const db = new PrismaClient();
+
+/**
+ * The other half of the guard: ask the database whether it is disposable.
+ *
+ * A name is a heuristic — `cafe_ops_test` typed against port 5433 would sail
+ * through the URL check and be catastrophically wrong. The marker table can
+ * only exist in a database somebody deliberately provisioned as throwaway,
+ * so it is positive proof rather than trust.
+ *
+ * Memoised: one query per test process, awaited where writing begins
+ * (fixture creation, tagged-café creation) and where deleting begins (the
+ * café purge), so neither a fixture nor a cleanup can run against a database
+ * that has not vouched for itself.
+ */
+let markerCheck: Promise<unknown> | null = null;
+export function assertTestDatabase(): Promise<unknown> {
+  markerCheck ??= assertTestDatabaseMarker(db);
+  return markerCheck;
+}
 
 export const TAG_PREFIX = "PH1";
 
@@ -35,6 +69,10 @@ export type Fixture = {
  * tenant per run. Phase 1 is about cash arithmetic, not tenancy.
  */
 export async function fixture(): Promise<Fixture> {
+  // Writing starts here for most suites: everything they create hangs off the
+  // café this returns. Prove the database is disposable before handing it out.
+  await assertTestDatabase();
+
   const branch = await db.branch.findFirst({
     where: { isActive: true },
     orderBy: { createdAt: "asc" },
@@ -341,6 +379,11 @@ export async function assertPurgeableTestCafe(
   if (typeof cafeId !== "string" || cafeId.length === 0) {
     throw new Error("purgeCafe needs a café id — refusing to run an unscoped delete");
   }
+  // Deleting starts here. The café-level guard below asks "is this row a test
+  // fixture"; this one asks the prior question, "is this DATABASE one we may
+  // delete from at all". Both are needed: a tagged café in the owner's
+  // database would satisfy the first and still be a write we must never make.
+  await assertTestDatabase();
 
   const cafe = await db.cafe.findUnique({
     where: { id: cafeId },
