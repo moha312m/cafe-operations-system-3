@@ -201,6 +201,79 @@ export async function resolveRecountPolicy(
 }
 
 /**
+ * Refuse a source that belongs to somebody else.
+ *
+ * A foreign key proves the row exists; it does not prove the row is ours. A
+ * counted line from another café satisfies every constraint on the table
+ * while belonging to another business, and attaching it would put that café's
+ * figures inside this one's investigation — and, once responsibility is
+ * assigned, inside the wrong person's record.
+ *
+ * Branch matters as well as café: a case names a branch, and a shortage found
+ * in one store room is not evidence about another.
+ *
+ * This lives here rather than in a database trigger because every case goes
+ * through this one door, and Revision 3 asks for no cross-table enforcement
+ * in the schema. It runs BEFORE the insert, so a refusal writes nothing.
+ */
+async function assertSourceBelongsToCafe(
+  tx: Prisma.TransactionClient,
+  args: OpenArgs
+): Promise<void> {
+  const mismatch = (what: string, owner: { cafeId: string; branchId: string } | null) => {
+    if (!owner) return `${what} غير موجود`;
+    if (owner.cafeId !== args.cafeId) return `${what} تابع لكافيه تاني — does not belong to this café`;
+    if (owner.branchId !== args.branchId) return `${what} تابع لفرع تاني — does not belong to this branch`;
+    return null;
+  };
+
+  let problem: string | null = null;
+
+  switch (args.source.kind) {
+    case "STOCK_LINE": {
+      // The line carries no café of its own; its session does, which is
+      // exactly the ownership that matters.
+      const line = await tx.stockCountLine.findUnique({
+        where: { id: args.source.stockCountLineId },
+        select: { session: { select: { cafeId: true, branchId: true } } },
+      });
+      problem = mismatch("سطر الجرد", line?.session ?? null);
+      break;
+    }
+    case "TENDER": {
+      const recon = await tx.tenderReconciliation.findUnique({
+        where: { id: args.source.tenderReconciliationId },
+        select: { cafeId: true, branchId: true },
+      });
+      problem = mismatch("تسوية الدفع", recon);
+      break;
+    }
+    case "OPENING": {
+      const exception = await tx.openingException.findUnique({
+        where: { id: args.source.openingExceptionId },
+        select: { cafeId: true, branchId: true },
+      });
+      problem = mismatch("استثناء الفتح", exception);
+      break;
+    }
+    case "CASH_SHIFT": {
+      // Cash evidence is the shift close, so the shift IS the source and is
+      // checked with the same strictness as an explicit source column.
+      const shift = args.shiftId
+        ? await tx.shift.findUnique({
+            where: { id: args.shiftId },
+            select: { cafeId: true, branchId: true },
+          })
+        : null;
+      problem = mismatch("الشيفت", shift);
+      break;
+    }
+  }
+
+  if (problem) throw new ApiError(400, problem);
+}
+
+/**
  * Open a variance case for one piece of evidence, inside the caller's
  * transaction, at most once.
  */
@@ -209,8 +282,10 @@ export async function openVarianceCase(
   args: OpenArgs
 ): Promise<{ caseId: string; created: boolean }> {
   if (args.source.kind === "CASH_SHIFT" && !args.shiftId) {
-    throw new ApiError(400, "فرق الكاش لازم يكون مربوط بشيفت");
+    throw new ApiError(400, "فرق الكاش لازم يكون مربوط بشيفت — a CASH case has no evidence without a shift");
   }
+
+  await assertSourceBelongsToCafe(tx, args);
 
   const where = existingWhere(args.source, args);
   const existing = await tx.varianceCase.findFirst({ where, select: { id: true } });
