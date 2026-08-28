@@ -10,12 +10,12 @@
 //     belongs to the custody it was taken under, and that is what lets a
 //     shortage be attributed to whoever actually held the room.
 //
-//   • `lockedByHandoverId` is deliberately ABSENT at this migration. It ships
-//     in M8, in the same migration as the `HandoverSession` table it points
-//     at. Every FK-bearing column in this milestone is created together with
-//     its target — no column waits two migrations for its constraint. That
-//     ordering is asserted here so it stays visible rather than being a
-//     remark in a plan nobody rereads.
+//   • `lockedByHandoverId` arrived in the SAME migration as the
+//     `HandoverSession` table it points at, never before it. Every FK-bearing
+//     column in this milestone is created together with its target — no
+//     column waits two migrations for its constraint. This suite asserted
+//     the column absent until that migration landed, and now asserts the
+//     stronger thing: it exists, and it has never existed unconstrained.
 
 import { test, after, before, describe } from "node:test";
 import assert from "node:assert/strict";
@@ -160,23 +160,48 @@ describe("COUNT-003 count session schema", () => {
     assert.deepEqual(values.map((v) => v.label), [...statuses]);
   });
 
-  test("lockedByHandoverId does not exist yet — it ships with the table it points at", async () => {
+  test("lockedByHandoverId arrived with the table it points at, not before it", async () => {
     // R3.3, asserted rather than asserted-about. Every FK-bearing column in
     // this milestone is created in the same migration as its FOREIGN KEY, so
     // there is never an interval in which a column could hold a value no
     // constraint checks.
+    //
+    // Until T17 this test asserted the column ABSENT, which was the same
+    // claim seen from the other side of the migration that introduced it.
+    // Now it asserts what that ordering bought: the column and its target and
+    // its constraint all exist, and no migration between them left the column
+    // bare.
     const cols = await db.$queryRaw<{ column_name: string }[]>`
       SELECT column_name FROM information_schema.columns
-       WHERE table_name = 'StockCountSession' AND column_name = 'lockedByHandoverId'
+       WHERE table_schema = current_schema()
+         AND table_name = 'StockCountSession' AND column_name = 'lockedByHandoverId'
     `;
-    assert.deepEqual(
-      cols, [],
-      "lockedByHandoverId belongs to M8, alongside HandoverSession"
-    );
+    assert.equal(cols.length, 1, "the column exists");
 
     const handover = await db.$queryRaw<{ table_name: string }[]>`
-      SELECT table_name FROM information_schema.tables WHERE table_name = 'HandoverSession'
+      SELECT table_name FROM information_schema.tables
+       WHERE table_schema = current_schema() AND table_name = 'HandoverSession'
     `;
-    assert.deepEqual(handover, [], "and its target does not exist yet either — consistently");
+    assert.equal(handover.length, 1, "so does the table it names");
+
+    const fk = await db.$queryRaw<{ constraint_name: string }[]>`
+      SELECT tc.constraint_name
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+       WHERE tc.constraint_type = 'FOREIGN KEY'
+         AND tc.table_schema = current_schema()
+         AND tc.table_name = 'StockCountSession'
+         AND kcu.column_name = 'lockedByHandoverId'
+    `;
+    assert.equal(fk.length, 1, "and the constraint that was never missing");
+
+    // The migration that added the column is the migration that added the
+    // table — one file, so there is no window between them.
+    const both = await db.$queryRaw<{ migration_name: string }[]>`
+      SELECT migration_name FROM "_prisma_migrations"
+       WHERE migration_name LIKE '%handover_session%' AND finished_at IS NOT NULL
+    `;
+    assert.equal(both.length, 1, "and both came from one migration");
   });
 });

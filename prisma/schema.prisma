@@ -218,6 +218,8 @@ model Cafe {
   stockCountSessions StockCountSession[]
   toleranceRules   ToleranceRule[]
   tenderReconciliations TenderReconciliation[]
+  handoverSessions  HandoverSession[]
+  openingExceptions OpeningException[]
 }
 
 // Per-cafe module flags + workflow, controlled ONLY by SUPER_ADMIN.
@@ -320,6 +322,8 @@ model Branch {
   stockCountSessions StockCountSession[]
   toleranceRules ToleranceRule[]
   tenderReconciliations TenderReconciliation[]
+  handoverSessions  HandoverSession[]
+  openingExceptions OpeningException[]
 
   @@unique([cafeId, menuSlug])
   @@index([cafeId])
@@ -508,6 +512,12 @@ model User {
   correctionsApproved StockCountCorrection[] @relation("CorrectionApprover")
   tendersSubmitted  TenderReconciliation[] @relation("TenderSubmitter")
   tendersApproved   TenderReconciliation[] @relation("TenderApprover")
+  handoversOutgoing HandoverSession[] @relation("HandoverOutgoing")
+  handoversIncoming HandoverSession[] @relation("HandoverIncoming")
+  handoverExceptions HandoverSession[] @relation("HandoverException")
+  handoverCashVerified HandoverSession[] @relation("HandoverCashVerifier")
+  stockAcknowledgements HandoverStockAcknowledgement[]
+  openingExceptionsAuthorized OpeningException[]
 
   @@index([cafeId])
   @@index([branchId])
@@ -992,6 +1002,9 @@ model Shift {
   stockCountSessions StockCountSession[]
   cashReasonCode ReasonCode? @relation(fields: [cashReasonCodeId], references: [id], onDelete: SetNull)
   tenderReconciliations TenderReconciliation[]
+  handoversOutgoing HandoverSession[] @relation("HandoverOutgoingShift")
+  handoversIncoming HandoverSession[] @relation("HandoverIncomingShift")
+  openingExceptions OpeningException[]
 
   @@unique([branchId, shiftNumber])
   @@index([cafeId])
@@ -1064,10 +1077,14 @@ model CustodyPeriod {
   participants CustodyParticipant[]
   shiftLinks   ShiftCustody[]
   countSessions StockCountSession[]
+  handoversOutCash  HandoverSession[] @relation("HandoverOutCash")
+  handoversOutStock HandoverSession[] @relation("HandoverOutStock")
+  handoversInCash   HandoverSession[] @relation("HandoverInCash")
+  handoversInStock  HandoverSession[] @relation("HandoverInStock")
+  openingExceptions OpeningException[]
 
-  // Consumers created by later tasks (count sessions, variance cases,
-  // handovers, opening exceptions) add their back-relations in the migration
-  // that creates them — a relation cannot name a model that does not exist.
+  // Variance cases add their back-relation in the migration that creates
+  // them — a relation cannot name a model that does not exist.
 
   @@index([cafeId, status])
   @@index([branchId, scope, status])
@@ -1159,6 +1176,9 @@ model ReasonCode {
   corrections StockCountCorrection[]
   tenderReconciliations TenderReconciliation[]
   cashShifts            Shift[]
+  handoverRejections    HandoverSession[]
+  stockAckDisputes      HandoverStockAcknowledgement[]
+  openingExceptions     OpeningException[]
 
   @@unique([cafeId, domain, code])
   @@index([cafeId, domain])
@@ -1218,14 +1238,22 @@ model StockCountSession {
   firstCounter User? @relation("CountFirstCounter", fields: [firstCounterId], references: [id], onDelete: SetNull)
   confirmedBy  User? @relation("CountConfirmer", fields: [confirmedById], references: [id], onDelete: SetNull)
 
-  lines StockCountLine[]
+  /// The handover that consumed this count and froze it. Created in the same
+  /// migration as HandoverSession, so the key is born with its target.
+  lockedByHandoverId String?
 
-  // lockedByHandoverId ships in M8, with the HandoverSession it points at.
-  // Rebases and handovers add their back-relations in their own tasks.
+  lines StockCountLine[]
+  lockedByHandover HandoverSession?  @relation("CountLockedByHandover", fields: [lockedByHandoverId], references: [id], onDelete: SetNull)
+  /// Handovers that carried this count as their stock evidence. Distinct from
+  /// `lockedByHandover`: being cited is not being frozen.
+  handovers        HandoverSession[] @relation("HandoverCountSession")
+
+  // Rebases add their back-relations in their own tasks.
 
   @@index([cafeId, createdAt])
   @@index([branchId, status])
   @@index([custodyPeriodId])
+  @@index([lockedByHandoverId])
 }
 
 // ───────────────────────────── Count lines ───────────────────────────
@@ -1296,6 +1324,7 @@ model StockCountLine {
 
   recounts    StockCountRecount[]
   corrections StockCountCorrection[]
+  handoverAcknowledgements HandoverStockAcknowledgement[]
 
   // Variance case and rebase attach in their own tasks.
 
@@ -1484,6 +1513,211 @@ model TenderReconciliation {
   @@unique([shiftId, method])
   @@index([cafeId, status])
   @@index([shiftId])
+}
+
+// ────────────────────────── Handover (T17) ───────────────────────────
+// A handover has two sides, and the incoming one inspects stock as well as
+// cash.
+//
+// An earlier revision verified only cash on the incoming side, which made a
+// stock handover one-sided in practice: the incoming custodian signed for a
+// store room they had never looked at, and there was nowhere to record that
+// they had not. HandoverStockAcknowledgement is that record — per line,
+// blind, and its own row rather than a column on the count it inspects.
+//
+// Four custody columns, not one and not two. Custody is scope-separated
+// (CASH and STOCK are separately held), and a handover has two sides:
+// outgoing × incoming × cash × stock is four. Collapsing any pair would make
+// a cash-only or stock-only handover inexpressible, and those are the
+// ordinary cases — the cashier hands over the drawer while the barista keeps
+// the store room.
+//
+// The two sides are two sets of columns for the same reason they are two
+// people. What the outgoing side submitted and what the incoming side
+// counted are different fields, so recording a verification cannot rewrite
+// the evidence being verified. The state machine that also forbids it in
+// time belongs to the handover services, not to this schema.
+enum HandoverStatus {
+  DRAFT
+  OUTGOING_SUBMITTED
+  INCOMING_REVIEW
+  ACCEPTED
+  REJECTED
+  MANAGER_EXCEPTION
+  COMPLETED
+}
+
+enum OpeningExceptionKind {
+  CASH_MISMATCH
+  STOCK_MISMATCH
+  FREE_FORM_OPENING
+  NO_INCOMING
+  FIRST_OPENING
+  MANAGER_ADJUSTMENT
+}
+
+enum StockAckDecision {
+  ACCEPTED
+  DISPUTED
+}
+
+model HandoverSession {
+  id       String         @id @default(cuid())
+  cafeId   String
+  branchId String
+  status   HandoverStatus @default(DRAFT)
+
+  /// Scope-separated on both sides. NULL means "this scope did not move".
+  outgoingCashCustodyId  String?
+  outgoingStockCustodyId String?
+  incomingCashCustodyId  String?
+  incomingStockCustodyId String?
+
+  outgoingShiftId String
+  incomingShiftId String?
+  outgoingUserId  String
+  incomingUserId  String?
+
+  /// The count carried as stock evidence. Distinct from the count this
+  /// handover LOCKS, which points the other way.
+  stockCountSessionId String?
+
+  idempotencyKey String? @unique
+
+  submittedAt DateTime?
+  reviewedAt  DateTime?
+  acceptedAt  DateTime?
+  rejectedAt  DateTime?
+  completedAt DateTime?
+
+  /// Required once the status says somebody refused — see the CHECK in the
+  /// migration. A refusal with no stated reason is not one anyone can act on.
+  rejectionReasonCodeId String?
+  rejectionNote         String?
+
+  /// Manager/owner authority, and never anonymous: MANAGER_EXCEPTION without
+  /// an authorising user is refused by the database.
+  exceptionById   String?
+  exceptionReason String?
+  exceptionAt     DateTime?
+
+  /// Outgoing evidence: what the leaving custodian says is in the drawer.
+  proposedOpeningCash Decimal? @db.Decimal(10, 2)
+  /// Incoming verification: what the arriving custodian counted. Separate
+  /// columns, so one cannot overwrite the other.
+  countedOpeningCash Decimal?  @db.Decimal(10, 2)
+  cashVarianceAmount Decimal?  @db.Decimal(10, 2)
+  cashVerifiedAt     DateTime?
+  cashVerifiedById   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cafe   Cafe   @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  /// Restrict: custody is the accountability record. Deleting the period a
+  /// handover cites would erase who was answerable and leave the transfer.
+  outgoingCashCustody  CustodyPeriod? @relation("HandoverOutCash", fields: [outgoingCashCustodyId], references: [id], onDelete: Restrict)
+  outgoingStockCustody CustodyPeriod? @relation("HandoverOutStock", fields: [outgoingStockCustodyId], references: [id], onDelete: Restrict)
+  incomingCashCustody  CustodyPeriod? @relation("HandoverInCash", fields: [incomingCashCustodyId], references: [id], onDelete: Restrict)
+  incomingStockCustody CustodyPeriod? @relation("HandoverInStock", fields: [incomingStockCustodyId], references: [id], onDelete: Restrict)
+
+  outgoingShift Shift  @relation("HandoverOutgoingShift", fields: [outgoingShiftId], references: [id], onDelete: Restrict)
+  incomingShift Shift? @relation("HandoverIncomingShift", fields: [incomingShiftId], references: [id], onDelete: SetNull)
+
+  outgoingUser   User  @relation("HandoverOutgoing", fields: [outgoingUserId], references: [id])
+  incomingUser   User? @relation("HandoverIncoming", fields: [incomingUserId], references: [id], onDelete: SetNull)
+  exceptionBy    User? @relation("HandoverException", fields: [exceptionById], references: [id], onDelete: SetNull)
+  cashVerifiedBy User? @relation("HandoverCashVerifier", fields: [cashVerifiedById], references: [id], onDelete: SetNull)
+
+  stockCountSession StockCountSession? @relation("HandoverCountSession", fields: [stockCountSessionId], references: [id], onDelete: SetNull)
+  rejectionReason   ReasonCode?        @relation(fields: [rejectionReasonCodeId], references: [id], onDelete: SetNull)
+
+  lockedCounts          StockCountSession[]            @relation("CountLockedByHandover")
+  stockAcknowledgements HandoverStockAcknowledgement[]
+  openingExceptions     OpeningException[]
+
+  @@index([cafeId, status])
+  @@index([branchId, createdAt])
+  @@index([outgoingShiftId])
+}
+
+/// The incoming side inspects stock, line by line, blind.
+model HandoverStockAcknowledgement {
+  id               String @id @default(cuid())
+  handoverId       String
+  stockCountLineId String
+
+  /// Blind spot-count by the incoming custodian. NULL means the line was
+  /// accepted without being counted, which is not the same as counting it
+  /// and finding nothing.
+  incomingCountedQuantity Decimal? @db.Decimal(12, 3)
+  /// effectiveCountedQuantity plus any ledger movement above the line's
+  /// itemVersion — what was actually being handed over, not what was counted
+  /// some time earlier.
+  handedOverQuantity      Decimal  @db.Decimal(12, 3)
+  varianceQuantity        Decimal? @db.Decimal(12, 3)
+
+  decision            StockAckDecision @default(ACCEPTED)
+  disputeReasonCodeId String?
+  disputeNote         String?
+
+  acknowledgedAt   DateTime @default(now())
+  acknowledgedById String
+
+  handover HandoverSession @relation(fields: [handoverId], references: [id], onDelete: Cascade)
+  /// Restrict: an acknowledgement is evidence about a specific counted line,
+  /// and is unreadable once that line is gone.
+  line     StockCountLine  @relation(fields: [stockCountLineId], references: [id], onDelete: Restrict)
+
+  acknowledgedBy User        @relation(fields: [acknowledgedById], references: [id])
+  disputeReason  ReasonCode? @relation(fields: [disputeReasonCodeId], references: [id], onDelete: SetNull)
+
+  @@unique([handoverId, stockCountLineId])
+  @@index([handoverId])
+}
+
+/// Opening a shift against the evidence, on somebody's authority.
+model OpeningException {
+  id              String  @id @default(cuid())
+  cafeId          String
+  branchId        String
+  shiftId         String?
+  custodyPeriodId String?
+  handoverId      String?
+
+  kind OpeningExceptionKind
+
+  proposedAmount Decimal? @db.Decimal(10, 2)
+  actualAmount   Decimal? @db.Decimal(10, 2)
+  varianceAmount Decimal? @db.Decimal(10, 2)
+
+  /// Non-nullable, per spec §17. An exception is somebody overriding what the
+  /// records say; a stated reason is the minimum of what that costs.
+  reasonCodeId   String
+  note           String?
+  authorizedById String
+
+  createdAt DateTime @default(now())
+
+  cafe   Cafe   @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  shift  Shift? @relation(fields: [shiftId], references: [id], onDelete: SetNull)
+
+  custodyPeriod CustodyPeriod?   @relation(fields: [custodyPeriodId], references: [id], onDelete: Restrict)
+  handover      HandoverSession? @relation(fields: [handoverId], references: [id], onDelete: SetNull)
+
+  /// Restrict, unlike the SetNull elsewhere: there is no valid state for this
+  /// row without a reason, so the reason cannot be retired out from under it.
+  reasonCode   ReasonCode @relation(fields: [reasonCodeId], references: [id])
+  authorizedBy User       @relation(fields: [authorizedById], references: [id])
+
+  // `varianceCase` arrives with the VarianceCase table it names.
+
+  @@index([cafeId, createdAt])
+  @@index([branchId, kind])
+  @@index([handoverId])
 }
 
 enum InventoryUnit {

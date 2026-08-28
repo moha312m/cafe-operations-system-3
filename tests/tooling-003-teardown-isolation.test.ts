@@ -101,8 +101,15 @@ type DelegateBag = Record<
 >;
 const delegates = db as unknown as DelegateBag;
 
-/** A model no migration has created. Later work ships it; today it is absent. */
-const ABSENT_MODEL = "handoverSession";
+/**
+ * A model no migration has created. Later work ships it; today it is absent.
+ *
+ * This was `handoverSession` until T17 built it — and the guard below is what
+ * caught that, rather than the suite quietly going vacuous. `varianceCase`
+ * is T18's, so it takes over the role until that task lands and moves the
+ * marker on again.
+ */
+const ABSENT_MODEL = "varianceCase";
 
 /** Name the absent model the way a leaking teardown did: without checking. */
 async function deleteFromAbsentModel(cafeId: string) {
@@ -114,10 +121,11 @@ async function deleteFromAbsentModel(cafeId: string) {
 
 describe("TOOLING-003 teardown survives a cleanup step that cannot run", () => {
   test("the absent delegate this suite relies on is genuinely absent", () => {
-    // Guards the rest of the suite against becoming vacuous. If a later task
-    // adds HandoverSession, the steps below would quietly start succeeding
-    // and stop proving anything about failure. This test fails first, and
-    // says what to do about it.
+    // Guards the rest of the suite against becoming vacuous. Once the model
+    // named above exists, the steps below would quietly start succeeding and
+    // stop proving anything about failure. This test fails first, and says
+    // what to do about it — which is exactly what happened when T17 shipped
+    // HandoverSession.
     assert.equal(
       delegates[ABSENT_MODEL],
       undefined,
