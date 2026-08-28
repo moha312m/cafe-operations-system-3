@@ -1081,3 +1081,221 @@ export async function confirmCountSession(args: {
     alreadyConfirmed: false,
   };
 }
+
+// ──────────────────── Corrections and the effective figure ───────────
+//
+// Somebody miscounts, or writes 15 where they meant 1.5. The count has to be
+// correctable, and the correction must not destroy the thing it corrects.
+//
+// That is why a line carries two numbers which must never collapse into one:
+//
+//   countedQuantity           what was observed. Evidence. Written once at
+//                             capture and never again.
+//   effectiveCountedQuantity  what the business acts on. Equals the
+//                             observation until an APPROVED correction
+//                             supersedes it.
+//
+// `countedQuantity` is absent from the approval's update payload, not merely
+// set to its own value. An investigation into a repeated shortage needs to
+// see that a figure was corrected and by how much; overwriting the original
+// would erase exactly that, leaving a tidy record of a count that was always
+// right.
+//
+// A correction is also not something one person does alone. It costs a reason
+// code from the café's own STOCK vocabulary and a second signature — and
+// holding `stock_count.approve_correction` is not the same as being a second
+// person, so the author is refused their own approval whatever keys they
+// hold. Every attempt, approved or not, stays readable: the trail is the
+// point of having corrections at all.
+
+export const CORRECTION_CREATED_AUDIT_ACTION = "CORRECTION_CREATED";
+export const CORRECTION_APPROVED_AUDIT_ACTION = "CORRECTION_APPROVED";
+
+/** A STOCK reason code of this café's, or a refusal saying which it was. */
+async function assertStockReason(reasonCodeId: string, cafeId: string) {
+  if (!reasonCodeId) throw new ApiError(400, "لازم تحدد سبب التصحيح");
+  const reason = await db.reasonCode.findUnique({
+    where: { id: reasonCodeId },
+    select: { cafeId: true, domain: true, isActive: true },
+  });
+  if (!reason || reason.cafeId !== cafeId || reason.domain !== "STOCK") {
+    throw new ApiError(400, "سبب التصحيح مش من أسباب المخزون بتاعة الكافيه");
+  }
+  if (!reason.isActive) throw new ApiError(400, "سبب التصحيح ده متوقف");
+}
+
+/**
+ * Propose a different figure for a counted line.
+ *
+ * Records what it is replacing — the figure currently IN FORCE, which after
+ * an earlier approved correction is that correction's value rather than the
+ * original observation. Writes nothing to the line: a proposal is not a
+ * decision, and a line that moved on proposal would let one person correct a
+ * count by simply asking to.
+ */
+export async function createCountCorrection(args: {
+  lineId: string;
+  newCountedQuantity: number;
+  reasonCodeId: string;
+  note?: string;
+  actorId: string;
+  sessionId?: string;
+  cafeId?: string;
+  viewerBranchId?: string | null;
+}): Promise<{ correctionId: string; status: "PENDING_APPROVAL" }> {
+  if (!Number.isFinite(args.newCountedQuantity) || args.newCountedQuantity < 0) {
+    throw new ApiError(400, "الكمية المصححة لازم تكون رقم مش سالب");
+  }
+
+  const line = await db.stockCountLine.findUnique({
+    where: { id: args.lineId },
+    select: {
+      id: true,
+      sessionId: true,
+      countedQuantity: true,
+      effectiveCountedQuantity: true,
+      session: { select: { id: true, cafeId: true, branchId: true, status: true } },
+    },
+  });
+  const wrongSession = args.sessionId !== undefined && line?.sessionId !== args.sessionId;
+  const wrongCafe = args.cafeId !== undefined && line?.session.cafeId !== args.cafeId;
+  if (!line || wrongSession || wrongCafe) {
+    throw new ApiError(404, "سطر الجرد غير موجود");
+  }
+  if (args.viewerBranchId && line.session.branchId !== args.viewerBranchId) {
+    throw new ApiError(403, "ليس لديك صلاحية على فرع تاني");
+  }
+  if (line.countedQuantity === null) {
+    throw new ApiError(400, "مفيش كمية معدودة تتصحح — الصنف ده لسه ما اتعدش");
+  }
+
+  await assertStockReason(args.reasonCodeId, line.session.cafeId);
+
+  // What is being superseded is the figure in force, not the original
+  // observation: correcting a correction starts from where the line stands.
+  const oldCountedQuantity = round3(
+    Number(line.effectiveCountedQuantity ?? line.countedQuantity)
+  );
+  const newCountedQuantity = round3(args.newCountedQuantity);
+
+  const correction = await db.stockCountCorrection.create({
+    data: {
+      lineId: line.id,
+      oldCountedQuantity,
+      newCountedQuantity,
+      reasonCodeId: args.reasonCodeId,
+      note: args.note ?? null,
+      actorId: args.actorId,
+      status: "PENDING_APPROVAL",
+    },
+    select: { id: true },
+  });
+
+  await audit({
+    cafeId: line.session.cafeId,
+    userId: args.actorId,
+    action: CORRECTION_CREATED_AUDIT_ACTION,
+    entity: "StockCountCorrection",
+    entityId: correction.id,
+    details: {
+      sessionId: line.session.id,
+      lineId: line.id,
+      oldCountedQuantity,
+      newCountedQuantity,
+      reasonCodeId: args.reasonCodeId,
+      note: args.note ?? null,
+    },
+  });
+
+  return { correctionId: correction.id, status: "PENDING_APPROVAL" };
+}
+
+/**
+ * THE only writer of `effectiveCountedQuantity` after capture.
+ *
+ * One transaction: mark the correction approved, move the working figure, and
+ * recompute the variance from it. `countedQuantity` is not in the update
+ * payload at all — COUNT-013 reads the raw column as text before and after,
+ * so a value that merely formats the same cannot pass for one that was left
+ * alone.
+ */
+export async function approveCountCorrection(args: {
+  correctionId: string;
+  approvedById: string;
+  cafeId?: string;
+  viewerBranchId?: string | null;
+}): Promise<{ correctionId: string; effectiveCountedQuantity: number; varianceQuantity: number }> {
+  const correction = await db.stockCountCorrection.findUnique({
+    where: { id: args.correctionId },
+    select: {
+      id: true,
+      status: true,
+      actorId: true,
+      oldCountedQuantity: true,
+      newCountedQuantity: true,
+      line: {
+        select: {
+          id: true,
+          expectedQuantity: true,
+          session: { select: { id: true, cafeId: true, branchId: true } },
+        },
+      },
+    },
+  });
+  if (
+    !correction ||
+    (args.cafeId !== undefined && correction.line.session.cafeId !== args.cafeId)
+  ) {
+    throw new ApiError(404, "التصحيح غير موجود");
+  }
+  if (args.viewerBranchId && correction.line.session.branchId !== args.viewerBranchId) {
+    throw new ApiError(403, "ليس لديك صلاحية على فرع تاني");
+  }
+  if (correction.status !== "PENDING_APPROVAL") {
+    throw new ApiError(409, "التصحيح ده اتبتّ فيه خلاص");
+  }
+  // Holding the key is not the same as being a second person.
+  if (correction.actorId === args.approvedById) {
+    throw new ApiError(403, "مينفعش تعتمد تصحيح انت اللي طلبته — لازم توقيع تاني");
+  }
+
+  const effective = round3(Number(correction.newCountedQuantity));
+  const variance = round3(effective - Number(correction.line.expectedQuantity ?? 0));
+  const approvedAt = new Date();
+
+  await db.$transaction(async (tx) => {
+    // Conditional, so two approvals racing move the figure once.
+    const claimed = await tx.stockCountCorrection.updateMany({
+      where: { id: correction.id, status: "PENDING_APPROVAL" },
+      data: { status: "APPROVED", approvedById: args.approvedById, approvedAt },
+    });
+    if (claimed.count === 0) throw new ApiError(409, "التصحيح ده اتبتّ فيه خلاص");
+
+    await tx.stockCountLine.update({
+      where: { id: correction.line.id },
+      data: {
+        // `countedQuantity` is deliberately absent. See the note above.
+        effectiveCountedQuantity: effective,
+        varianceQuantity: variance,
+      },
+    });
+  });
+
+  await audit({
+    cafeId: correction.line.session.cafeId,
+    userId: args.approvedById,
+    action: CORRECTION_APPROVED_AUDIT_ACTION,
+    entity: "StockCountCorrection",
+    entityId: correction.id,
+    details: {
+      sessionId: correction.line.session.id,
+      lineId: correction.line.id,
+      oldCountedQuantity: Number(correction.oldCountedQuantity),
+      effectiveCountedQuantity: effective,
+      varianceQuantity: variance,
+      requestedById: correction.actorId,
+    },
+  });
+
+  return { correctionId: correction.id, effectiveCountedQuantity: effective, varianceQuantity: variance };
+}
