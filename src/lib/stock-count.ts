@@ -32,7 +32,7 @@ import type {
 } from "@prisma/client";
 import { db } from "@/lib/db";
 import { ApiError } from "@/lib/api";
-import { audit } from "@/lib/audit";
+import { audit, auditInTransaction } from "@/lib/audit";
 import { round3 } from "@/lib/costing";
 import { captureCountPoint } from "@/lib/count-point";
 import { activeCustody } from "@/lib/custody";
@@ -1178,6 +1178,11 @@ export async function createCountCorrection(args: {
   );
   const newCountedQuantity = round3(args.newCountedQuantity);
 
+  // Changing a figure the incoming custodian has already accepted is a
+  // different act from correcting a draft, and a reviewer needs to be able to
+  // tell which one they are looking at.
+  const postCustodyTransfer = isCountLocked(line.session);
+
   const correction = await db.stockCountCorrection.create({
     data: {
       lineId: line.id,
@@ -1187,6 +1192,7 @@ export async function createCountCorrection(args: {
       note: args.note ?? null,
       actorId: args.actorId,
       status: "PENDING_APPROVAL",
+      postCustodyTransfer,
     },
     select: { id: true },
   });
@@ -1204,6 +1210,7 @@ export async function createCountCorrection(args: {
       newCountedQuantity,
       reasonCodeId: args.reasonCodeId,
       note: args.note ?? null,
+      postCustodyTransfer,
     },
   });
 
@@ -1298,4 +1305,115 @@ export async function approveCountCorrection(args: {
   });
 
   return { correctionId: correction.id, effectiveCountedQuantity: effective, varianceQuantity: variance };
+}
+
+// ─────────────────────────── The LOCKED state ────────────────────────
+//
+// A state that means nothing is worse than no state, because readers infer
+// meaning from the name. `LOCKED` sat in the enum through the whole schema
+// phase without one. It now has exactly one entry point and exactly one
+// consequence.
+//
+// ENTRY. A CONFIRMED session becomes LOCKED when an accepted handover has
+// rebased stock from it and transferred custody. `lockedByHandoverId` names
+// that handover, so why a count is closed reads off the count itself instead
+// of being inferred from dates.
+//
+// CONSEQUENCE. Correcting a locked count is still possible — a mistake found
+// after a handover is still a mistake — but it is flagged
+// `postCustodyTransfer`. Changing a figure the incoming custodian has already
+// accepted is a different act from correcting a draft, and a reviewer needs
+// to be able to tell which one they are looking at. Locking changes the flag,
+// not the approval requirement: the second signature is still required.
+
+/** The state a session is created in. Nothing transitions INTO it. */
+export const COUNT_SESSION_ENTRY_STATUS: StockCountStatus = "DRAFT";
+
+/**
+ * Every legal session move, and the runtime that makes each one.
+ *
+ * DRAFT            → IN_PROGRESS       first capture (`recordCountLine`)
+ * IN_PROGRESS      → SUBMITTED | RECOUNT_REQUIRED   `submitCountSession`
+ * SUBMITTED        → RECOUNT_REQUIRED  a re-submission that found a gap
+ * SUBMITTED        → CONFIRMED         `confirmCountSession`
+ * RECOUNT_REQUIRED → SUBMITTED         re-submitted once recounts resolved
+ * RECOUNT_REQUIRED → CONFIRMED         every line settled, including accepted
+ * CONFIRMED        → LOCKED            `lockCountSession`, from a handover
+ *
+ * LOCKED leads nowhere. Reopening a count another party has accepted would
+ * let the record of what they accepted be quietly rewritten.
+ */
+export const COUNT_SESSION_TRANSITIONS: Record<StockCountStatus, StockCountStatus[]> = {
+  DRAFT: ["IN_PROGRESS"],
+  IN_PROGRESS: ["SUBMITTED", "RECOUNT_REQUIRED"],
+  SUBMITTED: ["RECOUNT_REQUIRED", "CONFIRMED"],
+  RECOUNT_REQUIRED: ["SUBMITTED", "CONFIRMED"],
+  CONFIRMED: ["LOCKED"],
+  LOCKED: [],
+};
+
+export function isCountLocked(s: { status: StockCountStatus }): boolean {
+  return s.status === "LOCKED";
+}
+
+export const COUNT_LOCKED_AUDIT_ACTION = "COUNT_LOCKED";
+
+/**
+ * Freeze a confirmed count as the baseline a handover accepted.
+ *
+ * Takes the caller's transaction client and never opens its own, for the same
+ * reason custody's mutators do not: accepting a handover closes one custody,
+ * opens the next, rebases stock and locks the count it rebased from as ONE
+ * act. A lock that committed independently would be a statement about a
+ * custody transfer that may not have happened.
+ *
+ * The audit row goes through `auditInTransaction` for that same reason — it
+ * commits or rolls back with the lock, rather than recording a freeze that
+ * was undone a moment later.
+ */
+export async function lockCountSession(
+  tx: Prisma.TransactionClient,
+  args: { sessionId: string; handoverId: string; actorId?: string | null }
+): Promise<{ status: "LOCKED"; lockedAt: Date }> {
+  const session = await tx.stockCountSession.findUnique({
+    where: { id: args.sessionId },
+    select: { id: true, cafeId: true, branchId: true, status: true },
+  });
+  if (!session) throw new ApiError(404, "جلسة الجرد غير موجودة");
+  if (session.status !== "CONFIRMED") {
+    throw new ApiError(
+      409,
+      "مينفعش تقفل جرد لسه متأكدش — الجلسة لازم تكون CONFIRMED"
+    );
+  }
+
+  const handover = await tx.handoverSession.findUnique({
+    where: { id: args.handoverId },
+    select: { cafeId: true, branchId: true },
+  });
+  if (!handover) throw new ApiError(404, "جلسة التسليم غير موجودة");
+  if (handover.cafeId !== session.cafeId || handover.branchId !== session.branchId) {
+    throw new ApiError(400, "التسليم مش تابع لنفس الفرع");
+  }
+
+  const lockedAt = new Date();
+  await tx.stockCountSession.update({
+    where: { id: session.id },
+    data: { status: "LOCKED", lockedAt, lockedByHandoverId: args.handoverId },
+  });
+
+  await auditInTransaction(tx, {
+    cafeId: session.cafeId,
+    userId: args.actorId ?? null,
+    action: COUNT_LOCKED_AUDIT_ACTION,
+    entity: "StockCountSession",
+    entityId: session.id,
+    details: {
+      branchId: session.branchId,
+      handoverId: args.handoverId,
+      lockedAt: lockedAt.toISOString(),
+    },
+  });
+
+  return { status: "LOCKED", lockedAt };
 }
