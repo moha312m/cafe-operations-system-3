@@ -262,6 +262,18 @@ model CafeSettings {
   periodicCountType StockCountType   @default(FULL)
   stockCountMode    StockCountMode   @default(BLIND)
 
+  // Variance and recount policy. Permissive by default and explicitly
+  // backfilled for existing cafés: whether a discrepancy stops a handover is
+  // the owner's decision, and no shop should wake up signed into blocking it
+  // never agreed to. `varianceHardBlockAmount` NULL under blocking means
+  // "anything we can actually price", which is different from zero.
+  varianceBlocksHandover  Boolean  @default(false)
+  varianceHardBlockAmount Decimal? @db.Decimal(10, 2)
+
+  recountRequiredOutsideTolerance Boolean @default(true)
+  recountMaxAttempts              Int     @default(2)
+  allowSelfRecount                Boolean @default(true)
+
   // Extra workflow switches
   requireShiftForQrOrders     Boolean @default(false)
   allowCashierToPrepareOrders Boolean @default(false)

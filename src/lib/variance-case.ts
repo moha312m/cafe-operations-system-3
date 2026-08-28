@@ -116,6 +116,89 @@ const impactColumns = (impact: FinancialImpact) =>
         financialImpactUnavailableReason: impact.reason,
       };
 
+// ───────────────────── Blocking and recount policy ───────────────────
+// Whether a variance stops a handover is a business decision, not a product
+// constant, so it is read from the café rather than assumed.
+
+export type VarianceBlockingPolicy = {
+  blocksHandover: boolean;
+  hardBlockAmount: number | null;
+};
+
+export type RecountPolicy = { required: boolean; maxAttempts: number; allowSelf: boolean };
+
+/** Defaults for a café with no settings row yet — permissive, like the column defaults. */
+const NO_BLOCKING: VarianceBlockingPolicy = { blocksHandover: false, hardBlockAmount: null };
+
+export async function resolveVarianceBlocking(
+  cafeId: string,
+  client: Prisma.TransactionClient | typeof db = db
+): Promise<VarianceBlockingPolicy> {
+  const settings = await client.cafeSettings.findUnique({
+    where: { cafeId },
+    select: { varianceBlocksHandover: true, varianceHardBlockAmount: true },
+  });
+  if (!settings) return NO_BLOCKING;
+  return {
+    blocksHandover: settings.varianceBlocksHandover,
+    hardBlockAmount:
+      settings.varianceHardBlockAmount === null ? null : Number(settings.varianceHardBlockAmount),
+  };
+}
+
+/**
+ * Whether one case stops the shop.
+ *
+ * The `financialImpactAvailable` gate is spec §12 read in the direction that
+ * is easy to get backwards. It is tempting to treat "we cannot price this" as
+ * the dangerous case and block — but that turns missing cost data into an
+ * operational outage, and missing cost data is what a café with an incomplete
+ * recipe book has every single day. Unknown is not "presumed large", so an
+ * unquantified impact never blocks, whatever the policy says.
+ */
+export function caseIsBlocking(args: {
+  policy: VarianceBlockingPolicy;
+  amountVariance: number | null;
+  financialImpactAvailable: boolean;
+}): boolean {
+  if (!args.policy.blocksHandover) return false;
+  if (!args.financialImpactAvailable) return false;
+
+  // "Blocking on, no threshold" is a coherent instruction: stop for anything
+  // we can actually price.
+  if (args.policy.hardBlockAmount === null) return true;
+
+  // A threshold with nothing to measure against it cannot be exceeded.
+  if (args.amountVariance === null) return false;
+
+  // At the amount counts as blocking — it is the block amount, not the
+  // largest permitted one. Sign is irrelevant: an unexplained surplus is as
+  // much a discrepancy as an unexplained shortage.
+  return Math.abs(args.amountVariance) >= args.policy.hardBlockAmount;
+}
+
+export async function resolveRecountPolicy(
+  cafeId: string,
+  client: Prisma.TransactionClient | typeof db = db
+): Promise<RecountPolicy> {
+  const settings = await client.cafeSettings.findUnique({
+    where: { cafeId },
+    select: {
+      recountRequiredOutsideTolerance: true,
+      recountMaxAttempts: true,
+      allowSelfRecount: true,
+    },
+  });
+  // The column defaults, restated for a café whose settings row is not there
+  // yet: a recount is required, twice, and may be done by the same person.
+  if (!settings) return { required: true, maxAttempts: 2, allowSelf: true };
+  return {
+    required: settings.recountRequiredOutsideTolerance,
+    maxAttempts: settings.recountMaxAttempts,
+    allowSelf: settings.allowSelfRecount,
+  };
+}
+
 /**
  * Open a variance case for one piece of evidence, inside the caller's
  * transaction, at most once.
@@ -132,6 +215,16 @@ export async function openVarianceCase(
   const existing = await tx.varianceCase.findFirst({ where, select: { id: true } });
   if (existing) return { caseId: existing.id, created: false };
 
+  // Resolved once, at open time, and stored. A verdict recomputed at read
+  // time would silently change under a case that was already decided when
+  // the owner edited the policy afterwards.
+  const policy = await resolveVarianceBlocking(args.cafeId, tx);
+  const blocking = caseIsBlocking({
+    policy,
+    amountVariance: args.amountVariance ?? null,
+    financialImpactAvailable: args.financialImpact.available,
+  });
+
   try {
     const created = await tx.varianceCase.create({
       data: {
@@ -145,6 +238,7 @@ export async function openVarianceCase(
         amountVariance: args.amountVariance ?? null,
         ...impactColumns(args.financialImpact),
         confidence: args.confidence ?? "UNVERIFIABLE",
+        blocking,
         openedById: args.openedById,
       },
       select: { id: true },
