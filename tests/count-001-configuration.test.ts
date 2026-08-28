@@ -95,15 +95,35 @@ describe("COUNT-001 count configuration", () => {
   test("every pre-existing café reads NO_SHIFT_COUNT", async () => {
     // The backfill's whole point: nobody is newly required to count.
     //
-    // Scoped to real cafés. Other suites create their own tenants, which are
-    // NEW cafés and therefore correctly get the HYBRID column default — they
-    // are not evidence about the backfill either way. Asserting over every
-    // row would make this test fail for a reason that has nothing to do with
-    // what it checks, and it did exactly that once.
+    // "Pre-existing" means created before the migration that added the
+    // column — that is the only population the backfill ever touched. A café
+    // created afterwards correctly gets the HYBRID column default and is not
+    // evidence about the backfill either way.
+    //
+    // That distinction used to be drawn by NAME: anything not tagged `PH1`
+    // was assumed to be the developer's own long-lived café. It worked only
+    // because there happened to be exactly one such café and it happened to
+    // pre-date the migration. On a freshly migrated database every café is
+    // new, the seeded one is untagged, and the test failed for a reason that
+    // has nothing to do with what it checks — the same trap its own comment
+    // warns about.
+    //
+    // So the population is now taken from the migration's own timestamp,
+    // which is the fact the assertion is actually about. Where no café
+    // pre-dates the migration there is nothing to have been signed up, and
+    // that is a truthful pass rather than a lucky one.
+    const applied = await db.$queryRaw<{ finished_at: Date | null }[]>`
+      SELECT "finished_at" FROM "_prisma_migrations"
+       WHERE "migration_name" = '20260828100000_count_configuration'
+       LIMIT 1
+    `;
+    const migratedAt = applied[0]?.finished_at ?? null;
+    assert.ok(migratedAt, "the count-configuration migration must be recorded as applied");
+
     const forced = await db.cafeSettings.findMany({
       where: {
         stockCountPolicy: { not: "NO_SHIFT_COUNT" },
-        cafe: { name: { not: { startsWith: TAG_PREFIX } } },
+        cafe: { createdAt: { lt: migratedAt } },
       },
       select: { cafeId: true, stockCountPolicy: true },
     });

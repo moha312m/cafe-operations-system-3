@@ -216,6 +216,39 @@ describe("CASH-001 tender reconciliation and shift cash columns", () => {
     // The four columns are nullable because NULL is true: those shifts were
     // closed before tolerance, reasons and notes existed here. Backfilling a
     // default would have invented a reconciliation nobody performed.
+    //
+    // `preExisting` is whatever the database already held when the suite
+    // started. On the developer's long-lived database that was real history;
+    // on a freshly migrated test database it is empty, and this test failed on
+    // its own precondition — the honest signal that it had been reading
+    // ambient data all along.
+    //
+    // So when there is no history, the suite makes some. A shift that records
+    // none of the four values is exactly the shape of a shift closed before
+    // they existed, and it must still read NULL rather than acquire a verdict.
+    // Same invariant, no longer borrowed from a database this suite does not
+    // own.
+    if (preExisting.length === 0) {
+      // shiftNumber is unique per branch and this suite has already opened
+      // shifts here, so it is derived rather than assumed.
+      const last = await db.shift.aggregate({
+        where: { branchId },
+        _max: { shiftNumber: true },
+      });
+      preExisting = [
+        await db.shift.create({
+          data: {
+            cafeId,
+            branchId,
+            cashierId,
+            shiftNumber: (last._max.shiftNumber ?? 0) + 1,
+            openingCashAmount: 100,
+            expectedCashAmount: 100,
+          },
+          select: { id: true, actualCashAmount: true, cashDifference: true },
+        }),
+      ];
+    }
     assert.ok(preExisting.length > 0, "there must be prior shifts for this to mean anything");
 
     const now = await db.shift.findMany({
