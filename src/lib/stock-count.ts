@@ -23,7 +23,12 @@
 // counted. It becomes `IN_PROGRESS` when the first line is captured. Both
 // states are blind under a BLIND mode, so nothing is disclosed in between.
 
-import type { Prisma, StockCountType, StockCountStatus } from "@prisma/client";
+import type {
+  Prisma,
+  StockCountMode,
+  StockCountStatus,
+  StockCountType,
+} from "@prisma/client";
 import { db } from "@/lib/db";
 import { ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
@@ -269,4 +274,170 @@ export async function listCountSessions(args: {
     take: args.take ?? 50,
   });
   return rows.map(({ _count, ...s }) => ({ ...s, lineCount: _count.lines }));
+}
+
+// ───────────────────────── The blind read model ──────────────────────
+//
+// Spec §5. Somebody about to measure something must not be able to learn the
+// answer first, and "blind" has to mean blind at the RESPONSE, not merely
+// undrawn by the UI. The control is keyed on custody rather than on role, the
+// way SHIFT-003 keyed the cash target on holding the drawer: a manager who is
+// not counting keeps full visibility, and a manager who started the count
+// does not.
+//
+// Three fields are withheld together, because withholding only the first
+// would be theatre:
+//
+//   expectedQuantity  — the target itself
+//   varianceQuantity  — counted − expected, so expected = counted − variance
+//   costImpact        — |variance| × a cost the counter can read off the item
+//
+// They are DELETED rather than nulled. A null still tells the counter that a
+// figure exists and is being kept from them, and — more practically — invites
+// a client to render "expected: —" beside a field the server intends to be
+// absent. `redactBlindCount` set that precedent for the drawer.
+//
+// Two things never reach this route for anybody: `InventoryItem.currentStock`,
+// which is the theoretical figure under another name, and the ledger counters,
+// which LEDGER-004 keeps off the wire generally. Neither is in the projection
+// at all, so no redactor has to remember them.
+
+/** The figures a blind counter must not see, or trivially recompute. */
+export const BLIND_LINE_FIELDS = [
+  "expectedQuantity",
+  "varianceQuantity",
+  "costImpact",
+  "costImpactAvailable",
+  "costUnavailableReason",
+] as const;
+
+/** The statuses before the §5 disclosure point. */
+const PRE_DISCLOSURE_STATUSES: readonly StockCountStatus[] = ["DRAFT", "IN_PROGRESS"];
+
+type RedactableLine = { counterId: string | null };
+type RedactableSession = {
+  mode: StockCountMode;
+  status: StockCountStatus;
+  initiatedById: string;
+  lines: RedactableLine[];
+};
+
+/**
+ * Whether this viewer is one of the people this count is blind to.
+ *
+ * Initiator OR any line's counter. The initiator is included because starting
+ * a count is not supervising it — in a two-person café the person who opened
+ * the session is usually the person walking the shelves.
+ */
+export function countIsBlindTo(session: RedactableSession, viewerId: string): boolean {
+  if (session.mode !== "BLIND") return false;
+  if (!PRE_DISCLOSURE_STATUSES.includes(session.status)) return false;
+  return (
+    session.initiatedById === viewerId ||
+    session.lines.some((l) => l.counterId === viewerId)
+  );
+}
+
+/**
+ * Remove the count's targets from what this viewer is about to receive.
+ *
+ * Returns the session unchanged when the viewer is entitled to see it, so a
+ * caller can apply it unconditionally. The cast is deliberate and local: the
+ * runtime shape is narrower than `T` by exactly `BLIND_LINE_FIELDS`, which is
+ * the point, and every consumer of the redacted value is a JSON response.
+ */
+export function redactCountTargets<T extends RedactableSession>(
+  session: T,
+  viewerId: string
+): T {
+  if (!countIsBlindTo(session, viewerId)) return session;
+  return {
+    ...session,
+    lines: session.lines.map((line) => {
+      const copy = { ...line } as Record<string, unknown>;
+      for (const field of BLIND_LINE_FIELDS) delete copy[field];
+      return copy;
+    }),
+  } as unknown as T;
+}
+
+/**
+ * One session, shaped for reading.
+ *
+ * `currentStock` and the ledger counters are absent from the projection
+ * rather than removed afterwards: a field that is never selected cannot be
+ * forgotten by a redactor.
+ */
+const COUNT_SESSION_DETAIL = {
+  id: true,
+  cafeId: true,
+  branchId: true,
+  shiftId: true,
+  custodyPeriodId: true,
+  type: true,
+  status: true,
+  mode: true,
+  scopeDerivation: true,
+  startedAt: true,
+  submittedAt: true,
+  confirmedAt: true,
+  lockedAt: true,
+  initiatedById: true,
+  firstCounterId: true,
+  confirmedById: true,
+  lockedByHandoverId: true,
+  notes: true,
+  createdAt: true,
+  lines: {
+    select: {
+      id: true,
+      inventoryItemId: true,
+      unit: true,
+      disposition: true,
+      countedQuantity: true,
+      effectiveCountedQuantity: true,
+      countedAt: true,
+      counterId: true,
+      expectedQuantity: true,
+      varianceQuantity: true,
+      costImpact: true,
+      costImpactAvailable: true,
+      costUnavailableReason: true,
+      confidence: true,
+      expectedBasis: true,
+      reasonCodeId: true,
+      reasonNote: true,
+      inventoryItem: { select: { id: true, name: true, category: true, unit: true } },
+    },
+    orderBy: { inventoryItem: { name: "asc" } },
+  },
+} satisfies Prisma.StockCountSessionSelect;
+
+/**
+ * Load a session for a viewer, or refuse.
+ *
+ * A session belonging to another café is `404`, not `403`: a 403 would
+ * confirm the id exists, and one tenant learns nothing about another's
+ * records, including that they are there. A session at another branch of the
+ * viewer's OWN café is `403`, because the café is theirs and the branch is not.
+ */
+export async function getCountSessionForViewer(args: {
+  sessionId: string;
+  cafeId: string;
+  viewerId: string;
+  viewerBranchId: string | null;
+}) {
+  const session = await db.stockCountSession.findUnique({
+    where: { id: args.sessionId },
+    select: COUNT_SESSION_DETAIL,
+  });
+  if (!session || session.cafeId !== args.cafeId) {
+    throw new ApiError(404, "جلسة الجرد غير موجودة");
+  }
+  if (args.viewerBranchId && session.branchId !== args.viewerBranchId) {
+    throw new ApiError(403, "ليس لديك صلاحية على فرع تاني");
+  }
+
+  const blind = countIsBlindTo(session, args.viewerId);
+  return { ...redactCountTargets(session, args.viewerId), blind };
 }
