@@ -26,11 +26,12 @@
 // two movements in the same millisecond have distinct versions and wall-clock
 // ordering does not.
 //
-// `effectiveCountedQuantity`, not `countedQuantity`: an approved correction
-// supersedes the original observation. The original is never rewritten — it
-// is evidence of what was first seen, and editing it to match the corrected
-// figure would destroy the thing the correction exists to record. A rebase is
-// a separate, audited operational effect, not an edit to the count.
+// The figure acted on is the evidence in force, not necessarily the first
+// observation: a recount or an approved correction supersedes it. Neither
+// rewrites it — the first count is evidence of what was first seen, and
+// editing it to match a later figure would destroy the thing a recount or a
+// correction exists to record. A rebase is a separate, audited operational
+// effect, not an edit to the count.
 //
 // Everything goes through `applyStockMutation`, so the rebase takes the
 // item's row lock, advances the version and writes its own ledger row under
