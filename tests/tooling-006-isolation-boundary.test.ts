@@ -138,6 +138,21 @@ describe("TOOLING-006 test writes land only in the test database", () => {
         name: `${fx.marker} tea`, basePrice: "50.00",
       },
     });
+    // An explicit NOT_APPLICABLE recipe, for the same reason `policyProduct`
+    // carries one: the POS now refuses to create an order whose consumption it
+    // cannot read, and a product with no recipe is an unknown draw on the
+    // shelf rather than a zero one. This suite is about which DATABASE the
+    // writes land in, not about inventory, so the product states outright that
+    // it consumes nothing trackable instead of relying on a gap that no longer
+    // exists.
+    await db.recipe.create({
+      data: {
+        cafeId: fx.cafeId,
+        productId: product.id,
+        notApplicable: true,
+        notApplicableReason: "Test fixture — exercises isolation, consumes no stock",
+      },
+    });
 
     const created = await as<{ order?: { id: string } }>(fx.owner.email, "/api/orders", {
       method: "POST",
