@@ -33,15 +33,26 @@
 // recount against a balance that no longer exists — exactly the staleness the
 // lock/version contract exists to prevent.
 //
-// WHAT A RECOUNT MAY REWRITE. `countedQuantity` is the first observation and
-// is never touched: it is evidence of what was actually seen, and a later
-// count disagreeing with it does not make it untrue. What a recount does move
-// is the figure the business ACTS on — `effectiveCountedQuantity` — together
-// with the count point that figure is measured against, because the pair must
-// describe the same instant. A rebase reading a new figure against an old
-// cursor would double-count every movement in between. Every attempt,
-// including its own point and variance, is preserved in `StockCountRecount`,
-// and the first capture's point survives in its `ITEM_COUNTED` audit row.
+// WHAT A RECOUNT MAY REWRITE. Nothing of the first count. Its quantity,
+// expectation, cursor, basis, timestamp and counter all stay on the line
+// exactly as capture wrote them, and this recount's equivalents live in its
+// own `StockCountRecount` row. Two observations, two rows, each complete.
+//
+// An earlier version of this function wrote the recount's count point over
+// the line's. That produced correct rebase arithmetic — quantity and cursor
+// did match — by destroying the first count's provenance, leaving the
+// original cursor recoverable only from the `ITEM_COUNTED` audit row. That
+// row is written by the best-effort `audit()`, which swallows its own
+// failures by design, so the durable copy of the original count point was a
+// row the system does not promise to have written.
+//
+// The pairing that arithmetic needed now comes from
+// `effectiveCountEvidence` (src/lib/count-evidence.ts), which hands back a
+// quantity and the cursor belonging to that same observation. The line keeps
+// two denormalised mirrors — `effectiveCountedQuantity` and
+// `varianceQuantity` — so existing readers still see the figure in force;
+// the cursor is never mirrored, because a cursor is only correct next to its
+// own quantity.
 
 import type { CountLineDisposition, RecountKind } from "@prisma/client";
 import { db } from "@/lib/db";
@@ -238,16 +249,19 @@ export async function recordRecount(args: {
     await tx.stockCountLine.update({
       where: { id: line.id },
       data: {
-        // `countedQuantity` is absent from this payload on purpose: the first
-        // observation is evidence and a later count disagreeing with it does
-        // not make it untrue.
+        // The FIRST count's evidence is absent from this payload, all of it:
+        // countedQuantity, expectedQuantity, itemVersion, expectedBasis,
+        // countedAt and counterId stay exactly as capture wrote them. A later
+        // count disagreeing with the first does not make the first untrue, and
+        // an investigation into a repeated shortage needs both.
+        //
+        // What IS written are the two denormalised operational mirrors, kept
+        // equal to `effectiveCountEvidence(line)` so existing readers of the
+        // line get the figure in force. The CURSOR is never mirrored: it is
+        // only correct alongside its own quantity, so callers that need the
+        // pair take it from the resolver, which hands both over together.
         effectiveCountedQuantity: counted,
         varianceQuantity: variance,
-        expectedQuantity: point.expectedQuantity,
-        itemVersion: point.itemVersion,
-        expectedBasis: point.basis,
-        countedAt: point.capturedAt,
-        counterId: args.recounterId,
         disposition: next,
       },
     });

@@ -37,6 +37,11 @@ import { round3 } from "@/lib/costing";
 import { captureCountPoint } from "@/lib/count-point";
 import { activeCustody } from "@/lib/custody";
 import { isTerminal } from "@/lib/count-disposition";
+import {
+  EFFECTIVE_EVIDENCE_SELECT,
+  effectiveCountEvidence,
+  hasSupersedingRecount,
+} from "@/lib/count-evidence";
 import { openVarianceCase, resolveRecountPolicy } from "@/lib/variance-case";
 import {
   confidenceForCountedItem,
@@ -724,14 +729,9 @@ export async function submitCountSession(args: {
       status: true,
       lines: {
         select: {
-          id: true,
+          ...EFFECTIVE_EVIDENCE_SELECT,
           inventoryItemId: true,
           disposition: true,
-          countedQuantity: true,
-          effectiveCountedQuantity: true,
-          expectedQuantity: true,
-          varianceQuantity: true,
-          countedAt: true,
           inventoryItem: { select: { name: true, category: true, costPerUnit: true } },
         },
       },
@@ -764,7 +764,12 @@ export async function submitCountSession(args: {
   const updates: { id: string; data: Prisma.StockCountLineUpdateInput }[] = [];
 
   for (const line of session.lines) {
-    const variance = Number(line.varianceQuantity ?? 0);
+    // The variance under judgement belongs to the observation in force: after
+    // a resolving recount that is the recount's gap, not the discredited
+    // first count's.
+    const evidence = effectiveCountEvidence(line);
+    const variance = evidence.varianceQuantity;
+    const observedAt = evidence.countedAt ?? new Date();
 
     // How far the theoretical figure this variance is measured against can be
     // trusted, judged over everything since the last count somebody believed
@@ -774,14 +779,14 @@ export async function submitCountSession(args: {
     const window = await lastTrustedBaselineAt({
       branchId: session.branchId,
       inventoryItemId: line.inventoryItemId,
-      before: line.countedAt ?? new Date(),
+      before: observedAt,
     });
     const rated = await confidenceForCountedItem({
       cafeId: session.cafeId,
       branchId: session.branchId,
       inventoryItemId: line.inventoryItemId,
       windowFrom: window.at,
-      countedAt: line.countedAt ?? new Date(),
+      countedAt: observedAt,
     });
     const cost = stockCostImpact({
       varianceQuantity: variance,
@@ -790,6 +795,10 @@ export async function submitCountSession(args: {
     });
 
     const data: Prisma.StockCountLineUpdateInput = {
+      // The two denormalised mirrors, re-stated from the resolver so they
+      // cannot drift away from the evidence in force.
+      effectiveCountedQuantity: evidence.quantity,
+      varianceQuantity: variance,
       confidence: rated.confidence,
       confidenceIssues: rated.issues,
       confidenceWindowFrom: window.at,
@@ -817,7 +826,7 @@ export async function submitCountSession(args: {
     });
     const ok = withinTolerance({
       varianceQuantity: variance,
-      expectedQuantity: Number(line.expectedQuantity ?? 0),
+      expectedQuantity: evidence.expectedQuantity,
       tolerance,
     });
 
@@ -952,9 +961,8 @@ export async function confirmCountSession(args: {
       idempotencyKey: true,
       lines: {
         select: {
-          id: true,
+          ...EFFECTIVE_EVIDENCE_SELECT,
           disposition: true,
-          varianceQuantity: true,
           confidence: true,
           costImpact: true,
           costImpactAvailable: true,
@@ -1032,7 +1040,10 @@ export async function confirmCountSession(args: {
         shiftId: session.shiftId,
         custodyPeriodId: session.custodyPeriodId,
         source: { kind: "STOCK_LINE", stockCountLineId: line.id },
-        quantityVariance: Number(line.varianceQuantity ?? 0),
+        // The gap the evidence in force actually found. After a recount that
+        // is the recount's, so an investigation is opened on the figure
+        // somebody last stood in front of the shelf and wrote down.
+        quantityVariance: effectiveCountEvidence(line).varianceQuantity,
         // An unpriced difference has no amount to measure a threshold
         // against, which is why `caseIsBlocking` never blocks on one.
         amountVariance: impact.available ? impact.value : null,
@@ -1150,10 +1161,8 @@ export async function createCountCorrection(args: {
   const line = await db.stockCountLine.findUnique({
     where: { id: args.lineId },
     select: {
-      id: true,
+      ...EFFECTIVE_EVIDENCE_SELECT,
       sessionId: true,
-      countedQuantity: true,
-      effectiveCountedQuantity: true,
       session: { select: { id: true, cafeId: true, branchId: true, status: true } },
     },
   });
@@ -1169,13 +1178,27 @@ export async function createCountCorrection(args: {
     throw new ApiError(400, "مفيش كمية معدودة تتصحح — الصنف ده لسه ما اتعدش");
   }
 
+  // A recount is a second physical observation, and `StockCountCorrection`
+  // records which FIGURE it replaces but not which OBSERVATION. Correcting on
+  // top of a recount would therefore leave nothing able to say whether the
+  // corrected quantity belongs to the first count's cursor or the recount's —
+  // and the rebase needs that answer to know which movements to replay.
+  // Refused rather than guessed. A recount is the way to change a figure once
+  // somebody has walked back to the shelf.
+  if (hasSupersedingRecount(line)) {
+    throw new ApiError(
+      409,
+      "الصنف ده اتعاد عده — عدّل عن طريق إعادة عد تانية، مش تصحيح (recount supersedes correction)"
+    );
+  }
+
   await assertStockReason(args.reasonCodeId, line.session.cafeId);
 
-  // What is being superseded is the figure in force, not the original
-  // observation: correcting a correction starts from where the line stands.
-  const oldCountedQuantity = round3(
-    Number(line.effectiveCountedQuantity ?? line.countedQuantity)
-  );
+  // What is being superseded is the figure in force, not necessarily the
+  // original observation: correcting a correction starts from where the line
+  // stands. Taken from the resolver so it cannot disagree with what a rebase
+  // would act on.
+  const oldCountedQuantity = effectiveCountEvidence(line).quantity;
   const newCountedQuantity = round3(args.newCountedQuantity);
 
   // Changing a figure the incoming custodian has already accepted is a

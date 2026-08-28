@@ -10,8 +10,15 @@
 //
 // So the rebase replays:
 //
-//   stockAfter = effectiveCountedQuantity + ledgerDeltaAbove(line.itemVersion)
+//   evidence   = effectiveCountEvidence(line)   → quantity AND its own cursor
+//   stockAfter = evidence.quantity + ledgerDeltaAbove(evidence.itemVersion)
 //   delta      = stockAfter − stockBefore        → via applyStockMutation
+//
+// The quantity and the cursor are taken from ONE call because they are only
+// correct together. When a recount supersedes the first count, its figure
+// already includes every movement made before it — measuring that figure from
+// the FIRST count's cursor would replay those movements a second time and
+// leave the shop holding stock it does not have.
 //
 // Every movement lands on exactly one side of the cursor: inside the physical
 // baseline the counter observed, or in the replay. Never both, never neither.
@@ -52,6 +59,11 @@ import { auditInTransaction } from "@/lib/audit";
 import { round3 } from "@/lib/costing";
 import { isTerminal } from "@/lib/count-disposition";
 import { applyStockMutation, ledgerDeltaAbove, lockItemForUpdate } from "@/lib/ledger";
+import {
+  EFFECTIVE_EVIDENCE_SELECT,
+  effectiveCountEvidence,
+  type EffectiveEvidenceSource,
+} from "@/lib/count-evidence";
 
 export type RebaseResult = {
   sessionId: string;
@@ -104,8 +116,8 @@ export async function rebaseFromCount(args: {
       id: true, cafeId: true, branchId: true, status: true,
       lines: {
         select: {
-          id: true, inventoryItemId: true, disposition: true, itemVersion: true,
-          countedQuantity: true, effectiveCountedQuantity: true,
+          inventoryItemId: true, disposition: true,
+          ...EFFECTIVE_EVIDENCE_SELECT,
         },
       },
     },
@@ -149,8 +161,13 @@ export async function rebaseFromCount(args: {
     // An effective figure is required to act. A terminal line without one is
     // skipped rather than treated as zero — "nothing on the shelf" and "no
     // figure recorded" are different claims.
-    const effective = line.effectiveCountedQuantity ?? line.countedQuantity;
-    if (effective === null) {
+    //
+    // The quantity and the cursor come from ONE call, because they are only
+    // correct together: a recount's figure measured from the first count's
+    // cursor would replay every movement between the two counts a second
+    // time, on top of a figure that already includes them.
+    const evidence = effectiveCountEvidence(line);
+    if (line.countedQuantity === null && evidence.recountId === null) {
       result.itemsSkipped += 1;
       continue;
     }
@@ -161,9 +178,10 @@ export async function rebaseFromCount(args: {
       sessionId: session.id,
       lineId: line.id,
       inventoryItemId: line.inventoryItemId,
-      effectiveCounted: round3(Number(effective)),
+      effectiveCounted: evidence.quantity,
       originalCounted: line.countedQuantity === null ? null : Number(line.countedQuantity),
-      countCursor: line.itemVersion ?? BigInt(0),
+      countCursor: evidence.itemVersion ?? BigInt(0),
+      evidenceSource: evidence.source,
       actorId: args.actorId,
     });
 
@@ -207,6 +225,8 @@ async function applyOneLine(args: {
   effectiveCounted: number;
   originalCounted: number | null;
   countCursor: bigint;
+  /** Which observation supplied the figure AND the cursor above. */
+  evidenceSource: EffectiveEvidenceSource;
   actorId: string;
 }): Promise<
   | "ALREADY"
@@ -293,6 +313,11 @@ async function applyOneLine(args: {
           ledgerTransactionId: mutation.transactionId,
           originalCountedQuantity: args.originalCounted,
           effectiveCountedQuantity: args.effectiveCounted,
+          // Which observation the figure and the cursor both came from, so a
+          // reader can tell a rebase of a first count from one of a recount
+          // without re-deriving it.
+          evidenceSource: args.evidenceSource,
+          countCursor: Number(args.countCursor),
           stockBefore,
           replayedDelta: replay.delta,
           replayedMovementCount: replay.movementCount,

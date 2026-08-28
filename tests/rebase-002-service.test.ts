@@ -35,6 +35,7 @@ let cafeId: string;
 let branchId: string;
 let userId: string;
 let staffId: string;
+let reasonCodeId: string;
 
 before(async () => {
   const cafe = await db.cafe.create({
@@ -57,6 +58,10 @@ before(async () => {
     })).id;
   userId = await mk("manager", "BRANCH_MANAGER");
   staffId = await mk("staff", "CASHIER");
+
+  reasonCodeId = (await db.reasonCode.create({
+    data: { cafeId, domain: "STOCK", code: "MISCOUNT", label: "خطأ في العد" },
+  })).id;
 });
 
 after(() => teardownTaggedCafe(cafeId, [], { disconnect: true }));
@@ -115,7 +120,30 @@ async function confirmedCount(args: {
     },
     include: { lines: true },
   });
-  return { sessionId: session.id, lineId: session.lines[0].id };
+  const lineId = session.lines[0].id;
+
+  // A working figure that differs from the observation is the result of an
+  // APPROVED correction, so the fixture creates the correction rather than
+  // writing the denormalised column alone. `effectiveCountedQuantity` is a
+  // mirror of the evidence in force (src/lib/count-evidence.ts); setting it
+  // with no correction behind it would describe a state the application
+  // cannot produce.
+  if (args.effective && args.effective !== args.counted) {
+    await db.stockCountCorrection.create({
+      data: {
+        lineId,
+        oldCountedQuantity: args.counted,
+        newCountedQuantity: args.effective,
+        reasonCodeId,
+        actorId: staffId,
+        status: "APPROVED",
+        approvedById: userId,
+        approvedAt: new Date(),
+      },
+    });
+  }
+
+  return { sessionId: session.id, lineId };
 }
 
 const stockOf = async (id: string) =>
