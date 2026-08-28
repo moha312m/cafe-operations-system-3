@@ -446,3 +446,92 @@ export async function advanceVarianceCase(args: {
 
   return { caseId: updated.id, status: updated.status };
 }
+
+// ─────────────────────── Reading cases back out ──────────────────────
+//
+// The two projections a board and a detail view are served from, kept here
+// rather than in the route files so there is ONE place that decides what a
+// case discloses. Two things depend on that being single:
+//
+//   `itemVersion` is deliberately absent from the counted-line shape. It is a
+//   BigInt, and `JSON.stringify` throws on BigInt — so a route that selected
+//   a count line whole would not return a slightly wrong response, it would
+//   return 500. LEDGER-004 keeps the counters off the wire generally; this is
+//   the same rule at the variance surface, and duplicating the select across
+//   two files is exactly how one copy would quietly regain the field.
+//
+//   The impact triple travels together. `financialImpact` is NULL when it
+//   could not be established, and the flag and reason are what stop that null
+//   being read as "cost nothing" by whoever renders it.
+
+/** The counted line behind a STOCK case, with no internal counters. */
+const CASE_STOCK_LINE_SELECT = {
+  id: true,
+  inventoryItemId: true,
+  unit: true,
+  disposition: true,
+  expectedQuantity: true,
+  countedQuantity: true,
+  effectiveCountedQuantity: true,
+  varianceQuantity: true,
+  countedAt: true,
+  counterId: true,
+  confidence: true,
+  inventoryItem: { select: { id: true, name: true, unit: true, category: true } },
+} satisfies Prisma.StockCountLineSelect;
+
+const CASE_CORE = {
+  id: true,
+  cafeId: true,
+  branchId: true,
+  type: true,
+  status: true,
+  shiftId: true,
+  custodyPeriodId: true,
+  stockCountLineId: true,
+  tenderReconciliationId: true,
+  openingExceptionId: true,
+  quantityVariance: true,
+  amountVariance: true,
+  financialImpact: true,
+  financialImpactAvailable: true,
+  financialImpactUnavailableReason: true,
+  confidence: true,
+  assignedResponsibilityUserId: true,
+  blocking: true,
+  openedAt: true,
+  openedById: true,
+  resolvedAt: true,
+  resolvedById: true,
+  resolutionNote: true,
+  createdAt: true,
+} satisfies Prisma.VarianceCaseSelect;
+
+/** A row on the board: enough to triage, no more. */
+export const VARIANCE_CASE_LIST_SELECT = {
+  ...CASE_CORE,
+  custodyPeriod: { select: { id: true, scope: true, status: true } },
+  stockCountLine: {
+    select: {
+      id: true,
+      inventoryItemId: true,
+      inventoryItem: { select: { id: true, name: true, unit: true } },
+    },
+  },
+} satisfies Prisma.VarianceCaseSelect;
+
+/** One case, with what caused it resolved through its relations. */
+export const VARIANCE_CASE_DETAIL_SELECT = {
+  ...CASE_CORE,
+  custodyPeriod: {
+    select: { id: true, scope: true, status: true, startedAt: true, endedAt: true },
+  },
+  stockCountLine: { select: CASE_STOCK_LINE_SELECT },
+  shift: { select: { id: true, shiftNumber: true, status: true, openedAt: true } },
+  tenderReconciliation: {
+    select: { id: true, method: true, status: true, varianceAmount: true },
+  },
+  openingException: { select: { id: true, kind: true, note: true } },
+  openedBy: { select: { id: true, name: true } },
+  resolvedBy: { select: { id: true, name: true } },
+} satisfies Prisma.VarianceCaseSelect;
