@@ -440,6 +440,81 @@ describe("VAR-005 the type must agree with the evidence", () => {
     assert.equal(theirs.created, true);
   });
 
+  test("a non-CASH case may carry a contextual shift without changing its source", async () => {
+    // Revision 3 groups `shiftId` with `custodyPeriodId` ABOVE the block
+    // commented "Explicit sources", and describes CASH as "sourced by its
+    // shiftId … which is why it is the fourth arm of the CHECK rather than a
+    // fifth column". So the shift is CONTEXT on every type, and doubles as
+    // the source on CASH alone — it is not exclusively a source column.
+    //
+    // That reading is load-bearing for the tasks that open these cases: a
+    // tender settlement and a cash close both happen within a shift, and a
+    // count is taken during one. Forbidding `shiftId` on non-CASH cases
+    // would throw that context away and make "which shift was this found
+    // in?" unanswerable. So it is documented here rather than left to be
+    // rediscovered — and the type still comes from the typed source FK, not
+    // from the presence of a shift.
+    await clearCases();
+
+    const stock = await db.$transaction((tx) =>
+      openVarianceCase(tx, {
+        cafeId: home.cafeId, branchId: home.branchId, type: "STOCK",
+        shiftId: home.shiftId, openedById: home.userId,
+        source: { kind: "STOCK_LINE", stockCountLineId: home.lineId },
+        quantityVariance: -0.5,
+        financialImpact: { available: false, reason: "MISSING_COST" },
+      })
+    );
+    const c = await db.varianceCase.findUniqueOrThrow({
+      where: { id: stock.caseId }, include: { shift: true, stockCountLine: true },
+    });
+    assert.equal(c.type, "STOCK", "the type follows the source, not the shift");
+    assert.equal(c.stockCountLineId, home.lineId, "the evidence is still the counted line");
+    assert.equal(c.shift?.id, home.shiftId, "and the shift is kept as context");
+
+    // TENDER and OPENING_EXCEPTION carry it too — both happen within a shift.
+    await clearCases();
+    const tender = await db.$transaction((tx) =>
+      openVarianceCase(tx, {
+        cafeId: home.cafeId, branchId: home.branchId, type: "TENDER",
+        shiftId: home.shiftId, openedById: home.userId,
+        source: { kind: "TENDER", tenderReconciliationId: home.reconId },
+        financialImpact: { available: false, reason: "MISSING_COST" },
+      })
+    );
+    const t = await db.varianceCase.findUniqueOrThrow({ where: { id: tender.caseId } });
+    assert.equal(t.type, "TENDER");
+    assert.equal(t.shiftId, home.shiftId);
+
+    // But the context is not a loophole: a shift from elsewhere is refused
+    // on a non-CASH case exactly as it is on a CASH one.
+    await clearCases();
+    await assert.rejects(
+      () => db.$transaction((tx) =>
+        openVarianceCase(tx, {
+          cafeId: home.cafeId, branchId: home.branchId, type: "STOCK",
+          shiftId: otherCafe.shiftId, openedById: home.userId,
+          source: { kind: "STOCK_LINE", stockCountLineId: home.lineId },
+          financialImpact: { available: false, reason: "MISSING_COST" },
+        })
+      ),
+      /café|branch|does not belong/i,
+      "a contextual shift from another café is still another café's"
+    );
+    await assert.rejects(
+      () => db.$transaction((tx) =>
+        openVarianceCase(tx, {
+          cafeId: home.cafeId, branchId: home.branchId, type: "STOCK",
+          shiftId: otherBranch.shiftId, openedById: home.userId,
+          source: { kind: "STOCK_LINE", stockCountLineId: home.lineId },
+          financialImpact: { available: false, reason: "MISSING_COST" },
+        })
+      ),
+      /branch|café|does not belong/i
+    );
+    assert.equal(await db.varianceCase.count({ where: { cafeId: home.cafeId } }), 0);
+  });
+
   test("the refusal happens before anything is written", async () => {
     await clearCases();
     const before = await db.varianceCase.count();

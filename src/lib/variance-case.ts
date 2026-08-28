@@ -256,21 +256,28 @@ async function assertSourceBelongsToCafe(
       problem = mismatch("استثناء الفتح", exception);
       break;
     }
-    case "CASH_SHIFT": {
-      // Cash evidence is the shift close, so the shift IS the source and is
-      // checked with the same strictness as an explicit source column.
-      const shift = args.shiftId
-        ? await tx.shift.findUnique({
-            where: { id: args.shiftId },
-            select: { cafeId: true, branchId: true },
-          })
-        : null;
-      problem = mismatch("الشيفت", shift);
+    case "CASH_SHIFT":
+      // Cash evidence IS the shift close, so the shift is checked below with
+      // the same strictness as an explicit source column — it is not merely
+      // context for this type.
       break;
-    }
   }
 
   if (problem) throw new ApiError(400, problem);
+
+  // `shiftId` is contextual on every type and doubles as the source on CASH
+  // (Revision 3 groups it with `custodyPeriodId`, above the source columns).
+  // Either way a shift from another café or branch has no business being
+  // named here, so it is checked whenever it is supplied rather than only
+  // when it is the source.
+  if (args.shiftId) {
+    const shift = await tx.shift.findUnique({
+      where: { id: args.shiftId },
+      select: { cafeId: true, branchId: true },
+    });
+    const shiftProblem = mismatch("الشيفت", shift);
+    if (shiftProblem) throw new ApiError(400, shiftProblem);
+  }
 }
 
 /**
