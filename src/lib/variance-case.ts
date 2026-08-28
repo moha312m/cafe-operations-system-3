@@ -340,6 +340,17 @@ export async function openVarianceCase(
 }
 
 /**
+ * The canonical action for a case changing status.
+ *
+ * Named once, here, rather than written inline: the audit taxonomy (T45)
+ * lists `VARIANCE_CASE_STATUS_CHANGED` for this event, and two spellings of
+ * one action would leave an export or a report silently missing half its
+ * rows. `details` carries `from` and `to`, so what changed is legible
+ * without joining anything.
+ */
+export const VARIANCE_STATUS_AUDIT_ACTION = "VARIANCE_CASE_STATUS_CHANGED";
+
+/**
  * The only legal moves.
  *
  * WAIVED is reachable from anywhere that is not already terminal — an owner
@@ -421,7 +432,7 @@ export async function advanceVarianceCase(args: {
   await audit({
     cafeId: current.cafeId,
     userId: args.actorId,
-    action: "VARIANCE_CASE_ADVANCED",
+    action: VARIANCE_STATUS_AUDIT_ACTION,
     entity: "VarianceCase",
     entityId: args.caseId,
     details: {
