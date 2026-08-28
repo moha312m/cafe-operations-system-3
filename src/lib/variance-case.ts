@@ -38,6 +38,7 @@ import type { Prisma, TheoreticalConfidence, VarianceCaseStatus, VarianceCaseTyp
 import { db } from "@/lib/db";
 import { ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
+import { mayAssignResponsibility } from "@/lib/variance-confidence";
 
 /**
  * A priced impact, or a stated reason it could not be priced.
@@ -298,7 +299,7 @@ export async function advanceVarianceCase(args: {
 }): Promise<{ caseId: string; status: VarianceCaseStatus }> {
   const current = await db.varianceCase.findUnique({
     where: { id: args.caseId },
-    select: { id: true, cafeId: true, status: true },
+    select: { id: true, cafeId: true, status: true, confidence: true },
   });
   if (!current) throw new ApiError(404, "حالة الفرق غير موجودة");
 
@@ -306,6 +307,16 @@ export async function advanceVarianceCase(args: {
     throw new ApiError(
       400,
       `مينفعش تنقل الحالة من «${STATUS_LABEL[current.status]}» إلى «${STATUS_LABEL[args.to]}»`
+    );
+  }
+
+  // Evidence nobody could verify must never quietly become somebody's fault.
+  // Checked BEFORE the update, so a refusal leaves no name written: a guard
+  // that assigned first and complained afterwards would be no guard at all.
+  if (args.to === "RESPONSIBILITY_ASSIGNED" && !mayAssignResponsibility(current.confidence)) {
+    throw new ApiError(
+      400,
+      "مينفعش تحدد مسؤولية على فرق تقديره غير مؤكد — لازم الأدلة تكون VERIFIED"
     );
   }
 
