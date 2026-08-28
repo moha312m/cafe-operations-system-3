@@ -23,9 +23,12 @@
 // is a comment that a later migration, a seed script or a data fix can walk
 // straight past.
 //
-// `Shift.cashVarianceCaseId` is deliberately absent and asserted absent: it
-// ships with the VarianceCase table it points at, so the foreign key can be
-// created in the same migration as its target rather than left dangling.
+// `Shift.cashVarianceCaseId` was deliberately absent here and asserted
+// absent, until T18 created it in the same migration as the VarianceCase
+// table it points at — a foreign key born with its target rather than left
+// dangling. That test now asserts the ordering it was guarding, and the
+// point behind it: the case link is a pointer at an investigation, not a
+// second copy of the money.
 
 import { test, after, before, describe } from "node:test";
 import assert from "node:assert/strict";
@@ -317,16 +320,47 @@ describe("CASH-001 tender reconciliation and shift cash columns", () => {
     );
   });
 
-  test("Shift.cashVarianceCaseId does not exist yet", async () => {
-    // R3.3's ordering, visible in a test. The column ships in the migration
-    // that creates VarianceCase, so its foreign key can be created with its
-    // target rather than pointing at nothing in the meantime.
+  test("Shift.cashVarianceCaseId arrived with VarianceCase, and cash stayed put", async () => {
+    // R3.3's ordering, visible in a test. Until T18 this asserted the column
+    // ABSENT; T18 created it in the same migration as the VarianceCase table
+    // it points at, so the claim becomes the one that was being guarded — and
+    // the more important half: the case link is a POINTER, and none of the
+    // cash figures moved when it landed.
     const cols = await db.$queryRaw<{ column_name: string }[]>`
       SELECT column_name FROM information_schema.columns
        WHERE table_schema = current_schema()
          AND table_name = 'Shift' AND column_name = 'cashVarianceCaseId'
     `;
-    assert.deepEqual(cols, [], "when this fails, T18 has landed and owns the column");
+    assert.equal(cols.length, 1, "the column exists");
+
+    const fk = await db.$queryRaw<{ foreign_table: string; delete_rule: string }[]>`
+      SELECT ccu.table_name AS foreign_table, rc.delete_rule
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+        JOIN information_schema.constraint_column_usage ccu
+          ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+        JOIN information_schema.referential_constraints rc
+          ON rc.constraint_name = tc.constraint_name AND rc.constraint_schema = tc.table_schema
+       WHERE tc.constraint_type = 'FOREIGN KEY'
+         AND tc.table_schema = current_schema()
+         AND tc.table_name = 'Shift' AND kcu.column_name = 'cashVarianceCaseId'
+    `;
+    assert.equal(fk.length, 1, "with the constraint it was waiting for");
+    assert.equal(fk[0].foreign_table, "VarianceCase");
+    assert.equal(fk[0].delete_rule, "SET NULL", "closing a case does not close the shift");
+
+    // Still exactly one home for cash: the case link names an investigation,
+    // it does not hold a second copy of the money.
+    const cashColumns = await db.$queryRaw<{ column_name: string }[]>`
+      SELECT column_name FROM information_schema.columns
+       WHERE table_schema = current_schema()
+         AND table_name = 'VarianceCase' AND column_name ILIKE '%cash%'
+    `;
+    assert.deepEqual(
+      cashColumns, [],
+      "VarianceCase holds no cash column of its own — the drawer count stays on Shift"
+    );
   });
 
   test("every accountability id is a real foreign key", async () => {

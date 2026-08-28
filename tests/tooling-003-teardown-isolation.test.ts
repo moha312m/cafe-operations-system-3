@@ -104,12 +104,12 @@ const delegates = db as unknown as DelegateBag;
 /**
  * A model no migration has created. Later work ships it; today it is absent.
  *
- * This was `handoverSession` until T17 built it — and the guard below is what
- * caught that, rather than the suite quietly going vacuous. `varianceCase`
- * is T18's, so it takes over the role until that task lands and moves the
- * marker on again.
+ * The marker moves as the milestone builds: `handoverSession` until T17 built
+ * it, `varianceCase` until T18 did. Each time, the guard below is what caught
+ * the change rather than the suite quietly going vacuous. `stockCountRebase`
+ * is T22's, so it holds the role next.
  */
-const ABSENT_MODEL = "varianceCase";
+const ABSENT_MODEL = "stockCountRebase";
 
 /** Name the absent model the way a leaking teardown did: without checking. */
 async function deleteFromAbsentModel(cafeId: string) {

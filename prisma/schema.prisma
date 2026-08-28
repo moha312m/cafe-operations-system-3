@@ -220,6 +220,7 @@ model Cafe {
   tenderReconciliations TenderReconciliation[]
   handoverSessions  HandoverSession[]
   openingExceptions OpeningException[]
+  varianceCases     VarianceCase[]
 }
 
 // Per-cafe module flags + workflow, controlled ONLY by SUPER_ADMIN.
@@ -324,6 +325,7 @@ model Branch {
   tenderReconciliations TenderReconciliation[]
   handoverSessions  HandoverSession[]
   openingExceptions OpeningException[]
+  varianceCases     VarianceCase[]
 
   @@unique([cafeId, menuSlug])
   @@index([cafeId])
@@ -518,6 +520,9 @@ model User {
   handoverCashVerified HandoverSession[] @relation("HandoverCashVerifier")
   stockAcknowledgements HandoverStockAcknowledgement[]
   openingExceptionsAuthorized OpeningException[]
+  varianceCasesOpened   VarianceCase[] @relation("VarianceOpener")
+  varianceCasesResolved VarianceCase[] @relation("VarianceResolver")
+  varianceResponsibility VarianceCase[] @relation("VarianceResponsibility")
 
   @@index([cafeId])
   @@index([branchId])
@@ -982,6 +987,9 @@ model Shift {
   cashToleranceAmount Decimal? @db.Decimal(10, 2)
   cashReasonCodeId    String?
   cashReasonNote      String?
+  /// The CASH variance case this close opened, if it opened one. Unique:
+  /// one close, one case. Created with the VarianceCase table it names.
+  cashVarianceCaseId  String?  @unique
   totalSales         Decimal     @default(0) @db.Decimal(10, 2)
   totalCashSales     Decimal     @default(0) @db.Decimal(10, 2)
   totalCardSales     Decimal     @default(0) @db.Decimal(10, 2)
@@ -1005,6 +1013,8 @@ model Shift {
   handoversOutgoing HandoverSession[] @relation("HandoverOutgoingShift")
   handoversIncoming HandoverSession[] @relation("HandoverIncomingShift")
   openingExceptions OpeningException[]
+  varianceCases     VarianceCase[] @relation("ShiftVarianceCases")
+  cashVarianceCase  VarianceCase?  @relation("ShiftCashVariance", fields: [cashVarianceCaseId], references: [id], onDelete: SetNull)
 
   @@unique([branchId, shiftNumber])
   @@index([cafeId])
@@ -1082,9 +1092,7 @@ model CustodyPeriod {
   handoversInCash   HandoverSession[] @relation("HandoverInCash")
   handoversInStock  HandoverSession[] @relation("HandoverInStock")
   openingExceptions OpeningException[]
-
-  // Variance cases add their back-relation in the migration that creates
-  // them — a relation cannot name a model that does not exist.
+  varianceCases     VarianceCase[]
 
   @@index([cafeId, status])
   @@index([branchId, scope, status])
@@ -1325,8 +1333,9 @@ model StockCountLine {
   recounts    StockCountRecount[]
   corrections StockCountCorrection[]
   handoverAcknowledgements HandoverStockAcknowledgement[]
+  varianceCase             VarianceCase?
 
-  // Variance case and rebase attach in their own tasks.
+  // Rebase attaches in its own task.
 
   @@unique([sessionId, inventoryItemId])
   @@index([sessionId])
@@ -1506,12 +1515,116 @@ model TenderReconciliation {
   submittedBy User?       @relation("TenderSubmitter", fields: [submittedById], references: [id], onDelete: SetNull)
   approvedBy  User?       @relation("TenderApprover", fields: [approvedById], references: [id], onDelete: SetNull)
 
-  // `varianceCase` arrives with the VarianceCase table it names, so the
-  // foreign key is created alongside its target rather than pointing at
-  // nothing in the meantime.
+  varianceCase VarianceCase?
 
   @@unique([shiftId, method])
   @@index([cafeId, status])
+  @@index([shiftId])
+}
+
+// ────────────────────────── Variance (T18) ───────────────────────────
+// Point a case at what caused it, with keys the database can check.
+//
+// One investigation domain, four kinds of evidence behind it. The tempting
+// shape for that is a `sourceType` string beside a `sourceId` string — and it
+// cannot be constrained. Nothing would stop an id matching no row, or a type
+// disagreeing with the id next to it, and the database could refuse neither.
+//
+// So the sources are separate, explicitly-typed columns with real foreign
+// keys, and a CHECK counts them: exactly one arm applies. CASH is the fourth
+// arm and has no column of its own, because its evidence is the shift close —
+// the source of truth T16 settled — reached through `shiftId`. A cash source
+// column here would have been the second cash record all over again.
+//
+// Every source column is @unique, so one counted line, one settlement or one
+// opening exception raises exactly one case. That is what makes a retry in
+// the engine idempotent rather than merely unlikely to duplicate.
+enum VarianceCaseType {
+  CASH
+  TENDER
+  STOCK
+  OPENING_EXCEPTION
+}
+
+enum VarianceCaseStatus {
+  OPEN
+  UNDER_INVESTIGATION
+  RESPONSIBILITY_ASSIGNED
+  APPROVED
+  RESOLVED
+  WAIVED
+}
+
+model VarianceCase {
+  id       String             @id @default(cuid())
+  cafeId   String
+  branchId String
+  type     VarianceCaseType
+  status   VarianceCaseStatus @default(OPEN)
+
+  shiftId         String?
+  custodyPeriodId String?
+
+  /// Explicit sources. Exactly one arm applies, enforced by
+  /// `VarianceCase_single_source_check`. Unique, so one piece of evidence
+  /// raises one case.
+  stockCountLineId       String? @unique
+  tenderReconciliationId String? @unique
+  openingExceptionId     String? @unique
+
+  quantityVariance Decimal? @db.Decimal(12, 3)
+  amountVariance   Decimal? @db.Decimal(10, 2)
+
+  /// NULL is not zero. A shortage nobody can price is not a shortage that
+  /// cost nothing, and the paired boolean plus reason keep "unknown" from
+  /// reading as "harmless".
+  financialImpact                 Decimal? @db.Decimal(12, 2)
+  financialImpactAvailable        Boolean  @default(false)
+  financialImpactUnavailableReason String?
+
+  confidence TheoreticalConfidence @default(UNVERIFIABLE)
+
+  /// Investigation outcome ONLY. No payroll effect in this milestone, and
+  /// never a side effect of a difference being found — responsibility
+  /// follows custody and evidence, not attendance.
+  assignedResponsibilityUserId String?
+
+  blocking Boolean @default(false)
+
+  openedAt   DateTime  @default(now())
+  openedById String
+  resolvedAt DateTime?
+  resolvedById   String?
+  resolutionNote String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  cafe   Cafe   @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  shift  Shift? @relation("ShiftVarianceCases", fields: [shiftId], references: [id], onDelete: SetNull)
+
+  /// Restrict throughout: a case exists because something happened, and
+  /// deleting the evidence while keeping the case would turn an
+  /// investigation into an assertion. On custody it is load-bearing — a
+  /// period with cases attached cannot be deleted, so previous-period
+  /// responsibility cannot be erased.
+  custodyPeriod        CustodyPeriod?        @relation(fields: [custodyPeriodId], references: [id], onDelete: Restrict)
+  stockCountLine       StockCountLine?       @relation(fields: [stockCountLineId], references: [id], onDelete: Restrict)
+  tenderReconciliation TenderReconciliation? @relation(fields: [tenderReconciliationId], references: [id], onDelete: Restrict)
+  openingException     OpeningException?     @relation(fields: [openingExceptionId], references: [id], onDelete: Restrict)
+
+  openedBy               User  @relation("VarianceOpener", fields: [openedById], references: [id])
+  resolvedBy             User? @relation("VarianceResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+  assignedResponsibility User? @relation("VarianceResponsibility", fields: [assignedResponsibilityUserId], references: [id], onDelete: SetNull)
+
+  /// The cash link, from the other side. `Shift.cashVarianceCaseId` is
+  /// unique, so this is one-to-one.
+  cashShift Shift? @relation("ShiftCashVariance")
+
+  @@index([cafeId, status])
+  @@index([branchId, type])
+  @@index([custodyPeriodId])
   @@index([shiftId])
 }
 
@@ -1713,7 +1826,7 @@ model OpeningException {
   reasonCode   ReasonCode @relation(fields: [reasonCodeId], references: [id])
   authorizedBy User       @relation(fields: [authorizedById], references: [id])
 
-  // `varianceCase` arrives with the VarianceCase table it names.
+  varianceCase VarianceCase?
 
   @@index([cafeId, createdAt])
   @@index([branchId, kind])
