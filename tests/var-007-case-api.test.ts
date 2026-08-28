@@ -24,6 +24,7 @@ import { test, after, before, describe } from "node:test";
 import assert from "node:assert/strict";
 import { db, teardownTaggedCafe } from "./helpers/db";
 import { requireServer, as } from "./helpers/http";
+import { dateStrInTz } from "@/lib/date-range";
 import { countCafe, countItem, type CountCafe } from "./helpers/count";
 import { openVarianceCase } from "@/lib/variance-case";
 
@@ -218,7 +219,12 @@ describe("VAR-007 variance case API", () => {
   });
 
   test("a date range narrows by when the case was opened", async () => {
-    const today = new Date().toISOString().slice(0, 10);
+    // The café's timezone, not UTC. `toISOString()` yields the UTC date, and
+    // the API resolves `custom_day` in the café's zone (Africa/Cairo by
+    // default) — so between local midnight and UTC midnight the two disagree
+    // and this asked for yesterday. The suite now derives the day the same way
+    // the server does, from the same helper, so they cannot drift.
+    const today = dateStrInTz(new Date());
     const inRange = await list(
       fx.manager.email,
       `?branchId=${fx.branchId}&range=custom_day&date=${today}`
