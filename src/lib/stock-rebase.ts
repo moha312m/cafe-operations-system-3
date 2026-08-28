@@ -31,6 +31,14 @@
 // there must never be one: the COUNT_REBASE row's version being exactly one
 // above the item's prior version is what proves it went through the door.
 //
+// The audit row is written INSIDE that same transaction, not after it. A
+// COUNT_REBASE that moved a shelf and left no record of who moved it or what
+// arithmetic produced it is not a successful write with a missing note — it
+// is stock changing for reasons nobody can reconstruct. So the three
+// evidence layers (the rebase record, the ledger movement and the audit row)
+// commit together or not at all, and `auditInTransaction` throws where the
+// ordinary fire-and-forget `audit` would swallow.
+//
 // Idempotency is the unique on `(sessionId, inventoryItemId)`, in the
 // database rather than in a flag. Two callers racing produce one winner and
 // one collision, and the loser reports the existing work rather than adding a
@@ -40,7 +48,7 @@
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { ApiError } from "@/lib/api";
-import { audit } from "@/lib/audit";
+import { auditInTransaction } from "@/lib/audit";
 import { round3 } from "@/lib/costing";
 import { isTerminal } from "@/lib/count-disposition";
 import { applyStockMutation, ledgerDeltaAbove, lockItemForUpdate } from "@/lib/ledger";
@@ -57,6 +65,17 @@ export type RebaseResult = {
   }[];
   alreadyRebased: boolean;
 };
+
+/**
+ * The one persisted audit action for this operation.
+ *
+ * Named once, here, so there is a single canonical string rather than two
+ * that drift. `TXN_AUDIT_ACTION.COUNT_REBASE` in `inventory.ts` deliberately
+ * carries the same value: that map exists so no transaction type is missing
+ * an entry, and if a future path ever audits a rebase through it, it must
+ * write the same action this one does.
+ */
+export const REBASE_AUDIT_ACTION = "STOCK_REBASED";
 
 /** Postgres unique-violation, however it reaches us. */
 function isUniqueViolation(e: unknown): boolean {
@@ -143,6 +162,7 @@ export async function rebaseFromCount(args: {
       lineId: line.id,
       inventoryItemId: line.inventoryItemId,
       effectiveCounted: round3(Number(effective)),
+      originalCounted: line.countedQuantity === null ? null : Number(line.countedQuantity),
       countCursor: line.itemVersion ?? BigInt(0),
       actorId: args.actorId,
     });
@@ -161,24 +181,6 @@ export async function rebaseFromCount(args: {
       stockAfter: applied.stockAfter,
     });
 
-    // After the commit, never inside it: `audit` is fire-and-forget by
-    // design, and a logging failure must not be able to roll back a stock
-    // write that already succeeded.
-    await auditRebase({
-      cafeId: session.cafeId,
-      branchId: session.branchId,
-      sessionId: session.id,
-      lineId: line.id,
-      inventoryItemId: line.inventoryItemId,
-      originalCounted: line.countedQuantity === null ? null : Number(line.countedQuantity),
-      effectiveCounted: round3(Number(effective)),
-      stockBefore: applied.stockBefore,
-      replayedDelta: applied.replayedDelta,
-      replayedMovementCount: applied.replayedMovementCount,
-      stockAfter: applied.stockAfter,
-      appliedDelta: applied.appliedDelta,
-      actorId: args.actorId,
-    });
   }
 
   // A call that applied nothing but found existing work is a retry, and says
@@ -203,6 +205,7 @@ async function applyOneLine(args: {
   lineId: string;
   inventoryItemId: string;
   effectiveCounted: number;
+  originalCounted: number | null;
   countCursor: bigint;
   actorId: string;
 }): Promise<
@@ -272,6 +275,33 @@ async function applyOneLine(args: {
         },
       });
 
+      // The third evidence layer, in the same transaction as the other two.
+      // Both the original and the effective figure are recorded: an audit
+      // showing only what was acted on would hide that a correction was
+      // involved at all.
+      await auditInTransaction(tx, {
+        cafeId: args.cafeId,
+        userId: args.actorId,
+        action: REBASE_AUDIT_ACTION,
+        entity: "InventoryItem",
+        entityId: args.inventoryItemId,
+        details: {
+          sessionId: args.sessionId,
+          lineId: args.lineId,
+          branchId: args.branchId,
+          inventoryItemId: args.inventoryItemId,
+          ledgerTransactionId: mutation.transactionId,
+          originalCountedQuantity: args.originalCounted,
+          effectiveCountedQuantity: args.effectiveCounted,
+          stockBefore,
+          replayedDelta: replay.delta,
+          replayedMovementCount: replay.movementCount,
+          stockAfter: mutation.stockAfter,
+          appliedDelta,
+          rebaseItemVersion: Number(mutation.itemVersion),
+        },
+      });
+
       return {
         stockBefore,
         replayedDelta: replay.delta,
@@ -297,49 +327,4 @@ async function applyOneLine(args: {
     }
     throw e;
   }
-}
-
-/**
- * What a rebase records about itself.
- *
- * Its own function so the shape is visible in one place rather than inline in
- * the loop, and so "what did we record?" has a single answer. Both the
- * original and the effective figure are kept: an audit that showed only the
- * figure acted on would hide the fact that a correction was involved at all.
- */
-async function auditRebase(args: {
-  cafeId: string;
-  branchId: string;
-  sessionId: string;
-  lineId: string;
-  inventoryItemId: string;
-  originalCounted: number | null;
-  effectiveCounted: number;
-  stockBefore: number;
-  replayedDelta: number;
-  replayedMovementCount: number;
-  stockAfter: number;
-  appliedDelta: number;
-  actorId: string;
-}) {
-  await audit({
-    cafeId: args.cafeId,
-    userId: args.actorId,
-    action: "STOCK_REBASED",
-    entity: "InventoryItem",
-    entityId: args.inventoryItemId,
-    details: {
-      sessionId: args.sessionId,
-      lineId: args.lineId,
-      branchId: args.branchId,
-      inventoryItemId: args.inventoryItemId,
-      originalCountedQuantity: args.originalCounted,
-      effectiveCountedQuantity: args.effectiveCounted,
-      stockBefore: args.stockBefore,
-      replayedDelta: args.replayedDelta,
-      replayedMovementCount: args.replayedMovementCount,
-      stockAfter: args.stockAfter,
-      appliedDelta: args.appliedDelta,
-    },
-  });
 }
