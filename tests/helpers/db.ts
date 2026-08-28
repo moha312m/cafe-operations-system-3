@@ -187,16 +187,28 @@ export async function cleanupShift(shiftId: string) {
  * no stock of, so the stock guard refused the handover and thirteen tests
  * about *payment policy* failed for reasons of *inventory*.
  *
- * Deliberately recipe-free: a missing recipe is reported and skipped rather
- * than blocking service, so this product can always be served and the only
- * thing left governing the outcome is the policy under test.
+ * It carries an explicit NOT_APPLICABLE recipe, which is what keeps it always
+ * sellable AND always servable.
+ *
+ * It used to carry no recipe at all, and that worked while the only stock gate
+ * was at SERVED, where a missing recipe was reported and skipped rather than
+ * blocking. STOCK-003 closed that: the POS now refuses to CREATE an order
+ * whose consumption it cannot read, because "no recipe" is an unknown draw on
+ * the shelf rather than a zero one, and selling against it is what leaves
+ * theoretical stock that has never met a count.
+ *
+ * So the fixture states the thing it always meant instead of relying on the
+ * gap. NOT_APPLICABLE is the domain's own way of saying "this consumes nothing
+ * trackable" — a recorded decision rather than an absence — which is exactly
+ * true of a test item that exists to exercise payment policy. No assertion in
+ * any suite changes; the product is simply honest about why it is exempt.
  */
 export async function policyProduct(fx: Fixture, marker: string) {
   const category = await db.menuCategory.findFirstOrThrow({
     where: { cafeId: fx.cafeId },
     orderBy: { createdAt: "asc" },
   });
-  return db.product.create({
+  const product = await db.product.create({
     data: {
       cafeId: fx.cafeId,
       categoryId: category.id,
@@ -204,6 +216,15 @@ export async function policyProduct(fx: Fixture, marker: string) {
       basePrice: 75,
     },
   });
+  await db.recipe.create({
+    data: {
+      cafeId: fx.cafeId,
+      productId: product.id,
+      notApplicable: true,
+      notApplicableReason: "Test fixture — exercises policy, consumes no stock",
+    },
+  });
+  return product;
 }
 
 /**

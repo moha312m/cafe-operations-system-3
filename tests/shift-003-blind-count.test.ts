@@ -14,20 +14,44 @@
 
 import { test, after, before, describe } from "node:test";
 import assert from "node:assert/strict";
-import { db, fixture, clearOpenShifts, sessionFor, cleanup } from "./helpers/db";
+import {
+  db, fixture, clearOpenShifts, sessionFor, cleanup, policyProduct, cleanupProduct,
+} from "./helpers/db";
 import { requireServer, login, as } from "./helpers/http";
-
-after(async () => { await db.$disconnect(); });
 
 type ShiftPayload = Record<string, unknown> & { id: string; status: string };
 
 const CASHIER = "cashier@demo.com";
 const OWNER = "owner@demo.com";
 
+/**
+ * The item every sale here is rung up on.
+ *
+ * This suite is about whether a cashier can see the reconciliation target
+ * before they count the drawer. It reached for the first variant-free product
+ * on the seeded menu, which made it depend on whichever café data happened to
+ * be loaded — and once a real menu was imported that product was a coffee
+ * whose recipe wants beans this branch holds none of. With the POS now
+ * refusing to sell what the branch cannot make, every test here failed at
+ * "take one cash sale" for reasons of inventory.
+ *
+ * `policyProduct` is the fixture the serving and table-close suites already
+ * moved to for exactly this reason. Nothing about the blind-count assertions
+ * changes; the sale simply stops being an inventory question.
+ */
+let productId: string;
+
 before(async () => {
   await requireServer();
   await login(CASHIER, "cashier123");
   await login(OWNER, "owner1234");
+  const fx = await fixture();
+  productId = (await policyProduct(fx, "PH1-SHIFT003")).id;
+});
+
+after(async () => {
+  await cleanupProduct(productId);
+  await db.$disconnect();
 });
 
 /** Open a shift through the real API and take one cash sale on it. */
@@ -48,7 +72,7 @@ async function openWithSale(openingCash: number, marker: string) {
     body: JSON.stringify({
       branchId: fx.branchId, type: "TAKEAWAY", customerName: marker,
       collectionMode: "NOW", method: "CASH",
-      items: [{ productId: fx.productId, quantity: 1, addOnIds: [] }],
+      items: [{ productId, quantity: 1, addOnIds: [] }],
     }),
   });
   assert.ok(sale.status < 300, `sale failed: ${sale.text}`);
