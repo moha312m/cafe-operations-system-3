@@ -37,7 +37,12 @@ import { round3 } from "@/lib/costing";
 import { captureCountPoint } from "@/lib/count-point";
 import { activeCustody } from "@/lib/custody";
 import { isTerminal } from "@/lib/count-disposition";
-import { resolveRecountPolicy } from "@/lib/variance-case";
+import { openVarianceCase, resolveRecountPolicy } from "@/lib/variance-case";
+import {
+  confidenceForCountedItem,
+  lastTrustedBaselineAt,
+  stockCostImpact,
+} from "@/lib/variance-confidence";
 import { resolveStockTolerance, withinTolerance } from "@/lib/tolerance";
 import {
   resolveCountScope,
@@ -726,7 +731,8 @@ export async function submitCountSession(args: {
           effectiveCountedQuantity: true,
           expectedQuantity: true,
           varianceQuantity: true,
-          inventoryItem: { select: { name: true, category: true } },
+          countedAt: true,
+          inventoryItem: { select: { name: true, category: true, costPerUnit: true } },
         },
       },
     },
@@ -755,12 +761,51 @@ export async function submitCountSession(args: {
   let within = 0;
   let outside = 0;
   const verdicts: { id: string; disposition: CountLineDisposition }[] = [];
+  const updates: { id: string; data: Prisma.StockCountLineUpdateInput }[] = [];
 
   for (const line of session.lines) {
+    const variance = Number(line.varianceQuantity ?? 0);
+
+    // How far the theoretical figure this variance is measured against can be
+    // trusted, judged over everything since the last count somebody believed
+    // (T21). Written for EVERY counted line, including ones a recount or an
+    // acceptance already settled, because the variance case opened at
+    // confirmation reads these columns.
+    const window = await lastTrustedBaselineAt({
+      branchId: session.branchId,
+      inventoryItemId: line.inventoryItemId,
+      before: line.countedAt ?? new Date(),
+    });
+    const rated = await confidenceForCountedItem({
+      cafeId: session.cafeId,
+      branchId: session.branchId,
+      inventoryItemId: line.inventoryItemId,
+      windowFrom: window.at,
+      countedAt: line.countedAt ?? new Date(),
+    });
+    const cost = stockCostImpact({
+      varianceQuantity: variance,
+      costPerUnit: Number(line.inventoryItem.costPerUnit),
+      confidence: rated.confidence,
+    });
+
+    const data: Prisma.StockCountLineUpdateInput = {
+      confidence: rated.confidence,
+      confidenceIssues: rated.issues,
+      confidenceWindowFrom: window.at,
+      // NULL, never 0. The paired flag and reason keep "we could not price
+      // this" from reading as "this cost nothing".
+      costImpact: cost.available ? cost.value : null,
+      costImpactAvailable: cost.available,
+      costUnavailableReason: cost.available ? null : cost.reason,
+    };
+
     if (isTerminal(line.disposition)) {
-      // Already answered — by a recount, or by an accepted variance.
+      // Already answered — by a recount, or by an accepted variance. Its
+      // verdict is not re-judged against today's tolerance.
       if (line.disposition === "VARIANCE_CONFIRMED") outside += 1;
       else within += 1;
+      updates.push({ id: line.id, data });
       continue;
     }
 
@@ -771,23 +816,23 @@ export async function submitCountSession(args: {
       category: line.inventoryItem.category,
     });
     const ok = withinTolerance({
-      varianceQuantity: Number(line.varianceQuantity ?? 0),
+      varianceQuantity: variance,
       expectedQuantity: Number(line.expectedQuantity ?? 0),
       tolerance,
     });
 
-    if (ok) {
-      within += 1;
-      verdicts.push({ id: line.id, disposition: "WITHIN_TOLERANCE" });
-      continue;
-    }
+    const disposition: CountLineDisposition = ok
+      ? "WITHIN_TOLERANCE"
+      // Through OUTSIDE_TOLERANCE, always — see the note above.
+      : policy.required
+        ? "RECOUNT_REQUIRED"
+        : "OUTSIDE_TOLERANCE";
 
-    outside += 1;
-    // Through OUTSIDE_TOLERANCE, always — see the note above.
-    verdicts.push({
-      id: line.id,
-      disposition: policy.required ? "RECOUNT_REQUIRED" : "OUTSIDE_TOLERANCE",
-    });
+    if (ok) within += 1;
+    else outside += 1;
+
+    verdicts.push({ id: line.id, disposition });
+    updates.push({ id: line.id, data: { ...data, disposition } });
   }
 
   const needsRecount = verdicts.some((v) => v.disposition === "RECOUNT_REQUIRED");
@@ -797,11 +842,8 @@ export async function submitCountSession(args: {
   // One transaction: a submission that gave half the lines a verdict and then
   // failed would leave the count in a state nobody chose.
   await db.$transaction(async (tx) => {
-    for (const v of verdicts) {
-      await tx.stockCountLine.update({
-        where: { id: v.id },
-        data: { disposition: v.disposition },
-      });
+    for (const u of updates) {
+      await tx.stockCountLine.update({ where: { id: u.id }, data: u.data });
     }
     await tx.stockCountSession.update({
       where: { id: session.id },
@@ -826,4 +868,216 @@ export async function submitCountSession(args: {
   });
 
   return { status, within, outside };
+}
+
+// ───────────────────────── Confirming a count ────────────────────────
+//
+// Confirmation is where a count stops being a work-in-progress and becomes
+// evidence other things may act on: the rebase reads it, variance cases are
+// opened from it, a handover may cite it. So it succeeds on exactly one
+// condition — every line is terminal — and it runs once however many times it
+// is called.
+//
+// ONCE MATTERS MORE HERE THAN ANYWHERE ELSE. A confirmation that ran twice
+// would open two variance cases for one shortage, and a shop would
+// investigate the same missing 2 kg as two separate incidents. Idempotency is
+// carried by the database rather than by a flag:
+//
+//   • the status guard is a conditional UPDATE, so of two callers racing
+//     exactly one sees a row change and the other learns it already happened;
+//   • `VarianceCase.stockCountLineId` is `@unique`, so even if both got
+//     through, `openVarianceCase` returns the winner's row rather than a twin.
+//
+// CONFIRMING DOES NOT MOVE STOCK. The shelf is changed to match a count by an
+// explicit, audited COUNT_REBASE (T23), after confirmation and never as part
+// of it. Fusing them would make "we agreed the count" and "we moved the
+// stock" one act, leaving no moment at which somebody could look at the
+// numbers before the shelf moved.
+//
+// The refusal names the offending lines. A 409 saying only "some lines are
+// unsettled" leaves the person holding it with no move to make.
+
+export type ConfirmCountResult = {
+  status: "CONFIRMED";
+  confirmedAt: Date;
+  varianceCaseIds: string[];
+  alreadyConfirmed: boolean;
+};
+
+export const COUNT_CONFIRMED_AUDIT_ACTION = "COUNT_CONFIRMED";
+
+/** Statuses a confirmation may be applied to. */
+const CONFIRMABLE: readonly StockCountStatus[] = ["SUBMITTED", "RECOUNT_REQUIRED"];
+
+/** The cases already opened from this session's lines, in line order. */
+async function casesFor(lineIds: string[]): Promise<string[]> {
+  if (lineIds.length === 0) return [];
+  const rows = await db.varianceCase.findMany({
+    where: { stockCountLineId: { in: lineIds } },
+    select: { id: true },
+    orderBy: { createdAt: "asc" },
+  });
+  return rows.map((r) => r.id);
+}
+
+/**
+ * Close the count, and open a case for every difference somebody accepted.
+ *
+ * A repeat with the key that already confirmed returns the first result and
+ * creates nothing. A caller that lost a race learns the count is confirmed
+ * rather than receiving an error about a state that is, from their point of
+ * view, exactly what they asked for.
+ */
+export async function confirmCountSession(args: {
+  sessionId: string;
+  confirmedById: string;
+  idempotencyKey: string;
+  cafeId?: string;
+  viewerBranchId?: string | null;
+}): Promise<ConfirmCountResult> {
+  if (!args.idempotencyKey) {
+    throw new ApiError(400, "مفتاح التأكيد مطلوب");
+  }
+
+  const session = await db.stockCountSession.findUnique({
+    where: { id: args.sessionId },
+    select: {
+      id: true,
+      cafeId: true,
+      branchId: true,
+      shiftId: true,
+      custodyPeriodId: true,
+      status: true,
+      confirmedAt: true,
+      idempotencyKey: true,
+      lines: {
+        select: {
+          id: true,
+          disposition: true,
+          varianceQuantity: true,
+          confidence: true,
+          costImpact: true,
+          costImpactAvailable: true,
+          costUnavailableReason: true,
+        },
+      },
+    },
+  });
+  if (!session || (args.cafeId !== undefined && session.cafeId !== args.cafeId)) {
+    throw new ApiError(404, "جلسة الجرد غير موجودة");
+  }
+  if (args.viewerBranchId && session.branchId !== args.viewerBranchId) {
+    throw new ApiError(403, "ليس لديك صلاحية على فرع تاني");
+  }
+
+  const lineIds = session.lines.map((l) => l.id);
+
+  // Already done. Same key or not, the count is confirmed and saying so is
+  // the truthful answer; what must never happen is a second set of cases.
+  if (session.status === "CONFIRMED" || session.status === "LOCKED") {
+    return {
+      status: "CONFIRMED",
+      confirmedAt: session.confirmedAt ?? new Date(),
+      varianceCaseIds: await casesFor(lineIds),
+      alreadyConfirmed: true,
+    };
+  }
+
+  if (!CONFIRMABLE.includes(session.status)) {
+    throw new ApiError(409, "لازم تسلّم الجرد الأول قبل ما تأكده");
+  }
+
+  const unsettled = session.lines.filter((l) => !isTerminal(l.disposition));
+  if (unsettled.length > 0) {
+    throw new ApiError(
+      409,
+      `في سطور لسه مش مقفولة (${unsettled.length}): ${unsettled.map((l) => l.id).join("، ")}`
+    );
+  }
+
+  const confirmedAt = new Date();
+  const accepted = session.lines.filter((l) => l.disposition === "VARIANCE_CONFIRMED");
+
+  const outcome = await db.$transaction(async (tx) => {
+    // The guard and the write are one statement, so two callers racing cannot
+    // both see SUBMITTED and both proceed.
+    const claimed = await tx.stockCountSession.updateMany({
+      where: { id: session.id, status: { in: [...CONFIRMABLE] } },
+      data: {
+        status: "CONFIRMED",
+        confirmedAt,
+        confirmedById: args.confirmedById,
+        idempotencyKey: args.idempotencyKey,
+      },
+    });
+    if (claimed.count === 0) return { won: false, caseIds: [] as string[] };
+
+    const caseIds: string[] = [];
+    for (const line of accepted) {
+      const impact = line.costImpactAvailable
+        ? ({ available: true, value: Number(line.costImpact) } as const)
+        : ({
+            available: false,
+            reason:
+              (line.costUnavailableReason as
+                | "MISSING_COST"
+                | "UNTRUSTED_COST"
+                | "CONFIDENCE_NOT_VERIFIED") ?? "MISSING_COST",
+          } as const);
+
+      const opened = await openVarianceCase(tx, {
+        cafeId: session.cafeId,
+        branchId: session.branchId,
+        type: "STOCK",
+        shiftId: session.shiftId,
+        custodyPeriodId: session.custodyPeriodId,
+        source: { kind: "STOCK_LINE", stockCountLineId: line.id },
+        quantityVariance: Number(line.varianceQuantity ?? 0),
+        // An unpriced difference has no amount to measure a threshold
+        // against, which is why `caseIsBlocking` never blocks on one.
+        amountVariance: impact.available ? impact.value : null,
+        financialImpact: impact,
+        confidence: line.confidence,
+        openedById: args.confirmedById,
+      });
+      caseIds.push(opened.caseId);
+    }
+    return { won: true, caseIds };
+  });
+
+  if (!outcome.won) {
+    // Somebody else confirmed it a moment ago. Their cases are the cases.
+    const current = await db.stockCountSession.findUniqueOrThrow({
+      where: { id: session.id },
+      select: { confirmedAt: true },
+    });
+    return {
+      status: "CONFIRMED",
+      confirmedAt: current.confirmedAt ?? confirmedAt,
+      varianceCaseIds: await casesFor(lineIds),
+      alreadyConfirmed: true,
+    };
+  }
+
+  await audit({
+    cafeId: session.cafeId,
+    userId: args.confirmedById,
+    action: COUNT_CONFIRMED_AUDIT_ACTION,
+    entity: "StockCountSession",
+    entityId: session.id,
+    details: {
+      branchId: session.branchId,
+      lineCount: session.lines.length,
+      acceptedVarianceLines: accepted.length,
+      varianceCaseIds: outcome.caseIds,
+      idempotencyKey: args.idempotencyKey,
+    },
+  });
+
+  return {
+    status: "CONFIRMED",
+    confirmedAt,
+    varianceCaseIds: outcome.caseIds,
+    alreadyConfirmed: false,
+  };
 }
