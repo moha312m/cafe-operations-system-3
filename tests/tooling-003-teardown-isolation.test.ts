@@ -102,14 +102,22 @@ type DelegateBag = Record<
 const delegates = db as unknown as DelegateBag;
 
 /**
- * A model no migration has created. Later work ships it; today it is absent.
+ * A model no migration will ever create.
  *
- * The marker moves as the milestone builds: `handoverSession` until T17 built
- * it, `varianceCase` until T18 did. Each time, the guard below is what caught
- * the change rather than the suite quietly going vacuous. `stockCountRebase`
- * is T22's, so it holds the role next.
+ * This used to name the next real model the plan had not built yet, and the
+ * marker kept moving as it built them: `handoverSession` until T17 shipped
+ * it, `varianceCase` until T18, `stockCountRebase` until T22. Each time the
+ * guard below caught the change rather than letting the suite go quietly
+ * vacuous — which is the guard working, but it was also three edits to a
+ * test whose subject never changed.
+ *
+ * The plan declares no further models, so there is no next real name to move
+ * to. A deliberately fictional one is the honest end state: what this suite
+ * needs is a delegate that is absent, not one that happens to be unbuilt
+ * today. The guard stays, because a model appearing under this name would
+ * still make everything below prove nothing.
  */
-const ABSENT_MODEL = "stockCountRebase";
+const ABSENT_MODEL = "modelThatWillNeverExist";
 
 /** Name the absent model the way a leaking teardown did: without checking. */
 async function deleteFromAbsentModel(cafeId: string) {
@@ -121,11 +129,11 @@ async function deleteFromAbsentModel(cafeId: string) {
 
 describe("TOOLING-003 teardown survives a cleanup step that cannot run", () => {
   test("the absent delegate this suite relies on is genuinely absent", () => {
-    // Guards the rest of the suite against becoming vacuous. Once the model
-    // named above exists, the steps below would quietly start succeeding and
-    // stop proving anything about failure. This test fails first, and says
-    // what to do about it — which is exactly what happened when T17 shipped
-    // HandoverSession.
+    // Guards the rest of the suite against becoming vacuous. If the model
+    // named above ever existed, the steps below would quietly start
+    // succeeding and stop proving anything about failure. This test fails
+    // first and says what to do about it — which is exactly what it did when
+    // T17, T18 and T22 shipped the models it used to name.
     assert.equal(
       delegates[ABSENT_MODEL],
       undefined,

@@ -535,6 +535,7 @@ model User {
   varianceCasesOpened   VarianceCase[] @relation("VarianceOpener")
   varianceCasesResolved VarianceCase[] @relation("VarianceResolver")
   varianceResponsibility VarianceCase[] @relation("VarianceResponsibility")
+  countRebases      StockCountRebase[]
 
   @@index([cafeId])
   @@index([branchId])
@@ -1267,8 +1268,7 @@ model StockCountSession {
   /// Handovers that carried this count as their stock evidence. Distinct from
   /// `lockedByHandover`: being cited is not being frozen.
   handovers        HandoverSession[] @relation("HandoverCountSession")
-
-  // Rebases add their back-relations in their own tasks.
+  rebases          StockCountRebase[]
 
   @@index([cafeId, createdAt])
   @@index([branchId, status])
@@ -1346,8 +1346,7 @@ model StockCountLine {
   corrections StockCountCorrection[]
   handoverAcknowledgements HandoverStockAcknowledgement[]
   varianceCase             VarianceCase?
-
-  // Rebase attaches in its own task.
+  rebase                   StockCountRebase?
 
   @@unique([sessionId, inventoryItemId])
   @@index([sessionId])
@@ -1640,6 +1639,54 @@ model VarianceCase {
   @@index([shiftId])
 }
 
+/// A confirmed physical count becoming the operational baseline.
+///
+/// Every figure that produced the new balance is kept, so a rebase can be
+/// re-derived later rather than taken on trust. The count line itself is
+/// never rewritten: it is evidence, and this is the separate, audited
+/// operational effect that evidence caused.
+model StockCountRebase {
+  id              String @id @default(cuid())
+  sessionId       String
+  lineId          String @unique
+  inventoryItemId String
+
+  /// The figure acted on — `effectiveCountedQuantity` at rebase time, which
+  /// is the approved correction whenever one supersedes the original count.
+  countedQuantity Decimal @db.Decimal(12, 3)
+  /// `currentStock` immediately before, read under the item lock.
+  stockBefore     Decimal @db.Decimal(12, 3)
+  /// Movements above the line's `itemVersion`, replayed so nothing is lost.
+  /// A sale made while the count was in progress was excluded from the
+  /// expected figure — correctly, the counter never saw it — but it did
+  /// leave the shelf, so it must still reduce the rebased balance.
+  replayedDelta         Decimal @db.Decimal(12, 3)
+  replayedMovementCount Int
+  stockAfter            Decimal @db.Decimal(12, 3)
+  /// The itemVersion the COUNT_REBASE row itself was written at, proving it
+  /// went through the guarded writer rather than around it.
+  rebaseItemVersion     BigInt
+
+  ledgerTransactionId String @unique
+
+  rebasedAt   DateTime @default(now())
+  rebasedById String
+
+  session StockCountSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  line    StockCountLine    @relation(fields: [lineId], references: [id], onDelete: Cascade)
+
+  /// Restrict: a rebase explains a movement, so deleting the movement while
+  /// keeping the explanation would record an effect nothing can show.
+  inventoryItem     InventoryItem        @relation(fields: [inventoryItemId], references: [id], onDelete: Restrict)
+  ledgerTransaction InventoryTransaction @relation(fields: [ledgerTransactionId], references: [id], onDelete: Restrict)
+  rebasedBy         User                 @relation(fields: [rebasedById], references: [id])
+
+  /// Idempotency (§2.4): one confirmed count rebases one item exactly once,
+  /// and a retry collides instead of applying a second delta to a balance.
+  @@unique([sessionId, inventoryItemId])
+  @@index([sessionId])
+}
+
 // ────────────────────────── Handover (T17) ───────────────────────────
 // A handover has two sides, and the incoming one inspects stock as well as
 // cash.
@@ -1863,6 +1910,12 @@ enum InventoryTransactionType {
   TRANSFER_IN // تحويل داخل (+)
   TRANSFER_OUT // تحويل خارج (−)
   RETURN // مرتجع (+)
+  // A physical count became the operational baseline. Deliberately NOT
+  // ADJUSTMENT: a count records evidence and an adjustment records a
+  // correction, and reporting must tell a manager's tweak from a recount.
+  // Signed by the caller, because a count can find more than expected as
+  // easily as less.
+  COUNT_REBASE // إعادة ضبط بعد الجرد (±)
 }
 
 // Raw materials / ingredients tracked per branch. currentStock is the
@@ -1902,6 +1955,7 @@ model InventoryItem {
   countLines   StockCountLine[]
   toleranceRules ToleranceRule[]
   purchaseItems PurchaseInvoiceItem[]
+  countRebases StockCountRebase[]
 
   @@index([cafeId])
   @@index([branchId])
@@ -1936,6 +1990,7 @@ model InventoryTransaction {
   inventoryItem InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
   order         Order?        @relation(fields: [orderId], references: [id], onDelete: SetNull)
   createdBy     User?         @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  countRebase   StockCountRebase?
 
   @@index([cafeId])
   @@index([branchId])

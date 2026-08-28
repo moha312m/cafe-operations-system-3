@@ -36,6 +36,7 @@ export const TXN_LABEL: Record<InventoryTransactionType, string> = {
   TRANSFER_IN: "تحويل داخل",
   TRANSFER_OUT: "تحويل خارج",
   RETURN: "مرتجع",
+  COUNT_REBASE: "إعادة ضبط بعد الجرد",
 };
 
 // Which audit action a movement writes.
@@ -47,10 +48,15 @@ export const TXN_AUDIT_ACTION: Record<InventoryTransactionType, string> = {
   ADJUSTMENT: "INVENTORY_ADJUSTED",
   TRANSFER_IN: "INVENTORY_TRANSFERRED",
   TRANSFER_OUT: "INVENTORY_TRANSFERRED",
+  // Its own action, never INVENTORY_ADJUSTED: a physical recount and a
+  // manager's tweak must stay tellable apart in the audit trail forever
+  // after, and merging them at write time makes that impossible later.
+  COUNT_REBASE: "INVENTORY_COUNT_REBASED",
 };
 
 // Sign a raw (positive) quantity gets depending on the movement type.
-// ADJUSTMENT keeps the caller's sign (can be ±). Everything else is fixed.
+// ADJUSTMENT and COUNT_REBASE keep the caller's sign (can be ±). Everything
+// else is fixed.
 export function signedDelta(
   type: InventoryTransactionType,
   quantity: number
@@ -66,6 +72,11 @@ export function signedDelta(
       return -Math.abs(quantity);
     case "ADJUSTMENT":
       return quantity; // signed by the user
+    case "COUNT_REBASE":
+      // Signed by the caller, like ADJUSTMENT but for a different reason: a
+      // count can find MORE on the shelf than expected as easily as less, so
+      // forcing a sign would make one of those two outcomes unrepresentable.
+      return quantity;
   }
 }
 
