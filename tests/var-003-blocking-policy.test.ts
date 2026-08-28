@@ -35,8 +35,6 @@ const MARKER = tag("VAR003");
 let cafeId: string;
 let branchId: string;
 let openerId: string;
-let staffId: string;
-let shiftId: string;
 let lineId: string;
 
 /** CafeSettings rows that existed before this migration. */
@@ -66,14 +64,6 @@ before(async () => {
       },
     })).id;
   openerId = await mk("opener", "BRANCH_MANAGER");
-  staffId = await mk("staff", "CASHIER");
-
-  shiftId = (await db.shift.create({
-    data: {
-      cafeId, branchId, cashierId: staffId, shiftNumber: 1,
-      openingCashAmount: 0, expectedCashAmount: 0,
-    },
-  })).id;
 
   const itemId = (await db.inventoryItem.create({
     data: {
