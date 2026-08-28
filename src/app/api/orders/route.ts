@@ -17,6 +17,7 @@ import { attachOrderToTableSession } from "@/lib/table-sessions";
 import { findOrCreateCustomerByPhone, recordCustomerOrder } from "@/lib/customers";
 import { getLoyaltySettingsSafe, loyaltyCalcSettings, maybeAwardLoyaltyPoints, recordRedemption } from "@/lib/loyalty";
 import { validateRedemption } from "@/lib/loyalty-calc";
+import { checkCartAvailability } from "@/lib/stock-availability";
 
 const orderInclude = {
   items: { include: { addOns: true } },
@@ -212,6 +213,47 @@ export async function POST(request: NextRequest) {
         addOns: addOnRows,
       };
     });
+
+    // ── Can the branch actually make this? ──
+    //
+    // Placed here on purpose: the menu configuration above is validated, so
+    // the exact sold configuration (product, size, add-ons) is known, and
+    // NOTHING has been written yet. Everything below this point either
+    // creates a row or takes money — `findOrCreateCustomerByPhone` alone will
+    // create a customer profile — so a refusal has to happen before it, or
+    // "the order was blocked" would still leave a trail of the sale.
+    //
+    // The check is read-only and holds no lock. It is an operational
+    // availability answer, not a reservation: stock can still be consumed by
+    // another order between here and SERVED, and the locked deduction at
+    // SERVED remains the authoritative, concurrency-safe guard.
+    const availability = await checkCartAvailability({
+      cafeId,
+      branchId,
+      allowNegativeStock: cafe.allowNegativeStock,
+      lines: itemRows.map((row) => ({
+        productId: row.productId,
+        variantId: row.variantId,
+        addOnIds: row.addOns.map((a) => a.addOnId),
+        quantity: row.quantity,
+        label: row.variantName ? `${row.productName} (${row.variantName})` : row.productName,
+      })),
+    });
+    if (!availability.ok) {
+      // What could not be sold, and why, is worth keeping: it is the record
+      // the owner reads to find the ingredient that is costing them orders.
+      // Written from the route rather than the service so the availability
+      // check itself stays read-only.
+      await audit({
+        cafeId, userId: session.id, action: "ORDER_BLOCKED_STOCK_UNAVAILABLE",
+        entity: "Order", entityId: null,
+        details: { branchId, reason: availability.message, refusals: availability.refusals },
+      });
+      // 409, not 400: the request is well-formed and the menu configuration is
+      // valid — it conflicts with the branch's CURRENT state, and the same
+      // request may well succeed after a delivery lands.
+      throw new ApiError(409, availability.message);
+    }
 
     // ── Customer profile link (by phone) + loyalty redemption ──
     // Invalid/absent phone just skips the link; redemption REQUIRES a
