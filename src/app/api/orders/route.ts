@@ -256,19 +256,27 @@ export async function POST(request: NextRequest) {
       mode: enforcementMode,
       lines: availabilityLines,
     });
-    if (!availability.ok) {
-      // What could not be sold, and why, is worth keeping: it is the record
-      // the owner reads to find the ingredient that is costing them orders.
-      // Written from the route rather than the service so the availability
-      // check itself stays read-only.
-      await audit({
+    // What could not be sold, and why, is worth keeping: it is the record the
+    // owner reads to find the ingredient that is costing them orders. Written
+    // from the route rather than the service so the availability check itself
+    // stays read-only, and shared by both refusals so a sale lost to a race
+    // leaves the same evidence as one lost to an empty shelf.
+    const auditBlocked = (verdict: typeof availability, raced: boolean) =>
+      audit({
         cafeId, userId: session.id, action: "ORDER_BLOCKED_STOCK_UNAVAILABLE",
         entity: "Order", entityId: null,
         details: {
           branchId, mode: enforcementMode,
-          reason: availability.message, refusals: availability.refusals,
+          reason: verdict.message, refusals: verdict.refusals,
+          // Distinguishes "the shelf was already empty when the cashier
+          // asked" from "another till took it in between" — same refusal to
+          // the customer, completely different thing for the owner to fix.
+          raced,
         },
       });
+
+    if (!availability.ok) {
+      await auditBlocked(availability, false);
       // 409, not 400: the request is well-formed and the menu configuration is
       // valid — it conflicts with the branch's CURRENT state, and the same
       // request may well succeed after a delivery lands.
@@ -382,117 +390,138 @@ export async function POST(request: NextRequest) {
     const source = session.role === "WAITER" ? "WAITER" : "CASHIER_POS";
     const remainingAmount = round2(total - paidAmount);
 
-    const order = await db.$transaction(async (tx) => {
-      // ── The authoritative capacity check ──
-      //
-      // Both tills read "5 available", both take an order for 4, and both are
-      // told yes: the café has accepted eight portions of a five-portion
-      // ingredient and nobody finds out until SERVED, hours later, with the
-      // drinks made and the money taken. A number on a screen is not a
-      // reservation — acceptance is what takes the capacity.
-      //
-      // So the same service runs again here with the branch rows held FOR
-      // UPDATE, re-reading stock and live commitments underneath those locks.
-      // Whatever it decides, the order and its commitment are written together
-      // or not at all. The locks are released at COMMIT, microseconds later,
-      // and are never held while anybody waits for a cashier.
-      const locked = await checkCartAvailability({
-        cafeId,
-        branchId,
-        mode: enforcementMode,
-        client: tx,
-        lock: true,
-        lines: availabilityLines,
-      });
-      if (!locked.ok) {
-        // Thrown INSIDE the transaction so everything above rolls back with
-        // it. Reached only when another till took the capacity between the
-        // first check and this one, which is exactly the race this exists for.
-        throw new ApiError(409, locked.message ?? "لا يمكن إتمام الطلب حاليًا");
-      }
+    // Set when the locked check refused, so the audit can be written after the
+    // transaction that discovered it has rolled away.
+    let racedVerdict: typeof availability | null = null;
 
-      const last = await tx.order.aggregate({
-        where: { branchId },
-        _max: { orderNumber: true },
-      });
-      const created = await tx.order.create({
-        data: {
+    let order;
+    try {
+      order = await db.$transaction(async (tx) => {
+        // ── The authoritative capacity check ──
+        //
+        // Both tills read "5 available", both take an order for 4, and both are
+        // told yes: the café has accepted eight portions of a five-portion
+        // ingredient and nobody finds out until SERVED, hours later, with the
+        // drinks made and the money taken. A number on a screen is not a
+        // reservation — acceptance is what takes the capacity.
+        //
+        // So the same service runs again here with the branch rows held FOR
+        // UPDATE, re-reading stock and live commitments underneath those locks.
+        // Whatever it decides, the order and its commitment are written together
+        // or not at all. The locks are released at COMMIT, microseconds later,
+        // and are never held while anybody waits for a cashier.
+        const locked = await checkCartAvailability({
           cafeId,
           branchId,
-          orderNumber: (last._max.orderNumber ?? 0) + 1,
-          type: data.type,
-          status: "CONFIRMED", // staff orders skip the approval queue
-          source,
-          customerName: data.customerName,
-          customerPhone: data.customerPhone,
-          deliveryAddress: data.deliveryAddress,
-          tableNumber: data.tableNumber,
-          notes: data.notes,
-          subtotal: charges.subtotal,
-          discountAmount: charges.discountAmount,
-          serviceChargeAmount: charges.serviceChargeAmount,
-          taxAmount: charges.taxAmount,
-          total,
-          paymentStatus,
-          paidAmount,
-          remainingAmount,
-          taxRateSnapshot: charges.taxRateSnapshot,
-          serviceRateSnapshot: charges.serviceRateSnapshot,
-          // The policy this order was ACCEPTED under, stored alongside the
-          // rates and for the same reason: the availability answer above was
-          // given under `enforcementMode`, and the deduction at SERVED must be
-          // given under the same one however the café is configured by then.
-          // Server-derived — `createOrderSchema` has no such field, so a till
-          // cannot ask for a mode, only be told one.
-          inventoryEnforcementMode: enforcementMode,
-          customerId: customer?.id ?? null,
-          loyaltyPointsRedeemed: redeemPoints,
-          loyaltyDiscountAmount: loyaltyDiscount,
-          createdById: session.id,
-          items: {
-            create: itemRows.map((row) => ({
-              productId: row.productId,
-              variantId: row.variantId,
-              productName: row.productName,
-              variantName: row.variantName,
-              unitPrice: row.unitPrice,
-              quantity: row.quantity,
-              lineTotal: row.lineTotal,
-              notes: row.notes,
-              addOns: { create: row.addOns },
-            })),
-          },
-        },
-        include: orderInclude,
-      });
-      for (const s of paySplits) {
-        await tx.payment.create({
-          data: {
-            cafeId, branchId, orderId: created.id, shiftId: shift?.id ?? null,
-            cashierId: session.id, amount: s.amount, method: s.method,
-            status: "PAID", receivedById: session.id,
-          },
+          mode: enforcementMode,
+          client: tx,
+          lock: true,
+          lines: availabilityLines,
         });
-      }
+        if (!locked.ok) {
+          // Thrown INSIDE the transaction so everything above rolls back with
+          // it. Reached only when another till took the capacity between the
+          // first check and this one, which is exactly the race this exists for.
+          //
+          // The verdict is carried out rather than audited here: an audit row
+          // written inside this transaction would roll back with the order it
+          // was describing, and the one refusal nobody would have a record of
+          // is the rarest and most confusing kind.
+          racedVerdict = locked;
+          throw new ApiError(409, locked.message ?? "لا يمكن إتمام الطلب حاليًا");
+        }
 
-      // What this order has promised of the shelf, recorded once, from the
-      // figures the decision above was actually made against. It is a snapshot
-      // and is never recomputed: an owner who fixes a recipe at 10:05 changes
-      // what the next cup draws, not what this one was accepted for — the same
-      // rule `taxRateSnapshot` and `inventoryEnforcementMode` already apply.
-      //
-      // Under the permissive modes the sale may exceed the balance, and the
-      // commitment is written anyway: that is what keeps the displayed
-      // physical count honest about the size of the hole.
-      await persistOrderCommitments(tx, {
-        orderId: created.id,
-        cafeId,
-        branchId,
-        lines: commitmentLinesFor(locked),
+        const last = await tx.order.aggregate({
+          where: { branchId },
+          _max: { orderNumber: true },
+        });
+        const created = await tx.order.create({
+          data: {
+            cafeId,
+            branchId,
+            orderNumber: (last._max.orderNumber ?? 0) + 1,
+            type: data.type,
+            status: "CONFIRMED", // staff orders skip the approval queue
+            source,
+            customerName: data.customerName,
+            customerPhone: data.customerPhone,
+            deliveryAddress: data.deliveryAddress,
+            tableNumber: data.tableNumber,
+            notes: data.notes,
+            subtotal: charges.subtotal,
+            discountAmount: charges.discountAmount,
+            serviceChargeAmount: charges.serviceChargeAmount,
+            taxAmount: charges.taxAmount,
+            total,
+            paymentStatus,
+            paidAmount,
+            remainingAmount,
+            taxRateSnapshot: charges.taxRateSnapshot,
+            serviceRateSnapshot: charges.serviceRateSnapshot,
+            // The policy this order was ACCEPTED under, stored alongside the
+            // rates and for the same reason: the availability answer above was
+            // given under `enforcementMode`, and the deduction at SERVED must be
+            // given under the same one however the café is configured by then.
+            // Server-derived — `createOrderSchema` has no such field, so a till
+            // cannot ask for a mode, only be told one.
+            inventoryEnforcementMode: enforcementMode,
+            customerId: customer?.id ?? null,
+            loyaltyPointsRedeemed: redeemPoints,
+            loyaltyDiscountAmount: loyaltyDiscount,
+            createdById: session.id,
+            items: {
+              create: itemRows.map((row) => ({
+                productId: row.productId,
+                variantId: row.variantId,
+                productName: row.productName,
+                variantName: row.variantName,
+                unitPrice: row.unitPrice,
+                quantity: row.quantity,
+                lineTotal: row.lineTotal,
+                notes: row.notes,
+                addOns: { create: row.addOns },
+              })),
+            },
+          },
+          include: orderInclude,
+        });
+        for (const s of paySplits) {
+          await tx.payment.create({
+            data: {
+              cafeId, branchId, orderId: created.id, shiftId: shift?.id ?? null,
+              cashierId: session.id, amount: s.amount, method: s.method,
+              status: "PAID", receivedById: session.id,
+            },
+          });
+        }
+
+        // What this order has promised of the shelf, recorded once, from the
+        // figures the decision above was actually made against. It is a snapshot
+        // and is never recomputed: an owner who fixes a recipe at 10:05 changes
+        // what the next cup draws, not what this one was accepted for — the same
+        // rule `taxRateSnapshot` and `inventoryEnforcementMode` already apply.
+        //
+        // Under the permissive modes the sale may exceed the balance, and the
+        // commitment is written anyway: that is what keeps the displayed
+        // physical count honest about the size of the hole.
+        await persistOrderCommitments(tx, {
+          orderId: created.id,
+          cafeId,
+          branchId,
+          lines: commitmentLinesFor(locked),
+        });
+
+        return created;
       });
-
-      return created;
-    });
+    } catch (e) {
+      // The locked check refused. Its audit row belongs HERE, after the
+      // transaction that discovered it has rolled away — written inside, it
+      // would roll back along with the order it was describing, and the one
+      // refusal nobody had a record of would be the rarest and most confusing
+      // kind.
+      if (racedVerdict) await auditBlocked(racedVerdict, true);
+      throw e;
+    }
 
     if (shift) await recomputeShiftTotals(shift.id);
 

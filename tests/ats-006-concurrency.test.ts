@@ -110,6 +110,63 @@ describe("ATS-006 concurrent acceptance cannot overcommit", () => {
     assert.equal((await order(fx.manager.email, p.id, 2)).status, 201, "two still fits");
   });
 
+  test("a sale lost to the race leaves the same evidence as one lost to an empty shelf", async () => {
+    // The owner reads ORDER_BLOCKED_STOCK_UNAVAILABLE to find the ingredient
+    // that is costing them orders, and a refusal that never reached the audit
+    // is the one they would never be able to explain. `raced` separates "the
+    // shelf was already empty" from "another till took it in between" —
+    // identical to the customer, entirely different to fix.
+    const item = await ingredient(fx, "audited", { stock: 0.5 });
+    const p = await product(fx, "audited-drink");
+    await recipe(fx, { productId: p.id }, [{ itemId: item.id, qty: "0.100" }]);
+
+    const before = await db.auditLog.count({
+      where: { cafeId: fx.cafeId, action: "ORDER_BLOCKED_STOCK_UNAVAILABLE" },
+    });
+
+    const [a, b] = await Promise.all([
+      order(fx.manager.email, p.id, 4),
+      order(fx.owner.email, p.id, 4),
+    ]);
+    assert.equal([a, b].filter((r) => r.status === 201).length, 1);
+    assert.equal([a, b].filter((r) => r.status === 409).length, 1);
+
+    const rows = await db.auditLog.findMany({
+      where: { cafeId: fx.cafeId, action: "ORDER_BLOCKED_STOCK_UNAVAILABLE" },
+      orderBy: { createdAt: "desc" },
+      take: 1,
+    });
+    assert.equal(
+      await db.auditLog.count({
+        where: { cafeId: fx.cafeId, action: "ORDER_BLOCKED_STOCK_UNAVAILABLE" },
+      }),
+      before + 1,
+      "the refusal is on the record exactly once"
+    );
+    const details = rows[0].details as { raced?: boolean; reason?: string };
+    assert.equal(typeof details.reason, "string", "and says which ingredient");
+    assert.equal(
+      typeof details.raced, "boolean",
+      "and whether it was the shelf or another till"
+    );
+  });
+
+  test("reading availability writes nothing at all", async () => {
+    // A cashier idling on the POS generates a steady trickle of these. An
+    // audit row per read would bury the events that actually matter — a
+    // blocked sale, an override, a deduction — under thousands of
+    // "somebody looked".
+    const before = await db.auditLog.count({ where: { cafeId: fx.cafeId } });
+    for (let i = 0; i < 5; i += 1) {
+      const r = await as(fx.manager.email, `/api/pos/availability?branchId=${fx.branchId}`);
+      assert.equal(r.status, 200, r.text);
+    }
+    assert.equal(
+      await db.auditLog.count({ where: { cafeId: fx.cafeId } }), before,
+      "reads are reads"
+    );
+  });
+
   test("a permissive café still records what it promised", async () => {
     // ALLOW_NEGATIVE_STOCK may accept past the balance — that is the owner's
     // decision — but the commitment is still written, so the displayed
