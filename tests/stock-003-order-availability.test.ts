@@ -24,9 +24,13 @@ before(async () => {
   await requireServer();
   fx = await countCafe("STOCK003");
 
-  await db.cafe.update({
-    where: { id: fx.cafeId },
-    data: { allowNegativeStock: false },
+  // The café's enforcement policy, which replaced the old
+  // `Cafe.allowNegativeStock` boolean. STRICT is what this suite is about:
+  // refuse a sale the branch cannot make.
+  await db.cafeSettings.upsert({
+    where: { cafeId: fx.cafeId },
+    create: { cafeId: fx.cafeId, inventoryEnforcementMode: "STRICT" },
+    update: { inventoryEnforcementMode: "STRICT" },
   });
 
   const category = await db.menuCategory.create({

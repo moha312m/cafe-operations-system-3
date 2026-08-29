@@ -3,6 +3,7 @@ import { audit } from "@/lib/audit";
 import { round2, round3 } from "@/lib/costing";
 import { theoreticalConsumption } from "@/lib/recipes";
 import { applyStockMutation, lockItemForUpdate } from "@/lib/ledger";
+import { allowsKnownShortage } from "@/lib/inventory-policy";
 
 type Tx = Prisma.TransactionClient | PrismaClient;
 
@@ -31,7 +32,11 @@ export async function deductStockForOrder(
   const order = await tx.order.findUnique({
     where: { id: orderId },
     include: {
-      cafe: { select: { allowNegativeStock: true } },
+      // The café's enforcement policy, which decides whether a shortage at
+      // hand-over may commit a negative balance. Read here rather than passed
+      // in: the SERVED transition must obey the policy as it stands NOW, not
+      // as it stood when the order was taken.
+      cafe: { select: { settings: { select: { inventoryEnforcementMode: true } } } },
       // variantId and the chosen add-ons decide what was actually made: a
       // large latte is not a small one, and an extra shot is more beans.
       items: {
@@ -49,7 +54,10 @@ export async function deductStockForOrder(
 
   const branchId = order.branchId;
   const cafeId = order.cafeId;
-  const allowNegative = order.cafe.allowNegativeStock;
+  // A café with no settings row has expressed no opinion and gets the strict
+  // reading, exactly as the availability check does.
+  const mode = order.cafe.settings?.inventoryEnforcementMode ?? "STRICT";
+  const allowNegative = allowsKnownShortage(mode);
 
   // What each line theoretically consumes, resolved from the exact sold
   // configuration — product, size, and add-ons — rather than from the product

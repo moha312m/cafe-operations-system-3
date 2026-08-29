@@ -28,22 +28,37 @@
 // ── What blocks, and why the two refusals are not the same ──
 //
 // A quantity shortage is a KNOWN number: we know what the drink consumes, we
-// know what the shelf holds, and the café's `allowNegativeStock` is exactly
-// the owner's decision about whether to sell past it. That decision is
-// honoured.
+// know what the shelf holds, and whether to sell past it is the owner's
+// decision. That decision is honoured.
 //
-// A recipe that does not resolve is an UNKNOWN consumption. `allowNegativeStock`
-// says nothing about it — it is permission to go below a balance we can
-// compute, not permission to sell something whose draw on the shelf nobody has
-// written down. Letting negative stock wave through an unmapped product is how
-// a café ends up with theoretical stock that has never met its shelf, and the
-// next physical count reads the gap as somebody's shortage. So configuration
-// gaps block regardless of the negative-stock setting.
+// A recipe that does not resolve is an UNKNOWN consumption — nobody has
+// written down what the drink draws off the shelf. Selling against it is how a
+// café ends up with theoretical stock that has never met its shelf, and the
+// next physical count reads the gap as somebody's shortage.
+//
+// Those are different risks, so the café's policy names them separately:
+//
+//   STRICT                refuse both
+//   ALLOW_NEGATIVE_STOCK  accept the known shortage, still refuse the unknown
+//   OVERRIDE_ALL          accept both, and say so — the sale carries a
+//                         warning, an audit row, and an explicit record of
+//                         what could not be resolved
+//
+// The middle mode is the point of having three: an owner can accept going
+// below a balance we can compute without also agreeing to sell a draw nobody
+// has written down. This module decides; it never chooses the policy, which is
+// read from the café and never from the request.
 
 import { db } from "@/lib/db";
 import { round3, RecipeIssue } from "@/lib/costing";
 import { theoreticalConsumption } from "@/lib/recipes";
 import { UNIT_LABEL } from "@/lib/inventory";
+import {
+  allowsKnownShortage,
+  allowsUnknownConsumption,
+  OVERRIDE_SALE_WARNING,
+  type InventoryEnforcementMode,
+} from "@/lib/inventory-policy";
 import type { InventoryUnit } from "@prisma/client";
 
 /** One thing the cart is asking the branch to make. */
@@ -106,9 +121,37 @@ export type Demand = {
   labels: string[];
 };
 
-export type AvailabilityVerdict =
-  | { ok: true; demand: Demand[] }
-  | { ok: false; refusals: Refusal[]; message: string; demand: Demand[] };
+/** What a configuration wanted that we could not read. */
+export type UnresolvedConsumption = { label: string; issues: RecipeIssue[] };
+
+export type EnforcementDecision = "ALLOW" | "ALLOW_WITH_WARNING" | "BLOCK";
+
+/**
+ * The whole answer, in one shape, so callers never re-derive policy.
+ *
+ * `ok` is kept as the plain "may this sale proceed" question, which is what
+ * every caller actually branches on; the richer fields are for the audit row
+ * and the cashier's warning.
+ */
+export type AvailabilityVerdict = {
+  ok: boolean;
+  decision: EnforcementDecision;
+  mode: InventoryEnforcementMode;
+  /** Refusals that actually blocked. Empty unless decision is BLOCK. */
+  refusals: Refusal[];
+  /** Refusals the café's policy waived. Empty under STRICT, by construction. */
+  waived: Refusal[];
+  /** Blocking message for the cashier; null unless blocked. */
+  message: string | null;
+  /** Non-blocking messages for the cashier. */
+  warnings: string[];
+  /** Aggregated demand we could read, per branch stock row. */
+  knownConsumption: Demand[];
+  /** Configurations whose consumption we could NOT read. Never invented. */
+  unresolvedConsumption: UnresolvedConsumption[];
+  /** @deprecated use knownConsumption — kept so existing call sites read the same. */
+  demand: Demand[];
+};
 
 /**
  * Can this whole cart be made from this branch's stock right now?
@@ -126,10 +169,12 @@ export type AvailabilityVerdict =
 export async function checkCartAvailability(args: {
   cafeId: string;
   branchId: string;
-  allowNegativeStock: boolean;
+  /** The café's persisted policy. Never taken from a request body. */
+  mode: InventoryEnforcementMode;
   lines: AvailabilityLine[];
 }): Promise<AvailabilityVerdict> {
   const refusals: Refusal[] = [];
+  const unresolvedConsumption: UnresolvedConsumption[] = [];
 
   // ── 1. What the cart theoretically consumes ──
   // Resolution is `theoreticalConsumption`'s, not a second copy of it: the
@@ -151,6 +196,10 @@ export async function checkCartAvailability(args: {
     if (blocking.length > 0) {
       if (!refusals.some((r) => r.kind === "RECIPE_UNRESOLVABLE" && r.label === line.label)) {
         refusals.push({ kind: "RECIPE_UNRESOLVABLE", label: line.label, issues: blocking });
+        // Recorded whether or not policy lets the sale through. Under
+        // OVERRIDE_ALL this is what stops an unreadable recipe being quietly
+        // treated as zero consumption later.
+        unresolvedConsumption.push({ label: line.label, issues: blocking });
       }
       // No quantity is guessed for a configuration we could not read. It
       // contributes nothing to demand, and the refusal above is why.
@@ -261,8 +310,11 @@ export async function checkCartAvailability(args: {
   // a branch holding 0.220 KG may sell the drink that takes 0.220 KG and
   // finish at zero. round3 first, because stock is Decimal(12,3) and the
   // comparison must not turn a float tail into a phantom shortage.
+  // A shortage is recorded as a refusal REGARDLESS of policy. Whether it
+  // actually blocks is decided in one place below, so the arithmetic and the
+  // business rule never drift apart.
   for (const d of demand) {
-    if (round3(d.available - d.required) < 0 && !args.allowNegativeStock) {
+    if (round3(d.available - d.required) < 0) {
       refusals.push({
         kind: "INSUFFICIENT",
         label: d.labels[0],
@@ -274,8 +326,78 @@ export async function checkCartAvailability(args: {
     }
   }
 
-  if (refusals.length === 0) return { ok: true, demand };
-  return { ok: false, refusals, message: refusalMessage(refusals), demand };
+  return applyPolicy(args.mode, refusals, demand, unresolvedConsumption);
+}
+
+/**
+ * The single place the café's policy turns refusals into a decision.
+ *
+ * Everything above this point is arithmetic and resolution — the same facts
+ * whatever the café has chosen. Keeping the policy in one function is what
+ * stops `if (strict) … if (override) …` spreading into routes that have no
+ * business knowing about it.
+ */
+function applyPolicy(
+  mode: InventoryEnforcementMode,
+  all: Refusal[],
+  demand: Demand[],
+  unresolvedConsumption: UnresolvedConsumption[]
+): AvailabilityVerdict {
+  const waivable = (r: Refusal) =>
+    r.kind === "INSUFFICIENT"
+      // A known number the owner has decided to sell past.
+      ? allowsKnownShortage(mode)
+      // An unknown draw on the shelf: a recipe that will not resolve, or an
+      // ingredient this branch does not carry at all.
+      : allowsUnknownConsumption(mode);
+
+  const waived = all.filter(waivable);
+  const refusals = all.filter((r) => !waivable(r));
+
+  if (refusals.length > 0) {
+    return {
+      ok: false, decision: "BLOCK", mode,
+      refusals, waived,
+      message: refusalMessage(refusals),
+      warnings: [],
+      knownConsumption: demand, unresolvedConsumption, demand,
+    };
+  }
+
+  const warnings: string[] = [];
+  if (waived.length > 0) {
+    // The cashier is told the sale went through on policy rather than on
+    // stock, so "it let me sell it" never reads as "there was enough".
+    if (waived.some((r) => r.kind !== "INSUFFICIENT")) {
+      warnings.push(OVERRIDE_SALE_WARNING);
+    }
+    for (const r of waived) {
+      if (r.kind === "INSUFFICIENT") {
+        warnings.push(
+          `الخامة «${r.ingredient}» أقل من المطلوب — المتاح ${r.available} ` +
+            `${UNIT_LABEL[r.unit]} والمطلوب ${r.required} ${UNIT_LABEL[r.unit]}. ` +
+            `تم السماح بالبيع حسب سياسة المنشأة وهيتسجل رصيد سالب.`
+        );
+      } else if (r.kind === "INGREDIENT_NOT_STOCKED") {
+        warnings.push(
+          `الخامة «${r.ingredient}» غير مسجلة في مخزون الفرع، فاستهلاكها مش هيتخصم.`
+        );
+      } else {
+        warnings.push(
+          `«${r.label}» مكوناته غير مضبوطة (${r.issues.map(issueLabel).join("، ")}) ` +
+            `— الاستهلاك المسجل للطلب ده هيكون ناقص.`
+        );
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    decision: waived.length > 0 ? "ALLOW_WITH_WARNING" : "ALLOW",
+    mode, refusals: [], waived,
+    message: null, warnings,
+    knownConsumption: demand, unresolvedConsumption, demand,
+  };
 }
 
 /**

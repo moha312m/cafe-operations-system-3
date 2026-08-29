@@ -18,6 +18,7 @@ import { findOrCreateCustomerByPhone, recordCustomerOrder } from "@/lib/customer
 import { getLoyaltySettingsSafe, loyaltyCalcSettings, maybeAwardLoyaltyPoints, recordRedemption } from "@/lib/loyalty";
 import { validateRedemption } from "@/lib/loyalty-calc";
 import { checkCartAvailability } from "@/lib/stock-availability";
+import { getInventoryEnforcementMode } from "@/lib/inventory-policy";
 
 const orderInclude = {
   items: { include: { addOns: true } },
@@ -227,10 +228,15 @@ export async function POST(request: NextRequest) {
     // availability answer, not a reservation: stock can still be consumed by
     // another order between here and SERVED, and the locked deduction at
     // SERVED remains the authoritative, concurrency-safe guard.
+    // The café's persisted policy, read from the café the caller is
+    // authenticated into. Deliberately NOT from the request body: enforcement
+    // is a business setting the owner configures, never something a till can
+    // ask to relax.
+    const enforcementMode = await getInventoryEnforcementMode(cafeId);
     const availability = await checkCartAvailability({
       cafeId,
       branchId,
-      allowNegativeStock: cafe.allowNegativeStock,
+      mode: enforcementMode,
       lines: itemRows.map((row) => ({
         productId: row.productId,
         variantId: row.variantId,
@@ -247,12 +253,15 @@ export async function POST(request: NextRequest) {
       await audit({
         cafeId, userId: session.id, action: "ORDER_BLOCKED_STOCK_UNAVAILABLE",
         entity: "Order", entityId: null,
-        details: { branchId, reason: availability.message, refusals: availability.refusals },
+        details: {
+          branchId, mode: enforcementMode,
+          reason: availability.message, refusals: availability.refusals,
+        },
       });
       // 409, not 400: the request is well-formed and the menu configuration is
       // valid — it conflicts with the branch's CURRENT state, and the same
       // request may well succeed after a delivery lands.
-      throw new ApiError(409, availability.message);
+      throw new ApiError(409, availability.message ?? "لا يمكن إتمام الطلب حاليًا");
     }
 
     // ── Customer profile link (by phone) + loyalty redemption ──
@@ -454,6 +463,35 @@ export async function POST(request: NextRequest) {
       await maybeAwardLoyaltyPoints(order.id);
     }
 
+    // A sale that passed only because the café's policy allowed it is recorded
+    // against the order, so a later review can tell "we had the stock" from
+    // "we sold it anyway". Not written when nothing was waived — an explicit
+    // NOT_APPLICABLE recipe consumes nothing and is not an override.
+    if (availability.waived.length > 0) {
+      await audit({
+        cafeId, userId: session.id,
+        action: "ORDER_INVENTORY_POLICY_OVERRIDE",
+        entity: "Order", entityId: order.id,
+        details: {
+          orderNumber: order.orderNumber, branchId,
+          mode: enforcementMode,
+          byName: session.name,
+          reasonCategories: [...new Set(availability.waived.map((r) => r.kind))],
+          knownShortages: availability.waived
+            .filter((r) => r.kind === "INSUFFICIENT")
+            .map((r) => r.kind === "INSUFFICIENT"
+              ? { ingredient: r.ingredient, available: r.available, required: r.required }
+              : null)
+            .filter(Boolean),
+          recipeGaps: availability.unresolvedConsumption,
+          // The honest part: whether this order's recorded consumption can be
+          // treated as complete.
+          consumptionPartial: availability.unresolvedConsumption.length > 0
+            || availability.waived.some((r) => r.kind === "INGREDIENT_NOT_STOCKED"),
+        },
+      });
+    }
+
     await audit({
       cafeId, userId: session.id, action: "ORDER_CREATED", entity: "Order", entityId: order.id,
       details: { orderNumber: order.orderNumber, total, branchId, source, createdByName: session.name },
@@ -469,7 +507,14 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    return NextResponse.json({ order }, { status: 201 });
+    // Non-blocking: the sale happened. The warning exists so the cashier is
+    // never left thinking the shelf had what it did not.
+    return NextResponse.json(
+      availability.warnings.length > 0
+        ? { order, warnings: availability.warnings, inventoryPolicy: enforcementMode }
+        : { order },
+      { status: 201 }
+    );
   } catch (error) {
     return handleApiError(error);
   }

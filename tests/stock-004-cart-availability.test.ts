@@ -12,7 +12,7 @@
 // second cart line lands on one total.
 //
 // The second is conflating two different refusals. A quantity shortage is a
-// known number and `allowNegativeStock` is the owner's decision about selling
+// known number and the café's enforcement mode is the owner's decision about selling
 // past it. A recipe that does not resolve is an unknown consumption, and
 // negative stock says nothing about it — it is permission to go below a
 // balance we can compute, not permission to sell a draw nobody wrote down.
@@ -41,10 +41,7 @@ let categoryId: string;
 before(async () => {
   await requireServer();
   fx = await countCafe("STOCK004");
-  await db.cafe.update({
-    where: { id: fx.cafeId },
-    data: { allowNegativeStock: false },
-  });
+  await setMode("STRICT");
   const category = await db.menuCategory.create({
     data: { cafeId: fx.cafeId, name: `${fx.marker} drinks` },
   });
@@ -54,6 +51,25 @@ before(async () => {
 after(() => teardownTaggedCafe(fx ? [fx.cafeId] : [], [], { disconnect: true }));
 
 // ───────────────────────────── fixtures ──────────────────────────────
+
+/**
+ * The café's inventory enforcement policy.
+ *
+ * This suite used to flip `Cafe.allowNegativeStock`. That boolean was replaced
+ * by `CafeSettings.inventoryEnforcementMode`, which can express the third
+ * behaviour a boolean could not: selling against a recipe nobody has written
+ * is a different risk from going below a balance we can compute. Nothing this
+ * suite asserts changes — only how the café records the decision.
+ */
+async function setMode(
+  mode: "STRICT" | "ALLOW_NEGATIVE_STOCK" | "OVERRIDE_ALL"
+) {
+  await db.cafeSettings.upsert({
+    where: { cafeId: fx.cafeId },
+    create: { cafeId: fx.cafeId, inventoryEnforcementMode: mode },
+    update: { inventoryEnforcementMode: mode },
+  });
+}
 
 let seq = 0;
 /** A distinct name per fixture, so branch matching (name+unit) cannot alias. */
@@ -185,12 +201,12 @@ describe("STOCK-004 quantity availability", () => {
     const p = await product("shake negative");
     await recipeFor({ productId: p.id }, [{ itemId: ice.id, qty: "0.220" }]);
 
-    await db.cafe.update({ where: { id: fx.cafeId }, data: { allowNegativeStock: true } });
+    await setMode("ALLOW_NEGATIVE_STOCK");
     try {
       const r = await order([{ productId: p.id, quantity: 1 }]);
       assert.equal(r.status, 201, r.text);
     } finally {
-      await db.cafe.update({ where: { id: fx.cafeId }, data: { allowNegativeStock: false } });
+      await setMode("STRICT");
     }
   });
 });
@@ -313,18 +329,18 @@ describe("STOCK-004 a configuration whose consumption is unknown is refused", ()
     assert.equal((await order([{ productId: p.id, quantity: 1 }])).status, 201);
   });
 
-  test("a recipe gap is NOT waved through by allowNegativeStock", async () => {
+  test("a recipe gap is NOT waved through by ALLOW_NEGATIVE_STOCK", async () => {
     // The distinction the whole policy turns on. Negative stock is permission
     // to go below a balance we can compute; it is not permission to sell a
     // consumption nobody has written down.
     const p = await product("unmapped negative");
-    await db.cafe.update({ where: { id: fx.cafeId }, data: { allowNegativeStock: true } });
+    await setMode("ALLOW_NEGATIVE_STOCK");
     try {
       const r = await order([{ productId: p.id, quantity: 1 }]);
       assert.equal(r.status, 409, `an unmapped product must not become sellable: ${r.text}`);
       assert.match(r.body.error ?? "", /مكوناته غير مضبوطة/);
     } finally {
-      await db.cafe.update({ where: { id: fx.cafeId }, data: { allowNegativeStock: false } });
+      await setMode("STRICT");
     }
   });
 });
