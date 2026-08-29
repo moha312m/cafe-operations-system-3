@@ -6,6 +6,7 @@ import { audit } from "@/lib/audit";
 import { recomputeSessionTotals } from "@/lib/table-sessions";
 import { resolvePermissions } from "@/lib/perms/effective";
 import { canApproveOrder } from "@/lib/qr-approval";
+import { commitOrderConsumption } from "@/lib/stock-availability";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -28,19 +29,39 @@ export async function POST(_request: NextRequest, { params }: Params) {
       throw new ApiError(403, "ليس لديك صلاحية لتأكيد هذا الطلب");
     }
 
-    const updated = await db.order.update({
-      where: { id },
-      data: {
-        status: "CONFIRMED",
-        approvalStatus: "APPROVED",
-        approvedById: session.id,
-        approvedAt: new Date(),
-      },
-      include: {
-        items: { include: { addOns: true } },
-        branch: { select: { id: true, name: true } },
-        approvedBy: { select: { id: true, name: true } },
-      },
+    // Approval is the moment a QR order becomes a promise about the shelf.
+    // Until now it sat in a queue committing nothing — an unattended tablet
+    // must not be able to empty a branch's availability — so its consumption
+    // is snapshotted here, in the same transaction as the status change, and
+    // starts reducing what the till may still sell.
+    //
+    // It records rather than enforces: the person tapping approve has already
+    // decided, and refusing at this point would reject an order that was
+    // accepted a keystroke ago.
+    const updated = await db.$transaction(async (tx) => {
+      const row = await tx.order.update({
+        where: { id },
+        data: {
+          status: "CONFIRMED",
+          approvalStatus: "APPROVED",
+          approvedById: session.id,
+          approvedAt: new Date(),
+        },
+        include: {
+          items: { include: { addOns: true } },
+          branch: { select: { id: true, name: true } },
+          approvedBy: { select: { id: true, name: true } },
+        },
+      });
+      if (!row.inventoryCommittedAt) {
+        await commitOrderConsumption(tx, {
+          id: row.id,
+          cafeId: row.cafeId,
+          branchId: row.branchId,
+          inventoryEnforcementMode: row.inventoryEnforcementMode,
+        });
+      }
+      return row;
     });
 
     // Approval makes the order count towards the table bill.

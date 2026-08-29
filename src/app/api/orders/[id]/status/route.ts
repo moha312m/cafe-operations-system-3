@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { requirePermission, handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { deductStockForOrder, auditDeduction, StockError } from "@/lib/stock-deduction";
+import { releaseOrderCommitments } from "@/lib/inventory-commitment";
 import { recomputeSessionTotals } from "@/lib/table-sessions";
 import { reverseOrderLoyalty } from "@/lib/loyalty";
 import { isOrderFullyPaid } from "@/lib/order-payments";
@@ -111,6 +112,18 @@ export async function PATCH(request: NextRequest, { params }: Params) {
         if (status === "SERVED" && !order.stockDeductedAt) {
           deduction = await deductStockForOrder(tx, id, session.id);
           timelineExtra.stockDeductedAt = now;
+        }
+        // A cancelled order is not future consumption, so it must stop
+        // reducing what the branch can still make — in THIS transaction, so
+        // the status and the availability it implies can never disagree.
+        //
+        // Released rather than deleted. "The customer got the drink" and "we
+        // changed our mind" are different facts about the same quantity, and a
+        // released row carrying its reason is the only place that distinction
+        // survives; deleting would free the capacity and destroy the evidence
+        // in one statement.
+        if (status === "CANCELLED") {
+          await releaseOrderCommitments(tx, id, "CANCELLED");
         }
         return tx.order.update({
           where: { id },

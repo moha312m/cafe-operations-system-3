@@ -17,7 +17,8 @@ import { attachOrderToTableSession } from "@/lib/table-sessions";
 import { findOrCreateCustomerByPhone, recordCustomerOrder } from "@/lib/customers";
 import { getLoyaltySettingsSafe, loyaltyCalcSettings, maybeAwardLoyaltyPoints, recordRedemption } from "@/lib/loyalty";
 import { validateRedemption } from "@/lib/loyalty-calc";
-import { checkCartAvailability } from "@/lib/stock-availability";
+import { checkCartAvailability, commitmentLinesFor } from "@/lib/stock-availability";
+import { persistOrderCommitments } from "@/lib/inventory-commitment";
 import { getInventoryEnforcementMode } from "@/lib/inventory-policy";
 
 const orderInclude = {
@@ -224,26 +225,36 @@ export async function POST(request: NextRequest) {
     // create a customer profile — so a refusal has to happen before it, or
     // "the order was blocked" would still leave a trail of the sale.
     //
-    // The check is read-only and holds no lock. It is an operational
-    // availability answer, not a reservation: stock can still be consumed by
-    // another order between here and SERVED, and the locked deduction at
-    // SERVED remains the authoritative, concurrency-safe guard.
+    // This first pass is read-only and holds no lock. Its job is the good
+    // refusal: a clear Arabic message, an audit row naming the ingredient
+    // that cost the café the sale, and — because nothing has been written yet
+    // — no trace of a sale that did not happen.
+    //
+    // It is deliberately NOT the guarantee. The same check runs again inside
+    // the transaction below, behind the branch rows' locks, and that is the
+    // one that decides. Doing it twice is not redundancy: a lock cannot be
+    // held here, across `findOrCreateCustomerByPhone` and the loyalty and
+    // charge lookups, without serialising the whole café behind whichever
+    // cashier is slowest.
     // The café's persisted policy, read from the café the caller is
     // authenticated into. Deliberately NOT from the request body: enforcement
     // is a business setting the owner configures, never something a till can
     // ask to relax.
     const enforcementMode = await getInventoryEnforcementMode(cafeId);
+    // Built once and used by BOTH passes, so the friendly refusal and the
+    // locked one can never be answering slightly different questions.
+    const availabilityLines = itemRows.map((row) => ({
+      productId: row.productId,
+      variantId: row.variantId,
+      addOnIds: row.addOns.map((a) => a.addOnId),
+      quantity: row.quantity,
+      label: row.variantName ? `${row.productName} (${row.variantName})` : row.productName,
+    }));
     const availability = await checkCartAvailability({
       cafeId,
       branchId,
       mode: enforcementMode,
-      lines: itemRows.map((row) => ({
-        productId: row.productId,
-        variantId: row.variantId,
-        addOnIds: row.addOns.map((a) => a.addOnId),
-        quantity: row.quantity,
-        label: row.variantName ? `${row.productName} (${row.variantName})` : row.productName,
-      })),
+      lines: availabilityLines,
     });
     if (!availability.ok) {
       // What could not be sold, and why, is worth keeping: it is the record
@@ -372,6 +383,34 @@ export async function POST(request: NextRequest) {
     const remainingAmount = round2(total - paidAmount);
 
     const order = await db.$transaction(async (tx) => {
+      // ── The authoritative capacity check ──
+      //
+      // Both tills read "5 available", both take an order for 4, and both are
+      // told yes: the café has accepted eight portions of a five-portion
+      // ingredient and nobody finds out until SERVED, hours later, with the
+      // drinks made and the money taken. A number on a screen is not a
+      // reservation — acceptance is what takes the capacity.
+      //
+      // So the same service runs again here with the branch rows held FOR
+      // UPDATE, re-reading stock and live commitments underneath those locks.
+      // Whatever it decides, the order and its commitment are written together
+      // or not at all. The locks are released at COMMIT, microseconds later,
+      // and are never held while anybody waits for a cashier.
+      const locked = await checkCartAvailability({
+        cafeId,
+        branchId,
+        mode: enforcementMode,
+        client: tx,
+        lock: true,
+        lines: availabilityLines,
+      });
+      if (!locked.ok) {
+        // Thrown INSIDE the transaction so everything above rolls back with
+        // it. Reached only when another till took the capacity between the
+        // first check and this one, which is exactly the race this exists for.
+        throw new ApiError(409, locked.message ?? "لا يمكن إتمام الطلب حاليًا");
+      }
+
       const last = await tx.order.aggregate({
         where: { branchId },
         _max: { orderNumber: true },
@@ -435,6 +474,23 @@ export async function POST(request: NextRequest) {
           },
         });
       }
+
+      // What this order has promised of the shelf, recorded once, from the
+      // figures the decision above was actually made against. It is a snapshot
+      // and is never recomputed: an owner who fixes a recipe at 10:05 changes
+      // what the next cup draws, not what this one was accepted for — the same
+      // rule `taxRateSnapshot` and `inventoryEnforcementMode` already apply.
+      //
+      // Under the permissive modes the sale may exceed the balance, and the
+      // commitment is written anyway: that is what keeps the displayed
+      // physical count honest about the size of the hole.
+      await persistOrderCommitments(tx, {
+        orderId: created.id,
+        cafeId,
+        branchId,
+        lines: commitmentLinesFor(locked),
+      });
+
       return created;
     });
 

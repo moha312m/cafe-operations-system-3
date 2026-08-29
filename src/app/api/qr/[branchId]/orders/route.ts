@@ -12,6 +12,7 @@ import { normalizeEgyptianPhone } from "@/lib/phone";
 import { findOrCreateCustomerByPhone, recordCustomerOrder } from "@/lib/customers";
 import { getLoyaltySettingsSafe, loyaltyCalcSettings, maybeAwardLoyaltyPoints } from "@/lib/loyalty";
 import { getInventoryEnforcementMode } from "@/lib/inventory-policy";
+import { commitOrderConsumption } from "@/lib/stock-availability";
 import { computeEarnedPoints } from "@/lib/loyalty-calc";
 
 type Params = { params: Promise<{ branchId: string }> };
@@ -207,7 +208,7 @@ export async function POST(request: NextRequest, { params }: Params) {
         where: { branchId },
         _max: { orderNumber: true },
       });
-      return tx.order.create({
+      const created = await tx.order.create({
         data: {
           cafeId,
           branchId,
@@ -251,6 +252,26 @@ export async function POST(request: NextRequest, { params }: Params) {
           },
         },
       });
+
+      // A branch that routes without approval has ACCEPTED this order the
+      // moment it was submitted, so it is a promise about the shelf from now
+      // on and its consumption is snapshotted here. One that routes through
+      // the approval queue commits nothing yet — an unattended tablet must not
+      // be able to empty a branch's availability — and is snapshotted by
+      // /approve instead.
+      //
+      // Either way this records rather than enforces: the QR path has never
+      // taken an availability decision, and starting to refuse a customer's
+      // order here would be a different feature.
+      if (orderStatus === "CONFIRMED") {
+        await commitOrderConsumption(tx, {
+          id: created.id,
+          cafeId,
+          branchId,
+          inventoryEnforcementMode: enforcementMode,
+        });
+      }
+      return created;
     });
 
     // First QR order for a table opens its session (timer starts at first
