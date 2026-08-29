@@ -5,17 +5,23 @@ import { money } from "@/lib/client";
 import { t } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { cartAdjusted, type BranchAvailability, type CartDemandLine } from "@/lib/available-to-sell";
+import { AvailabilityBadge } from "./availability-badge";
 import type { CartLine } from "./types";
 
 export function CartItem({
   line,
   currency,
+  availability,
+  cartDemand,
   onQuantityChange,
   onRemove,
   onNoteChange,
 }: {
   line: CartLine;
   currency: string;
+  availability?: BranchAvailability | null;
+  cartDemand?: CartDemandLine[];
   onQuantityChange: (key: string, delta: number) => void;
   onRemove: (key: string) => void;
   onNoteChange: (key: string, note: string) => void;
@@ -48,6 +54,27 @@ export function CartItem({
           <p className="text-xs text-muted-foreground tabular-nums">
             {money(line.unitPrice, currency)} {t.pos.each}
           </p>
+          {/* What is left for the NEXT one, this whole cart already taken
+              off. It is the number that changes as the cashier presses + and
+              −, and the one that says whether another can be promised. */}
+          <AvailabilityBadge
+            className="mt-1"
+            availability={
+              availability
+                ? cartAdjusted(
+                    availability,
+                    {
+                      productId: line.product.id,
+                      variantId: line.variant?.id ?? null,
+                      addOnIds: line.addOns.map((a) => a.id),
+                    },
+                    cartDemand ?? []
+                  )
+                : null
+            }
+            mode={availability?.mode ?? "STRICT"}
+            afterCart
+          />
         </div>
         <p className="shrink-0 text-sm font-bold tabular-nums">
           {money(line.unitPrice * line.quantity, currency)}

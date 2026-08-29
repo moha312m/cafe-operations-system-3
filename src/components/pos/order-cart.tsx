@@ -2,6 +2,7 @@
 
 import { Badge } from "@/components/ui/badge";
 import { t } from "@/lib/i18n";
+import type { BranchAvailability, CartDemandLine } from "@/lib/available-to-sell";
 import { CartItem } from "./cart-item";
 import {
   OrderTypeSelector,
@@ -14,6 +15,8 @@ import type { CartLine, CollectionMode, OrderType, PaymentMethod, SplitMethod } 
 export function OrderCart({
   cart,
   currency,
+  availability,
+  cartDemand,
   orderType,
   details,
   branchId,
@@ -50,6 +53,8 @@ export function OrderCart({
 }: {
   cart: CartLine[];
   currency: string;
+  availability?: BranchAvailability | null;
+  cartDemand?: CartDemandLine[];
   orderType: OrderType;
   details: CustomerDetails;
   branchId?: string;
@@ -137,6 +142,8 @@ export function OrderCart({
                 key={line.key}
                 line={line}
                 currency={currency}
+                availability={availability}
+                cartDemand={cartDemand}
                 onQuantityChange={onQuantityChange}
                 onRemove={onRemove}
                 onNoteChange={onNoteChange}

@@ -26,6 +26,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  cartAdjusted,
+  type BranchAvailability,
+  type CartDemandLine,
+} from "@/lib/available-to-sell";
+import { AvailabilityBadge } from "@/components/pos/availability-badge";
+import { ConfiguredAvailability } from "@/components/pos/configured-availability";
 import { CategoryTabs } from "@/components/pos/category-tabs";
 import { ProductGrid } from "@/components/pos/product-grid";
 import { OrderCart } from "@/components/pos/order-cart";
@@ -160,6 +167,61 @@ function PosPageInner() {
     user.role === "BRANCH_MANAGER" ||
     user.role === "CAFE_OWNER";
   const needsShift = user.role === "CASHIER";
+
+  // ── Available-to-sell ────────────────────────────────────────
+  // How many more of each configuration the branch can physically make. Kept
+  // apart from the menu on purpose: the menu is what the café sells and
+  // changes when somebody edits it, while this changes on every sale,
+  // delivery, cancellation and recipe edit. Caching it alongside the products
+  // would serve a number that was true when the shift opened.
+  const [availability, setAvailability] = useState<BranchAvailability | null>(null);
+
+  const loadAvailability = useCallback(() => {
+    if (!branchId) return;
+    api<{ availability: BranchAvailability }>(
+      `/api/pos/availability?branchId=${branchId}`
+    )
+      .then((r) => setAvailability(r.availability))
+      // A failed load leaves the cards with no badge rather than a wrong one.
+      // Availability is an aid to the cashier, never a gate — the order
+      // endpoint enforces the café's policy whatever this screen shows.
+      .catch(() => setAvailability(null));
+  }, [branchId]);
+
+  useEffect(() => {
+    loadAvailability();
+  }, [loadAvailability]);
+
+  // The board goes stale from other tills, the kitchen, and deliveries, so it
+  // is refreshed whenever this till comes back to the front — which is what a
+  // cashier actually does between orders — and on a slow beat while it stays
+  // there. No realtime channel is opened for this: none exists in the app
+  // today, and one built for a count on a card would be a subsystem to
+  // operate forever.
+  useEffect(() => {
+    if (!branchId) return;
+    const onFocus = () => loadAvailability();
+    window.addEventListener("focus", onFocus);
+    const timer = setInterval(loadAvailability, 60_000);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      clearInterval(timer);
+    };
+  }, [branchId, loadAvailability]);
+
+  // What this cart has already spoken for. Subtracted from the board in the
+  // browser, so tapping a product updates every card that shares an
+  // ingredient without a round trip.
+  const cartDemandLines: CartDemandLine[] = useMemo(
+    () =>
+      cart.map((l) => ({
+        productId: l.product.id,
+        variantId: l.variant?.id ?? null,
+        addOnIds: l.addOns.map((a) => a.id),
+        quantity: l.quantity,
+      })),
+    [cart]
+  );
 
   // ── Item configuration dialog (variant / add-ons / note) ────
   const [configuring, setConfiguring] = useState<Product | null>(null);
@@ -442,6 +504,10 @@ function PosPageInner() {
       setPaidInput("");
       setRedeem({ points: 0, discount: 0 });
       if (isDineIn) setTableReload((k) => k + 1);
+      // The order just took capacity, and the cart it was subtracted from is
+      // now empty — so the cards must come back from the server rather than
+      // springing back to their pre-cart numbers.
+      loadAvailability();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "فشل تسجيل الطلب");
     } finally {
@@ -534,6 +600,8 @@ function PosPageInner() {
         <ProductGrid
           products={visibleProducts}
           currency={currency}
+          availability={availability}
+          cartDemand={cartDemandLines}
           onSelect={handleSelectProduct}
         />
       </div>
@@ -542,6 +610,8 @@ function PosPageInner() {
       <OrderCart
         cart={cart}
         currency={currency}
+        availability={availability}
+        cartDemand={cartDemandLines}
         orderType={orderType}
         details={details}
         branchId={branchId || undefined}
@@ -595,6 +665,11 @@ function PosPageInner() {
               {configuring.variants.filter((v) => v.isActive).length > 0 && (
                 <div className="space-y-2">
                   <Label>{t.pos.variant}</Label>
+                  {/* Each size carries its OWN count. A large latte is not a
+                      small one — they are priced, costed and now counted
+                      separately — so the picker is where a multi-size product
+                      gets its numbers, and the card outside stays honest by
+                      showing a range instead of one of them. */}
                   <div className="flex flex-wrap gap-2">
                     {configuring.variants
                       .filter((v) => v.isActive)
@@ -603,9 +678,29 @@ function PosPageInner() {
                           key={v.id}
                           size="sm"
                           variant={selVariant === v.id ? "default" : "outline"}
+                          className="h-auto flex-col items-start gap-0.5 py-1.5"
                           onClick={() => setSelVariant(v.id)}
                         >
-                          {v.name} — {money(v.price, currency)}
+                          <span>
+                            {v.name} — {money(v.price, currency)}
+                          </span>
+                          <AvailabilityBadge
+                            availability={
+                              availability
+                                ? cartAdjusted(
+                                    availability,
+                                    {
+                                      productId: configuring.id,
+                                      variantId: v.id,
+                                      addOnIds: [...selAddOns],
+                                    },
+                                    cartDemandLines
+                                  )
+                                : null
+                            }
+                            mode={availability?.mode ?? "STRICT"}
+                            afterCart={cartDemandLines.length > 0}
+                          />
                         </Button>
                       ))}
                   </div>
@@ -637,6 +732,20 @@ function PosPageInner() {
                   </div>
                 </div>
               )}
+              {/* The count for what is actually being added: this size, with
+                  these add-ons, after this cart. An extra shot draws beans of
+                  its own, so the configured line can support fewer than the
+                  drink alone — which is the number the cashier is about to
+                  promise. */}
+              <ConfiguredAvailability
+                availability={availability}
+                selection={{
+                  productId: configuring.id,
+                  variantId: selVariant || null,
+                  addOnIds: [...selAddOns],
+                }}
+                cartDemand={cartDemandLines}
+              />
               <div className="space-y-2">
                 <Label>{t.pos.itemNote}</Label>
                 <Textarea
