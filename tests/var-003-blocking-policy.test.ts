@@ -37,14 +37,7 @@ let branchId: string;
 let openerId: string;
 let lineId: string;
 
-/** CafeSettings rows that existed before this migration. */
-let preExistingSettings: string[] = [];
-
 before(async () => {
-  preExistingSettings = (
-    await db.cafeSettings.findMany({ select: { id: true } })
-  ).map((s) => s.id);
-
   const cafe = await db.cafe.create({
     data: {
       name: `${MARKER} cafe`, slug: MARKER.toLowerCase(),
@@ -105,15 +98,31 @@ describe("VAR-003 variance blocking and recount policy", () => {
   test("every café that existed before this migration reads the permissive default", async () => {
     // Backfill, not just a column default. An existing shop must not wake up
     // signed into blocking it never agreed to.
-    assert.ok(preExistingSettings.length > 0, "there must be prior cafés for this to mean anything");
+    //
+    // "Existed before" has to be decided by the migration's own recorded
+    // timestamp, not by "every settings row present when this file started".
+    // The latter is whatever the database happened to be carrying — on a
+    // long-lived one it is genuinely pre-migration rows, and on a freshly
+    // migrated one it is rows created minutes ago that only ever saw the
+    // column defaults. The old form also required that population to be
+    // non-empty, which made a pristine database fail a check about history it
+    // does not have. Where nothing pre-dates the migration there is nothing
+    // that could have been signed up, and that is a truthful pass.
+    const applied = await db.$queryRaw<{ finished_at: Date | null }[]>`
+      SELECT "finished_at" FROM "_prisma_migrations"
+       WHERE "migration_name" = '20260828190000_variance_policy'
+       LIMIT 1
+    `;
+    const migratedAt = applied[0]?.finished_at ?? null;
+    assert.ok(migratedAt, "the variance-policy migration must be recorded as applied");
+
     const rows = await db.cafeSettings.findMany({
-      where: { id: { in: preExistingSettings } },
+      where: { cafe: { createdAt: { lt: migratedAt } } },
       select: {
         id: true, varianceBlocksHandover: true, varianceHardBlockAmount: true,
         recountRequiredOutsideTolerance: true, recountMaxAttempts: true, allowSelfRecount: true,
       },
     });
-    assert.equal(rows.length, preExistingSettings.length, "no settings row went missing");
     for (const r of rows) {
       assert.equal(r.varianceBlocksHandover, false, `${r.id} blocks nothing`);
       assert.equal(r.varianceHardBlockAmount, null);

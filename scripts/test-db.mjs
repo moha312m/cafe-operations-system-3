@@ -157,7 +157,7 @@ function run(cmd, args, opts = {}) {
     // with shell:true Windows re-joins argv on spaces, which turns pg_ctl's
     // `-o "-p 5434"` into two arguments and fails with "too many arguments".
     shell: opts.shell ?? false,
-    stdio: opts.quiet ? "pipe" : "inherit",
+    stdio: opts.stdio ?? (opts.quiet ? "pipe" : "inherit"),
     cwd: opts.cwd ?? REPO_ROOT,
     env: { ...process.env, ...(opts.env ?? {}) },
   });
@@ -167,6 +167,26 @@ function run(cmd, args, opts = {}) {
 const npx = (args, opts = {}) => run("npx", args, { ...opts, shell: true });
 
 const pgctl = (...args) => run(path.join(PG_BIN, "pg_ctl.exe"), args, { quiet: true });
+
+/**
+ * `pg_ctl start`, which cannot be run through the capturing `pgctl` above.
+ *
+ * `pg_ctl start` launches the postgres server and exits, but the server it
+ * launches INHERITS pg_ctl's stdout and stderr and holds them for as long as
+ * it runs. With `stdio: "pipe"` that is a deadlock rather than a slow call:
+ * pg_ctl is long gone, yet `spawnSync` sits waiting for an end-of-file on a
+ * pipe whose remaining writer is a database server that will not exit. The
+ * cluster comes up correctly and `testdb:up` never returns — the provisioning
+ * step appears to hang forever on a cold cluster, which is exactly what it did.
+ *
+ * So this one call discards the child's stdio instead of capturing it. Nothing
+ * is lost: the server's own output already goes to the `-l` logfile, `-w` makes
+ * pg_ctl wait for readiness before exiting, and the exit status still says
+ * whether the start succeeded. On failure the logfile is the thing worth
+ * reading, so the caller is pointed at it rather than at an empty capture.
+ */
+const pgctlStart = (...args) =>
+  run(path.join(PG_BIN, "pg_ctl.exe"), args, { stdio: "ignore" });
 
 export function clusterRunning() {
   const r = pgctl("status", "-D", TEST_PGDATA);
@@ -186,12 +206,16 @@ function up() {
   if (clusterRunning()) {
     console.log(`Test cluster already running on port ${TEST_DB_PORT}.`);
   } else {
-    const r = pgctl(
+    const logfile = path.join(TEST_CLUSTER_ROOT, "pg.log");
+    const r = pgctlStart(
       "start", "-D", TEST_PGDATA,
-      "-l", path.join(TEST_CLUSTER_ROOT, "pg.log"),
+      "-l", logfile,
       "-o", `-p ${TEST_DB_PORT}`, "-w", "-t", "60"
     );
-    if (!r.ok) { console.error(r.out); process.exit(1); }
+    if (!r.ok) {
+      console.error(`pg_ctl start failed (exit ${r.status}). See ${logfile}.`);
+      process.exit(1);
+    }
     console.log(`Test cluster started on port ${TEST_DB_PORT}.`);
   }
   return prepare();

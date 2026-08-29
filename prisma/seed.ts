@@ -28,6 +28,20 @@ async function main() {
       slug: "qahwet-el-madina",
       currency: "EGP",
       taxRate: 14, // ضريبة القيمة المضافة في مصر
+      // Every café in a running system has a settings row: `getCafeSettings`
+      // creates one the first time anything reads it, and every other café
+      // factory in the repository writes one up front. The seed used to omit
+      // it, so a freshly seeded café was the one café shape the application
+      // itself never produces — configured by nobody until some unrelated
+      // request happened to materialise it.
+      //
+      // That absence was load-bearing in the worst way. A suite that does
+      // `cafeSettings.update({ where: { cafeId } })` succeeded or failed
+      // depending on whether an EARLIER suite had already triggered the lazy
+      // create, which is execution order deciding a result. Stating the row
+      // here removes the ordering entirely; the values are the column
+      // defaults, which is exactly what the lazy create would have written.
+      settings: { create: {} },
     },
   });
 
@@ -192,13 +206,54 @@ async function main() {
   const methods = ["CASH", "CARD", "WALLET"] as const;
   const orderCounters = new Map<string, number>();
 
+  /**
+   * Keep "history" in the past.
+   *
+   * The loop below spreads each day's orders across 09:00–17:00. For the six
+   * earlier days that is history. For TODAY it was prophecy: seeding at 01:00
+   * wrote sales timed for 15:00, and a café cannot have made a sale it has
+   * not made yet.
+   *
+   * That is not a cosmetic wrinkle, because the reporting screens legitimately
+   * disagree about a future-dated row. The dashboard's open-ended "today"
+   * stops at `now` — deliberately, so "vs previous" compares equal elapsed
+   * time — while the daily report covers the whole calendar day. A sale dated
+   * later today therefore appears on one screen and not the other, and any
+   * measurement taken "from now on" picks up revenue that did not exist when
+   * its baseline was read.
+   *
+   * So today's orders are mapped into the part of today that has actually
+   * elapsed, preserving their spread and their ordering. Today keeps its
+   * revenue — this is not a matter of shifting today's data to yesterday —
+   * it simply stops being dated ahead of the clock.
+   */
+  const seededAt = new Date();
+  const todayStart = new Date(seededAt);
+  todayStart.setHours(0, 0, 0, 0);
+  // Room for the derived payment (+10m) and completion (+15m) timestamps to
+  // stay in the past as well, since reporting windows read those too.
+  const latestOrderAt = seededAt.getTime() - 20 * 60_000;
+
+  function keepInThePast(when: Date): Date {
+    if (when.getTime() <= latestOrderAt) return when;
+    const elapsed = Math.max(latestOrderAt - todayStart.getTime(), 0);
+    const intoTheDay = when.getTime() - todayStart.getTime();
+    const fraction = intoTheDay / (24 * 60 * 60_000);
+    return new Date(todayStart.getTime() + Math.round(fraction * elapsed));
+  }
+
+  /** A derived timestamp may never overtake the clock either. */
+  const noLaterThanNow = (at: Date) =>
+    new Date(Math.min(at.getTime(), seededAt.getTime()));
+
   for (let daysAgo = 6; daysAgo >= 0; daysAgo--) {
     const ordersToday = 3 + ((daysAgo * 7) % 5); // 3..7, deterministic
     for (let n = 0; n < ordersToday; n++) {
       const branch = n % 3 === 0 ? nasrCity : n % 3 === 1 ? tagamo3 : zayed;
-      const when = new Date();
-      when.setDate(when.getDate() - daysAgo);
-      when.setHours(9 + ((n * 3) % 9), (n * 17) % 60, 0, 0);
+      const intended = new Date();
+      intended.setDate(intended.getDate() - daysAgo);
+      intended.setHours(9 + ((n * 3) % 9), (n * 17) % 60, 0, 0);
+      const when = keepInThePast(intended);
 
       const itemCount = 1 + (n % 3);
       let subtotal = 0;
@@ -243,7 +298,7 @@ async function main() {
           total,
           createdById: cashier.id,
           createdAt: when,
-          completedAt: new Date(when.getTime() + 15 * 60 * 1000),
+          completedAt: noLaterThanNow(new Date(when.getTime() + 15 * 60 * 1000)),
           items: { create: items },
           payments: {
             create: {
@@ -251,7 +306,7 @@ async function main() {
               amount: total,
               method: methods[n % methods.length],
               receivedById: cashier.id,
-              createdAt: new Date(when.getTime() + 10 * 60 * 1000),
+              createdAt: noLaterThanNow(new Date(when.getTime() + 10 * 60 * 1000)),
             },
           },
         },

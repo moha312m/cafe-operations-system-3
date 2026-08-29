@@ -184,8 +184,15 @@ describe("REFUND-006 table-session settlement", () => {
       await refundOrder(order.id, manager, "اختبار التقارير");
       await recomputeSessionTotals(session.id);
 
+      // Bounded at BOTH ends. `{ gte: from }` says "from now on, for ever",
+      // which is a window this test cannot own: anything else in the café
+      // carrying a later timestamp lands inside it and is counted against
+      // figures asserted to the piastre. Closing it at the moment the work
+      // finished states what the assertion actually means — what THIS test
+      // did — and none of its own rows fall outside.
       const fin = await periodFinancials({
-        cafeId: fx.cafeId, branchId: fx.branchId, period: { gte: from },
+        cafeId: fx.cafeId, branchId: fx.branchId,
+        period: { gte: from, lte: new Date() },
       });
       assert.equal(fin.grossSales, 120, "C: the sale happened and must stay in Gross");
       assert.equal(fin.refunds, 120, "D: the refund must be reported");
