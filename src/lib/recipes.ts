@@ -22,7 +22,7 @@ import {
   convertQuantity, unitsCompatible, round2, round3,
   RecipeIssue, productCostStrict, profitFor,
 } from "@/lib/costing";
-import type { InventoryUnit, Prisma } from "@prisma/client";
+import type { InventoryUnit, Prisma, PrismaClient } from "@prisma/client";
 import { createHash } from "node:crypto";
 
 export { RecipeIssue };
@@ -50,6 +50,9 @@ export type ResolvedRecipe = {
 const withItems = {
   items: { include: { inventoryItem: true } },
 } satisfies Prisma.RecipeInclude;
+
+/** A recipe row loaded with everything resolution needs in order to read it. */
+export type LoadedRecipe = Prisma.RecipeGetPayload<{ include: typeof withItems }>;
 
 /**
  * A stable digest of what a recipe actually says. Confirmation is stored
@@ -109,20 +112,47 @@ function confirmationHolds(r: {
  */
 export async function resolveEffectiveRecipe(
   productId: string,
-  variantId: string | null
+  variantId: string | null,
+  // Reads inside somebody's transaction must go through THAT transaction.
+  // Reaching for the global client from inside `db.$transaction` takes a
+  // second connection out of the same pool while the first is held, which
+  // under concurrency exhausts the pool and leaves every request waiting on a
+  // connection that only another waiting request can release. It also reads a
+  // different snapshot than the transaction is working from.
+  client: Prisma.TransactionClient | PrismaClient = db
 ): Promise<ResolvedRecipe> {
+  const [variantRecipe, defaultRecipe, variantCount] = await Promise.all([
+    variantId
+      ? client.recipe.findFirst({ where: { productId, variantId }, include: withItems })
+      : Promise.resolve(null),
+    client.recipe.findFirst({ where: { productId, variantId: null, addOnId: null }, include: withItems }),
+    client.productVariant.count({ where: { productId } }),
+  ]);
+
+  return chooseEffectiveRecipe({ variantId, variantRecipe, defaultRecipe, variantCount });
+}
+
+/**
+ * The resolution rules themselves, over rows somebody has already loaded.
+ *
+ * Split out from the query so a screen that needs FIFTY configurations can
+ * load the café's recipes once and apply the identical rules in memory. The
+ * POS availability board is that screen: a per-configuration query would be
+ * forty round trips before the cashier's first tap, and a second copy of
+ * these rules written to avoid them is how the board and the till come to
+ * disagree about what a large latte draws.
+ */
+export function chooseEffectiveRecipe(args: {
+  variantId: string | null;
+  variantRecipe: LoadedRecipe | null;
+  defaultRecipe: LoadedRecipe | null;
+  variantCount: number;
+}): ResolvedRecipe {
+  const { variantId, variantRecipe, defaultRecipe, variantCount } = args;
   const empty = (source: RecipeSource, issues: RecipeIssue[]): ResolvedRecipe => ({
     source, recipeId: null, items: [], issues,
     confirmed: false, verifiedById: null, verifiedAt: null,
   });
-
-  const [variantRecipe, defaultRecipe, variantCount] = await Promise.all([
-    variantId
-      ? db.recipe.findFirst({ where: { productId, variantId }, include: withItems })
-      : Promise.resolve(null),
-    db.recipe.findFirst({ where: { productId, variantId: null, addOnId: null }, include: withItems }),
-    db.productVariant.count({ where: { productId } }),
-  ]);
 
   const chosen =
     variantRecipe ??
@@ -161,8 +191,15 @@ export async function resolveEffectiveRecipe(
 }
 
 /** The recipe attached to an add-on, if one has been configured. */
-export async function resolveAddOnRecipe(addOnId: string): Promise<ResolvedRecipe> {
-  const r = await db.recipe.findFirst({ where: { addOnId }, include: withItems });
+export async function resolveAddOnRecipe(
+  addOnId: string,
+  client: Prisma.TransactionClient | PrismaClient = db
+): Promise<ResolvedRecipe> {
+  return readAddOnRecipe(await client.recipe.findFirst({ where: { addOnId }, include: withItems }));
+}
+
+/** The same reading, over a row somebody has already loaded. */
+export function readAddOnRecipe(r: LoadedRecipe | null): ResolvedRecipe {
   if (!r) {
     return {
       source: "NONE", recipeId: null, items: [], issues: [RecipeIssue.MISSING_ADDON_RECIPE],
@@ -212,10 +249,31 @@ export async function theoreticalConsumption(args: {
   variantId: string | null;
   addOnIds: string[];
   quantity: number;
+  /** Read through the caller's transaction when there is one. */
+  client?: Prisma.TransactionClient | PrismaClient;
 }): Promise<Consumption> {
-  const base = await resolveEffectiveRecipe(args.productId, args.variantId);
-  const addOns = await Promise.all(args.addOnIds.map((id) => resolveAddOnRecipe(id)));
+  const client = args.client ?? db;
+  const base = await resolveEffectiveRecipe(args.productId, args.variantId, client);
+  const addOns = await Promise.all(
+    args.addOnIds.map((id) => resolveAddOnRecipe(id, client))
+  );
+  return mergeConsumption(base, addOns, args.quantity);
+}
 
+/**
+ * The merge itself, over recipes somebody has already resolved.
+ *
+ * Same reason as `chooseEffectiveRecipe`: the availability board needs this
+ * arithmetic for every configuration on the menu and cannot afford a query
+ * per configuration, and a second implementation written to avoid them is how
+ * the board and the SERVED-time deduction come to disagree about what one cup
+ * takes off the shelf. There is one merge, and both callers use it.
+ */
+export function mergeConsumption(
+  base: ResolvedRecipe,
+  addOns: ResolvedRecipe[],
+  quantity: number
+): Consumption {
   const issues = new Set<RecipeIssue>([...base.issues]);
   for (const a of addOns) a.issues.forEach((i) => issues.add(i));
   if (base.source === "NONE") issues.add(RecipeIssue.MISSING_RECIPE);
@@ -229,7 +287,7 @@ export async function theoreticalConsumption(args: {
         i.unit,
         i.inventoryItem.unit
       );
-      const qty = round3(perUnit * args.quantity);
+      const qty = round3(perUnit * quantity);
       const cur = merged.get(i.inventoryItemId);
       const cost = Number(i.inventoryItem.costPerUnit) > 0
         ? round2(qty * Number(i.inventoryItem.costPerUnit))
@@ -259,6 +317,71 @@ export async function theoreticalConsumption(args: {
     cost: costable ? round2(lines.reduce((s, l) => s + (l.cost ?? 0), 0)) : null,
     issues: [...issues],
   };
+}
+
+// ── Reading a whole café's recipes at once ───────────────────────────
+//
+// One query for the recipes, one for the variant counts, and then the SAME
+// resolution and merge rules applied in memory. The POS availability board
+// needs an answer for every sellable configuration on the menu, and the
+// per-configuration functions above cost three queries each: fifty
+// configurations would be a hundred and fifty round trips before a cashier's
+// first tap.
+//
+// The alternative — a bespoke bulk calculator — is the one thing that must
+// not exist. The whole point of variant-aware recipes is that a large latte
+// and a small one resolve differently, and a second implementation of those
+// rules would drift from this one silently, in the direction of a board that
+// promises drinks the till then refuses.
+
+export type RecipeIndex = {
+  byVariant: Map<string, LoadedRecipe>;
+  byProduct: Map<string, LoadedRecipe>;
+  byAddOn: Map<string, LoadedRecipe>;
+  variantCount: Map<string, number>;
+};
+
+export async function loadRecipeIndex(cafeId: string): Promise<RecipeIndex> {
+  const [recipes, variantGroups] = await Promise.all([
+    db.recipe.findMany({ where: { cafeId }, include: withItems }),
+    db.productVariant.groupBy({
+      by: ["productId"],
+      where: { product: { cafeId } },
+      _count: { _all: true },
+    }),
+  ]);
+
+  const index: RecipeIndex = {
+    byVariant: new Map(),
+    byProduct: new Map(),
+    byAddOn: new Map(),
+    variantCount: new Map(variantGroups.map((g) => [g.productId, g._count._all])),
+  };
+  for (const r of recipes) {
+    if (r.variantId) index.byVariant.set(r.variantId, r);
+    else if (r.addOnId) index.byAddOn.set(r.addOnId, r);
+    else if (r.productId) index.byProduct.set(r.productId, r);
+  }
+  return index;
+}
+
+/** `resolveEffectiveRecipe`, answered from a loaded index. */
+export function resolveEffectiveRecipeFrom(
+  index: RecipeIndex,
+  productId: string,
+  variantId: string | null
+): ResolvedRecipe {
+  return chooseEffectiveRecipe({
+    variantId,
+    variantRecipe: variantId ? (index.byVariant.get(variantId) ?? null) : null,
+    defaultRecipe: index.byProduct.get(productId) ?? null,
+    variantCount: index.variantCount.get(productId) ?? 0,
+  });
+}
+
+/** `resolveAddOnRecipe`, answered from a loaded index. */
+export function resolveAddOnRecipeFrom(index: RecipeIndex, addOnId: string): ResolvedRecipe {
+  return readAddOnRecipe(index.byAddOn.get(addOnId) ?? null);
 }
 
 export type GateStatus = "VERIFIED" | "INCOMPLETE" | "NOT_APPLICABLE";
