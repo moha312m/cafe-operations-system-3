@@ -399,6 +399,13 @@ export async function POST(request: NextRequest) {
           remainingAmount,
           taxRateSnapshot: charges.taxRateSnapshot,
           serviceRateSnapshot: charges.serviceRateSnapshot,
+          // The policy this order was ACCEPTED under, stored alongside the
+          // rates and for the same reason: the availability answer above was
+          // given under `enforcementMode`, and the deduction at SERVED must be
+          // given under the same one however the café is configured by then.
+          // Server-derived — `createOrderSchema` has no such field, so a till
+          // cannot ask for a mode, only be told one.
+          inventoryEnforcementMode: enforcementMode,
           customerId: customer?.id ?? null,
           loyaltyPointsRedeemed: redeemPoints,
           loyaltyDiscountAmount: loyaltyDiscount,
@@ -474,7 +481,11 @@ export async function POST(request: NextRequest) {
         entity: "Order", entityId: order.id,
         details: {
           orderNumber: order.orderNumber, branchId,
-          mode: enforcementMode,
+          // Read off the order rather than off the variable: this row is
+          // evidence about what governed THIS order, and the order is where
+          // that now lives. The two agree at this instant; taking it from the
+          // order is what keeps them agreeing if the café changes later.
+          mode: order.inventoryEnforcementMode,
           byName: session.name,
           reasonCategories: [...new Set(availability.waived.map((r) => r.kind))],
           knownShortages: availability.waived

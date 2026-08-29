@@ -32,11 +32,6 @@ export async function deductStockForOrder(
   const order = await tx.order.findUnique({
     where: { id: orderId },
     include: {
-      // The café's enforcement policy, which decides whether a shortage at
-      // hand-over may commit a negative balance. Read here rather than passed
-      // in: the SERVED transition must obey the policy as it stands NOW, not
-      // as it stood when the order was taken.
-      cafe: { select: { settings: { select: { inventoryEnforcementMode: true } } } },
       // variantId and the chosen add-ons decide what was actually made: a
       // large latte is not a small one, and an extra shot is more beans.
       items: {
@@ -54,9 +49,18 @@ export async function deductStockForOrder(
 
   const branchId = order.branchId;
   const cafeId = order.cafeId;
-  // A café with no settings row has expressed no opinion and gets the strict
-  // reading, exactly as the availability check does.
-  const mode = order.cafe.settings?.inventoryEnforcementMode ?? "STRICT";
+  // The policy this ORDER was accepted under, not the one the café is running
+  // now. The two moments of an order's inventory lifecycle — availability at
+  // the till and this locked deduction — can be hours apart, and the owner can
+  // change the setting in between. Reading it fresh here made the change
+  // retroactive, in both directions: an order accepted permissively could no
+  // longer be handed over once policy tightened, and an order accepted under
+  // STRICT could have a shortage waived that the till would have refused.
+  //
+  // The snapshot is taken at creation from CafeSettings and is never client
+  // -supplied, so this is still the café's own decision — just the one that
+  // was actually in force when the customer was told yes.
+  const mode = order.inventoryEnforcementMode;
   const allowNegative = allowsKnownShortage(mode);
 
   // What each line theoretically consumes, resolved from the exact sold

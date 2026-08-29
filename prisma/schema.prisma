@@ -874,6 +874,15 @@ model Order {
   assignedApproverRole   Role?
   assignedApproverUserId String?
 
+  // The inventory policy this order was ACCEPTED under, snapshotted at
+  // creation from CafeSettings and never read from the request. An order's
+  // inventory lifecycle spans two moments — availability at the till, and the
+  // locked deduction at SERVED — and the café's setting can change between
+  // them. The order carries its own answer so it behaves the same way at both
+  // ends, for the same reason taxRateSnapshot exists above: a settings edit
+  // governs new orders, never one that already exists.
+  inventoryEnforcementMode InventoryEnforcementMode @default(STRICT)
+
   // Set once ingredients are auto-deducted on SERVED (double-deduct guard)
   stockDeductedAt DateTime?
 

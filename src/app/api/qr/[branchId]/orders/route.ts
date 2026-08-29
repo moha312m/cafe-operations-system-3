@@ -11,6 +11,7 @@ import { getApprovalSettings, resolveRouting } from "@/lib/qr-approval";
 import { normalizeEgyptianPhone } from "@/lib/phone";
 import { findOrCreateCustomerByPhone, recordCustomerOrder } from "@/lib/customers";
 import { getLoyaltySettingsSafe, loyaltyCalcSettings, maybeAwardLoyaltyPoints } from "@/lib/loyalty";
+import { getInventoryEnforcementMode } from "@/lib/inventory-policy";
 import { computeEarnedPoints } from "@/lib/loyalty-calc";
 
 type Params = { params: Promise<{ branchId: string }> };
@@ -180,6 +181,16 @@ export async function POST(request: NextRequest, { params }: Params) {
       };
     });
 
+    // The café's inventory policy at the moment this order is accepted.
+    //
+    // A QR order takes no availability decision here — it lands in the
+    // approval queue rather than at a till — but it reaches SERVED like any
+    // other, and the deduction there reads the order's own mode. Without a
+    // snapshot the QR path would be the one route whose orders still drifted
+    // with the café's settings. Read from the café, never from the customer's
+    // request: `qrOrderSchema` has no such field, and this endpoint is public.
+    const enforcementMode = await getInventoryEnforcementMode(cafeId);
+
     // Tax/service come from the branch's configurable settings, snapshotted.
     const finSettings = await getBranchFinancialSettings(branchId);
     const charges = computeCharges({
@@ -222,6 +233,7 @@ export async function POST(request: NextRequest, { params }: Params) {
           remainingAmount: total,
           taxRateSnapshot: charges.taxRateSnapshot,
           serviceRateSnapshot: charges.serviceRateSnapshot,
+          inventoryEnforcementMode: enforcementMode,
           customerId: customer?.id ?? null,
           createdById: null, // placed by the customer, no user account
           items: {
