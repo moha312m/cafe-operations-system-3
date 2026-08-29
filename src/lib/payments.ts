@@ -8,7 +8,7 @@
 import { db } from "@/lib/db";
 import { audit } from "@/lib/audit";
 import { ApiError } from "@/lib/api";
-import { getActiveShift, recomputeShiftTotals } from "@/lib/shifts";
+import { requireCashCustody, recomputeShiftTotals } from "@/lib/shifts";
 import { recomputeSessionTotals } from "@/lib/table-sessions";
 import { maybeAwardLoyaltyPoints } from "@/lib/loyalty";
 import type { Prisma, PaymentMethod } from "@prisma/client";
@@ -17,6 +17,45 @@ import type { SessionUser } from "@/lib/auth";
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
 export type PaymentSplit = { method: Exclude<PaymentMethod, "MIXED">; amount: number };
+
+// Close an order out after its money has been returned.
+//
+// `paidAmount` is the live settlement balance rather than a record of what was
+// once collected, so leaving it at the full total after a refund reads as
+// money the café is still holding (REFUND-002).
+//
+// A FULL refund is terminal: nothing is paid and nothing is owed. REFUNDED
+// means the customer owes nothing — not that the bill has reopened. Leaving a
+// receivable behind would let Gross 120 / Refunds 120 / Net 0 coexist with a
+// live 120 against the same sale, which no reconciliation can express. A
+// customer who buys again gets a new order.
+//
+// History is not lost by this: the Payment rows keep both the collection and
+// the refund, so what actually moved stays derivable.
+export async function applyRefundToOrderSettlement(
+  tx: Prisma.TransactionClient,
+  orderId: string,
+  amount: number
+) {
+  const order = await tx.order.findUnique({
+    where: { id: orderId },
+    select: { total: true, paidAmount: true },
+  });
+  if (!order) return;
+
+  const newPaid = Math.max(round2(Number(order.paidAmount) - amount), 0);
+  const fullyRefunded = newPaid <= 0.001;
+
+  await tx.order.update({
+    where: { id: orderId },
+    data: {
+      paidAmount: newPaid,
+      // Terminal on a full refund; a part-refund leaves the balance owed.
+      remainingAmount: fullyRefunded ? 0 : Math.max(round2(Number(order.total) - newPaid), 0),
+      paymentStatus: fullyRefunded ? "REFUNDED" : "PARTIAL",
+    },
+  });
+}
 
 // A loyalty redemption applied during collection. `points` were validated
 // against the loyalty settings by the caller; the balance and per-order
@@ -162,6 +201,15 @@ export async function applyOrderPaymentInTx(
   });
   if (!order) throw new ApiError(404, "الطلب مش موجود");
 
+  // A refunded sale is closed for good. This has to be checked explicitly:
+  // the guard below derives remaining from `total - paidAmount`, and a full
+  // refund leaves paidAmount at zero, which would otherwise look like an
+  // ordinary unpaid order and let the same sale be collected twice. A
+  // customer buying again gets a new order (REFUND-002).
+  if (order.paymentStatus === "REFUNDED") {
+    throw new ApiError(400, "الطلب ده مرتجع — اعمل طلب جديد بدل ما تحصّل عليه");
+  }
+
   const oldRemaining = round2(Number(order.total) - Number(order.paidAmount));
   if (oldRemaining <= 0.001) {
     throw new DuplicatePaymentError(order.id, order.orderNumber, order.cafeId);
@@ -248,11 +296,9 @@ export async function collectOrderPayment({
   redemption?: CollectionRedemption;
   pointValue?: number;
 }) {
-  // Cashiers must be on an open shift to touch the drawer.
-  const shift = await getActiveShift(branchId, session.id);
-  if (session.role === "CASHIER" && !shift) {
-    throw new ApiError(400, "لا يمكن تحصيل الدفع بدون شيفت مفتوح");
-  }
+  // Anyone touching the drawer must be on an open shift — see
+  // requireCashCustody. The caller has already authorised the collection.
+  const shift = await requireCashCustody(branchId, session.id);
 
   const moneyAmount = Math.round(splits.reduce((s, p) => s + p.amount, 0) * 100) / 100;
 

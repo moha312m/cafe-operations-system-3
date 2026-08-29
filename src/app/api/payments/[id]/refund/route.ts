@@ -3,15 +3,15 @@ import { db } from "@/lib/db";
 import { getSession } from "@/lib/auth";
 import { hasPermission } from "@/lib/permissions";
 import { handleApiError, ApiError } from "@/lib/api";
-import { audit } from "@/lib/audit";
-import { recomputeShiftTotals } from "@/lib/shifts";
-import { recomputeSessionTotals } from "@/lib/table-sessions";
+import { refundPayment } from "@/lib/refunds";
 
 type Params = { params: Promise<{ id: string }> };
 
-// POST /api/payments/[id]/refund — mark a payment refunded. A cash refund
-// reduces the shift's expected cash; card/wallet reduce their totals. Only
-// managers/owners (payments:create + shifts:read) may refund.
+// POST /api/payments/[id]/refund — reverse a payment. A reversal against a
+// shift that is still open adjusts that shift; against an already-closed
+// shift it posts a linked reversal in the current period instead, leaving
+// the accepted close untouched (see lib/refunds). Only managers/owners
+// (shifts:read) may refund.
 export async function POST(_request: NextRequest, { params }: Params) {
   try {
     const session = await getSession();
@@ -23,7 +23,7 @@ export async function POST(_request: NextRequest, { params }: Params) {
 
     const payment = await db.payment.findUnique({
       where: { id },
-      include: { order: { select: { orderNumber: true, tableSessionId: true } } },
+      select: { cafeId: true, branchId: true },
     });
     if (!payment) throw new ApiError(404, "عملية الدفع مش موجودة");
     if (session.role !== "SUPER_ADMIN" && payment.cafeId !== session.cafeId) {
@@ -32,37 +32,9 @@ export async function POST(_request: NextRequest, { params }: Params) {
     if (session.branchId && payment.branchId && payment.branchId !== session.branchId) {
       throw new ApiError(403, "ليس لديك صلاحية لتنفيذ هذا الإجراء");
     }
-    if (payment.status === "REFUNDED") throw new ApiError(400, "الدفعة مرتجعة بالفعل");
 
-    const refunded = await db.payment.update({
-      where: { id },
-      data: { status: "REFUNDED" },
-    });
-    if (payment.shiftId) await recomputeShiftTotals(payment.shiftId);
-    // Refunds shrink the table's paid amount too.
-    if (payment.order?.tableSessionId) {
-      await recomputeSessionTotals(payment.order.tableSessionId);
-    }
-
-    await audit({
-      cafeId: payment.cafeId,
-      userId: session.id,
-      action: "PAYMENT_REFUNDED",
-      entity: "Payment",
-      entityId: payment.id,
-      details: {
-        branchId: payment.branchId,
-        shiftId: payment.shiftId,
-        orderId: payment.orderId,
-        orderNumber: payment.order?.orderNumber,
-        oldValue: "PAID",
-        newValue: "REFUNDED",
-        amount: Number(payment.amount),
-        method: payment.method,
-      },
-    });
-
-    return NextResponse.json({ payment: refunded });
+    const result = await refundPayment(id, session);
+    return NextResponse.json({ payment: result });
   } catch (error) {
     return handleApiError(error);
   }

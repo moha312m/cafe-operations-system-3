@@ -26,6 +26,8 @@ export async function GET(request: NextRequest) {
       ...(cafeId ? { cafeId } : {}),
     };
     const payWhere: Prisma.PaymentWhereInput = {
+      // Money received: a refund also carries status PAID (REFUND-005).
+      type: "COLLECTION",
       status: "PAID",
       createdAt: { gte: from, lte: to },
       ...(cafeId ? { cafeId } : {}),

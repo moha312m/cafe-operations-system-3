@@ -9,7 +9,7 @@ import {
 } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { hasPermission } from "@/lib/permissions";
-import { productCost, profitFor } from "@/lib/costing";
+import { configurationFinancials } from "@/lib/recipes";
 
 const productInclude = {
   category: { select: { id: true, name: true } },
@@ -34,32 +34,29 @@ export async function GET(request: NextRequest) {
 
     const products = await db.product.findMany({
       where: { cafeId },
-      include: showCost
-        ? {
-            ...productInclude,
-            recipeItems: {
-              include: {
-                inventoryItem: { select: { unit: true, costPerUnit: true } },
-              },
-            },
-          }
-        : productInclude,
+      include: productInclude,
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
     });
 
     if (!showCost) return NextResponse.json({ products });
 
-    // Attach cost/profit and strip the raw recipe rows from the payload.
-    const enriched = products.map((p) => {
-      const recipe = (p as typeof p & { recipeItems: Parameters<typeof productCost>[0] })
-        .recipeItems;
-      const hasRecipe = recipe.length > 0;
-      const cost = productCost(recipe);
-      const profit = profitFor(Number(p.basePrice), cost, hasRecipe);
-      const { recipeItems: _drop, ...rest } = p as typeof p & { recipeItems: unknown };
-      void _drop;
-      return { ...rest, hasRecipe, ...profit };
-    });
+    // A product row is not a sellable configuration when it has sizes. Do
+    // not collapse different size recipes into one invented product margin;
+    // the per-size report is the honest place for those figures.
+    const enriched = await Promise.all(products.map(async (p) => {
+      if (p.variants.length > 0) {
+        return {
+          ...p, hasRecipe: false, costStatus: "MULTIPLE_CONFIGURATIONS" as const,
+          cost: null, profit: null, margin: null, tier: null,
+        };
+      }
+      const financials = await configurationFinancials({
+        productId: p.id, variantId: null, sellingPrice: Number(p.basePrice),
+      });
+      return {
+        ...p, hasRecipe: financials.costStatus === "AVAILABLE", ...financials,
+      };
+    }));
 
     return NextResponse.json({ products: enriched, costVisible: true });
   } catch (error) {

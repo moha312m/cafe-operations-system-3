@@ -2,7 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { requireKey, handleApiError, ApiError, requireFeature } from "@/lib/api";
 import { audit } from "@/lib/audit";
-import { round2, weightedAverageCost } from "@/lib/purchases";
+import { weightedAverageCost } from "@/lib/purchases";
+import { applyStockMutation, lockItemForUpdate } from "@/lib/ledger";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -39,36 +40,37 @@ export async function POST(_request: NextRequest, { params }: Params) {
     const stockAdds = await db.$transaction(async (tx) => {
       const adds: { itemId: string; qty: number; newStock: number; newCost: number }[] = [];
       for (const line of inv.items) {
-        const item = await tx.inventoryItem.findUnique({
-          where: { id: line.inventoryItemId },
-          select: { id: true, currentStock: true, costPerUnit: true },
-        });
-        if (!item) throw new ApiError(400, "خامة غير موجودة");
+        // The locked read replaces a plain findUnique: the balance this
+        // arithmetic is based on must be the one nothing else can move
+        // until this transaction commits.
+        const locked = await lockItemForUpdate(tx, line.inventoryItemId).catch(() => null);
+        if (!locked) throw new ApiError(400, "خامة غير موجودة");
 
         const qty = Number(line.quantity);
         const unitCost = Number(line.unitCost);
-        const oldStock = Number(item.currentStock);
-        const newStock = round2(oldStock + qty);
-        const newCost = weightedAverageCost(oldStock, Number(item.costPerUnit), qty, unitCost);
+        const oldStock = locked.currentStock;
+        const newCost = weightedAverageCost(oldStock, locked.costPerUnit, qty, unitCost);
 
-        await tx.inventoryTransaction.create({
-          data: {
-            cafeId: inv.cafeId,
-            branchId: inv.branchId,
-            inventoryItemId: item.id,
-            type: "PURCHASE",
-            quantity: qty, // positive delta
-            unitCost,
-            totalCost: Number(line.totalCost),
-            note: `إضافة من فاتورة شراء رقم ${inv.invoiceNumber}`,
-            createdById: session.id,
-          },
+        // Previously `round2(oldStock + qty)` — two decimals on a
+        // Decimal(12,3) column, so an 18 g receipt landed as 20 g and
+        // invented coffee nobody delivered. The guarded writer is round3
+        // throughout, which is what the column was widened for.
+        const applied = await applyStockMutation(tx, {
+          inventoryItemId: line.inventoryItemId,
+          cafeId: inv.cafeId,
+          branchId: inv.branchId,
+          type: "PURCHASE",
+          quantity: qty, // positive delta
+          unitCost,
+          totalCost: Number(line.totalCost),
+          note: `إضافة من فاتورة شراء رقم ${inv.invoiceNumber}`,
+          createdById: session.id,
+          newCostPerUnit: newCost,
         });
-        await tx.inventoryItem.update({
-          where: { id: item.id },
-          data: { currentStock: newStock, costPerUnit: newCost },
+
+        adds.push({
+          itemId: line.inventoryItemId, qty, newStock: applied.stockAfter, newCost,
         });
-        adds.push({ itemId: item.id, qty, newStock, newCost });
       }
 
       await tx.purchaseInvoice.update({

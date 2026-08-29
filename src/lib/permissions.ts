@@ -18,6 +18,11 @@ export const PERMISSIONS = [
   "payments:read",
   "shifts:operate", // open/close own shift, take POS orders under it
   "shifts:read", // view shift reports across the branch/cafe
+  // Taking part in a custody handover: see it, submit one, accept one.
+  // Deliberately its own permission rather than a side-effect of operating a
+  // shift — a store keeper hands over stock without ever touching a drawer,
+  // and the sensitive manager actions (exception, resolve) are NOT here.
+  "handover:participate",
   "dashboard:read",
   "reports:read",
   "inventory:manage",
@@ -54,6 +59,7 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "payments:read",
     "shifts:operate",
     "shifts:read",
+    "handover:participate",
     "dashboard:read",
     "reports:read",
     "inventory:manage",
@@ -84,6 +90,8 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "payments:create",
     "payments:read",
     "shifts:operate",
+    // A cashier is a custodian: they hand the drawer over and take one on.
+    "handover:participate",
   ],
 
   // Kitchen / barista display: sees the queue, advances statuses.
@@ -95,6 +103,8 @@ export const ROLE_PERMISSIONS: Record<Role, Permission[]> = {
     "inventory:read",
     "recipe:manage",
     "cost:read",
+    // The store keeper hands over the room they hold, without a drawer.
+    "handover:participate",
   ],
 };
 

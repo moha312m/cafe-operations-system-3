@@ -20,7 +20,9 @@ export async function GET(request: NextRequest) {
         where: { id: orderId, cafeId: session.cafeId ?? "" },
         include: {
           payments: {
-            where: { status: "PAID" },
+            // Money received only — a refund row also carries status PAID
+            // and would be presented to the cashier as a payment (REFUND-005).
+            where: { type: "COLLECTION", status: "PAID" },
             orderBy: { createdAt: "asc" },
             select: { id: true, amount: true, method: true, createdAt: true },
           },

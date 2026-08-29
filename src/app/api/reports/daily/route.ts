@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { requirePermission, resolveCafeId, handleApiError, ApiError } from "@/lib/api";
+import { periodFinancials, salesByStaff, refundsByActor } from "@/lib/reporting";
 
 // Daily sales report: totals, payment-method breakdown, per-branch
 // breakdown, and item sales for one calendar day (?date=YYYY-MM-DD).
@@ -20,6 +21,15 @@ export async function GET(request: NextRequest) {
 
     const branchFilter = branchId ? { branchId } : {};
     const dayWindow = { gte: dayStart, lt: dayEnd };
+
+    // Sales, refunds and money movement come from one shared definition so
+    // this report and the dashboard cannot drift apart.
+    const scope = { cafeId, branchId, period: dayWindow };
+    const [financials, staffSales, refundActors] = await Promise.all([
+      periodFinancials(scope),
+      salesByStaff(scope),
+      refundsByActor(scope),
+    ]);
 
     const [
       completed,
@@ -55,6 +65,7 @@ export async function GET(request: NextRequest) {
           by: ["method"],
           where: {
             cafeId,
+            type: "COLLECTION",
             status: "PAID",
             createdAt: dayWindow,
             order: { ...branchFilter },
@@ -93,6 +104,7 @@ export async function GET(request: NextRequest) {
           by: ["cashierId"],
           where: {
             cafeId,
+            type: "COLLECTION",
             status: "PAID",
             createdAt: dayWindow,
             order: { ...branchFilter },
@@ -115,7 +127,7 @@ export async function GET(request: NextRequest) {
       // Payments collected through the tables board today.
       db.payment.aggregate({
         where: {
-          cafeId, status: "PAID", createdAt: dayWindow,
+          cafeId, type: "COLLECTION", status: "PAID", createdAt: dayWindow,
           tableSessionId: { not: null }, order: { ...branchFilter },
         },
         _sum: { amount: true },
@@ -214,6 +226,23 @@ export async function GET(request: NextRequest) {
         supplierPayments: Number(supplierPayAgg._sum.amount ?? 0),
         unpaidTotal: Math.round(Number(purchaseUnpaid._sum.remainingAmount ?? 0) * 100) / 100,
       },
+      // Gross Sales / Refunds / Net Sales / Collections, by transaction period.
+      financials,
+      // Selling performance, attributed to whoever made the sale. A refund
+      // reduces the original seller rather than appearing as negative sales
+      // for whoever processed it.
+      salesByStaff: staffSales.map((s) => ({
+        userId: s.userId,
+        name: s.name,
+        grossSales: s.grossSales,
+        refunds: s.refunds,
+        netSales: s.netSales,
+        orders: s.orders,
+      })),
+      // Refund processing, kept separate from selling performance.
+      refundsByActor: refundActors,
+      // Money handled per cashier (collections and refunds alike). Retained
+      // for continuity — it answers "who touched money", not "who sold".
       byCashier: cashierGroups
         .filter((c) => c.cashierId)
         .map((c) => ({

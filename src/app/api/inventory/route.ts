@@ -10,6 +10,7 @@ import {
 } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { round2 } from "@/lib/inventory";
+import { applyStockMutation } from "@/lib/ledger";
 import type { Prisma } from "@prisma/client";
 
 const itemSelect = {
@@ -127,38 +128,50 @@ export async function POST(request: NextRequest) {
     const branch = await db.branch.findFirst({ where: { id: branchId, cafeId } });
     if (!branch) throw new ApiError(400, "الفرع مش موجود في الكافيه");
 
-    const item = await db.inventoryItem.create({
-      data: {
-        cafeId,
-        branchId,
-        name: data.name,
-        category: data.category || null,
-        unit: data.unit,
-        currentStock: data.currentStock,
-        minimumStock: data.minimumStock,
-        costPerUnit: data.costPerUnit,
-        supplierName: data.supplierName || null,
-        expiryDate: data.expiryDate ? new Date(data.expiryDate) : null,
-      },
-      select: itemSelect,
-    });
-
-    // Opening balance → an initial PURCHASE row in the ledger.
-    if (data.currentStock > 0) {
-      await db.inventoryTransaction.create({
+    // One transaction for the item and its opening ledger row. This used to
+    // be two unrelated writes with no transaction at all, so a failure
+    // between them left an item whose balance no ledger row accounted for —
+    // a phantom shortage waiting for the first physical count to find.
+    //
+    // The item is created at zero and the opening balance is applied through
+    // the guarded writer, so the very first movement is numbered like every
+    // other one rather than arriving as an unexplained starting figure.
+    const item = await db.$transaction(async (tx) => {
+      const created = await tx.inventoryItem.create({
         data: {
           cafeId,
           branchId,
-          inventoryItemId: item.id,
+          name: data.name,
+          category: data.category || null,
+          unit: data.unit,
+          currentStock: 0,
+          minimumStock: data.minimumStock,
+          costPerUnit: data.costPerUnit,
+          supplierName: data.supplierName || null,
+          expiryDate: data.expiryDate ? new Date(data.expiryDate) : null,
+        },
+        select: { id: true },
+      });
+
+      if (data.currentStock > 0) {
+        await applyStockMutation(tx, {
+          inventoryItemId: created.id,
+          cafeId,
+          branchId,
           type: "PURCHASE",
           quantity: data.currentStock,
           unitCost: data.costPerUnit,
           totalCost: round2(data.currentStock * data.costPerUnit),
           note: "رصيد افتتاحي",
           createdById: session.id,
-        },
+        });
+      }
+
+      return tx.inventoryItem.findUniqueOrThrow({
+        where: { id: created.id },
+        select: itemSelect,
       });
-    }
+    });
 
     await audit({
       cafeId,

@@ -12,6 +12,7 @@ import {
   requireFeature,
 } from "@/lib/api";
 import { audit } from "@/lib/audit";
+import { redactBlindCount } from "@/lib/shifts";
 
 const shiftInclude = {
   cashier: { select: { id: true, name: true } },
@@ -68,7 +69,12 @@ export async function GET(request: NextRequest) {
       orderBy: { openedAt: "desc" },
       take: 200,
     });
-    return NextResponse.json({ shifts });
+    // SHIFT-003: an open shift the requester holds is one they will have to
+    // count, so its target is withheld. Other people's shifts, and settled
+    // history, are unaffected.
+    return NextResponse.json({
+      shifts: shifts.map((s) => redactBlindCount(s, session.id)),
+    });
   } catch (error) {
     return handleApiError(error);
   }
@@ -95,7 +101,11 @@ export async function POST(request: NextRequest) {
       include: shiftInclude,
     });
     if (existing) {
-      return NextResponse.json({ shift: existing, alreadyOpen: true });
+      // Re-opening must not become a side channel to the target (SHIFT-003).
+      return NextResponse.json({
+        shift: redactBlindCount(existing, session.id),
+        alreadyOpen: true,
+      });
     }
 
     const branch = await db.branch.findFirst({
@@ -135,7 +145,12 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    return NextResponse.json({ shift }, { status: 201 });
+    // Redacted for consistency: the client never holds a target for an open
+    // shift, so nothing stale can surface later in the count UI.
+    return NextResponse.json(
+      { shift: redactBlindCount(shift, session.id) },
+      { status: 201 }
+    );
   } catch (error) {
     return handleApiError(error);
   }

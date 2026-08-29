@@ -8,9 +8,17 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
+    "test": "node scripts/run-tests.mjs",
     "postinstall": "prisma generate",
     "db:migrate": "prisma migrate deploy",
-    "db:seed": "tsx prisma/seed.ts"
+    "db:seed": "tsx prisma/seed.ts",
+    "db:scratch": "node scripts/scratch-db.mjs",
+    "baseline": "node scripts/baseline.mjs",
+    "testdb:up": "node scripts/test-db.mjs up",
+    "testdb:down": "node scripts/test-db.mjs down",
+    "testdb:status": "node scripts/test-db.mjs status",
+    "testdb:destroy": "node scripts/test-db.mjs destroy",
+    "testserver": "node scripts/test-server.mjs"
   },
   "engines": {
     "node": ">=20 <=22"

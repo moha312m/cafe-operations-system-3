@@ -25,6 +25,14 @@ type DashboardData = {
   range: string;
   period: { from: string; to: string };
   todayRevenue: number;
+  financials: {
+    grossSales: number;
+    refunds: number;
+    netSales: number;
+    collections: number;
+    cashRefunds: number;
+    cardRefunds: number;
+  };
   todayOrders: number;
   ordersAll: number;
   completedOrders: number;
@@ -377,6 +385,13 @@ function DashboardInner() {
               {delta >= 0 ? "▲" : "▼"} {Math.abs(delta)}٪ {d.vsPrev}
             </span>
           )}
+        />
+        <StatCard
+          label="المرتجعات" value={fmt(data.financials?.refunds ?? 0)} icon="↩️" accent="red"
+        />
+        <StatCard
+          label="صافي المبيعات" value={fmt(data.financials?.netSales ?? 0)} icon="🧮" accent="violet"
+          hint={<span className="text-muted-foreground">بعد خصم المرتجعات</span>}
         />
         <StatCard label={d.todayOrders} value={data.todayOrders} icon="🧾" accent="blue" />
         <StatCard label={d.avgOrderValue} value={fmt(data.averageOrderValue)} icon="📊" accent="violet" />

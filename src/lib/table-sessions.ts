@@ -12,16 +12,34 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 const INACTIVE_ORDER_STATUSES = ["CANCELLED", "REJECTED", "PENDING_WAITER_APPROVAL"] as const;
 
 // Recompute a session's denormalised totals from its orders/payments.
-// totalAmount   = active orders' totals
-// paidAmount    = PAID payments on those orders (refunds drop out)
-// remaining     = total - paid (clamped at 0)
+//
+// The three figures answer different questions and must not be derived from
+// each other:
+//
+// totalAmount     historical — what the table's active orders came to.
+//                 Reporting reads this, so a refunded bill stays counted.
+// paidAmount      money movement — collected minus returned, i.e. what the
+//                 café is still holding against this table.
+// remainingAmount current receivable — what the customer still owes.
+//
+// remaining is the sum of each order's own remainingAmount rather than
+// `total - paid`. Only the order knows whether its balance is live: a full
+// refund is terminal and settles the order at 0, a part-refund leaves the
+// balance owed, and loyalty may have moved the total. Deriving it from a
+// historical total against a net cash figure reopened refunded bills as a
+// phantom balance and forced a manager override to close the table
+// (REFUND-006).
 export async function recomputeSessionTotals(sessionId: string) {
   const [orderAgg, payAgg] = await Promise.all([
     db.order.aggregate({
       where: { tableSessionId: sessionId, status: { notIn: [...INACTIVE_ORDER_STATUSES] } },
-      _sum: { total: true },
+      _sum: { total: true, remainingAmount: true },
     }),
-    db.payment.aggregate({
+    // Collections and refunds are summed separately: a refund carries
+    // status PAID too, so one aggregate would report money returned as
+    // money collected (REFUND-005).
+    db.payment.groupBy({
+      by: ["type"],
       where: {
         status: "PAID",
         order: { tableSessionId: sessionId, status: { notIn: [...INACTIVE_ORDER_STATUSES] } },
@@ -30,13 +48,20 @@ export async function recomputeSessionTotals(sessionId: string) {
     }),
   ]);
   const total = round2(Number(orderAgg._sum.total ?? 0));
-  const paid = round2(Number(payAgg._sum.amount ?? 0));
+  const collected = payAgg
+    .filter((r) => r.type !== "REFUND")
+    .reduce((s, r) => s + Number(r._sum.amount ?? 0), 0);
+  const returned = payAgg
+    .filter((r) => r.type === "REFUND")
+    .reduce((s, r) => s + Number(r._sum.amount ?? 0), 0);
+  const paid = Math.max(round2(collected - returned), 0);
+  const receivable = Math.max(round2(Number(orderAgg._sum.remainingAmount ?? 0)), 0);
   return db.tableSession.update({
     where: { id: sessionId },
     data: {
       totalAmount: total,
       paidAmount: paid,
-      remainingAmount: Math.max(round2(total - paid), 0),
+      remainingAmount: receivable,
     },
   });
 }
@@ -100,13 +125,59 @@ export async function attachOrderToTableSession(order: {
   return session;
 }
 
-// Derived display status for a session card.
-export function sessionDisplayStatus(s: { totalAmount: unknown; paidAmount: unknown; remainingAmount: unknown }) {
+// Orders that still owe the customer something: confirmed, being made, or
+// made and sitting on the pass. CANCELLED and REJECTED are finished with;
+// PENDING_WAITER_APPROVAL has not joined the bill yet and is already outside
+// the session's totals.
+//
+// Exported because closing a table and labelling one are the same question
+// asked twice, and they must not drift apart.
+export const BLOCKING_ORDER_STATUSES = ["CONFIRMED", "PREPARING", "READY"] as const;
+
+export type SessionDisplayStatus =
+  | "CLOSED"
+  | "PENDING_COLLECTION"
+  | "PARTIAL"
+  | "AWAITING_HANDOVER"
+  | "READY_TO_CLOSE"
+  | "OCCUPIED";
+
+// What the table's badge should say.
+//
+// This asks exactly what closing asks — is the bill settled, and has
+// everything reached the customer — so the badge cannot promise something the
+// close endpoint then refuses. `unservedOrders` is a required argument rather
+// than an optional one precisely so a caller cannot quietly fall back to the
+// money-only answer that caused a settled-but-still-cooking table to advertise
+// itself as ready to close (POLICY-004).
+//
+// Nothing here is persisted: it is derived per request.
+export function sessionDisplayStatus(
+  s: { status?: string; totalAmount: unknown; paidAmount: unknown; remainingAmount: unknown },
+  unservedOrders: number
+): SessionDisplayStatus {
+  if (s.status && s.status !== "OPEN") return "CLOSED";
+
   const total = Number(s.totalAmount);
   const paid = Number(s.paidAmount);
   const remaining = Number(s.remainingAmount);
-  if (total > 0 && remaining <= 0.001) return "READY_TO_CLOSE" as const;
-  if (paid > 0 && remaining > 0) return "PARTIAL" as const;
-  if (total > 0) return "PENDING_COLLECTION" as const;
-  return "OCCUPIED" as const;
+
+  // Money outstanding is the louder problem and is reported first, even when
+  // the kitchen is also still busy — it is the one that stops the customer
+  // leaving.
+  if (remaining > 0.001) {
+    return paid > 0 ? "PARTIAL" : "PENDING_COLLECTION";
+  }
+  if (total > 0) {
+    return unservedOrders > 0 ? "AWAITING_HANDOVER" : "READY_TO_CLOSE";
+  }
+  return "OCCUPIED";
+}
+
+/** Whether a table may be closed on the normal (non-override) path. */
+export function isReadyToClose(
+  s: { status?: string; totalAmount: unknown; paidAmount: unknown; remainingAmount: unknown },
+  unservedOrders: number
+): boolean {
+  return sessionDisplayStatus(s, unservedOrders) === "READY_TO_CLOSE";
 }

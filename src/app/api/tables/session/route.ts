@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { requireKey, resolveCafeId, handleApiError, ApiError } from "@/lib/api";
-import { sessionDisplayStatus } from "@/lib/table-sessions";
+import { sessionDisplayStatus, BLOCKING_ORDER_STATUSES } from "@/lib/table-sessions";
 
 // Orders excluded from the table bill (never shown as invoices).
 const INACTIVE = ["CANCELLED", "REJECTED"] as const;
@@ -45,7 +45,10 @@ export async function GET(request: NextRequest) {
       session: {
         id: ts.id,
         tableNumber: ts.tableNumber,
-        displayStatus: sessionDisplayStatus(ts),
+        displayStatus: sessionDisplayStatus(
+          ts,
+          ts.orders.filter((o) => (BLOCKING_ORDER_STATUSES as readonly string[]).includes(o.status)).length
+        ),
         startedAt: ts.startedAt,
         totalAmount: Number(ts.totalAmount),
         paidAmount: Number(ts.paidAmount),

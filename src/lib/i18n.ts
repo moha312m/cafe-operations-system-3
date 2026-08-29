@@ -167,6 +167,30 @@ export const t = {
     },
   },
 
+  servingPolicy: {
+    title: "سياسة الدفع والتقديم",
+    hint: "بتحدد إذا كان ينفع الطلب يتسلّم للعميل قبل ما يتدفع. بيتظبط مرة واحدة — الموظف مش بيختاره كل طلب.",
+    dineIn: "الصالة",
+    takeaway: "التيك أواي",
+    allowBefore: "السماح بالتقديم قبل الدفع",
+    requireFirst: "الدفع قبل التقديم",
+    allowBeforeTakeaway: "السماح بالتسليم قبل الدفع",
+    requireFirstTakeaway: "الدفع قبل التسليم",
+    branchSection: "إعدادات الفرع",
+    useCafeDefault: "استخدام سياسة الكافيه",
+    effectiveNow: "المطبّق حاليًا",
+    inherited: "موروث من الكافيه",
+    overridden: "مخصص لهذا الفرع",
+    saved: "تم حفظ سياسة الدفع",
+    // Pay-first dead-end: the barista needs a way forward, not a dead button.
+    mustCollectFirst: "لازم يتدفع الأول",
+    collectNow: "تحصيل الدفع",
+    // Close / keep-open decision.
+    closePromptTitle: "الترابيزة خلصت",
+    closePromptBody: "الحساب مدفوع بالكامل وكل الطلبات اتسلّمت. تقفل الترابيزة؟",
+    closeTable: "اقفل الترابيزة",
+    keepOpen: "سيبها مفتوحة",
+  },
   finance: {
     settingsTitle: "إعدادات الضريبة والسيرفيس",
     taxEnabled: "تفعيل الضريبة",
@@ -213,6 +237,7 @@ export const t = {
     openingCash: "رصيد بداية الشيفت",
     expectedCash: "الكاش المتوقع",
     expectedCashInDrawer: "الكاش المتوقع في الدرج",
+    blindCountHint: "اعدّ الكاش الفعلي في الدرج وسجّله. الفرق هيظهر بعد التسجيل.",
     actualCash: "الكاش الفعلي",
     actualCashInDrawer: "الكاش الفعلي في الدرج",
     difference: "الفرق",

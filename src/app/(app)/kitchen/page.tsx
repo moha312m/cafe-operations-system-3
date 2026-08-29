@@ -1,9 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { api, money } from "@/lib/client";
 import { t, formatTime } from "@/lib/i18n";
+import { isOrderFullyPaid } from "@/lib/order-payments";
 import { handledBy } from "@/lib/order-staff";
 import { useApp } from "@/components/app-shell";
 import { FeatureGate } from "@/components/feature-gate";
@@ -80,10 +82,9 @@ function waitLabel(minutes: number): string {
 }
 
 function isPaid(order: KitchenOrder): boolean {
-  const paid = order.payments
-    .filter((p) => p.status === "PAID")
-    .reduce((s, p) => s + Number(p.amount), 0);
-  return paid + 0.001 >= Number(order.total);
+  // Collections less refunds — a refund row also carries status PAID, so
+  // summing by status alone marked a refunded order as paid (REFUND-005).
+  return isOrderFullyPaid({ total: order.total, payments: order.payments });
 }
 
 // Short two-tone chime via WebAudio — no asset files needed.
@@ -117,6 +118,14 @@ function playChime() {
 
 export default function KitchenPage() {
   const { cafe, user } = useApp();
+  const router = useRouter();
+  // Whether an unpaid order may be handed over is configuration, resolved per
+  // branch and per order type. Without it the screen would keep blocking
+  // handover at a café that has chosen to serve first and bill later.
+  const [policy, setPolicy] = useState<{
+    dineIn: "ALLOW_BEFORE_PAYMENT" | "REQUIRE_PAYMENT_FIRST";
+    takeaway: "ALLOW_BEFORE_PAYMENT" | "REQUIRE_PAYMENT_FIRST";
+  } | null>(null);
   const currency = cafe?.currency ?? "EGP";
 
   const [orders, setOrders] = useState<KitchenOrder[]>([]);
@@ -170,6 +179,16 @@ export default function KitchenPage() {
     } catch {
       // polling failure is non-fatal; next tick retries
     }
+  }, [branchFilter, user.branchId]);
+
+  useEffect(() => {
+    const id = user.branchId ?? (branchFilter !== "all" ? branchFilter : null);
+    if (!id) return;
+    api<{ policy: { dineIn: "ALLOW_BEFORE_PAYMENT" | "REQUIRE_PAYMENT_FIRST"; takeaway: "ALLOW_BEFORE_PAYMENT" | "REQUIRE_PAYMENT_FIRST" } }>(
+      `/api/branches/${id}/serving-policy`
+    )
+      .then((r) => setPolicy(r.policy))
+      .catch(() => setPolicy(null));
   }, [branchFilter, user.branchId]);
 
   useEffect(() => {
@@ -325,7 +344,15 @@ export default function KitchenPage() {
                 const late = waitMins >= 15;
                 const veryLate = waitMins >= 25;
                 const paid = isPaid(order);
-                const serveBlocked = col.next === "SERVED" && !paid;
+                // Until the policy loads, keep the stricter behaviour rather
+                // than letting an order out that this café would not allow.
+                const mustPayFirst =
+                  order.type === "DINE_IN"
+                    ? policy?.dineIn !== "ALLOW_BEFORE_PAYMENT"
+                    : order.type === "TAKEAWAY"
+                      ? policy?.takeaway !== "ALLOW_BEFORE_PAYMENT"
+                      : true; // delivery is not configurable yet
+                const serveBlocked = col.next === "SERVED" && mustPayFirst && !paid;
                 return (
                   <div
                     key={order.id}
@@ -437,9 +464,24 @@ export default function KitchenPage() {
                       {col.action}
                     </Button>
                     {serveBlocked && (
-                      <p className="text-center text-xs text-destructive">
-                        في انتظار الدفع — الكاشير لازم يحصّل الأول
-                      </p>
+                      <div className="space-y-1.5">
+                        <p className="text-center text-xs text-destructive">
+                          {t.servingPolicy.mustCollectFirst}
+                        </p>
+                        {/* The way forward, not just the refusal: this opens
+                            the POS already pointed at this order. */}
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="w-full"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            router.push(`/pos?collectOrderId=${order.id}`);
+                          }}
+                        >
+                          💵 {t.servingPolicy.collectNow}
+                        </Button>
+                      </div>
                     )}
                   </div>
                 );

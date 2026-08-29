@@ -78,7 +78,8 @@ export async function GET(_req: NextRequest, { params }: Params) {
       }),
       db.payment.groupBy({
         by: ["method"],
-        where: { ...base, status: "PAID", createdAt: { gte: days30 } },
+        // Money received: a refund also carries status PAID (REFUND-005).
+        where: { ...base, type: "COLLECTION", status: "PAID", createdAt: { gte: days30 } },
         _sum: { amount: true },
       }),
       db.orderItem.groupBy({

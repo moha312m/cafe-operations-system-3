@@ -1,0 +1,207 @@
+// COUNT-003 — a physical count is its own session, not an adjustment.
+//
+// Spec §4. The distinction matters for reporting more than for storage: a
+// manager needs to tell a physical recount from somebody's tweak, and that is
+// impossible if a count is recorded as an ADJUSTMENT like any other.
+//
+// Two things this suite pins that are easy to lose later:
+//
+//   • `custodyPeriodId` is a real foreign key, not a loose string. A count
+//     belongs to the custody it was taken under, and that is what lets a
+//     shortage be attributed to whoever actually held the room.
+//
+//   • `lockedByHandoverId` arrived in the SAME migration as the
+//     `HandoverSession` table it points at, never before it. Every FK-bearing
+//     column in this milestone is created together with its target — no
+//     column waits two migrations for its constraint. This suite asserted
+//     the column absent until that migration landed, and now asserts the
+//     stronger thing: it exists, and it has never existed unconstrained.
+
+import { test, after, before, describe } from "node:test";
+import assert from "node:assert/strict";
+import { db, tag, teardownTaggedCafe } from "./helpers/db";
+
+const MARKER = tag("COUNT003");
+let cafeId: string;
+let branchId: string;
+let userId: string;
+let custodyPeriodId: string;
+
+before(async () => {
+  const cafe = await db.cafe.create({
+    data: {
+      name: `${MARKER} cafe`, slug: MARKER.toLowerCase(),
+      settings: { create: {} },
+      branches: { create: [{ name: `${MARKER} main` }] },
+    },
+    include: { branches: true },
+  });
+  cafeId = cafe.id;
+  branchId = cafe.branches[0].id;
+
+  userId = (await db.user.create({
+    data: {
+      email: `${MARKER}@example.invalid`, name: MARKER,
+      passwordHash: "no-login-path", role: "BRANCH_MANAGER", cafeId, branchId,
+    },
+  })).id;
+
+  custodyPeriodId = (await db.custodyPeriod.create({
+    data: { cafeId, branchId, scope: "STOCK" },
+  })).id;
+});
+
+// This teardown used to open with `db.stockCountSession.deleteMany(...)` —
+// the model the RED run existed to prove absent. The delegate was undefined,
+// the hook threw on its first line, and the tagged café stayed behind. The
+// purge names no model at all; see TOOLING-003.
+after(() => teardownTaggedCafe(cafeId, [], { disconnect: true }));
+
+/** A session this suite owns. */
+function session(data: Record<string, unknown> = {}) {
+  return db.stockCountSession.create({
+    data: {
+      cafeId, branchId, type: "CRITICAL", scopeDerivation: "CRITICAL_ONLY",
+      initiatedById: userId, ...data,
+    },
+  });
+}
+
+async function clearSessions() {
+  await db.stockCountSession.deleteMany({ where: { cafeId } });
+}
+
+describe("COUNT-003 count session schema", () => {
+  test("a session persists as DRAFT and BLIND, carrying how its scope was derived", async () => {
+    await clearSessions();
+    const s = await session();
+    assert.equal(s.status, "DRAFT");
+    assert.equal(s.mode, "BLIND", "a count is blind unless the owner says otherwise");
+    assert.equal(s.type, "CRITICAL");
+    assert.equal(
+      s.scopeDerivation, "CRITICAL_ONLY",
+      "the session records HOW its scope was chosen, so the count can be audited later"
+    );
+  });
+
+  test("the custody period resolves through a relation, not a loose id", async () => {
+    await clearSessions();
+    const s = await session({ custodyPeriodId });
+    const loaded = await db.stockCountSession.findUniqueOrThrow({
+      where: { id: s.id }, include: { custodyPeriod: true },
+    });
+    assert.equal(loaded.custodyPeriod?.id, custodyPeriodId);
+    assert.equal(
+      loaded.custodyPeriod?.scope, "STOCK",
+      "a stock count belongs to a stock custody — that is what makes attribution possible"
+    );
+  });
+
+  test("deleting the custody period nulls the link rather than orphaning the count", async () => {
+    // The count is evidence. It must survive the disappearance of the
+    // custody row, holding a NULL rather than a dangling id.
+    await clearSessions();
+    const spare = await db.custodyPeriod.create({
+      data: { cafeId, branchId, scope: "STOCK", status: "TRANSFERRED" },
+    });
+    const s = await session({ custodyPeriodId: spare.id });
+    await db.custodyPeriod.delete({ where: { id: spare.id } });
+
+    const after = await db.stockCountSession.findUniqueOrThrow({ where: { id: s.id } });
+    assert.equal(after.custodyPeriodId, null, "the count survives, unattributed");
+  });
+
+  test("a branch may run only one active count, and may start another once confirmed", async () => {
+    // Two concurrent counts of one branch would produce two contradictory
+    // sets of evidence about the same shelves at the same time.
+    await clearSessions();
+    const first = await session({ status: "IN_PROGRESS" });
+    await assert.rejects(
+      () => session({ status: "IN_PROGRESS" }),
+      (e: { code?: string }) => e.code === "P2002",
+      "a second live count at one branch is two answers to one question"
+    );
+
+    await db.stockCountSession.update({
+      where: { id: first.id }, data: { status: "CONFIRMED", confirmedAt: new Date() },
+    });
+    const second = await session({ status: "IN_PROGRESS" });
+    assert.ok(second.id, "once the first is confirmed, the next may begin");
+  });
+
+  test("idempotencyKey is unique, so a retried submission cannot double-count", async () => {
+    await clearSessions();
+    const key = `${MARKER}-idem`;
+    await session({ status: "CONFIRMED", idempotencyKey: key });
+    await assert.rejects(
+      () => session({ status: "CONFIRMED", idempotencyKey: key }),
+      (e: { code?: string }) => e.code === "P2002"
+    );
+  });
+
+  test("all six statuses store", async () => {
+    await clearSessions();
+    const statuses = [
+      "DRAFT", "IN_PROGRESS", "SUBMITTED", "RECOUNT_REQUIRED", "CONFIRMED", "LOCKED",
+    ] as const;
+    // Only one may be active at a time, so terminal ones are created together
+    // and the active ones checked one at a time.
+    for (const status of statuses) {
+      await clearSessions();
+      const s = await session({ status });
+      assert.equal(s.status, status);
+    }
+
+    const values = await db.$queryRaw<{ label: string }[]>`
+      SELECT e.enumlabel AS label FROM pg_enum e
+        JOIN pg_type t ON t.oid = e.enumtypid
+       WHERE t.typname = 'StockCountStatus' ORDER BY e.enumsortorder
+    `;
+    assert.deepEqual(values.map((v) => v.label), [...statuses]);
+  });
+
+  test("lockedByHandoverId arrived with the table it points at, not before it", async () => {
+    // R3.3, asserted rather than asserted-about. Every FK-bearing column in
+    // this milestone is created in the same migration as its FOREIGN KEY, so
+    // there is never an interval in which a column could hold a value no
+    // constraint checks.
+    //
+    // Until T17 this test asserted the column ABSENT, which was the same
+    // claim seen from the other side of the migration that introduced it.
+    // Now it asserts what that ordering bought: the column and its target and
+    // its constraint all exist, and no migration between them left the column
+    // bare.
+    const cols = await db.$queryRaw<{ column_name: string }[]>`
+      SELECT column_name FROM information_schema.columns
+       WHERE table_schema = current_schema()
+         AND table_name = 'StockCountSession' AND column_name = 'lockedByHandoverId'
+    `;
+    assert.equal(cols.length, 1, "the column exists");
+
+    const handover = await db.$queryRaw<{ table_name: string }[]>`
+      SELECT table_name FROM information_schema.tables
+       WHERE table_schema = current_schema() AND table_name = 'HandoverSession'
+    `;
+    assert.equal(handover.length, 1, "so does the table it names");
+
+    const fk = await db.$queryRaw<{ constraint_name: string }[]>`
+      SELECT tc.constraint_name
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+       WHERE tc.constraint_type = 'FOREIGN KEY'
+         AND tc.table_schema = current_schema()
+         AND tc.table_name = 'StockCountSession'
+         AND kcu.column_name = 'lockedByHandoverId'
+    `;
+    assert.equal(fk.length, 1, "and the constraint that was never missing");
+
+    // The migration that added the column is the migration that added the
+    // table — one file, so there is no window between them.
+    const both = await db.$queryRaw<{ migration_name: string }[]>`
+      SELECT migration_name FROM "_prisma_migrations"
+       WHERE migration_name LIKE '%handover_session%' AND finished_at IS NOT NULL
+    `;
+    assert.equal(both.length, 1, "and both came from one migration");
+  });
+});

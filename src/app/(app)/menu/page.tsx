@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { api, money } from "@/lib/client";
@@ -36,7 +37,6 @@ import {
 } from "@/components/ui/table";
 import { MenuImportDialog } from "@/components/menu-import/menu-import-dialog";
 import { RecipeEditor } from "@/components/menu/recipe-editor";
-import { ProductCostReport } from "@/components/menu/product-cost-report";
 
 // ─────────────────────────── Types ───────────────────────────
 
@@ -69,10 +69,11 @@ type Product = {
   branchPrices: { branchId: string; price: string }[];
   // Attached only when the caller has cost:read.
   hasRecipe?: boolean;
-  cost?: number;
-  profit?: number;
-  margin?: number;
-  tier?: "high" | "medium" | "low" | "loss" | "no-recipe";
+  costStatus?: "AVAILABLE" | "RECIPE_INCOMPLETE" | "NOT_APPLICABLE" | "MULTIPLE_CONFIGURATIONS";
+  cost?: number | null;
+  profit?: number | null;
+  margin?: number | null;
+  tier?: "high" | "medium" | "low" | "loss" | "no-recipe" | null;
 };
 
 type ProductForm = {
@@ -503,12 +504,16 @@ export default function MenuPage() {
                       </TableCell>
                       {showCost && (
                         <TableCell className="tabular-nums">
-                          {p.hasRecipe ? money(p.cost ?? 0, currency) : "—"}
+                          {p.costStatus === "AVAILABLE" && typeof p.cost === "number"
+                            ? money(p.cost, currency)
+                            : p.costStatus === "MULTIPLE_CONFIGURATIONS"
+                              ? "حسب الحجم"
+                              : "غير متاحة"}
                         </TableCell>
                       )}
                       {showCost && (
                         <TableCell>
-                          {p.hasRecipe ? (
+                          {p.costStatus === "AVAILABLE" && typeof p.profit === "number" && typeof p.margin === "number" ? (
                             <span
                               className={cn(
                                 "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium",
@@ -521,10 +526,12 @@ export default function MenuPage() {
                                       : "bg-destructive/10 text-destructive"
                               )}
                             >
-                              {money(p.profit ?? 0, currency)} · {p.margin}٪
+                              {money(p.profit, currency)} · {p.margin}٪
                             </span>
                           ) : (
-                            <Badge variant="outline">لا توجد وصفة</Badge>
+                            <Badge variant="outline">
+                              {p.costStatus === "MULTIPLE_CONFIGURATIONS" ? "افتح تقرير الأحجام" : "الوصفة غير مكتملة"}
+                            </Badge>
                           )}
                         </TableCell>
                       )}
@@ -752,7 +759,9 @@ export default function MenuPage() {
                 التكلفة محسوبة من وصفات المنتجات وأسعار الخامات في المخزون.
               </p>
             </div>
-            <ProductCostReport currency={currency} />
+            <Button nativeButton={false} render={<Link href="/recipe-review" />}>
+              فتح شاشة دقة وتكلفة المنتجات
+            </Button>
           </TabsContent>
         )}
       </Tabs>

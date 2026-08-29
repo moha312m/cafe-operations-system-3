@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { requireKey, handleApiError, ApiError } from "@/lib/api";
-import { sessionDisplayStatus } from "@/lib/table-sessions";
+import { sessionDisplayStatus, BLOCKING_ORDER_STATUSES } from "@/lib/table-sessions";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -58,7 +58,10 @@ export async function GET(_request: NextRequest, { params }: Params) {
         tableNumber: ts.tableNumber,
         branch: ts.branch.name,
         status: ts.status,
-        displayStatus: sessionDisplayStatus(ts),
+        displayStatus: sessionDisplayStatus(
+          ts,
+          ts.orders.filter((o) => (BLOCKING_ORDER_STATUSES as readonly string[]).includes(o.status)).length
+        ),
         startedAt: ts.startedAt,
         closedAt: ts.closedAt,
         totalAmount: Number(ts.totalAmount),

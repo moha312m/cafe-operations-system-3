@@ -22,7 +22,8 @@ import {
 import { PageHeader, Panel, EmptyState, LoadingState, SourceBadge, StatusBadge } from "@/components/cafe/ui";
 import type { OrderStatus, OrderSource } from "@prisma/client";
 
-type DisplayStatus = "OCCUPIED" | "PENDING_COLLECTION" | "PARTIAL" | "READY_TO_CLOSE";
+type DisplayStatus =
+  | "OCCUPIED" | "PENDING_COLLECTION" | "PARTIAL" | "AWAITING_HANDOVER" | "READY_TO_CLOSE" | "CLOSED";
 
 type SessionCard = {
   id: string;
@@ -36,6 +37,8 @@ type SessionCard = {
   customerName: string | null;
   orderCount: number;
   lastOrderAt: string | null;
+  /** Orders not yet handed to the customer; a table with any is unfinished. */
+  unservedOrders: number;
 };
 
 type ClosedCard = {
@@ -73,7 +76,11 @@ const STATUS_META: Record<DisplayStatus, { label: string; cls: string; card: str
   OCCUPIED: { label: "مشغولة", cls: "bg-blue-500/12 text-blue-700 dark:text-blue-400", card: "border-blue-500/40" },
   PENDING_COLLECTION: { label: "في انتظار التحصيل", cls: "bg-amber-500/12 text-amber-700 dark:text-amber-400", card: "border-amber-500/40" },
   PARTIAL: { label: "مدفوعة جزئيًا", cls: "bg-violet-500/12 text-violet-700 dark:text-violet-400", card: "border-violet-500/40" },
+  // Settled, but something has not reached the customer yet. Distinct from
+  // "ready to close" so the badge never promises what close would refuse.
+  AWAITING_HANDOVER: { label: "في انتظار التسليم", cls: "bg-sky-500/12 text-sky-700 dark:text-sky-400", card: "border-sky-500/40" },
   READY_TO_CLOSE: { label: "جاهزة للقفل", cls: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400", card: "border-emerald-500/40" },
+  CLOSED: { label: "مقفولة", cls: "bg-foreground/8 text-muted-foreground", card: "border-border" },
 };
 
 const METHOD_LABELS: Record<string, string> = { CASH: "كاش", CARD: "فيزا", WALLET: "محفظة" };
@@ -169,6 +176,34 @@ export default function TablesPage() {
     try { setDetail(await api<Detail>(`/api/tables/${id}`)); } catch { setDetail(null); }
   }
 
+  // "Keep open" has to stick, but only until the table changes. Keying the
+  // dismissal on a fingerprint of the state it was dismissed in means a new
+  // round, a payment or a status change brings the question back on its own,
+  // with no timers and nothing to clean up.
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+  const closeKey = (c: SessionCard) =>
+    `${c.id}:${c.orderCount}:${c.remainingAmount}:${c.unservedOrders}:${c.lastOrderAt ?? ""}`;
+  // One verdict, not a third opinion: the server computed displayStatus from
+  // the same rule the close endpoint enforces, so the prompt just follows it.
+  const readyToClose = (c: SessionCard) =>
+    c.displayStatus === "READY_TO_CLOSE" && !dismissed.has(closeKey(c));
+
+  async function closeFromPrompt(c: SessionCard) {
+    setBusy(true);
+    try {
+      await api(`/api/tables/${c.id}/close`, { method: "POST" });
+      toast.success("تم قفل الترابيزة بنجاح");
+      await load();
+    } catch (e) {
+      // The server revalidates; if a round landed meanwhile it refuses and the
+      // table simply stays open.
+      toast.error(e instanceof Error ? e.message : "فشل القفل");
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  }
+
   // NOTE: money collection moved to the POS cashier screen — this page
   // deep-links into /pos?collectTableSessionId=… ("تحصيل من الكاشير").
 
@@ -259,7 +294,7 @@ export default function TablesPage() {
 
       {/* Status filter */}
       <div className="mb-4 flex flex-wrap gap-1 rounded-xl border border-border bg-card p-0.5 text-sm w-fit">
-        {([["ALL", "كل الترابيزات"], ["OCCUPIED", "المشغولة"], ["PENDING_COLLECTION", "في انتظار التحصيل"], ["PARTIAL", "مدفوعة جزئيًا"], ["READY_TO_CLOSE", "جاهزة للقفل"]] as const).map(([k, lbl]) => (
+        {([["ALL", "كل الترابيزات"], ["OCCUPIED", "المشغولة"], ["PENDING_COLLECTION", "في انتظار التحصيل"], ["PARTIAL", "مدفوعة جزئيًا"], ["AWAITING_HANDOVER", "في انتظار التسليم"], ["READY_TO_CLOSE", "جاهزة للقفل"]] as const).map(([k, lbl]) => (
           <button key={k} onClick={() => setFilter(k as typeof filter)}
             className={`rounded-lg px-3 py-1.5 font-medium transition-colors ${filter === k ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground"}`}>
             {lbl}
@@ -299,6 +334,40 @@ export default function TablesPage() {
                     <p className="mt-2 text-xs text-muted-foreground">
                       {s.orderCount} طلب{s.lastOrderAt ? ` · آخر طلب ${formatTime(s.lastOrderAt)}` : ""}
                     </p>
+
+                    {/* Settled and fully served: offer to close, but never
+                        close on the staff's behalf. */}
+                    {readyToClose(s) && (
+                      <div
+                        className="mt-3 space-y-2 rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-2.5"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <p className="text-xs font-medium text-emerald-800 dark:text-emerald-300">
+                          {t.servingPolicy.closePromptBody}
+                        </p>
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            className="flex-1"
+                            disabled={busy}
+                            onClick={() => closeFromPrompt(s)}
+                          >
+                            {t.servingPolicy.closeTable}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="flex-1"
+                            disabled={busy}
+                            onClick={() =>
+                              setDismissed((prev) => new Set(prev).add(closeKey(s)))
+                            }
+                          >
+                            {t.servingPolicy.keepOpen}
+                          </Button>
+                        </div>
+                      </div>
+                    )}
                   </button>
                 );
               })}

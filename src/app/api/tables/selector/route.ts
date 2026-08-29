@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { requireKey, resolveCafeId, handleApiError, ApiError, requireFeature } from "@/lib/api";
 import { getCafeSettings } from "@/lib/cafe-settings";
-import { sessionDisplayStatus } from "@/lib/table-sessions";
+import { sessionDisplayStatus, BLOCKING_ORDER_STATUSES } from "@/lib/table-sessions";
 import { ensureDefaultTables } from "@/lib/table-setup";
 
 // GET /api/tables/selector?branchId= — active configured tables for a branch,
@@ -28,7 +28,16 @@ export async function GET(request: NextRequest) {
       }),
       db.tableSession.findMany({
         where: { cafeId, branchId, status: "OPEN" },
-        select: { id: true, tableNumber: true, totalAmount: true, paidAmount: true, remainingAmount: true, startedAt: true },
+        select: {
+          id: true, tableNumber: true, totalAmount: true, paidAmount: true,
+          remainingAmount: true, startedAt: true, status: true,
+          // Only the orders that have not reached the customer: the badge
+          // means the same thing here as everywhere else (POLICY-004).
+          orders: {
+            where: { status: { in: [...BLOCKING_ORDER_STATUSES] } },
+            select: { id: true },
+          },
+        },
       }),
       getCafeSettings(cafeId),
     ]);
@@ -49,7 +58,7 @@ export async function GET(request: NextRequest) {
           session: s
             ? {
                 id: s.id,
-                displayStatus: sessionDisplayStatus(s),
+                displayStatus: sessionDisplayStatus(s, s.orders.length),
                 remainingAmount: Number(s.remainingAmount),
                 totalAmount: Number(s.totalAmount),
                 startedAt: s.startedAt,

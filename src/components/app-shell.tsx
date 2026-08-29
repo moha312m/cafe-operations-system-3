@@ -59,12 +59,21 @@ const NAV: NavItem[] = [
   // Approvals shows when waiter approval is on OR QR orders route to a waiter.
   { href: "/approvals", label: t.nav.approvals, icon: "📱", permission: "orders:approve", key: "qr_orders.view", feature: (f) => f.qrMenuEnabled },
   { href: "/menu", label: t.nav.menu, icon: "📖", permission: "menu:manage" },
+  // Recipe accuracy sits beside the menu: it is about how the menu is made,
+  // and it exposes ingredient cost, so it rides the same cost permission.
+  { href: "/recipe-review", label: "دقة الوصفات", icon: "🧪", permission: "cost:read" },
   { href: "/branches", label: t.nav.branches, icon: "🏬", permission: "branches:manage", feature: (f) => f.branchManagementEnabled },
   { href: "/staff", label: t.nav.staff, icon: "👥", permission: "users:manage", feature: (f) => f.staffManagementEnabled },
   { href: "/inventory", label: t.nav.inventory, icon: "📦", permission: "inventory:read", feature: (f) => f.inventoryEnabled },
   { href: "/purchases", label: "المشتريات", icon: "🛒", permission: "inventory:read", key: "purchases.view", feature: (f) => f.purchasesEnabled },
   { href: "/suppliers", label: "الموردين", icon: "🚚", permission: "inventory:read", key: "suppliers.view", feature: (f) => f.purchasesEnabled },
   { href: "/customers", label: "العملاء", icon: "💳", permission: "orders:read", key: "customers.view" },
+  // Counting, its variance cases, and custody handover. Each gates on its own
+  // granular key rather than the legacy bridge: the pages are new, so there is
+  // no legacy permission that means "may see this" without over-granting.
+  { href: "/stock-counts", label: "جرد المخزون", icon: "📋", permission: "inventory:read", key: "stock_count.view", feature: (f) => f.inventoryEnabled },
+  { href: "/variances", label: "الفروقات", icon: "⚖️", permission: "shifts:read", key: "variance.view", feature: (f) => f.shiftManagementEnabled },
+  { href: "/handovers", label: "التسليم والاستلام", icon: "🤝", permission: "shifts:operate", key: "handover.view", feature: (f) => f.shiftManagementEnabled },
   { href: "/reports", label: t.nav.reports, icon: "📈", permission: "reports:read" },
   { href: "/shifts", label: t.nav.shiftReports, icon: "🧮", permission: "shifts:read", feature: (f) => f.shiftManagementEnabled },
   { href: "/settings", label: "الإعدادات", icon: "⚙️", permission: "branches:manage" },

@@ -22,7 +22,9 @@ export type Shift = {
   shiftNumber: number;
   openedAt: string;
   openingCashAmount: string;
-  expectedCashAmount: string;
+  // Absent while the shift is open and belongs to the viewer: the drawer
+  // target is withheld until they commit an independent count (SHIFT-003).
+  expectedCashAmount?: string;
   totalSales: string;
   totalCashSales: string;
   totalCardSales: string;
@@ -123,11 +125,17 @@ export function ShiftControls({
     if (!shift) return;
     setBusy(true);
     try {
-      await api(`/api/shifts/${shift.id}/close`, {
-        method: "POST",
-        body: { actualCashAmount: Number(actualCash) || 0, notes: notes.trim() || undefined },
-      });
-      const diff = (Number(actualCash) || 0) - Number(shift.expectedCashAmount);
+      // The reconciliation is revealed by the server's response, and only
+      // once it has persisted the count — never computed here from a target
+      // the client was never given (SHIFT-003).
+      const res = await api<{ shift: Shift & { cashDifference: string | null } }>(
+        `/api/shifts/${shift.id}/close`,
+        {
+          method: "POST",
+          body: { actualCashAmount: Number(actualCash) || 0, notes: notes.trim() || undefined },
+        }
+      );
+      const diff = Number(res.shift.cashDifference ?? 0);
       const msg =
         Math.abs(diff) < 0.01
           ? t.shifts.matched
@@ -152,9 +160,6 @@ export function ShiftControls({
     );
   }
 
-  const expected = shift ? Number(shift.expectedCashAmount) : 0;
-  const diffPreview = (Number(actualCash) || 0) - expected;
-
   return (
     <>
       {shift ? (
@@ -171,9 +176,6 @@ export function ShiftControls({
               hour: "2-digit",
               minute: "2-digit",
             })}
-          </span>
-          <span className="text-xs text-muted-foreground">
-            {t.shifts.expectedCash}: {money(shift.expectedCashAmount, currency)}
           </span>
           <Button
             size="sm"
@@ -248,12 +250,6 @@ export function ShiftControls({
                   <dt className="text-muted-foreground">{t.shifts.orderCount}</dt>
                   <dd className="tabular-nums">{shift.orderCount}</dd>
                 </div>
-                <div className="flex justify-between border-t pt-1.5 font-semibold">
-                  <dt>{t.shifts.expectedCashInDrawer}</dt>
-                  <dd className="tabular-nums">
-                    {money(shift.expectedCashAmount, currency)}
-                  </dd>
-                </div>
               </dl>
 
               <div className="space-y-2">
@@ -269,23 +265,13 @@ export function ShiftControls({
                 />
               </div>
 
-              {actualCash !== "" && (
-                <div
-                  className={
-                    Math.abs(diffPreview) < 0.01
-                      ? "rounded-lg bg-emerald-50 p-2 text-center text-sm font-medium text-emerald-700"
-                      : diffPreview > 0
-                        ? "rounded-lg bg-sky-50 p-2 text-center text-sm font-medium text-sky-700"
-                        : "rounded-lg bg-red-50 p-2 text-center text-sm font-medium text-red-700"
-                  }
-                >
-                  {Math.abs(diffPreview) < 0.01
-                    ? t.shifts.matched
-                    : diffPreview > 0
-                      ? `${t.shifts.surplus} ${money(diffPreview, currency)}`
-                      : `${t.shifts.shortage} ${money(-diffPreview, currency)}`}
-                </div>
-              )}
+              {/* No live variance: the count has to be the cashier's own
+                  reading of the drawer, not a number nudged until the banner
+                  turns green. The result appears once the server has stored
+                  it (SHIFT-003). */}
+              <p className="rounded-lg bg-muted/50 p-2 text-center text-xs text-muted-foreground">
+                {t.shifts.blindCountHint}
+              </p>
 
               <div className="space-y-2">
                 <Label>{t.shifts.notes}</Label>

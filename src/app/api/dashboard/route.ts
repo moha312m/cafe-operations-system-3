@@ -2,9 +2,10 @@ import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { requirePermission, resolveCafeId, handleApiError, ApiError } from "@/lib/api";
 import { hasPermission } from "@/lib/permissions";
-import { productCost, profitFor } from "@/lib/costing";
+import { configurationFinancials } from "@/lib/recipes";
 import { resolvePermissions } from "@/lib/perms/effective";
 import { getCafeSettings } from "@/lib/cafe-settings";
+import { periodFinancials, salesByStaff, refundsByActor } from "@/lib/reporting";
 import {
   getDateRangeFromFilter, dayListForRange, dateStrInTz, DEFAULT_TZ,
 } from "@/lib/date-range";
@@ -42,25 +43,34 @@ async function buildRecipeSummary(role: string, cafeId: string) {
   const products = await db.product.findMany({
     where: { cafeId, isActive: true },
     select: {
+      id: true,
       name: true,
       basePrice: true,
-      recipeItems: {
-        include: { inventoryItem: { select: { unit: true, costPerUnit: true } } },
-      },
+      variants: { where: { isActive: true }, orderBy: [{ sortOrder: "asc" }, { price: "asc" }] },
     },
   });
   let withoutRecipe = 0;
   let lowMargin = 0;
   let top: { name: string; profit: number; margin: number } | null = null;
   for (const p of products) {
-    if (p.recipeItems.length === 0) {
-      withoutRecipe++;
-      continue;
+    const configurations = p.variants.length > 0 ? p.variants : [null];
+    for (const variant of configurations) {
+      const financials = await configurationFinancials({
+        productId: p.id,
+        variantId: variant?.id ?? null,
+        sellingPrice: Number(variant?.price ?? p.basePrice),
+      });
+      if (financials.costStatus !== "AVAILABLE") {
+        withoutRecipe++;
+        continue;
+      }
+      const { profit, margin, tier } = financials;
+      if (tier === "loss") lowMargin++;
+      const name = variant ? `${p.name} — ${variant.name}` : p.name;
+      if (profit !== null && margin !== null && (!top || profit > top.profit)) {
+        top = { name, profit, margin };
+      }
     }
-    const cost = productCost(p.recipeItems);
-    const { profit, margin, tier } = profitFor(Number(p.basePrice), cost, true);
-    if (tier === "loss") lowMargin++;
-    if (!top || profit > top.profit) top = { name: p.name, profit, margin };
   }
   return { withoutRecipe, lowMargin, topProduct: top };
 }
@@ -86,11 +96,20 @@ export async function GET(request: NextRequest) {
     const period = { gte: from, lte: to };
     const servedInPeriod = { cafeId, ...branchFilter, status: "SERVED" as const, createdAt: period };
 
+    // Shared financial definitions, so this screen and the daily report
+    // cannot disagree about the same day.
+    const scope = { cafeId, branchId, period };
+    const [financials, staffSales, refundActors] = await Promise.all([
+      periodFinancials(scope),
+      salesByStaff(scope),
+      refundsByActor(scope),
+    ]);
+
     const [
       servedAgg, prevServedAgg, allOrdersCount, cancelledCount, openOrders,
       periodOrders, topItems, leastItems, branches, inventoryItems,
       openShiftsCount, closedShiftsCount, cashPeriodAgg, paymentSplitRows,
-      salesByBranch, cashiersRows, sourceRows, collectionRows,
+      salesByBranch, sourceRows, collectionRows,
       recentOrders, recentShifts, latestClosed, pendingOrdersRows,
     ] = await Promise.all([
       db.order.aggregate({
@@ -137,25 +156,18 @@ export async function GET(request: NextRequest) {
       // Shifts CLOSED within the window (by closedAt) — the "closed today" metric.
       db.shift.count({ where: { cafeId, ...branchFilter, status: "CLOSED", closedAt: period } }),
       db.payment.aggregate({
-        where: { cafeId, order: branchFilter, status: "PAID", method: "CASH", createdAt: period },
+        where: { cafeId, order: branchFilter, type: "COLLECTION", status: "PAID", method: "CASH", createdAt: period },
         _sum: { amount: true },
       }),
       db.payment.groupBy({
         by: ["method"],
-        where: { cafeId, order: branchFilter, status: "PAID", createdAt: period },
+        where: { cafeId, order: branchFilter, type: "COLLECTION", status: "PAID", createdAt: period },
         _sum: { amount: true },
       }),
       db.order.groupBy({
         by: ["branchId"],
         where: { cafeId, ...branchFilter, status: "SERVED", createdAt: period },
         _sum: { total: true },
-      }),
-      db.payment.groupBy({
-        by: ["cashierId"],
-        where: { cafeId, order: branchFilter, status: "PAID", createdAt: period, cashierId: { not: null } },
-        _sum: { amount: true },
-        orderBy: { _sum: { amount: "desc" } },
-        take: 5,
       }),
       db.order.groupBy({
         by: ["source"],
@@ -215,11 +227,6 @@ export async function GET(request: NextRequest) {
       }),
     ]);
 
-    const cashierIds = cashiersRows.map((r) => r.cashierId).filter(Boolean) as string[];
-    const cashierUsers = cashierIds.length
-      ? await db.user.findMany({ where: { id: { in: cashierIds } }, select: { id: true, name: true } })
-      : [];
-    const cashierName = new Map(cashierUsers.map((u) => [u.id, u.name]));
     const branchName = new Map(branches.map((b) => [b.id, b.name]));
 
     // Inventory alerts + a short low-stock list.
@@ -267,9 +274,12 @@ export async function GET(request: NextRequest) {
       .sort((a, b) => b.value - a.value);
     const topProducts = topItems.map((t) => ({ name: t.productName, quantity: t._sum.quantity ?? 0, revenue: Number(t._sum.lineTotal ?? 0) }));
     const leastProducts = leastItems.map((t) => ({ name: t.productName, quantity: t._sum.quantity ?? 0, revenue: Number(t._sum.lineTotal ?? 0) }));
-    const topCashiers = cashiersRows
-      .filter((r) => r.cashierId)
-      .map((r) => ({ name: cashierName.get(r.cashierId!) ?? "—", value: Number(r._sum.amount ?? 0) }));
+    // Selling performance comes from the order side, attributed to whoever
+    // made the sale. Deriving it from payment rows made a refund look like
+    // negative sales for whoever handed the money back (REFUND-001).
+    const topCashiers = staffSales
+      .slice(0, 5)
+      .map((s) => ({ name: s.name, value: s.netSales }));
 
     return NextResponse.json({
       range: win.range,
@@ -286,6 +296,11 @@ export async function GET(request: NextRequest) {
       openShifts: openShiftsCount,
       closedShiftsToday: closedShiftsCount,
       netCash: Number(cashPeriodAgg._sum.amount ?? 0),
+      // Gross Sales / Refunds / Net Sales / Collections — identical
+      // definitions to the daily report, from the same helper.
+      financials,
+      salesByStaff: staffSales,
+      refundsByActor: refundActors,
       taxTotal: Number(servedAgg._sum.taxAmount ?? 0),
       serviceTotal: Number(servedAgg._sum.serviceChargeAmount ?? 0),
       uncollectedTotal: Math.round(uncollectedTotal * 100) / 100,

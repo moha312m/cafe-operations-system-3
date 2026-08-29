@@ -72,6 +72,62 @@ export type RecipeRow = {
   inventoryItem: { unit: InventoryUnit; costPerUnit: Num };
 };
 
+// Reasons a recipe cannot be trusted. Shared with the recipe gate so a screen
+// can say what is actually wrong instead of "invalid".
+export enum RecipeIssue {
+  MISSING_RECIPE = "MISSING_RECIPE",
+  MISSING_VARIANT_RECIPE = "MISSING_VARIANT_RECIPE",
+  MISSING_ADDON_RECIPE = "MISSING_ADDON_RECIPE",
+  INCOMPATIBLE_UNIT = "INCOMPATIBLE_UNIT",
+  INVALID_QUANTITY = "INVALID_QUANTITY",
+  MISSING_COST = "MISSING_COST",
+  INACTIVE_INGREDIENT = "INACTIVE_INGREDIENT",
+  NO_INGREDIENTS = "NO_INGREDIENTS",
+  NOT_CONFIRMED = "NOT_CONFIRMED",
+  STALE_CONFIRMATION = "STALE_CONFIRMATION",
+}
+
+export type StrictCost =
+  | { ok: true; total: number; issues: [] }
+  | { ok: false; total: null; issues: RecipeIssue[] };
+
+// Cost of a recipe, or an explicit refusal.
+//
+// `productCost` below skips a row whose unit cannot be converted, which makes
+// a broken ingredient contribute 0 and the product look cheaper than it is.
+// That is tolerable for a display that has always behaved that way; it is not
+// tolerable as an input to verification or to money charged against a person.
+// This variant reports why it cannot answer instead of inventing a number.
+export function productCostStrict(recipe: RecipeRow[]): StrictCost {
+  const issues = new Set<RecipeIssue>();
+  if (recipe.length === 0) issues.add(RecipeIssue.NO_INGREDIENTS);
+
+  let total = 0;
+  for (const r of recipe) {
+    const qty = Number(r.quantity);
+    if (!Number.isFinite(qty) || qty <= 0) issues.add(RecipeIssue.INVALID_QUANTITY);
+    if (!unitsCompatible(r.unit, r.inventoryItem.unit)) {
+      issues.add(RecipeIssue.INCOMPATIBLE_UNIT);
+      continue;
+    }
+    const cost = Number(r.inventoryItem.costPerUnit);
+    if (!Number.isFinite(cost) || cost <= 0) {
+      issues.add(RecipeIssue.MISSING_COST);
+      continue;
+    }
+    total += ingredientCost({
+      quantity: qty,
+      recipeUnit: r.unit,
+      itemUnit: r.inventoryItem.unit,
+      costPerUnit: cost,
+      wastePercentage: Number(r.wastePercentage ?? 0),
+    });
+  }
+
+  if (issues.size > 0) return { ok: false, total: null, issues: [...issues] };
+  return { ok: true, total: round2(total), issues: [] };
+}
+
 export function productCost(recipe: RecipeRow[]): number {
   let total = 0;
   for (const r of recipe) {
