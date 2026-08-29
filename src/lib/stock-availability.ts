@@ -51,7 +51,14 @@
 
 import { db } from "@/lib/db";
 import { round3, RecipeIssue } from "@/lib/costing";
-import { theoreticalConsumption } from "@/lib/recipes";
+import {
+  theoreticalConsumption,
+  loadRecipeIndex,
+  mergeConsumption,
+  resolveAddOnRecipeFrom,
+  resolveEffectiveRecipeFrom,
+  type Consumption,
+} from "@/lib/recipes";
 import { UNIT_LABEL } from "@/lib/inventory";
 import {
   allowsKnownShortage,
@@ -59,7 +66,23 @@ import {
   OVERRIDE_SALE_WARNING,
   type InventoryEnforcementMode,
 } from "@/lib/inventory-policy";
-import type { InventoryUnit } from "@prisma/client";
+import {
+  countUncommittedOpenOrders,
+  lockBranchItems,
+  persistOrderCommitments,
+  readBranchFreeQuantities,
+  type CommitmentLine,
+  type FreeQuantity,
+} from "@/lib/inventory-commitment";
+import type {
+  AddOnRequirement,
+  AvailabilityState,
+  BranchAvailability,
+  ConfigurationRequirement,
+  IngredientSlot,
+  Requirement,
+} from "@/lib/available-to-sell";
+import type { Prisma, PrismaClient, InventoryUnit } from "@prisma/client";
 
 /** One thing the cart is asking the branch to make. */
 export type AvailabilityLine = {
@@ -116,7 +139,16 @@ export type Demand = {
   name: string;
   unit: InventoryUnit;
   required: number;
+  /**
+   * What a NEW sale may draw on: the shelf balance less what accepted orders
+   * have already promised. This is the figure the refusal message quotes,
+   * because it is the one the cashier can actually act on — "the freezer has
+   * a kilo" is no use when the kilo is already spoken for.
+   */
   available: number;
+  /** The two halves of `available`, kept for the audit row and diagnostics. */
+  currentStock: number;
+  committed: number;
   /** Every cart line that contributed, for the message and for diagnostics. */
   labels: string[];
 };
@@ -164,7 +196,19 @@ export type AvailabilityVerdict = {
  * also merges the cases that reach the same ingredient by different routes —
  * base recipe and add-on, two sizes of the same drink, two separate lines.
  *
- * Writes nothing. Locks nothing.
+ * ── Two callers, one calculator ──
+ *
+ * By default this writes nothing and locks nothing: it is the read the POS
+ * makes before an order exists, and locking every ingredient row for the
+ * length of a user-facing request would serialise the café behind the slowest
+ * cashier while still holding nothing after the response was sent.
+ *
+ * Pass `client` + `lock` and the SAME function becomes the authoritative
+ * check inside order creation: it takes the branch rows FOR UPDATE, re-reads
+ * stock and live commitments underneath those locks, and returns a verdict
+ * the caller can persist a commitment against. Two implementations — a
+ * friendly one for the screen and a strict one for the transaction — is
+ * exactly how a POS comes to promise what the till then refuses.
  */
 export async function checkCartAvailability(args: {
   cafeId: string;
@@ -172,7 +216,12 @@ export async function checkCartAvailability(args: {
   /** The café's persisted policy. Never taken from a request body. */
   mode: InventoryEnforcementMode;
   lines: AvailabilityLine[];
+  /** Run inside a caller's transaction, so the answer can be acted on. */
+  client?: Prisma.TransactionClient | PrismaClient;
+  /** Take the branch rows FOR UPDATE first. Requires an interactive `client`. */
+  lock?: boolean;
 }): Promise<AvailabilityVerdict> {
+  const client = args.client ?? db;
   const refusals: Refusal[] = [];
   const unresolvedConsumption: UnresolvedConsumption[] = [];
 
@@ -190,6 +239,7 @@ export async function checkCartAvailability(args: {
       variantId: line.variantId,
       addOnIds: line.addOnIds,
       quantity: line.quantity,
+      client,
     });
 
     const blocking = consumption.issues.filter((i) => UNRESOLVABLE.has(i));
@@ -235,21 +285,39 @@ export async function checkCartAvailability(args: {
   const demand: Demand[] = [];
 
   if (cafeDemand.size > 0) {
-    const cafeItems = await db.inventoryItem.findMany({
+    const cafeItems = await client.inventoryItem.findMany({
       where: { id: { in: [...cafeDemand.keys()] }, cafeId: args.cafeId },
       select: { id: true, name: true, unit: true },
     });
 
+    // ── Take the locks BEFORE reading the balances ──
+    // In lock mode the whole point is that the numbers cannot move between
+    // being read and being acted on, so the rows this cart touches are
+    // resolved by name+unit first, locked, and only then measured. The lock
+    // set is the cart's own ingredients, never the branch's whole store: a
+    // milkshake order must not stop an espresso order.
+    if (args.lock && args.client && cafeItems.length > 0) {
+      const targets = await args.client.inventoryItem.findMany({
+        where: {
+          cafeId: args.cafeId,
+          branchId: args.branchId,
+          archivedAt: null,
+          OR: cafeItems.map((i) => ({ name: i.name, unit: i.unit })),
+        },
+        select: { id: true },
+      });
+      await lockBranchItems(
+        args.client as Prisma.TransactionClient,
+        targets.map((t) => t.id)
+      );
+    }
+
+    // Free quantity, not shelf balance: an accepted order that has not been
+    // deducted yet has already spent its ingredients, and a check that
+    // ignored that would let the branch sell the same last portion twice.
+    // One statement, so the balance and the commitments describe one instant.
     const branchRows = cafeItems.length
-      ? await db.inventoryItem.findMany({
-          where: {
-            cafeId: args.cafeId,
-            branchId: args.branchId,
-            archivedAt: null,
-            OR: cafeItems.map((i) => ({ name: i.name, unit: i.unit })),
-          },
-          select: { id: true, name: true, unit: true, currentStock: true },
-        })
+      ? await readBranchFreeQuantities(client, args.cafeId, args.branchId)
       : [];
     const byKey = new Map(branchRows.map((r) => [`${r.name}|${r.unit}`, r]));
 
@@ -286,17 +354,19 @@ export async function checkCartAvailability(args: {
         continue;
       }
 
-      const cur = perBranchRow.get(branchRow.id);
+      const cur = perBranchRow.get(branchRow.inventoryItemId);
       if (cur) {
         cur.required = round3(cur.required + want.qty);
         for (const l of want.labels) if (!cur.labels.includes(l)) cur.labels.push(l);
       } else {
-        perBranchRow.set(branchRow.id, {
-          inventoryItemId: branchRow.id,
+        perBranchRow.set(branchRow.inventoryItemId, {
+          inventoryItemId: branchRow.inventoryItemId,
           name: branchRow.name,
           unit: branchRow.unit,
           required: round3(want.qty),
-          available: round3(Number(branchRow.currentStock)),
+          available: branchRow.free,
+          currentStock: branchRow.currentStock,
+          committed: branchRow.committed,
           labels: [...want.labels],
         });
       }
@@ -456,4 +526,276 @@ function issueLabel(issue: RecipeIssue): string {
     default:
       return issue;
   }
+}
+
+// ── The POS availability board ───────────────────────────────────────
+//
+// Everything above answers "may this cart be sold". This answers the other
+// half of the feature: for every sellable configuration on the menu, how many
+// more could this branch make.
+//
+// The shape of the load is the design. A café has dozens of products and most
+// of them have sizes, so a per-card question is not a slower version of the
+// right answer — it is a different one that falls over at the counter. So:
+//
+//   one query   the branch's stock with its live commitments netted off
+//   one query   how many open orders predate the commitment ledger
+//   two queries the menu (products with their sizes and add-ons)
+//   two queries every recipe in the café, and the per-product size counts
+//
+// and then the SAME resolution and merge that `theoreticalConsumption` uses,
+// applied in memory. Not a bulk re-implementation of it: `mergeConsumption`
+// and `chooseEffectiveRecipe` are the very functions the per-order path calls,
+// reached through an index rather than through three queries per
+// configuration. A second calculator written for speed is how a board comes
+// to promise a drink the till then refuses.
+//
+// Nothing here is cached. Availability changes on every sale, every delivery,
+// every cancellation and every recipe edit; a menu-shaped cache would serve a
+// number that was true when the shift started.
+
+/** Aggregate demand per branch slot for one resolved consumption. */
+function requirementsFor(
+  consumption: Consumption,
+  slotOf: Map<string, number>
+): { requirements: Requirement[]; missing: string[] } {
+  const perSlot = new Map<number, number>();
+  const missing: string[] = [];
+
+  for (const line of consumption.lines) {
+    // Recipes name café-level ingredients; the shelf that empties belongs to
+    // one branch, and the match is by name+unit — the identical rule the
+    // deduction uses, so the board counts what the deduction will remove.
+    const slot = slotOf.get(`${line.name}|${line.stockUnit}`);
+    if (slot === undefined) {
+      if (!missing.includes(line.name)) missing.push(line.name);
+      continue;
+    }
+    perSlot.set(slot, round3((perSlot.get(slot) ?? 0) + line.quantityInStockUnit));
+  }
+
+  return {
+    requirements: [...perSlot.entries()].sort((a, b) => a[0] - b[0]),
+    missing,
+  };
+}
+
+/**
+ * The state of one consumption before any arithmetic.
+ *
+ * The order is the café's own order of seriousness, and it is why these are
+ * four answers rather than one number with caveats. An unreadable draw is not
+ * a shortage — nobody has written down what the cup takes, so there is no
+ * quantity to be short of. A branch that has never carried an ingredient is
+ * not out of it either. Only when neither applies is there a count.
+ */
+function stateFor(
+  consumption: Consumption,
+  requirements: Requirement[],
+  missing: string[]
+): AvailabilityState {
+  const unreadable = consumption.issues.filter((i) => UNRESOLVABLE.has(i));
+  if (unreadable.length > 0) return "UNKNOWN";
+  if (missing.length > 0) return "NOT_STOCKED";
+  if (requirements.length === 0) return "NOT_STOCK_TRACKED";
+  return "EXACT";
+}
+
+/** Blocking issues only — a missing PRICE is not a missing quantity. */
+function unreadableIssues(consumption: Consumption): string[] {
+  return consumption.issues.filter((i) => UNRESOLVABLE.has(i));
+}
+
+/** A stable identity for a requirement vector, so sizes can be compared. */
+const vectorKey = (r: Requirement[]) => r.map(([s, q]) => `${s}:${q}`).join(",");
+
+export async function branchAvailability(args: {
+  cafeId: string;
+  branchId: string;
+  mode: InventoryEnforcementMode;
+}): Promise<BranchAvailability> {
+  const [free, uncertainOpenOrders, products, addOnRows, index] = await Promise.all([
+    readBranchFreeQuantities(db, args.cafeId, args.branchId),
+    countUncommittedOpenOrders(db, args.branchId),
+    db.product.findMany({
+      where: { cafeId: args.cafeId, isActive: true },
+      select: {
+        id: true,
+        variants: { where: { isActive: true }, select: { id: true }, orderBy: { sortOrder: "asc" } },
+      },
+      orderBy: { sortOrder: "asc" },
+    }),
+    db.addOn.findMany({
+      where: { cafeId: args.cafeId, isActive: true },
+      select: { id: true },
+    }),
+    loadRecipeIndex(args.cafeId),
+  ]);
+
+  const ingredients: IngredientSlot[] = free.map((f) => ({
+    name: f.name,
+    unit: f.unit,
+    free: f.free,
+  }));
+  const slotOf = new Map(free.map((f, i) => [`${f.name}|${f.unit}`, i]));
+
+  const describe = (consumption: Consumption) => {
+    const { requirements, missing } = requirementsFor(consumption, slotOf);
+    return {
+      state: stateFor(consumption, requirements, missing),
+      requirements,
+      missing,
+      issues: unreadableIssues(consumption),
+    };
+  };
+
+  const configurationOf = (productId: string, variantId: string | null) =>
+    describe(
+      mergeConsumption(resolveEffectiveRecipeFrom(index, productId, variantId), [], 1)
+    );
+
+  const configurations: ConfigurationRequirement[] = [];
+
+  for (const p of products) {
+    if (p.variants.length === 0) {
+      configurations.push({ productId: p.id, variantId: null, ...configurationOf(p.id, null) });
+      continue;
+    }
+
+    const sized = p.variants.map((v) => ({
+      ...configurationOf(p.id, v.id),
+      variantId: v.id,
+    }));
+    for (const s of sized) {
+      configurations.push({ productId: p.id, ...s });
+    }
+
+    // The product-level entry, for a card whose size has not been chosen yet.
+    //
+    // When every size draws identically — which is what a product default
+    // declared to cover all variants means — that IS the product's count and
+    // showing it is honest. When they differ there is no single true number,
+    // and picking either size's would be a lie about the other, so the card
+    // is told to defer to the sizes and given their spread instead.
+    const uniform =
+      sized.every((s) => s.state === sized[0].state) &&
+      new Set(sized.map((s) => vectorKey(s.requirements))).size === 1;
+
+    configurations.push(
+      uniform
+        ? {
+            productId: p.id,
+            variantId: null,
+            state: sized[0].state,
+            requirements: sized[0].requirements,
+            missing: sized[0].missing,
+            issues: sized[0].issues,
+          }
+        : {
+            productId: p.id,
+            variantId: null,
+            state: "PER_VARIANT",
+            requirements: [],
+            missing: [...new Set(sized.flatMap((s) => s.missing))],
+            issues: [...new Set(sized.flatMap((s) => s.issues))],
+          }
+    );
+  }
+
+  const addOns: AddOnRequirement[] = addOnRows.map((a) => ({
+    addOnId: a.id,
+    ...describe(mergeConsumption(resolveAddOnRecipeFrom(index, a.id), [], 1)),
+  }));
+
+  return {
+    branchId: args.branchId,
+    mode: args.mode,
+    generatedAt: new Date().toISOString(),
+    uncertainOpenOrders,
+    ingredients,
+    configurations,
+    addOns,
+  };
+}
+
+/**
+ * The commitment rows implied by a verdict, ready to persist.
+ *
+ * Taken from `knownConsumption` rather than recomputed, so what is recorded is
+ * exactly the figure the policy decision was made against. Nothing is written
+ * for a consumption that could not be read: the absence IS the honest record,
+ * and a zero row would later read as "measured and found to be nothing".
+ */
+export function commitmentLinesFor(verdict: AvailabilityVerdict): CommitmentLine[] {
+  return verdict.knownConsumption
+    .filter((d) => d.required > 0)
+    .map((d) => ({
+      inventoryItemId: d.inventoryItemId,
+      quantity: d.required,
+      unit: d.unit,
+    }));
+}
+
+export type { FreeQuantity };
+
+/**
+ * Snapshot an already-accepted order's consumption, from its own item rows.
+ *
+ * The till path builds its lines from a validated cart and blocks on the
+ * verdict; a QR order does not go through a till. It is accepted either by a
+ * branch that routes without approval or by the person who taps approve, and
+ * in both cases the decision has already been taken — the customer has been
+ * told yes. So this records what the order will consume and does NOT enforce:
+ * refusing here would reject an order that has already been accepted, which
+ * is a different feature and one nobody asked for.
+ *
+ * What it must not do is leave the order unaccounted for. Without a snapshot
+ * a QR order would be indistinguishable from a pre-ledger legacy one, and
+ * would sit in the branch's "uncertain" count until it finalised while its
+ * ingredients quietly stayed available to the till.
+ *
+ * Runs inside the caller's transaction, behind the same row locks the till
+ * takes, so two acceptances cannot race each other.
+ */
+export async function commitOrderConsumption(
+  tx: Prisma.TransactionClient,
+  order: {
+    id: string;
+    cafeId: string;
+    branchId: string;
+    inventoryEnforcementMode: InventoryEnforcementMode;
+  }
+): Promise<AvailabilityVerdict> {
+  const items = await tx.orderItem.findMany({
+    where: { orderId: order.id },
+    select: {
+      productId: true, variantId: true, productName: true, variantName: true,
+      quantity: true, addOns: { select: { addOnId: true } },
+    },
+  });
+
+  const verdict = await checkCartAvailability({
+    cafeId: order.cafeId,
+    branchId: order.branchId,
+    mode: order.inventoryEnforcementMode,
+    client: tx,
+    lock: true,
+    lines: items
+      .filter((i): i is typeof i & { productId: string } => Boolean(i.productId))
+      .map((i) => ({
+        productId: i.productId,
+        variantId: i.variantId ?? null,
+        addOnIds: i.addOns.map((a) => a.addOnId).filter((id): id is string => Boolean(id)),
+        quantity: i.quantity,
+        label: i.variantName ? `${i.productName} (${i.variantName})` : i.productName,
+      })),
+  });
+
+  await persistOrderCommitments(tx, {
+    orderId: order.id,
+    cafeId: order.cafeId,
+    branchId: order.branchId,
+    lines: commitmentLinesFor(verdict),
+  });
+  return verdict;
 }
