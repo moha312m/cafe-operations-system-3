@@ -13,7 +13,7 @@
 // which people click through, but the consequence stated where the choice is
 // made.
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/client";
 import { Button } from "@/components/ui/button";
@@ -31,17 +31,25 @@ export function InventoryPolicyCard() {
   const [choice, setChoice] = useState<InventoryEnforcementMode | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const load = useCallback(async () => {
-    try {
-      const r = await api<{ mode: InventoryEnforcementMode }>("/api/cafe/inventory-policy");
-      setSaved(r.mode);
-      setChoice(r.mode);
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "فشل تحميل سياسة المخزون");
-    }
+  // The saved policy is fetched once, on mount, and the state lands in the
+  // promise's callback rather than in the effect body. That is the shape the
+  // effect rule asks for — the effect subscribes to an external system and
+  // sets state when it answers — and `cancelled` is what keeps a card the
+  // owner has already navigated away from from writing into a dead tree.
+  useEffect(() => {
+    let cancelled = false;
+    api<{ mode: InventoryEnforcementMode }>("/api/cafe/inventory-policy")
+      .then((r) => {
+        if (cancelled) return;
+        setSaved(r.mode);
+        setChoice(r.mode);
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        toast.error(e instanceof Error ? e.message : "فشل تحميل سياسة المخزون");
+      });
+    return () => { cancelled = true; };
   }, []);
-
-  useEffect(() => { void load(); }, [load]);
 
   async function save() {
     if (!choice || choice === saved) return;
