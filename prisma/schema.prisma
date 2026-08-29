@@ -174,8 +174,10 @@ model Cafe {
   currency  String   @default("USD")
   taxRate   Decimal  @default(0) @db.Decimal(5, 2) // percent, e.g. 14.00
   isActive  Boolean  @default(true) // false = suspended by the platform owner
-  // Allow serving orders even if an ingredient goes below zero. Default
-  // off: serving is blocked when stock is insufficient.
+  /// DEPRECATED — superseded by CafeSettings.inventoryEnforcementMode, which
+  /// is the authoritative policy. Kept only so the migration that replaced it
+  /// is non-destructive; nothing in src/ reads it (POLICY-005 pins that by
+  /// scanning the source tree). Dropping it is a separate approved migration.
   allowNegativeStock Boolean @default(false)
 
   // Platform suspension audit (set when isActive is flipped off).
@@ -226,6 +228,26 @@ model Cafe {
 // Per-cafe module flags + workflow, controlled ONLY by SUPER_ADMIN.
 // One row per cafe (created with defaults on demand). Cafe owners/staff
 // can use enabled features but can never flip a flag themselves.
+/// How hard the café enforces inventory and recipe completeness at the till.
+///
+/// A boolean answered only "may stock go below zero". Three behaviours are
+/// needed, and the distinction the boolean could not express is the one that
+/// matters: going below a balance we CAN compute is a different risk from
+/// selling against a recipe nobody has written. An owner may reasonably accept
+/// the first without the second.
+enum InventoryEnforcementMode {
+  /// Refuse anything we cannot make: shortages and unreadable recipes alike.
+  STRICT
+  /// A KNOWN quantity shortage is the owner's call and may go negative. The
+  /// recipe must still be readable — negative stock is permission to go below
+  /// a number, not permission to sell an unknown draw on the shelf.
+  ALLOW_NEGATIVE_STOCK
+  /// Sell regardless, and be honest about it: what resolves is still deducted,
+  /// what does not is recorded as untracked rather than invented, and the sale
+  /// carries a warning and an audit row.
+  OVERRIDE_ALL
+}
+
 model CafeSettings {
   id     String @id @default(cuid())
   cafeId String @unique
@@ -253,6 +275,13 @@ model CafeSettings {
   // DELIVERY is deliberately not configurable yet and stays payment-first.
   dineInServingPolicy   ServingPaymentPolicy @default(ALLOW_BEFORE_PAYMENT)
   takeawayServingPolicy ServingPaymentPolicy @default(REQUIRE_PAYMENT_FIRST)
+
+  /// Inventory & recipe enforcement. The DEFAULT is what a NEW café gets;
+  /// the migration maps every EXISTING café from the old
+  /// `Cafe.allowNegativeStock` boolean (false -> STRICT, true ->
+  /// ALLOW_NEGATIVE_STOCK), so no café's behaviour changes and none is
+  /// silently promoted to OVERRIDE_ALL.
+  inventoryEnforcementMode InventoryEnforcementMode @default(STRICT)
 
   // Count configuration. The DEFAULTs are what a NEW café gets; the
   // migration pins every EXISTING café to NO_SHIFT_COUNT, so no shop is
