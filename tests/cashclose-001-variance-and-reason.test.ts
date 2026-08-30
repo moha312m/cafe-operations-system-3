@@ -149,10 +149,26 @@ type CloseBody = {
   error?: string;
 };
 
+/**
+ * T34 adaptation, and the ONLY change this suite needed for it.
+ *
+ * The drawer above deliberately collects 700 on card and 300 on wallet, so
+ * both processor channels are ACTIVE — and T34 will not mark a shift CLOSED
+ * while a channel it took money on is unreconciled. Those two figures are
+ * defaulted to their exact expected amounts so every assertion below is about
+ * CASH and nothing else, exactly as it was before T34 existed.
+ *
+ * Nothing about the cash rules moved: not the arithmetic, not the reason
+ * requirement, not the case, not the audit, not the absence of a tolerance.
+ * The request simply now also states what the acquirer and the wallet
+ * provider settled, which is the point of T34. A caller that wants a tender
+ * difference overrides these; no test in this file does, because a tender
+ * difference is TENDER-001's subject, not this suite's.
+ */
 const close = (email: string, shiftId: string, body: Record<string, unknown>) =>
   as<CloseBody>(email, `/api/shifts/${shiftId}/close`, {
     method: "POST",
-    body: JSON.stringify(body),
+    body: JSON.stringify({ actualCardAmount: 700, actualWalletAmount: 300, ...body }),
   });
 
 const shiftRow = (id: string) => db.shift.findUniqueOrThrow({ where: { id } });
@@ -646,15 +662,35 @@ describe("CASHCLOSE-001 — cash variance is recorded as a fact", () => {
       "expected cash is opening + net CASH only — card and wallet never entered the drawer"
     );
 
-    assert.deepEqual(
-      await db.tenderReconciliation.findMany({ where: { shiftId: d.shiftId } }),
-      [],
-      "T33 opens no settlement channel — that is T34"
-    );
+    // This assertion used to read "T33 opens no settlement channel — that is
+    // T34", and T34 is now here: the channels ARE settled by the close, with
+    // the exact figures this suite's `close` helper supplies. What the
+    // assertion was really protecting is unchanged and is stated directly
+    // below — a cash close does not invent a tender DIFFERENCE, and the
+    // drawer's own numbers above are computed without reference to either
+    // channel.
+    const settlements = await db.tenderReconciliation.findMany({
+      where: { shiftId: d.shiftId },
+      orderBy: { method: "asc" },
+    });
+    assert.equal(settlements.length, 2, "card and wallet settle alongside the drawer");
+    for (const s of settlements) {
+      assert.equal(
+        Number(s.varianceAmount),
+        0,
+        "an exactly-settled channel differs by nothing, whatever the drawer did"
+      );
+      assert.equal(s.reasonNote, null, "and is asked to explain nothing");
+    }
+
     const nonCash = await db.varianceCase.findMany({
       where: { shiftId: d.shiftId, type: { not: "CASH" } },
     });
-    assert.deepEqual(nonCash, [], "and raises no TENDER case");
+    assert.deepEqual(
+      nonCash,
+      [],
+      "a 30 EGP cash shortage raises no TENDER case — the tenders are accounted separately"
+    );
   });
 
   // ─────────────────────── permissions and tenancy ───────────────────

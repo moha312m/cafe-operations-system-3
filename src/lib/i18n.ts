@@ -245,6 +245,17 @@ export const t = {
     // not know yet whether there IS a difference, so the field cannot be
     // demanded up front without revealing the target it exists to withhold.
     varianceReasonHint: "لو الكاش المعدود مختلف عن المتوقع، لازم تكتب السبب.",
+    // T34 — the two channels that never reach the drawer. Each is asked for
+    // separately, and explained separately: a rejected card authorisation and
+    // a pending wallet transfer are different events with different
+    // counterparties, and one shared box would let a sentence about one stand
+    // as the explanation for the other.
+    settlementHeading: "تسوية الفيزا والمحافظ",
+    settlementHint: "اكتب المبلغ اللي المزود سوّاه فعليًا من تقرير التسوية.",
+    actualCardSettled: "المبلغ المسوّى من الفيزا",
+    actualWalletSettled: "المبلغ المسوّى من المحفظة",
+    cardVarianceReason: "سبب فرق الفيزا (لو فيه فرق)",
+    walletVarianceReason: "سبب فرق المحفظة (لو فيه فرق)",
     difference: "الفرق",
     totalSales: "إجمالي المبيعات",
     cashSales: "مبيعات الكاش",

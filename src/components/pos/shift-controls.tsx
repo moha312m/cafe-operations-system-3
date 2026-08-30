@@ -57,6 +57,15 @@ export function ShiftControls({
   const [actualCash, setActualCash] = useState("");
   const [notes, setNotes] = useState("");
   const [varianceReason, setVarianceReason] = useState("");
+  // T34 — one settlement figure and one reason per processor channel. Kept as
+  // four separate pieces of state rather than one "settlement" object because
+  // that is what they are: two independent reconciliations that happen to be
+  // collected on the same screen, and merging them here is the first step
+  // towards netting them in the request.
+  const [actualCard, setActualCard] = useState("");
+  const [cardReason, setCardReason] = useState("");
+  const [actualWallet, setActualWallet] = useState("");
+  const [walletReason, setWalletReason] = useState("");
   const [busy, setBusy] = useState(false);
 
   const setActive = useCallback(
@@ -119,6 +128,11 @@ export function ShiftControls({
     }
     setActualCash("");
     setNotes("");
+    setActualCard("");
+    setCardReason("");
+    setActualWallet("");
+    setWalletReason("");
+    setVarianceReason("");
     setCloseDialog(true);
   }
 
@@ -136,6 +150,16 @@ export function ShiftControls({
           body: {
             actualCashAmount: Number(actualCash) || 0,
             reason: varianceReason.trim() || undefined,
+            // Sent only when the closer actually typed something. An empty
+            // box must stay `undefined` rather than becoming 0: the server
+            // treats a supplied 0 as an affirmative "the provider settled
+            // nothing", which is a different statement from "this channel was
+            // not settled here" and, on a channel that took money, a
+            // fabricated report.
+            actualCardAmount: actualCard === "" ? undefined : Number(actualCard),
+            cardReason: cardReason.trim() || undefined,
+            actualWalletAmount: actualWallet === "" ? undefined : Number(actualWallet),
+            walletReason: walletReason.trim() || undefined,
             notes: notes.trim() || undefined,
           },
         }
@@ -296,6 +320,80 @@ export function ShiftControls({
                 </p>
               </div>
 
+              {/* T34 — the channels that never reach the drawer.
+                  Shown per channel, and ONLY when that channel took money
+                  this shift: a café that never accepted a wallet payment is
+                  not asked what its wallet provider settled, and a zero typed
+                  into a box for a terminal nobody owns would be a provider
+                  report that was never read.
+
+                  The two are laid out as two blocks, not one "electronic
+                  settlement" total, because they settle with two different
+                  counterparties on two different schedules — and a single
+                  combined figure would let a card shortfall hide inside a
+                  wallet surplus, which is the exact failure the server-side
+                  rule refuses to allow. */}
+              {(Number(shift.totalCardSales) !== 0 ||
+                Number(shift.totalWalletSales) !== 0) && (
+                <div className="space-y-3 rounded-lg border p-3">
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium">{t.shifts.settlementHeading}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {t.shifts.settlementHint}
+                    </p>
+                  </div>
+
+                  {Number(shift.totalCardSales) !== 0 && (
+                    <div className="space-y-2">
+                      <Label>{t.shifts.actualCardSettled}</Label>
+                      <Input
+                        type="number"
+                        step="0.01"
+                        dir="ltr"
+                        placeholder="0.00"
+                        value={actualCard}
+                        onChange={(e) => setActualCard(e.target.value)}
+                      />
+                      {/* Offered unconditionally and never pre-filled, the
+                          same treatment the cash reason gets: if it is left
+                          empty and the settlement does not match, the server
+                          refuses and says so, and the figure typed above is
+                          still here to explain. */}
+                      <Label className="text-xs font-normal text-muted-foreground">
+                        {t.shifts.cardVarianceReason}
+                      </Label>
+                      <Textarea
+                        rows={2}
+                        value={cardReason}
+                        onChange={(e) => setCardReason(e.target.value)}
+                      />
+                    </div>
+                  )}
+
+                  {Number(shift.totalWalletSales) !== 0 && (
+                    <div className="space-y-2">
+                      <Label>{t.shifts.actualWalletSettled}</Label>
+                      <Input
+                        type="number"
+                        step="0.01"
+                        dir="ltr"
+                        placeholder="0.00"
+                        value={actualWallet}
+                        onChange={(e) => setActualWallet(e.target.value)}
+                      />
+                      <Label className="text-xs font-normal text-muted-foreground">
+                        {t.shifts.walletVarianceReason}
+                      </Label>
+                      <Textarea
+                        rows={2}
+                        value={walletReason}
+                        onChange={(e) => setWalletReason(e.target.value)}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="space-y-2">
                 <Label>{t.shifts.notes}</Label>
                 <Textarea
@@ -309,7 +407,17 @@ export function ShiftControls({
           <DialogFooter>
             <Button
               className="w-full"
-              disabled={busy || actualCash === ""}
+              // A settlement is required for every channel that took money,
+              // so the button waits for it the same way it waits for the
+              // drawer count. This is convenience, not enforcement — the
+              // server refuses the close on its own figures regardless of
+              // what the client allows to be pressed.
+              disabled={
+                busy ||
+                actualCash === "" ||
+                (Number(shift?.totalCardSales ?? 0) !== 0 && actualCard === "") ||
+                (Number(shift?.totalWalletSales ?? 0) !== 0 && actualWallet === "")
+              }
               onClick={closeShift}
             >
               {t.shifts.closeConfirm}
