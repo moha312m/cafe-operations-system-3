@@ -1,17 +1,31 @@
-// The drawer count becomes a fact, and its evidence commits with it.
+// The shift's money becomes a fact, and its evidence commits with it.
 //
-// T33. Three properties live here that the route could not give on its own.
+// T33 for cash, extended by T34 to the channels that never reach a drawer.
+// Three properties live here that the route could not give on its own.
 //
 // ── ONE ACT ──
 //
 // Closing a shift with a non-zero variance is not one write plus some notes
 // about it. It is: freshen the aggregates, write the close snapshot, open the
-// CASH variance case, link it to the shift, and write both audit rows. The
-// close path used to do those through `db` and `audit` — separate implicit
+// CASH variance case, link it to the shift, write every processor settlement
+// with the cases and audit rows those raise, and write both cash audit rows.
+// The close path used to do those through `db` and `audit` — separate implicit
 // transactions, in an order where the later ones were allowed to disappear,
 // because `audit` swallows. A café whose AuditLog insert failed got a shift
 // that had gone CLOSED 300 EGP short with nothing recording who accepted the
 // count or what the figures were.
+//
+// T34 widens that invariant rather than adding a second one beside it. The
+// card and wallet settlements join THIS transaction (see
+// `lib/tender-settlement`), so a card difference that cannot be announced
+// leaves the drawer unclosed — a shift marked CLOSED asserts that the whole
+// shift was settled, and a partially reconciled close is a worse record than
+// no reconciliation at all.
+//
+// The three tenders are accounted separately and never netted: cash on
+// `Shift`, card and wallet on their own `TenderReconciliation` rows, each with
+// its own reason and its own case. A −20 card shortfall beside a +30 wallet
+// surplus is two findings with two counterparties, not a +10 anything.
 //
 // That is not a missing log line. The close is the moment a named custodian is
 // discharged of money they were holding, and the audit row plus the case ARE
@@ -64,6 +78,12 @@ import { ApiError } from "@/lib/api";
 import { auditInTransaction } from "@/lib/audit";
 import { openVarianceCase } from "@/lib/variance-case";
 import { recomputeShiftTotals } from "@/lib/shifts";
+import {
+  persistTenderSettlements,
+  resolveTenderSettlements,
+  type PersistedTenderSettlement,
+  type TenderSettlementInputs,
+} from "@/lib/tender-settlement";
 
 /** The column is Decimal(10,2); every comparison happens at that resolution. */
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -120,20 +140,27 @@ export function resolveVarianceReason(
   return trimmed;
 }
 
-export type CashCloseArgs = {
+export type ShiftCloseArgs = {
   shiftId: string;
   /** The physically counted drawer. */
   actualCash: number;
-  /** Required when the variance is non-zero; ignored when it is zero. */
+  /** Required when the cash variance is non-zero; ignored when it is zero. */
   reason?: string | null;
-  /** Free-text shift note, unrelated to the variance reason. */
+  /**
+   * The electronic channels, each with what the processor settled and why it
+   * differed. Keyed by method rather than flattened into `actualCardAmount` /
+   * `actualWalletAmount` pairs, so adding a channel is a change to
+   * `ELECTRONIC_TENDER_METHODS` and not to four call sites.
+   */
+  tenders?: TenderSettlementInputs;
+  /** Free-text shift note, unrelated to any variance reason. */
   notes?: string | null;
   actorId: string;
   /** True when the closer is not the custodian — recorded, never blocked. */
   closedByManager: boolean;
 };
 
-export type CashCloseResult = {
+export type ShiftCloseResult = {
   shiftId: string;
   expectedCash: number;
   actualCash: number;
@@ -141,6 +168,13 @@ export type CashCloseResult = {
   kind: CashVarianceKind;
   reason: string | null;
   varianceCaseId: string | null;
+  /**
+   * One entry per channel actually reconciled. A channel with no activity
+   * that nobody settled is absent rather than present-and-zero, because
+   * "nothing happened here" and "the provider reported zero" are different
+   * facts and the schema keeps them apart.
+   */
+  tenders: PersistedTenderSettlement[];
 };
 
 /**
@@ -160,16 +194,17 @@ async function lockShift(tx: Prisma.TransactionClient, shiftId: string): Promise
 }
 
 /**
- * Close a shift against a counted drawer, atomically.
+ * Close a shift against a counted drawer and its processor settlements,
+ * atomically.
  *
  * Authorization and tenancy are the ROUTE's job and have already happened by
  * the time this runs — this function is the financial act, and it assumes the
  * actor was allowed to perform it. What it does not assume is that the shift is
  * still open, which is why the status is re-read under the lock.
  */
-export async function closeShiftWithCashCount(
-  args: CashCloseArgs
-): Promise<CashCloseResult> {
+export async function closeShiftWithSettlement(
+  args: ShiftCloseArgs
+): Promise<ShiftCloseResult> {
   return db.$transaction(async (tx) => {
     if (!(await lockShift(tx, args.shiftId))) {
       throw new ApiError(404, "الشيفت مش موجود");
@@ -194,8 +229,21 @@ export async function closeShiftWithCashCount(
     const kind = varianceKind(variance);
 
     // Before any write: a close missing its required evidence must leave the
-    // shift untouched rather than be rolled back from halfway through.
+    // shift untouched rather than be rolled back from halfway through. That
+    // now covers all three tenders — every reason is demanded here, so a
+    // close that is going to be refused for a missing card explanation is
+    // refused before the drawer snapshot is written.
     const reason = resolveVarianceReason(variance, args.reason);
+    const settlements = resolveTenderSettlements(
+      {
+        // The authoritative per-method aggregates, from the same freshened
+        // row `expectedCash` came from. Never a second formula, and never a
+        // figure the client supplied.
+        CARD: Number(fresh.totalCardSales),
+        WALLET: Number(fresh.totalWalletSales),
+      },
+      args.tenders ?? {}
+    );
 
     // Status-guarded, so a racing second close updates zero rows rather than
     // overwriting the first completed one. The lock above makes this the
@@ -254,6 +302,20 @@ export async function closeShiftWithCashCount(
       });
     }
 
+    // The electronic channels, after the status guard so a losing racer never
+    // reaches them, and inside this same transaction so a settlement that
+    // cannot be recorded takes the cash close down with it. A shift marked
+    // CLOSED asserts the WHOLE shift was settled; a partially reconciled one
+    // would be a worse record than no reconciliation at all.
+    const tenders = await persistTenderSettlements(tx, {
+      cafeId: locked.cafeId,
+      branchId: locked.branchId,
+      shiftId: locked.id,
+      shiftNumber: locked.shiftNumber,
+      actorId: args.actorId,
+      settlements,
+    });
+
     const evidence = {
       branchId: locked.branchId,
       shiftId: locked.id,
@@ -270,7 +332,25 @@ export async function closeShiftWithCashCount(
       action: SHIFT_CLOSED_AUDIT_ACTION,
       entity: "Shift",
       entityId: locked.id,
-      details: { ...evidence, closedByManager: args.closedByManager, varianceCaseId },
+      details: {
+        ...evidence,
+        closedByManager: args.closedByManager,
+        varianceCaseId,
+        // The whole close, reconstructible from one row: cash above, and
+        // every channel that was settled here. Listed separately rather than
+        // summed — a net figure would make the two counterparties
+        // indistinguishable and the record unusable as evidence.
+        tenders: tenders.map((t) => ({
+          method: t.method,
+          expected: t.expected,
+          actual: t.actual,
+          variance: t.variance,
+          kind: t.kind,
+          reason: t.reason,
+          reconciliationId: t.reconciliationId,
+          varianceCaseId: t.varianceCaseId,
+        })),
+      },
     });
 
     if (variance !== 0) {
@@ -295,6 +375,7 @@ export async function closeShiftWithCashCount(
       kind,
       reason,
       varianceCaseId,
+      tenders,
     };
   });
 }
