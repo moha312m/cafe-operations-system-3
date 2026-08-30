@@ -240,6 +240,11 @@ export const t = {
     blindCountHint: "اعدّ الكاش الفعلي في الدرج وسجّله. الفرق هيظهر بعد التسجيل.",
     actualCash: "الكاش الفعلي",
     actualCashInDrawer: "الكاش الفعلي في الدرج",
+    varianceReason: "سبب الفرق (لو فيه فرق)",
+    // Phrased as a conditional because the count is blind: the cashier does
+    // not know yet whether there IS a difference, so the field cannot be
+    // demanded up front without revealing the target it exists to withhold.
+    varianceReasonHint: "لو الكاش المعدود مختلف عن المتوقع، لازم تكتب السبب.",
     difference: "الفرق",
     totalSales: "إجمالي المبيعات",
     cashSales: "مبيعات الكاش",

@@ -56,6 +56,7 @@ export function ShiftControls({
   const [openingCash, setOpeningCash] = useState("");
   const [actualCash, setActualCash] = useState("");
   const [notes, setNotes] = useState("");
+  const [varianceReason, setVarianceReason] = useState("");
   const [busy, setBusy] = useState(false);
 
   const setActive = useCallback(
@@ -132,7 +133,11 @@ export function ShiftControls({
         `/api/shifts/${shift.id}/close`,
         {
           method: "POST",
-          body: { actualCashAmount: Number(actualCash) || 0, notes: notes.trim() || undefined },
+          body: {
+            actualCashAmount: Number(actualCash) || 0,
+            reason: varianceReason.trim() || undefined,
+            notes: notes.trim() || undefined,
+          },
         }
       );
       const diff = Number(res.shift.cashDifference ?? 0);
@@ -272,6 +277,24 @@ export function ShiftControls({
               <p className="rounded-lg bg-muted/50 p-2 text-center text-xs text-muted-foreground">
                 {t.shifts.blindCountHint}
               </p>
+
+              {/* Offered unconditionally, and never pre-filled. The count is
+                  blind, so the cashier cannot be shown "you are 30 short —
+                  explain it" without handing them the target SHIFT-003 exists
+                  to withhold. If they leave it empty and the drawer does not
+                  balance, the server refuses the close and says so, the count
+                  they typed is still here, and they add the reason then. */}
+              <div className="space-y-2">
+                <Label>{t.shifts.varianceReason}</Label>
+                <Textarea
+                  rows={2}
+                  value={varianceReason}
+                  onChange={(e) => setVarianceReason(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {t.shifts.varianceReasonHint}
+                </p>
+              </div>
 
               <div className="space-y-2">
                 <Label>{t.shifts.notes}</Label>
