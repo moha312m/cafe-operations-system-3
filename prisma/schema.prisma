@@ -538,7 +538,8 @@ model User {
   ordersAssigned   Order[]    @relation("OrderAssignedApprover")
   qrApprovalTargetFor QrOrderApprovalSettings[] @relation("QrApprovalTargetUser")
   paymentsReceived Payment[]
-  shifts           Shift[]
+  shifts           Shift[]   @relation("ShiftCashier")
+  shiftsClosed     Shift[]   @relation("ShiftClosedBy")
   auditLogs        AuditLog[]
   verifiedRecipes  Recipe[]  @relation("RecipeVerifiedBy")
   inventoryTxns    InventoryTransaction[]
@@ -1024,6 +1025,13 @@ model Shift {
   shiftNumber        Int // تسلسلي لكل فرع
   openedAt           DateTime    @default(now())
   closedAt           DateTime?
+  /// Who accepted the count and discharged the custodian — NOT necessarily
+  /// `cashierId`, who is the person that HELD the drawer. A manager closing
+  /// somebody else's shift is an ordinary and supervised act, and collapsing
+  /// the two would attribute their acceptance to the cashier being checked.
+  /// Nullable because a shift closed before T33 truthfully has no answer, and
+  /// backfilling the cashier would invent one.
+  closedById         String?
   openingCashAmount  Decimal     @default(0) @db.Decimal(10, 2)
   expectedCashAmount Decimal     @default(0) @db.Decimal(10, 2)
   actualCashAmount   Decimal? @db.Decimal(10, 2)
@@ -1055,7 +1063,11 @@ model Shift {
 
   cafe     Cafe      @relation(fields: [cafeId], references: [id], onDelete: Cascade)
   branch   Branch    @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  cashier  User      @relation(fields: [cashierId], references: [id])
+  cashier  User      @relation("ShiftCashier", fields: [cashierId], references: [id])
+  /// SetNull, unlike `cashier`: the custodian is load-bearing evidence and a
+  /// shift may not outlive them anonymously, but who signed the close is a
+  /// fact about an act, and an archived manager must not pin the row forever.
+  closedBy User?     @relation("ShiftClosedBy", fields: [closedById], references: [id], onDelete: SetNull)
   payments Payment[]
   custodyLinks ShiftCustody[]
   stockCountSessions StockCountSession[]
@@ -1076,6 +1088,7 @@ model Shift {
   @@index([closedAt])
   @@index([branchId, status])
   @@index([cashReasonCodeId])
+  @@index([closedById])
 }
 
 // ───────────────────────────── Inventory ─────────────────────────────
