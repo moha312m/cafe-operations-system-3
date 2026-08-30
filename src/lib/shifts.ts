@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { ApiError } from "@/lib/api";
 
@@ -61,8 +62,24 @@ export async function getActiveShift(branchId: string, cashierId: string) {
 //
 //   expectedCash = openingCash + net cash movements
 //   totalSales   = cash + card + wallet (PAID only)
-export async function recomputeShiftTotals(shiftId: string) {
-  const shift = await db.shift.findUnique({ where: { id: shiftId } });
+//
+// THIS IS THE AUTHORITATIVE EXPECTED-CASH ANSWER, and the only one. The cash
+// close reconciles against what this returns rather than deriving the target
+// again from payments, because two formulas would be two opinions with
+// nothing in the schema saying which an owner should believe.
+//
+// `client` exists for exactly that caller. The close writes its snapshot, its
+// variance case and its audit rows as one act, and the aggregates it
+// reconciles against must be freshened inside that same transaction —
+// otherwise a rolled-back close would leave the totals it recomputed
+// committed, and the shift would carry an expected figure produced by an
+// event that never happened. It defaults to `db`, so every existing
+// fire-and-forget call site is unchanged.
+export async function recomputeShiftTotals(
+  shiftId: string,
+  client: Prisma.TransactionClient | typeof db = db
+) {
+  const shift = await client.shift.findUnique({ where: { id: shiftId } });
   if (!shift) return null;
   // An accepted close is a historical snapshot. Recomputing a CLOSED shift
   // rewrote expectedCash while leaving the counted cash and stored
@@ -70,7 +87,7 @@ export async function recomputeShiftTotals(shiftId: string) {
   // Money moving after the close belongs to the current period instead.
   if (shift.status === "CLOSED") return shift;
 
-  const payments = await db.payment.findMany({
+  const payments = await client.payment.findMany({
     where: { shiftId },
     select: {
       amount: true, method: true, type: true, status: true, orderId: true,
@@ -112,7 +129,7 @@ export async function recomputeShiftTotals(shiftId: string) {
 
   // Discounts across the distinct orders paid within this shift.
   const orders = paidOrderIds.size
-    ? await db.order.findMany({
+    ? await client.order.findMany({
         where: { id: { in: [...paidOrderIds] } },
         select: { discountAmount: true },
       })
@@ -126,7 +143,7 @@ export async function recomputeShiftTotals(shiftId: string) {
   const totalSales = round2(cash + card + wallet);
   const expectedCash = round2(Number(shift.openingCashAmount) + cash);
 
-  return db.shift.update({
+  return client.shift.update({
     where: { id: shiftId },
     data: {
       totalCashSales: round2(cash),
