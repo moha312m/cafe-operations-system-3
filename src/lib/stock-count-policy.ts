@@ -20,11 +20,12 @@
 // being absent.
 
 import type {
-  StockCountPolicy, StockCountType, StockCountMode,
+  PeriodicFullCountSchedule, StockCountPolicy, StockCountType, StockCountMode,
 } from "@prisma/client";
 import { db } from "@/lib/db";
 import { ApiError } from "@/lib/api";
 import { getCafeSettings } from "@/lib/cafe-settings";
+import { businessDateInTz, DEFAULT_TZ } from "@/lib/date-range";
 
 /** 400, and it names CYCLE, so the refusal is legible to the person who hit it. */
 export class UnsupportedCountPolicyError extends ApiError {
@@ -98,6 +99,103 @@ export async function resolveStockCountPolicy(
       mode: mode.from,
     },
   };
+}
+
+export type ResolvedPeriodicFullCount = {
+  schedule: PeriodicFullCountSchedule;
+  weekday: number | null;
+  source: Record<"schedule" | "weekday", "CAFE" | "BRANCH">;
+};
+
+/** The handover intent is supplied by the caller; no Shift state is inferred. */
+export type PeriodicFullCountTarget = "SHIFT_TO_SHIFT" | "BRANCH_CUSTODY";
+
+export type FullCountDueVerdict = {
+  due: boolean;
+  businessDate: string;
+  target: PeriodicFullCountTarget;
+  reason:
+    | "MANUAL_ONLY"
+    | "SHIFT_TO_SHIFT"
+    | "DAILY_BRANCH_CUSTODY"
+    | "WEEKLY_MATCHING_BRANCH_CUSTODY"
+    | "WEEKLY_NON_MATCHING_WEEKDAY";
+  schedule: PeriodicFullCountSchedule;
+  weekday: number | null;
+};
+
+export async function resolvePeriodicFullCount(
+  cafeId: string,
+  branchId: string,
+): Promise<ResolvedPeriodicFullCount> {
+  const [settings, branch] = await Promise.all([
+    getCafeSettings(cafeId),
+    db.branch.findUniqueOrThrow({
+      where: { id: branchId },
+      select: {
+        cafeId: true,
+        periodicFullCountScheduleOverride: true,
+        periodicFullCountWeekdayOverride: true,
+      },
+    }),
+  ]);
+
+  if (branch.cafeId !== cafeId) {
+    throw new ApiError(400, "Ø§Ù„ÙØ±Ø¹ Ù…Ø´ ØªØ§Ø¨Ø¹ Ù„Ù„ÙƒØ§ÙÙŠÙ‡");
+  }
+
+  const schedule = pick(
+    settings.periodicFullCountSchedule,
+    branch.periodicFullCountScheduleOverride,
+  );
+  // Schedule and weekday are a constrained configuration pair. A branch's
+  // non-null schedule override therefore owns the paired weekday too: a
+  // DAILY/MANUAL override intentionally resolves to NULL rather than leaking
+  // a weekly weekday inherited from its cafe.
+  const weekday = branch.periodicFullCountScheduleOverride === null
+    ? { value: settings.periodicFullCountWeekday, from: "CAFE" as const }
+    : { value: branch.periodicFullCountWeekdayOverride, from: "BRANCH" as const };
+  return {
+    schedule: schedule.value,
+    weekday: weekday.value,
+    source: { schedule: schedule.from, weekday: weekday.from },
+  };
+}
+
+function weekdayForBusinessDate(businessDate: string): number {
+  const [year, month, day] = businessDate.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+}
+
+export async function fullCountDue(args: {
+  cafeId: string;
+  branchId: string;
+  at: Date;
+  target: PeriodicFullCountTarget;
+}): Promise<FullCountDueVerdict> {
+  const [resolved, businessDate] = await Promise.all([
+    resolvePeriodicFullCount(args.cafeId, args.branchId),
+    Promise.resolve(businessDateInTz(args.at, DEFAULT_TZ)),
+  ]);
+  const base = {
+    businessDate,
+    target: args.target,
+    schedule: resolved.schedule,
+    weekday: resolved.weekday,
+  };
+
+  if (args.target === "SHIFT_TO_SHIFT") {
+    return { ...base, due: false, reason: "SHIFT_TO_SHIFT" };
+  }
+  if (resolved.schedule === "MANUAL_ONLY") {
+    return { ...base, due: false, reason: "MANUAL_ONLY" };
+  }
+  if (resolved.schedule === "DAILY_LAST_HANDOVER") {
+    return { ...base, due: true, reason: "DAILY_BRANCH_CUSTODY" };
+  }
+  return weekdayForBusinessDate(businessDate) === resolved.weekday
+    ? { ...base, due: true, reason: "WEEKLY_MATCHING_BRANCH_CUSTODY" }
+    : { ...base, due: false, reason: "WEEKLY_NON_MATCHING_WEEKDAY" };
 }
 
 /**

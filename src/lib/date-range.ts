@@ -58,6 +58,21 @@ export function dateStrInTz(at: Date, tz: string = DEFAULT_TZ): string {
   return new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(at);
 }
 
+/**
+ * Next Cup's operational date: the local day begins at 03:00, rather than
+ * at local midnight. Reporting remains deliberately calendar-day based;
+ * periodic handover scheduling is the first consumer of this business date.
+ */
+export function businessDateInTz(at: Date, tz: string = DEFAULT_TZ): string {
+  const localDate = dateStrInTz(at, tz);
+  const hour = Number(new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    hour: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(at).find((part) => part.type === "hour")?.value);
+  return hour < 3 ? addDays(localDate, -1) : localDate;
+}
+
 // UTC instant of local midnight for a "YYYY-MM-DD" calendar date in tz.
 // Two-pass offset lookup handles DST transitions on the day itself.
 export function zonedDayStart(dateStr: string, tz: string = DEFAULT_TZ): Date {

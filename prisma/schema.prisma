@@ -295,6 +295,8 @@ model CafeSettings {
   handoverCountType StockCountType   @default(CRITICAL)
   periodicCountType StockCountType   @default(FULL)
   stockCountMode    StockCountMode   @default(BLIND)
+  periodicFullCountSchedule PeriodicFullCountSchedule @default(MANUAL_ONLY)
+  periodicFullCountWeekday  Int?
 
   // Variance and recount policy. Permissive by default and explicitly
   // backfilled for existing cafés: whether a discrepancy stops a handover is
@@ -351,6 +353,8 @@ model Branch {
   handoverCountTypeOverride StockCountType?
   periodicCountTypeOverride StockCountType?
   stockCountModeOverride    StockCountMode?
+  periodicFullCountScheduleOverride PeriodicFullCountSchedule?
+  periodicFullCountWeekdayOverride  Int?
 
   cafe           Cafe                 @relation(fields: [cafeId], references: [id], onDelete: Cascade)
   users          User[]
@@ -1261,6 +1265,12 @@ enum StockCountType {
 enum StockCountMode {
   BLIND // the counter does not see the expected figure
   OPEN // the expected figure is shown
+}
+
+enum PeriodicFullCountSchedule {
+  DAILY_LAST_HANDOVER
+  WEEKLY
+  MANUAL_ONLY
 }
 
 enum ReasonDomain {
