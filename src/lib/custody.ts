@@ -15,11 +15,28 @@
 // The check below exists to produce a legible message, not to be the
 // guarantee.
 
-import type { Prisma, CustodyPeriod, CustodyRole, CustodyScope } from "@prisma/client";
+import type {
+  Prisma,
+  CustodyHolderType,
+  CustodyPeriod,
+  CustodyRole,
+  CustodyScope,
+  ShiftCustodyGate,
+} from "@prisma/client";
 import { db } from "@/lib/db";
 import { ApiError } from "@/lib/api";
 
 type Participant = { userId: string; role: CustodyRole };
+
+export type CustodyBootstrapVerdict = {
+  cashCustodyPeriodId: string | null;
+  stockCustodyPeriodId: string | null;
+  opened: CustodyScope[];
+  joined: CustodyScope[];
+  withheld: CustodyScope[];
+  operational: boolean;
+  gate: ShiftCustodyGate | null;
+};
 
 const SCOPE_LABEL: Record<CustodyScope, string> = {
   CASH: "الخزنة",
@@ -40,9 +57,16 @@ export async function openCustodyPeriod(
     shiftId?: string | null;
     previousPeriodId?: string | null;
     openingCashAmount?: number | null;
+    holderType?: CustodyHolderType;
+    openedById?: string | null;
+    responsibleShiftId?: string | null;
   }
 ): Promise<{ custodyPeriodId: string }> {
-  if (args.participants.length === 0) {
+  const holderType = args.holderType ?? "USER";
+  if (holderType === "BRANCH" && args.scope !== "STOCK") {
+    throw new ApiError(400, "Branch custody is stock-only");
+  }
+  if (holderType === "USER" && args.participants.length === 0) {
     throw new ApiError(400, "لازم تحدد مين مسؤول عن العهدة");
   }
 
@@ -63,7 +87,10 @@ export async function openCustodyPeriod(
       cafeId: args.cafeId,
       branchId: args.branchId,
       scope: args.scope,
+      holderType,
       previousPeriodId: args.previousPeriodId ?? null,
+      openedById: args.openedById ?? null,
+      responsibleShiftId: args.responsibleShiftId ?? null,
       // A stock custody has no drawer, so the column stays NULL for it.
       openingCashAmount:
         args.scope === "CASH" ? args.openingCashAmount ?? null : null,
@@ -83,6 +110,140 @@ export async function openCustodyPeriod(
   }
 
   return { custodyPeriodId: period.id };
+}
+
+const LIVE_HANDOVER_STATUSES = ["DRAFT", "OUTGOING_SUBMITTED", "INCOMING_REVIEW"] as const;
+
+/** Whether a live handover already names outgoing stock custody for this branch. */
+export async function branchIsMidHandover(
+  tx: Prisma.TransactionClient,
+  branchId: string
+): Promise<boolean> {
+  return Boolean(await tx.handoverSession.findFirst({
+    where: {
+      branchId,
+      status: { in: [...LIVE_HANDOVER_STATUSES] },
+      outgoingStockCustodyId: { not: null },
+    },
+    select: { id: true },
+  }));
+}
+
+/**
+ * Establish the custody a newly-opened shift may use. This deliberately
+ * records a gate rather than trying to invent a handover acceptance.
+ */
+export async function ensureCustodyForShift(
+  tx: Prisma.TransactionClient,
+  args: {
+    cafeId: string;
+    branchId: string;
+    shiftId: string;
+    userId: string;
+    openingCashAmount: number;
+  }
+): Promise<CustodyBootstrapVerdict> {
+  const [cash, stock, midHandover] = await Promise.all([
+    tx.custodyPeriod.findFirst({
+      where: { branchId: args.branchId, scope: "CASH", status: "OPEN" },
+      include: { participants: { select: { userId: true } } },
+    }),
+    tx.custodyPeriod.findFirst({
+      where: { branchId: args.branchId, scope: "STOCK", status: "OPEN" },
+      include: { participants: { select: { userId: true } } },
+    }),
+    branchIsMidHandover(tx, args.branchId),
+  ]);
+
+  const result: CustodyBootstrapVerdict = {
+    cashCustodyPeriodId: null,
+    stockCustodyPeriodId: null,
+    opened: [],
+    joined: [],
+    withheld: [],
+    operational: false,
+    gate: null,
+  };
+
+  if (midHandover) {
+    if (cash) result.withheld.push("CASH");
+    if (stock) result.withheld.push("STOCK");
+    result.gate = "AWAITING_CUSTODY_TRANSFER";
+  } else if (stock?.holderType === "BRANCH") {
+    if (cash?.holderType === "USER") {
+      if (!cash.participants.some((p) => p.userId === args.userId)) {
+        await tx.custodyParticipant.create({
+          data: { custodyPeriodId: cash.id, userId: args.userId, role: "SHARED" },
+        });
+        result.joined.push("CASH");
+      }
+      await linkShiftCustody(tx, { shiftId: args.shiftId, custodyPeriodId: cash.id, scope: "CASH" });
+      result.cashCustodyPeriodId = cash.id;
+    } else if (!cash) {
+      const opened = await openCustodyPeriod(tx, {
+        cafeId: args.cafeId,
+        branchId: args.branchId,
+        scope: "CASH",
+        participants: [{ userId: args.userId, role: "PRIMARY" }],
+        shiftId: args.shiftId,
+        holderType: "USER",
+        openedById: args.userId,
+        openingCashAmount: args.openingCashAmount,
+      });
+      result.cashCustodyPeriodId = opened.custodyPeriodId;
+      result.opened.push("CASH");
+    }
+    result.withheld.push("STOCK");
+    result.gate = "AWAITING_OPENING_VERIFICATION";
+  } else if (!cash && !stock) {
+    const openedCash = await openCustodyPeriod(tx, {
+      cafeId: args.cafeId,
+      branchId: args.branchId,
+      scope: "CASH",
+      participants: [{ userId: args.userId, role: "PRIMARY" }],
+      shiftId: args.shiftId,
+      holderType: "USER",
+      openedById: args.userId,
+      openingCashAmount: args.openingCashAmount,
+    });
+    const openedStock = await openCustodyPeriod(tx, {
+      cafeId: args.cafeId,
+      branchId: args.branchId,
+      scope: "STOCK",
+      participants: [{ userId: args.userId, role: "PRIMARY" }],
+      shiftId: args.shiftId,
+      holderType: "USER",
+      openedById: args.userId,
+      responsibleShiftId: args.shiftId,
+    });
+    result.cashCustodyPeriodId = openedCash.custodyPeriodId;
+    result.stockCustodyPeriodId = openedStock.custodyPeriodId;
+    result.opened.push("CASH", "STOCK");
+    result.operational = true;
+  } else if (cash?.holderType === "USER" && stock?.holderType === "USER") {
+    for (const [scope, period] of [["CASH", cash], ["STOCK", stock]] as const) {
+      if (!period.participants.some((p) => p.userId === args.userId)) {
+        await tx.custodyParticipant.create({
+          data: { custodyPeriodId: period.id, userId: args.userId, role: "SHARED" },
+        });
+        result.joined.push(scope);
+      }
+      await linkShiftCustody(tx, { shiftId: args.shiftId, custodyPeriodId: period.id, scope });
+      if (scope === "CASH") result.cashCustodyPeriodId = period.id;
+      else result.stockCustodyPeriodId = period.id;
+    }
+    result.operational = true;
+  } else {
+    throw new ApiError(409, "Open custody state is incomplete for this branch");
+  }
+
+  await tx.shift.update({
+    where: { id: args.shiftId },
+    data: result.gate
+      ? { custodyGateReason: result.gate, custodyReadyAt: null }
+      : { custodyGateReason: null, custodyReadyAt: new Date() },
+  });
+  return result;
 }
 
 /**

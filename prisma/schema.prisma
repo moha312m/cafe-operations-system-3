@@ -109,6 +109,11 @@ enum ShiftStatus {
   CLOSED
 }
 
+enum ShiftCustodyGate {
+  AWAITING_CUSTODY_TRANSFER
+  AWAITING_OPENING_VERIFICATION
+}
+
 // How a cafe operates end-to-end. Drives sensible defaults for the
 // feature flags + QR routing; the individual flags still win.
 enum CafeWorkflowMode {
@@ -1059,6 +1064,8 @@ model Shift {
   totalDiscounts     Decimal     @default(0) @db.Decimal(10, 2)
   orderCount         Int         @default(0)
   status             ShiftStatus @default(OPEN)
+  custodyReadyAt     DateTime?
+  custodyGateReason  ShiftCustodyGate?
   notes              String?
   createdAt          DateTime    @default(now())
   updatedAt          DateTime    @updatedAt
@@ -1091,6 +1098,8 @@ model Shift {
   @@index([openedAt])
   @@index([closedAt])
   @@index([branchId, status])
+  @@index([branchId, custodyGateReason])
+  @@index([branchId, custodyReadyAt])
   @@index([cashReasonCodeId])
   @@index([closedById])
 }

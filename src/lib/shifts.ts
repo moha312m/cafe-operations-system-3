@@ -20,7 +20,7 @@ export async function requireCashCustody(
   userId: string,
   message = "لا يمكن تحصيل الدفع بدون شيفت مفتوح"
 ) {
-  const shift = await getActiveShift(branchId, userId);
+  const shift = await requireOperationalShift(branchId, userId);
   if (!shift) throw new ApiError(400, message);
   return shift;
 }
@@ -49,11 +49,31 @@ export function redactBlindCount<
 
 // The cashier's currently OPEN shift at a branch, or null. A cashier may
 // only ever have one open shift per branch (enforced on open).
-export async function getActiveShift(branchId: string, cashierId: string) {
-  return db.shift.findFirst({
+export async function getActiveShift(
+  branchId: string,
+  cashierId: string,
+  client: Prisma.TransactionClient | typeof db = db
+) {
+  return client.shift.findFirst({
+    where: { branchId, cashierId, status: "OPEN", custodyGateReason: null },
+    orderBy: { openedAt: "desc" },
+  });
+}
+
+/** Return an open operational shift, rejecting a visibly-open but gated one. */
+export async function requireOperationalShift(
+  branchId: string,
+  cashierId: string,
+  client: Prisma.TransactionClient | typeof db = db
+) {
+  const shift = await client.shift.findFirst({
     where: { branchId, cashierId, status: "OPEN" },
     orderBy: { openedAt: "desc" },
   });
+  if (shift?.custodyGateReason) {
+    throw new ApiError(400, `Shift is awaiting custody: ${shift.custodyGateReason}`);
+  }
+  return shift;
 }
 
 // Recompute a shift's aggregate figures from its linked payments (and the

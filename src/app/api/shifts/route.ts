@@ -13,6 +13,7 @@ import {
 } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { redactBlindCount } from "@/lib/shifts";
+import { ensureCustodyForShift } from "@/lib/custody";
 
 const shiftInclude = {
   cashier: { select: { id: true, name: true } },
@@ -118,7 +119,7 @@ export async function POST(request: NextRequest) {
         where: { branchId },
         _max: { shiftNumber: true },
       });
-      return tx.shift.create({
+      const shift = await tx.shift.create({
         data: {
           cafeId,
           branchId,
@@ -129,6 +130,14 @@ export async function POST(request: NextRequest) {
         },
         include: shiftInclude,
       });
+      await ensureCustodyForShift(tx, {
+        cafeId,
+        branchId,
+        shiftId: shift.id,
+        userId: session.id,
+        openingCashAmount: data.openingCashAmount,
+      });
+      return tx.shift.findUniqueOrThrow({ where: { id: shift.id }, include: shiftInclude });
     });
 
     await audit({
