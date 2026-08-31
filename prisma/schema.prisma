@@ -566,6 +566,8 @@ model User {
   varianceCasesResolved VarianceCase[] @relation("VarianceResolver")
   varianceResponsibility VarianceCase[] @relation("VarianceResponsibility")
   countRebases      StockCountRebase[]
+  openedStockCustodies   CustodyPeriod[] @relation("OpenedStockCustody")
+  acceptedStockCustodies CustodyPeriod[] @relation("AcceptedStockCustody")
 
   @@index([cafeId])
   @@index([branchId])
@@ -1078,6 +1080,8 @@ model Shift {
   openingExceptions OpeningException[]
   varianceCases     VarianceCase[] @relation("ShiftVarianceCases")
   cashVarianceCase  VarianceCase?  @relation("ShiftCashVariance", fields: [cashVarianceCaseId], references: [id], onDelete: SetNull)
+  responsibleStockCustodies CustodyPeriod[] @relation("ResponsibleStockCustodyShift")
+  inventoryTransactions     InventoryTransaction[] @relation("InventoryTransactionShift")
 
   @@unique([branchId, shiftNumber])
   @@index([cafeId])
@@ -1122,12 +1126,23 @@ enum CustodyStatus {
   CLOSED
 }
 
+enum CustodyHolderType {
+  USER
+  BRANCH
+}
+
 model CustodyPeriod {
   id       String        @id @default(cuid())
   cafeId   String
   branchId String
   scope    CustodyScope
   status   CustodyStatus @default(OPEN)
+  holderType CustodyHolderType @default(USER)
+
+  openedById         String?
+  acceptedById       String?
+  acceptedAt         DateTime?
+  responsibleShiftId String?
 
   startedAt DateTime  @default(now())
   endedAt   DateTime?
@@ -1145,6 +1160,9 @@ model CustodyPeriod {
 
   cafe           Cafe           @relation(fields: [cafeId], references: [id], onDelete: Cascade)
   branch         Branch         @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  openedBy       User?          @relation("OpenedStockCustody", fields: [openedById], references: [id], onDelete: SetNull)
+  acceptedBy     User?          @relation("AcceptedStockCustody", fields: [acceptedById], references: [id], onDelete: SetNull)
+  responsibleShift Shift?       @relation("ResponsibleStockCustodyShift", fields: [responsibleShiftId], references: [id], onDelete: SetNull)
   previousPeriod CustodyPeriod? @relation("CustodyChain", fields: [previousPeriodId], references: [id], onDelete: SetNull)
   nextPeriod     CustodyPeriod? @relation("CustodyChain")
 
@@ -1157,9 +1175,12 @@ model CustodyPeriod {
   handoversInStock  HandoverSession[] @relation("HandoverInStock")
   openingExceptions OpeningException[]
   varianceCases     VarianceCase[]
+  inventoryTransactions InventoryTransaction[]
 
   @@index([cafeId, status])
   @@index([branchId, scope, status])
+  @@index([branchId, holderType, status])
+  @@index([responsibleShiftId])
 }
 
 model CustodyParticipant {
@@ -2030,6 +2051,8 @@ model InventoryTransaction {
   note            String?
   orderId         String? // set for automatic USAGE deductions on SERVED
   createdById     String?
+  custodyPeriodId String?
+  shiftId         String?
   createdAt       DateTime                 @default(now())
   /// The item's ledgerVersion at which this row was written. Everything at
   /// or below a captured version is committed; nothing above it has been
@@ -2041,6 +2064,8 @@ model InventoryTransaction {
   inventoryItem InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Cascade)
   order         Order?        @relation(fields: [orderId], references: [id], onDelete: SetNull)
   createdBy     User?         @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  custodyPeriod CustodyPeriod? @relation(fields: [custodyPeriodId], references: [id], onDelete: SetNull)
+  shift         Shift?         @relation("InventoryTransactionShift", fields: [shiftId], references: [id], onDelete: SetNull)
   countRebase   StockCountRebase?
 
   @@index([cafeId])
@@ -2050,6 +2075,8 @@ model InventoryTransaction {
   @@index([createdAt])
   @@index([cafeId, createdAt])
   @@index([orderId])
+  @@index([custodyPeriodId, type])
+  @@index([shiftId])
   // Database-enforced proof that one item never holds a version twice. The
   // unique index also serves every (item, version) lookup, so no separate
   // plain index is declared.
