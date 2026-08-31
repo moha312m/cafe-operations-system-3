@@ -80,8 +80,11 @@ export function allocateTimestamps({
 
   const visibleTimestamps = existing
     .map((name) => TIMESTAMP_PREFIX.exec(name)?.[1] ?? null)
-    .filter(Boolean);
-  const floor = [formatTimestamp(now), ...visibleTimestamps].sort().at(-1);
+    .filter((timestamp) => timestamp !== null);
+  const floor = visibleTimestamps.reduce(
+    (latest, timestamp) => timestamp > latest ? timestamp : latest,
+    formatTimestamp(now)
+  );
   const floorDate = timestampToDate(floor);
   const spacingMs = spacingMinutes * 60_000;
   const names = MIGRATION_CONCEPTS.slice(0, count).map(({ slug }, index) => {
