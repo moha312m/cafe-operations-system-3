@@ -2,7 +2,7 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 import { audit } from "@/lib/audit";
 import { round2, round3 } from "@/lib/costing";
 import { theoreticalConsumption } from "@/lib/recipes";
-import { applyStockMutation, lockItemForUpdate } from "@/lib/ledger";
+import { applyStockMutation, lockItemForUpdate, type StockAttributionSnapshot } from "@/lib/ledger";
 import { allowsKnownShortage } from "@/lib/inventory-policy";
 
 type Tx = Prisma.TransactionClient | PrismaClient;
@@ -23,7 +23,8 @@ export class StockError extends Error {}
 export async function deductStockForOrder(
   tx: Tx,
   orderId: string,
-  userId: string | null
+  userId: string | null,
+  attribution?: StockAttributionSnapshot
 ): Promise<{
   deducted: { name: string; quantity: number }[];
   productsWithoutRecipe: string[];
@@ -145,6 +146,7 @@ export async function deductStockForOrder(
       totalCost: round2(req.qty * item.costPerUnit),
       note: `خصم تلقائي بسبب الطلب رقم ${order.orderNumber}`,
       createdById: userId,
+      attribution,
       // The sufficiency decision is made above, with the café's own policy
       // and its own message; the writer must not second-guess it.
       allowNegative: true,

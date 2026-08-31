@@ -541,6 +541,7 @@ model User {
   ordersApproved   Order[]    @relation("OrderApprovedBy")
   ordersRejected   Order[]    @relation("OrderRejectedBy")
   ordersAssigned   Order[]    @relation("OrderAssignedApprover")
+  ordersServed     Order[]    @relation("OrderServedBy")
   qrApprovalTargetFor QrOrderApprovalSettings[] @relation("QrApprovalTargetUser")
   paymentsReceived Payment[]
   shifts           Shift[]   @relation("ShiftCashier")
@@ -894,6 +895,12 @@ model Order {
   // Set once ingredients are auto-deducted on SERVED (double-deduct guard)
   stockDeductedAt DateTime?
 
+  // Immutable first-SERVED accountability snapshot. Nullable only because
+  // historical orders existed before M14; new SERVED transitions write all three.
+  servedById                 String?
+  servedStockCustodyPeriodId String?
+  servedShiftId              String?
+
   // جلسة الترابيزة — dine-in orders attach to their table's open session.
   tableSessionId String?
 
@@ -911,6 +918,9 @@ model Order {
   approvedBy    User?                  @relation("OrderApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
   rejectedBy    User?                  @relation("OrderRejectedBy", fields: [rejectedById], references: [id], onDelete: SetNull)
   assignedApprover User?               @relation("OrderAssignedApprover", fields: [assignedApproverUserId], references: [id], onDelete: SetNull)
+  servedBy     User?                   @relation("OrderServedBy", fields: [servedById], references: [id], onDelete: Restrict)
+  servedStockCustodyPeriod CustodyPeriod? @relation("OrderServedStockCustody", fields: [servedStockCustodyPeriodId], references: [id], onDelete: Restrict)
+  servedShift  Shift?                  @relation("OrderServedShift", fields: [servedShiftId], references: [id], onDelete: Restrict)
   customer      Customer?              @relation(fields: [customerId], references: [id], onDelete: SetNull)
   items         OrderItem[]
   payments      Payment[]
@@ -929,6 +939,9 @@ model Order {
   @@index([approvedById])
   @@index([source])
   @@index([tableSessionId])
+  @@index([servedById])
+  @@index([servedStockCustodyPeriodId])
+  @@index([servedShiftId])
 }
 
 // Item rows snapshot name & price at sale time so menu edits never
@@ -1089,6 +1102,7 @@ model Shift {
   cashVarianceCase  VarianceCase?  @relation("ShiftCashVariance", fields: [cashVarianceCaseId], references: [id], onDelete: SetNull)
   responsibleStockCustodies CustodyPeriod[] @relation("ResponsibleStockCustodyShift")
   inventoryTransactions     InventoryTransaction[] @relation("InventoryTransactionShift")
+  servedOrders              Order[] @relation("OrderServedShift")
 
   @@unique([branchId, shiftNumber])
   @@index([cafeId])
@@ -1185,6 +1199,7 @@ model CustodyPeriod {
   openingExceptions OpeningException[]
   varianceCases     VarianceCase[]
   inventoryTransactions InventoryTransaction[]
+  servedOrders          Order[] @relation("OrderServedStockCustody")
 
   @@index([cafeId, status])
   @@index([branchId, scope, status])

@@ -63,7 +63,13 @@ async function resetPolicy(cafeId: string, branchId: string) {
 async function ensureDrawer(fx: Awaited<ReturnType<typeof fixture>>) {
   const cashier = await sessionFor(CASHIER);
   await clearOpenShifts(fx.branchId, cashier.id);
-  return openShift(fx, cashier.id, 100);
+  const shift = await openShift(fx, cashier.id, 100);
+  const custody = await db.custodyPeriod.findFirst({
+    where: { branchId: fx.branchId, scope: "STOCK", status: "OPEN" }, select: { id: true },
+  });
+  if (custody) await db.custodyPeriod.update({ where: { id: custody.id }, data: { holderType: "USER", responsibleShiftId: shift.id } });
+  else await db.custodyPeriod.create({ data: { cafeId: fx.cafeId, branchId: fx.branchId, scope: "STOCK", holderType: "USER", openedById: cashier.id, responsibleShiftId: shift.id } });
+  return shift;
 }
 
 /** An unpaid order walked as far as READY, i.e. sitting on the pass. */
@@ -150,7 +156,7 @@ describe("POLICY-002 serving enforcement", () => {
     const cashier = await sessionFor(CASHIER);
     await purge(marker);
     await clearOpenShifts(fx.branchId, cashier.id);
-    const shift = await openShift(fx, cashier.id, 100);
+    const shift = await ensureDrawer(fx);
     await setCafePolicy(fx.cafeId, "ALLOW_BEFORE_PAYMENT", "REQUIRE_PAYMENT_FIRST");
     try {
       const id = await unpaidReadyOrder(fx.branchId, marker, { table: "POL2KL" });

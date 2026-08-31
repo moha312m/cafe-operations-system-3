@@ -10,6 +10,7 @@ import { isOrderFullyPaid } from "@/lib/order-payments";
 import { requiresPaymentBeforeServing } from "@/lib/serving-policy";
 import { unrecordCustomerOrder } from "@/lib/customers";
 import type { OrderStatus } from "@prisma/client";
+import type { StockAttributionSnapshot } from "@/lib/ledger";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -51,7 +52,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       throw new ApiError(403, "الطلب تبع فرع تاني");
     }
 
-    if (!TRANSITIONS[order.status].includes(status)) {
+    if (!(status === "SERVED" && order.status === "SERVED") && !TRANSITIONS[order.status].includes(status)) {
       throw new ApiError(400, "الحالة دي مش مسموحة للطلب في وضعه الحالي");
     }
     if (status === "CANCELLED") {
@@ -61,7 +62,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     // set per order type and resolved from the branch's effective policy —
     // never from anything the caller sends. A café with table service serves
     // first and bills after; a takeaway counter does not.
-    if (status === "SERVED") {
+    if (status === "SERVED" && order.status !== "SERVED") {
       const mustBePaid = await requiresPaymentBeforeServing(order.branchId, order.type);
       if (mustBePaid && !isOrderFullyPaid({ total: order.total, payments: order.payments })) {
         throw new ApiError(400, "لازم الطلب يتدفع بالكامل قبل التسليم");
@@ -96,8 +97,71 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     let deduction: Awaited<ReturnType<typeof deductStockForOrder>> | null = null;
 
     let updated;
+    let servedReplay = false;
     try {
       updated = await db.$transaction(async (tx) => {
+        if (status === "SERVED") {
+          await tx.$queryRawUnsafe('SELECT "id" FROM "Order" WHERE "id" = $1 FOR UPDATE', id);
+          const lockedOrder = await tx.order.findUniqueOrThrow({
+            where: { id },
+            include: { payments: true },
+          });
+
+          if (lockedOrder.status === "SERVED") {
+            servedReplay = true;
+            return tx.order.findUniqueOrThrow({
+              where: { id },
+              include: {
+                items: { include: { addOns: true } },
+                payments: true,
+                branch: { select: { id: true, name: true } },
+                createdBy: { select: { id: true, name: true } },
+              },
+            });
+          }
+          if (!TRANSITIONS[lockedOrder.status].includes(status)) {
+            throw new ApiError(400, "Order status transition is not allowed in its current state");
+          }
+
+          const custodyRows = await tx.$queryRawUnsafe<{
+            id: string;
+            holderType: "USER" | "BRANCH";
+            responsibleShiftId: string | null;
+          }[]>(
+            'SELECT "id", "holderType", "responsibleShiftId" FROM "CustodyPeriod" WHERE "branchId" = $1 AND "scope" = \'STOCK\' AND "status" = \'OPEN\' FOR UPDATE',
+            lockedOrder.branchId
+          );
+          const custody = custodyRows[0];
+          if (!custody || custody.holderType !== "USER" || !custody.responsibleShiftId) {
+            throw new ApiError(409, "Serving requires an open USER-held stock custody with a responsible shift");
+          }
+          const attribution: StockAttributionSnapshot = {
+            custodyPeriodId: custody.id,
+            shiftId: custody.responsibleShiftId,
+          };
+          const servedTimeline = { servedAt: now, completedAt: now, stockDeductedAt: now };
+          deduction = await deductStockForOrder(tx, id, session.id, attribution);
+          await tx.orderItem.updateMany({
+            where: { orderId: id, kitchenStatus: { not: "CANCELLED" } },
+            data: { kitchenStatus: "SERVED" },
+          });
+          return tx.order.update({
+            where: { id },
+            data: {
+              status: "SERVED",
+              ...servedTimeline,
+              servedById: session.id,
+              servedStockCustodyPeriodId: custody.id,
+              servedShiftId: custody.responsibleShiftId,
+            },
+            include: {
+              items: { include: { addOns: true } },
+              payments: true,
+              branch: { select: { id: true, name: true } },
+              createdBy: { select: { id: true, name: true } },
+            },
+          });
+        }
         if (itemKitchenStatus) {
           await tx.orderItem.updateMany({
             where: { orderId: id, kitchenStatus: { not: "CANCELLED" } },
@@ -108,10 +172,6 @@ export async function PATCH(request: NextRequest, { params }: Params) {
         // stock (unless the cafe allows negative) → rolls back the whole
         // transition so the order is NOT marked served.
         const timelineExtra: { stockDeductedAt?: Date } = {};
-        if (status === "SERVED" && !order.stockDeductedAt) {
-          deduction = await deductStockForOrder(tx, id, session.id);
-          timelineExtra.stockDeductedAt = now;
-        }
         return tx.order.update({
           where: { id },
           data: { status, ...timeline, ...timelineExtra },
@@ -137,6 +197,8 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       }
       throw e;
     }
+
+    if (servedReplay) return NextResponse.json({ order: updated });
 
     // Cancellations change the table bill — keep the session totals fresh.
     if (order.tableSessionId) {

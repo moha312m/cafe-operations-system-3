@@ -52,7 +52,11 @@ const owing = { status: "OPEN", totalAmount: 120, paidAmount: 0, remainingAmount
 async function drawer(fx: Awaited<ReturnType<typeof fixture>>) {
   const u = await sessionFor(CASHIER);
   await clearOpenShifts(fx.branchId, u.id);
-  return openShift(fx, u.id, 300);
+  const shift = await openShift(fx, u.id, 300);
+  const custody = await db.custodyPeriod.findFirst({ where: { branchId: fx.branchId, scope: "STOCK", status: "OPEN" }, select: { id: true } });
+  if (custody) await db.custodyPeriod.update({ where: { id: custody.id }, data: { holderType: "USER", responsibleShiftId: shift.id } });
+  else await db.custodyPeriod.create({ data: { cafeId: fx.cafeId, branchId: fx.branchId, scope: "STOCK", holderType: "USER", openedById: u.id, responsibleShiftId: shift.id } });
+  return shift;
 }
 async function dineIn(branchId: string, marker: string, table: string, stopAt: string) {
   const r = await as<{ order: { id: string } }>(CASHIER, "/api/orders", {

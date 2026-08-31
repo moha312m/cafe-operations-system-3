@@ -46,7 +46,11 @@ before(async () => {
 async function drawer(fx: Awaited<ReturnType<typeof fixture>>, who = CASHIER, opening = 200) {
   const u = await sessionFor(who);
   await clearOpenShifts(fx.branchId, u.id);
-  return openShift(fx, u.id, opening);
+  const shift = await openShift(fx, u.id, opening);
+  const custody = await db.custodyPeriod.findFirst({ where: { branchId: fx.branchId, scope: "STOCK", status: "OPEN" }, select: { id: true } });
+  if (custody) await db.custodyPeriod.update({ where: { id: custody.id }, data: { holderType: "USER", responsibleShiftId: shift.id } });
+  else await db.custodyPeriod.create({ data: { cafeId: fx.cafeId, branchId: fx.branchId, scope: "STOCK", holderType: "USER", openedById: u.id, responsibleShiftId: shift.id } });
+  return shift;
 }
 
 /** A dine-in order on `table`, paid or not, left at `stopAt`. */
