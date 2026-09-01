@@ -158,7 +158,7 @@ describe("LEDGER-007 centralized freeze guard", () => {
     assert.deepEqual(await ledgerDeltaAbove(db, item.id, BigInt(0)), { delta: 0, movementCount: 0 });
   });
 
-  test("direct active-freeze lookup remains non-memoized inside one transaction", async () => {
+  test("same-transaction guarded mutations share one durable active-freeze lookup", async () => {
     const item = await ingredient(fx.branchId, "baseline", 10);
     const client = new PrismaClient({ log: [{ emit: "event", level: "query" }] });
     let activeLookups = 0;
@@ -178,7 +178,7 @@ describe("LEDGER-007 centralized freeze guard", () => {
       });
     });
     await client.$disconnect();
-    assert.equal(activeLookups, 2);
+    assert.equal(activeLookups, 1);
   });
 });
 
