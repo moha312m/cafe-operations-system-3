@@ -33,6 +33,11 @@
 
 import type { Prisma, PrismaClient, InventoryTransactionType, InventoryUnit } from "@prisma/client";
 import { round3 } from "@/lib/costing";
+import {
+  acquireInventorySharedLocks,
+  activeFreezeFor,
+  InventoryFrozenError,
+} from "@/lib/inventory-freeze";
 
 export type StockAttributionSnapshot = {
   custodyPeriodId: string | null;
@@ -63,6 +68,8 @@ export type StockMutation = {
    * written verbatim so mixed historical evidence cannot be constructed.
    */
   attribution?: StockAttributionSnapshot;
+  /** Trusted handover orchestration token; never accepted from public inventory input. */
+  freezeToken?: string | null;
 };
 
 export type StockMutationResult = {
@@ -145,6 +152,12 @@ export async function applyStockMutation(
   tx: Prisma.TransactionClient,
   m: StockMutation
 ): Promise<StockMutationResult> {
+  await acquireInventorySharedLocks(tx, [m.branchId]);
+  const freeze = await activeFreezeFor(tx, m.branchId);
+  if (freeze && m.freezeToken !== freeze.handoverId) {
+    throw new InventoryFrozenError();
+  }
+
   const locked = await lockItemForUpdate(tx, m.inventoryItemId);
   const attribution = m.attribution ?? await resolveStockAttribution(tx, m.branchId);
 

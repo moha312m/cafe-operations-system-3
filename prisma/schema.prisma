@@ -226,6 +226,7 @@ model Cafe {
   toleranceRules   ToleranceRule[]
   tenderReconciliations TenderReconciliation[]
   handoverSessions  HandoverSession[]
+  inventoryFreezes  InventoryFreeze[]
   openingExceptions OpeningException[]
   varianceCases     VarianceCase[]
 }
@@ -374,6 +375,7 @@ model Branch {
   toleranceRules ToleranceRule[]
   tenderReconciliations TenderReconciliation[]
   handoverSessions  HandoverSession[]
+  inventoryFreezes  InventoryFreeze[]
   openingExceptions OpeningException[]
   varianceCases     VarianceCase[]
 
@@ -570,6 +572,8 @@ model User {
   handoversIncoming HandoverSession[] @relation("HandoverIncoming")
   handoverExceptions HandoverSession[] @relation("HandoverException")
   handoverCashVerified HandoverSession[] @relation("HandoverCashVerifier")
+  inventoryFreezesStarted  InventoryFreeze[] @relation("InventoryFreezeStartedBy")
+  inventoryFreezesReleased InventoryFreeze[] @relation("InventoryFreezeReleasedBy")
   stockAcknowledgements HandoverStockAcknowledgement[]
   openingExceptionsAuthorized OpeningException[]
   varianceCasesOpened   VarianceCase[] @relation("VarianceOpener")
@@ -1915,10 +1919,36 @@ model HandoverSession {
   lockedCounts          StockCountSession[]            @relation("CountLockedByHandover")
   stockAcknowledgements HandoverStockAcknowledgement[]
   openingExceptions     OpeningException[]
+  inventoryFreeze       InventoryFreeze?
 
   @@index([cafeId, status])
   @@index([branchId, createdAt])
   @@index([outgoingShiftId])
+}
+
+/// A transactionally serialized stock-write boundary owned by one handover.
+/// The partial one-active-per-branch index is defined manually in M16 because
+/// Prisma cannot express a partial index predicate.
+model InventoryFreeze {
+  id           String   @id @default(cuid())
+  cafeId       String
+  branchId     String
+  handoverId   String   @unique
+  startedAt    DateTime @default(now())
+  startedById  String
+  releasedAt   DateTime?
+  releasedById String?
+
+  cafe       Cafe            @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  branch     Branch          @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  handover   HandoverSession @relation(fields: [handoverId], references: [id], onDelete: Cascade)
+  startedBy  User            @relation("InventoryFreezeStartedBy", fields: [startedById], references: [id], onDelete: Restrict)
+  releasedBy User?           @relation("InventoryFreezeReleasedBy", fields: [releasedById], references: [id], onDelete: Restrict)
+
+  @@index([cafeId, startedAt])
+  @@index([branchId, startedAt])
+  @@index([startedById])
+  @@index([releasedById])
 }
 
 /// The incoming side inspects stock, line by line, blind.

@@ -60,6 +60,7 @@ import { auditInTransaction } from "@/lib/audit";
 import { round3 } from "@/lib/costing";
 import { isTerminal } from "@/lib/count-disposition";
 import { applyStockMutation, ledgerDeltaAbove, lockItemForUpdate } from "@/lib/ledger";
+import { acquireInventorySharedLocks } from "@/lib/inventory-freeze";
 import {
   EFFECTIVE_EVIDENCE_SELECT,
   effectiveCountEvidence,
@@ -254,6 +255,7 @@ async function applyOneLine(args: {
 
   try {
     return await db.$transaction(async (tx: Prisma.TransactionClient) => {
+      await acquireInventorySharedLocks(tx, [args.branchId]);
       const replay = await ledgerDeltaAbove(tx, args.inventoryItemId, args.countCursor);
       const stockAfter = round3(args.effectiveCounted + replay.delta);
 
