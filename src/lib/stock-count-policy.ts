@@ -20,12 +20,13 @@
 // being absent.
 
 import type {
-  PeriodicFullCountSchedule, StockCountPolicy, StockCountType, StockCountMode,
+  PeriodicFullCountSchedule, Prisma, StockCountPolicy, StockCountType, StockCountMode,
 } from "@prisma/client";
 import { db } from "@/lib/db";
 import { ApiError } from "@/lib/api";
 import { getCafeSettings } from "@/lib/cafe-settings";
 import { businessDateInTz, DEFAULT_TZ } from "@/lib/date-range";
+import { resolveBranchHandoverConfigReadOnly } from "@/lib/handover-config";
 
 /** 400, and it names CYCLE, so the refusal is legible to the person who hit it. */
 export class UnsupportedCountPolicyError extends ApiError {
@@ -124,6 +125,13 @@ export type FullCountDueVerdict = {
   weekday: number | null;
 };
 
+type FullCountDueArgs = {
+  cafeId: string;
+  branchId: string;
+  at: Date;
+  target: PeriodicFullCountTarget;
+};
+
 export async function resolvePeriodicFullCount(
   cafeId: string,
   branchId: string,
@@ -167,16 +175,11 @@ function weekdayForBusinessDate(businessDate: string): number {
   return new Date(Date.UTC(year, month - 1, day)).getUTCDay();
 }
 
-export async function fullCountDue(args: {
-  cafeId: string;
-  branchId: string;
-  at: Date;
-  target: PeriodicFullCountTarget;
-}): Promise<FullCountDueVerdict> {
-  const [resolved, businessDate] = await Promise.all([
-    resolvePeriodicFullCount(args.cafeId, args.branchId),
-    Promise.resolve(businessDateInTz(args.at, DEFAULT_TZ)),
-  ]);
+function fullCountDueFromResolved(
+  args: FullCountDueArgs,
+  resolved: Pick<ResolvedPeriodicFullCount, "schedule" | "weekday">,
+): FullCountDueVerdict {
+  const businessDate = businessDateInTz(args.at, DEFAULT_TZ);
   const base = {
     businessDate,
     target: args.target,
@@ -196,6 +199,25 @@ export async function fullCountDue(args: {
   return weekdayForBusinessDate(businessDate) === resolved.weekday
     ? { ...base, due: true, reason: "WEEKLY_MATCHING_BRANCH_CUSTODY" }
     : { ...base, due: false, reason: "WEEKLY_NON_MATCHING_WEEKDAY" };
+}
+
+export async function fullCountDue(args: {
+  cafeId: string;
+  branchId: string;
+  at: Date;
+  target: PeriodicFullCountTarget;
+}): Promise<FullCountDueVerdict> {
+  const resolved = await resolvePeriodicFullCount(args.cafeId, args.branchId);
+  return fullCountDueFromResolved(args, resolved);
+}
+
+/** Read-only SH-7 verdict using only the caller's transaction. */
+export async function fullCountDueInTransaction(
+  tx: Prisma.TransactionClient,
+  args: FullCountDueArgs,
+): Promise<FullCountDueVerdict> {
+  const config = await resolveBranchHandoverConfigReadOnly(tx, args.cafeId, args.branchId);
+  return fullCountDueFromResolved(args, config.periodic);
 }
 
 /**
@@ -228,16 +250,24 @@ export function countRequiredForHandover(
  * not an implementation detail — a caller cannot narrow the scope because
  * there is nowhere to say so.
  */
-export async function resolveCountScope(args: {
+type ResolveCountScopeArgs = {
   cafeId: string;
   branchId: string;
   type: StockCountType;
   /** Optional, only so a caller that already resolved policy can pass it. */
   policy?: ResolvedStockCountPolicy;
-}): Promise<{ inventoryItemIds: string[]; derivation: "ALL_ELIGIBLE" | "CRITICAL_ONLY" }> {
-  const policy = args.policy ?? (await resolveStockCountPolicy(args.cafeId, args.branchId));
-  if (policy.policy === "CYCLE") throw new UnsupportedCountPolicyError();
+};
 
+type CountScopeReadClient = Pick<Prisma.TransactionClient, "inventoryItem">;
+type CountScope = {
+  inventoryItemIds: string[];
+  derivation: "ALL_ELIGIBLE" | "CRITICAL_ONLY";
+};
+
+async function resolveCountScopeWithClient(
+  client: CountScopeReadClient,
+  args: ResolveCountScopeArgs,
+): Promise<CountScope> {
   if (args.type !== "CRITICAL" && args.type !== "FULL") {
     throw new UnsupportedCountPolicyError(
       `نوع الجرد «${String(args.type)}» غير مدعوم — اختار CRITICAL أو FULL`
@@ -245,7 +275,7 @@ export async function resolveCountScope(args: {
   }
 
   const criticalOnly = args.type === "CRITICAL";
-  const items = await db.inventoryItem.findMany({
+  const items = await client.inventoryItem.findMany({
     where: {
       cafeId: args.cafeId,
       branchId: args.branchId,
@@ -263,4 +293,31 @@ export async function resolveCountScope(args: {
     inventoryItemIds: items.map((i) => i.id),
     derivation: criticalOnly ? "CRITICAL_ONLY" : "ALL_ELIGIBLE",
   };
+}
+
+export async function resolveCountScope(args: {
+  cafeId: string;
+  branchId: string;
+  type: StockCountType;
+  /** Optional, only so a caller that already resolved policy can pass it. */
+  policy?: ResolvedStockCountPolicy;
+}): Promise<CountScope> {
+  const policy = args.policy ?? (await resolveStockCountPolicy(args.cafeId, args.branchId));
+  if (policy.policy === "CYCLE") throw new UnsupportedCountPolicyError();
+  return resolveCountScopeWithClient(db, args);
+}
+
+/** Read-only server-derived scope using only the caller's transaction. */
+export async function resolveCountScopeInTransaction(
+  tx: Prisma.TransactionClient,
+  args: ResolveCountScopeArgs,
+): Promise<CountScope> {
+  if (args.policy?.policy === "CYCLE") throw new UnsupportedCountPolicyError();
+  if (!args.policy) {
+    const config = await resolveBranchHandoverConfigReadOnly(tx, args.cafeId, args.branchId);
+    if (config.configError?.code === "CYCLE_POLICY_UNSUPPORTED") {
+      throw new UnsupportedCountPolicyError();
+    }
+  }
+  return resolveCountScopeWithClient(tx, args);
 }

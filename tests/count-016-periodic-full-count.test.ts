@@ -1,9 +1,11 @@
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { PrismaClient } from "@prisma/client";
 import { db, tag, teardownTaggedCafe } from "./helpers/db";
 import {
   fullCountDue,
+  fullCountDueInTransaction,
   resolvePeriodicFullCount,
 } from "@/lib/stock-count-policy";
 import { businessDateInTz, DEFAULT_TZ } from "@/lib/date-range";
@@ -213,5 +215,94 @@ describe("COUNT-016 periodic full-count boundaries", () => {
       assert.equal(body.includes(forbidden), false, `fullCountDue must not use ${forbidden}`);
     }
     assert.equal(body.includes("ALREADY_COUNTED_TODAY"), false);
+  });
+
+  test("transactional due verdict matches every target, schedule, and 03:00 boundary", async () => {
+    const cases = [
+      { schedule: "DAILY_LAST_HANDOVER", weekday: null, at: "2026-09-01T10:00:00Z", target: "BRANCH_CUSTODY" },
+      { schedule: "DAILY_LAST_HANDOVER", weekday: null, at: "2026-09-01T10:00:00Z", target: "SHIFT_TO_SHIFT" },
+      { schedule: "WEEKLY", weekday: 1, at: "2026-08-31T23:30:00Z", target: "BRANCH_CUSTODY" },
+      { schedule: "WEEKLY", weekday: 1, at: "2026-09-01T00:00:00Z", target: "BRANCH_CUSTODY" },
+      { schedule: "WEEKLY", weekday: 1, at: "2026-08-31T23:30:00Z", target: "SHIFT_TO_SHIFT" },
+      { schedule: "MANUAL_ONLY", weekday: null, at: "2026-09-01T10:00:00Z", target: "BRANCH_CUSTODY" },
+    ] as const;
+
+    for (const sample of cases) {
+      await setCafeSchedule(sample.schedule, sample.weekday);
+      await clearBranchOverride();
+      const args = {
+        cafeId,
+        branchId,
+        at: new Date(sample.at),
+        target: sample.target,
+      };
+      const global = await fullCountDue(args);
+      const transactional = await db.$transaction((tx) => fullCountDueInTransaction(tx, args));
+      assert.deepEqual(transactional, global);
+    }
+  });
+
+  test("transactional due sees uncommitted schedule and performs no writes", async () => {
+    await setCafeSchedule("MANUAL_ONLY", null);
+    await clearBranchOverride();
+    const queries: string[] = [];
+    const client = new PrismaClient({
+      datasourceUrl: process.env.DATABASE_URL,
+      log: [{ emit: "event", level: "query" }],
+    });
+    client.$on("query", (event) => queries.push(event.query));
+
+    try {
+      await client.$transaction(async (tx) => {
+        await tx.branch.update({
+          where: { id: branchId },
+          data: {
+            periodicFullCountScheduleOverride: "DAILY_LAST_HANDOVER",
+            periodicFullCountWeekdayOverride: null,
+          },
+        });
+        queries.length = 0;
+
+        const verdict = await fullCountDueInTransaction(tx, {
+          cafeId,
+          branchId,
+          at: new Date("2026-09-01T10:00:00Z"),
+          target: "BRANCH_CUSTODY",
+        });
+
+        assert.deepEqual(
+          { due: verdict.due, schedule: verdict.schedule, reason: verdict.reason },
+          { due: true, schedule: "DAILY_LAST_HANDOVER", reason: "DAILY_BRANCH_CUSTODY" },
+          "the supplied transaction must expose its uncommitted schedule override",
+        );
+        assert.equal(
+          queries.some((sql) => /\b(?:INSERT|UPDATE|DELETE|TRUNCATE)\b/i.test(sql)),
+          false,
+          "the measured resolver window must contain reads only",
+        );
+
+        await tx.branch.update({
+          where: { id: branchId },
+          data: {
+            periodicFullCountScheduleOverride: null,
+            periodicFullCountWeekdayOverride: null,
+          },
+        });
+      });
+    } finally {
+      await client.$disconnect();
+    }
+  });
+
+  test("transactional due rejects a branch from another cafe", async () => {
+    await assert.rejects(
+      db.$transaction((tx) => fullCountDueInTransaction(tx, {
+        cafeId,
+        branchId: otherCafeBranchId,
+        at: new Date("2026-09-01T10:00:00Z"),
+        target: "BRANCH_CUSTODY",
+      })),
+      /branch|cafe/i,
+    );
   });
 });
