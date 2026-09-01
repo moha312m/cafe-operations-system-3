@@ -298,6 +298,34 @@ export const t = {
   } satisfies Record<Role, string>,
 
   // ── Super Admin (platform owner) panel ──
+  handoverConfig: {
+    title: "إعدادات تسليم المخزون",
+    enabled: "تفعيل عدّ التسليم",
+    mode: "نوع العد",
+    modeValues: { FULL: "كل الأصناف", SELECTED: "أصناف محددة" },
+    ingredients: "الأصناف المختارة",
+    ingredientSearch: "ابحث عن صنف…",
+    noIngredients: "لا توجد أصناف مطابقة",
+    schedule: "جدول العد الدوري",
+    scheduleValues: { MANUAL_ONLY: "يدوي فقط", DAILY_LAST_HANDOVER: "يومي عند آخر تسليم", WEEKLY: "أسبوعي" },
+    weekday: "يوم الأسبوع",
+    weekdays: { sunday: "الأحد", monday: "الاثنين", tuesday: "الثلاثاء", wednesday: "الأربعاء", thursday: "الخميس", friday: "الجمعة", saturday: "السبت" },
+    usingCafeDefault: "يستخدم إعداد الكافيه الافتراضي",
+    save: "حفظ إعدادات التسليم",
+    saving: "جارٍ الحفظ…",
+    loading: "جارٍ تحميل إعدادات التسليم…",
+    loadFailure: "تعذر تحميل إعدادات التسليم",
+    saveSuccess: "تم حفظ إعدادات التسليم",
+    saveFailure: "تعذر حفظ إعدادات التسليم",
+    selectedEmpty: "اختر صنفًا واحدًا على الأقل عند تفعيل الأصناف المحددة",
+    chooseModeFirst: "اختر نوع عدّ مدعومًا أولًا قبل التفعيل",
+    errors: {
+      CYCLE_POLICY_UNSUPPORTED: "سياسة العد الدوري غير مدعومة لإعدادات التسليم",
+      SELECTED_WITH_NO_ITEMS: "لا توجد أصناف نشطة محددة لعدّ التسليم",
+      WEEKLY_WITHOUT_WEEKDAY: "الجدول الأسبوعي يحتاج يومًا محددًا",
+    },
+  },
+
   admin: {
     brand: "إدارة المنصة",
     brandSub: "لوحة تحكم المالك",

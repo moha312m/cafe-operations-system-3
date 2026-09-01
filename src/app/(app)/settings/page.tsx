@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ServingPolicyCard } from "@/components/settings/serving-policy-card";
 import { InventoryPolicyCard } from "@/components/settings/inventory-policy-card";
+import { HandoverConfigPanel } from "@/components/settings/handover-config-panel";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
@@ -141,7 +142,7 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: 
 }
 
 export default function SettingsPage() {
-  const { user } = useApp();
+  const { user, canKey } = useApp();
   const [branches, setBranches] = useState<Branch[]>([]);
   const [branchId, setBranchId] = useState(user.branchId ?? "");
   const [s, setS] = useState<FinSettings | null>(null);
@@ -287,6 +288,8 @@ export default function SettingsPage() {
           <ServingPolicyCard branchId={branchId} showBranchOverride={branches.length > 1} />
 
           <InventoryPolicyCard />
+
+          {canKey("stock_count.configure") && <HandoverConfigPanel branchId={branchId} />}
 
           <LoyaltySettingsCard />
         </>
