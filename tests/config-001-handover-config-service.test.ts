@@ -1,7 +1,14 @@
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
+import { PrismaClient } from "@prisma/client";
 import { db, tag, teardownTaggedCafe } from "./helpers/db";
-import { handoverEnablementPreflight, resolveBranchHandoverConfig, updateBranchHandoverConfig } from "@/lib/handover-config";
+import {
+  handoverEnablementPreflight,
+  handoverEnablementPreflightInTransaction,
+  resolveBranchHandoverConfig,
+  resolveBranchHandoverConfigReadOnly,
+  updateBranchHandoverConfig,
+} from "@/lib/handover-config";
 
 const MARKER = tag("CONFIG001");
 const cafeIds: string[] = [];
@@ -158,5 +165,120 @@ describe("CONFIG-001 handover configuration service", () => {
     assert.equal(await db.auditLog.count({ where: { cafeId, entityId: branchId, action: "HANDOVER_CONFIG_UPDATED" } }), before + 1);
     assert.equal(audit.entity, "Branch");
     assert.ok(audit.details && typeof audit.details === "object");
+  });
+
+  test("transaction-aware resolution reads uncommitted configuration from the supplied transaction", async () => {
+    const cafe = await db.cafe.create({
+      data: {
+        name: `${MARKER} transaction`,
+        slug: `${MARKER}-transaction`.toLowerCase(),
+        settings: { create: { stockCountPolicy: "NO_SHIFT_COUNT", handoverCountType: "FULL" } },
+        branches: { create: { name: "transaction" } },
+      },
+      include: { branches: true },
+    });
+    cafeIds.push(cafe.id);
+
+    const errors = await db.$transaction(async (tx) => {
+      await tx.branch.update({
+        where: { id: cafe.branches[0].id },
+        data: { stockCountPolicyOverride: "CYCLE" },
+      });
+      return handoverEnablementPreflightInTransaction(tx, cafe.id, cafe.branches[0].id);
+    });
+
+    assert.deepEqual(errors.map((error) => error.code), ["CYCLE_POLICY_UNSUPPORTED"]);
+  });
+
+  test("read-only resolution uses in-memory defaults when CafeSettings is absent and emits no write SQL", async () => {
+    const cafe = await db.cafe.create({
+      data: {
+        name: `${MARKER} missing settings`,
+        slug: `${MARKER}-missing-settings`.toLowerCase(),
+        branches: { create: { name: "missing settings" } },
+      },
+      include: { branches: true },
+    });
+    cafeIds.push(cafe.id);
+    const queries: string[] = [];
+    const client = new PrismaClient({
+      datasourceUrl: process.env.DATABASE_URL,
+      log: [{ emit: "event", level: "query" }],
+    });
+    client.$on("query", (event) => queries.push(event.query));
+
+    try {
+      const config = await client.$transaction((tx) =>
+        resolveBranchHandoverConfigReadOnly(tx, cafe.id, cafe.branches[0].id),
+      );
+      assert.equal(config.enabled, true);
+      assert.equal(config.mode, "SELECTED");
+      assert.deepEqual(config.selectedItemIds, []);
+      assert.equal(config.configError?.code, "SELECTED_WITH_NO_ITEMS");
+      assert.equal(await db.cafeSettings.findUnique({ where: { cafeId: cafe.id } }), null);
+      assert.equal(queries.some((sql) => /\b(?:INSERT|UPDATE|DELETE|TRUNCATE)\b/i.test(sql)), false);
+    } finally {
+      await client.$disconnect();
+    }
+  });
+
+  test("transaction-aware preflight returns every configuration error in SH-8 order", async () => {
+    const cafe = await db.cafe.create({
+      data: {
+        name: `${MARKER} all errors`,
+        slug: `${MARKER}-all-errors`.toLowerCase(),
+        settings: { create: {} },
+        branches: {
+          create: {
+            name: "all errors",
+            stockCountPolicyOverride: "CYCLE",
+            handoverCountTypeOverride: "CRITICAL",
+          },
+        },
+      },
+      include: { branches: true },
+    });
+    cafeIds.push(cafe.id);
+
+    const errors = await db.$transaction((tx) =>
+      handoverEnablementPreflightInTransaction(tx, cafe.id, cafe.branches[0].id),
+    );
+
+    assert.deepEqual(errors.map((error) => error.code), [
+      "CYCLE_POLICY_UNSUPPORTED",
+      "SELECTED_WITH_NO_ITEMS",
+    ]);
+  });
+
+  test("transaction-aware resolution preserves SH-8 provenance and rejects a cross-cafe branch", async () => {
+    const cafe = await db.cafe.create({
+      data: {
+        name: `${MARKER} provenance`,
+        slug: `${MARKER}-provenance`.toLowerCase(),
+        settings: { create: { stockCountPolicy: "FULL", handoverCountType: "FULL", periodicFullCountSchedule: "WEEKLY", periodicFullCountWeekday: 4 } },
+        branches: { create: { name: "provenance", stockCountPolicyOverride: "HYBRID", handoverCountTypeOverride: "CRITICAL", periodicFullCountScheduleOverride: "WEEKLY", periodicFullCountWeekdayOverride: 2 } },
+      },
+      include: { branches: true },
+    });
+    const other = await db.cafe.create({
+      data: {
+        name: `${MARKER} tenancy`,
+        slug: `${MARKER}-tenancy`.toLowerCase(),
+        settings: { create: {} },
+        branches: { create: { name: "tenancy" } },
+      },
+      include: { branches: true },
+    });
+    cafeIds.push(cafe.id, other.id);
+
+    const [global, transactional] = await Promise.all([
+      resolveBranchHandoverConfig(cafe.id, cafe.branches[0].id),
+      db.$transaction((tx) => resolveBranchHandoverConfigReadOnly(tx, cafe.id, cafe.branches[0].id)),
+    ]);
+    assert.deepEqual(transactional, global);
+    await assert.rejects(
+      db.$transaction((tx) => resolveBranchHandoverConfigReadOnly(tx, cafe.id, other.branches[0].id)),
+      /Branch does not belong to cafe/,
+    );
   });
 });

@@ -2,10 +2,7 @@ import type { PeriodicFullCountSchedule, Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { ApiError } from "@/lib/api";
 import { auditInTransaction } from "@/lib/audit";
-import {
-  resolvePeriodicFullCount,
-  resolveStockCountPolicy,
-} from "@/lib/stock-count-policy";
+import { getCafeSettings } from "@/lib/cafe-settings";
 
 export type HandoverConfigError =
   | { code: "CYCLE_POLICY_UNSUPPORTED"; message: string }
@@ -44,6 +41,92 @@ function configErrors(args: {
   return errors;
 }
 
+type HandoverConfigReadClient = Pick<
+  Prisma.TransactionClient,
+  "branch" | "cafeSettings" | "inventoryItem"
+>;
+
+type HandoverConfigSettings = {
+  stockCountPolicy: "NO_SHIFT_COUNT" | "CRITICAL" | "FULL" | "HYBRID" | "CYCLE";
+  handoverCountType: "CRITICAL" | "FULL";
+  periodicFullCountSchedule: PeriodicFullCountSchedule;
+  periodicFullCountWeekday: number | null;
+};
+
+const READ_ONLY_DEFAULT_SETTINGS: HandoverConfigSettings = {
+  stockCountPolicy: "HYBRID",
+  handoverCountType: "CRITICAL",
+  periodicFullCountSchedule: "MANUAL_ONLY",
+  periodicFullCountWeekday: null,
+};
+
+function inherited<T>(cafeValue: T, branchOverride: T | null) {
+  return branchOverride === null
+    ? { value: cafeValue, source: "CAFE" as const }
+    : { value: branchOverride, source: "BRANCH" as const };
+}
+
+async function readHandoverConfig(
+  client: HandoverConfigReadClient,
+  cafeId: string,
+  branchId: string,
+  cafeSettings: HandoverConfigSettings | null,
+): Promise<{ config: BranchHandoverConfig; errors: HandoverConfigError[] }> {
+  const branch = await client.branch.findUnique({
+    where: { id: branchId },
+    select: {
+      cafeId: true,
+      stockCountPolicyOverride: true,
+      handoverCountTypeOverride: true,
+      periodicFullCountScheduleOverride: true,
+      periodicFullCountWeekdayOverride: true,
+    },
+  });
+  if (!branch) throw new ApiError(404, "Branch not found");
+  if (branch.cafeId !== cafeId) {
+    throw new ApiError(400, "Branch does not belong to cafe");
+  }
+
+  const settings = cafeSettings ?? READ_ONLY_DEFAULT_SETTINGS;
+  const policy = inherited(settings.stockCountPolicy, branch.stockCountPolicyOverride);
+  const handoverCountType = inherited(settings.handoverCountType, branch.handoverCountTypeOverride);
+  const schedule = inherited(settings.periodicFullCountSchedule, branch.periodicFullCountScheduleOverride);
+  const weekday = branch.periodicFullCountScheduleOverride === null
+    ? { value: settings.periodicFullCountWeekday, source: "CAFE" as const }
+    : { value: branch.periodicFullCountWeekdayOverride, source: "BRANCH" as const };
+  const mode = handoverCountType.value === "FULL" ? "FULL" : "SELECTED";
+  const selectedItemIds = mode === "SELECTED"
+    ? (await client.inventoryItem.findMany({
+      where: { cafeId, branchId, archivedAt: null, isActive: true, isCritical: true },
+      select: { id: true },
+      orderBy: { name: "asc" },
+    })).map((item) => item.id)
+    : [];
+  const errors = configErrors({
+    policy: policy.value,
+    mode,
+    selectedItemIds,
+    schedule: schedule.value,
+    weekday: weekday.value,
+  });
+  return {
+    config: {
+      enabled: policy.value !== "NO_SHIFT_COUNT",
+      mode,
+      selectedItemIds,
+      periodic: { schedule: schedule.value, weekday: weekday.value },
+      source: {
+        enabled: policy.source,
+        mode: handoverCountType.source,
+        schedule: schedule.source,
+        weekday: weekday.source,
+      },
+      configError: errors[0] ?? null,
+    },
+    errors,
+  };
+}
+
 const message: Record<HandoverConfigError["code"], string> = {
   CYCLE_POLICY_UNSUPPORTED: "CYCLE policy is not supported for handover configuration",
   SELECTED_WITH_NO_ITEMS: "SELECTED handover mode has no selected active items",
@@ -59,44 +142,53 @@ export async function resolveBranchHandoverConfig(
   cafeId: string,
   branchId: string,
 ): Promise<BranchHandoverConfig> {
-  const [policy, periodic] = await Promise.all([
-    resolveStockCountPolicy(cafeId, branchId),
-    resolvePeriodicFullCount(cafeId, branchId),
-  ]);
-  const mode = policy.handoverCountType === "FULL" ? "FULL" : "SELECTED";
-  const selectedItemIds = mode === "SELECTED"
-    ? (await db.inventoryItem.findMany({
-      where: { cafeId, branchId, archivedAt: null, isActive: true, isCritical: true },
-      select: { id: true },
-      orderBy: { name: "asc" },
-    })).map((item) => item.id)
-    : [];
-  const errors = configErrors({
-    policy: policy.policy,
-    mode,
-    selectedItemIds,
-    schedule: periodic.schedule,
-    weekday: periodic.weekday,
-  });
-  return {
-    enabled: policy.policy !== "NO_SHIFT_COUNT",
-    mode,
-    selectedItemIds,
-    periodic: { schedule: periodic.schedule, weekday: periodic.weekday },
-    source: {
-      enabled: policy.source.policy,
-      mode: policy.source.handoverCountType,
-      schedule: periodic.source.schedule,
-      weekday: periodic.source.weekday,
-    },
-    configError: errors[0] ?? null,
-  };
+  const settings = await getCafeSettings(cafeId);
+  return (await readHandoverConfig(db, cafeId, branchId, settings)).config;
 }
 
 export async function handoverEnablementPreflight(cafeId: string, branchId: string): Promise<HandoverConfigError[]> {
-  const config = await resolveBranchHandoverConfig(cafeId, branchId);
-  const policy = await resolveStockCountPolicy(cafeId, branchId);
-  return configErrors({ policy: policy.policy, mode: config.mode, selectedItemIds: config.selectedItemIds, schedule: config.periodic.schedule, weekday: config.periodic.weekday });
+  const settings = await getCafeSettings(cafeId);
+  return (await readHandoverConfig(db, cafeId, branchId, settings)).errors;
+}
+
+/**
+ * Resolves the SH-8 handover configuration using only the caller's
+ * transaction. Missing settings are represented by the schema defaults in
+ * memory, so this read-only path never triggers CafeSettings lazy creation.
+ */
+export async function resolveBranchHandoverConfigReadOnly(
+  tx: Prisma.TransactionClient,
+  cafeId: string,
+  branchId: string,
+): Promise<BranchHandoverConfig> {
+  const settings = await tx.cafeSettings.findUnique({
+    where: { cafeId },
+    select: {
+      stockCountPolicy: true,
+      handoverCountType: true,
+      periodicFullCountSchedule: true,
+      periodicFullCountWeekday: true,
+    },
+  });
+  return (await readHandoverConfig(tx, cafeId, branchId, settings)).config;
+}
+
+/** Returns every SH-8 configuration error from the caller's transaction. */
+export async function handoverEnablementPreflightInTransaction(
+  tx: Prisma.TransactionClient,
+  cafeId: string,
+  branchId: string,
+): Promise<HandoverConfigError[]> {
+  const settings = await tx.cafeSettings.findUnique({
+    where: { cafeId },
+    select: {
+      stockCountPolicy: true,
+      handoverCountType: true,
+      periodicFullCountSchedule: true,
+      periodicFullCountWeekday: true,
+    },
+  });
+  return (await readHandoverConfig(tx, cafeId, branchId, settings)).errors;
 }
 
 export async function updateBranchHandoverConfig(args: {
