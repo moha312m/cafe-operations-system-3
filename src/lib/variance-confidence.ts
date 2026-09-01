@@ -170,6 +170,32 @@ export async function confidenceForCountedItem(args: {
  * be measured against is not, and multiplying the two would produce a
  * confident number resting on a gap.
  */
+export type UnitCostSnapshot =
+  | {
+      available: true;
+      unitCost: number;
+      source: "INVENTORY_ITEM_COST_PER_UNIT";
+      capturedAt: Date;
+    }
+  | { available: false; reason: "MISSING_COST" };
+
+/**
+ * Captures the unit cost observed when a count is judged. This is deliberately
+ * independent from theoretical-confidence: an uncertain variance still has a
+ * historically meaningful observed item cost.
+ */
+export function captureUnitCost(costPerUnit: number | null, capturedAt: Date): UnitCostSnapshot {
+  if (costPerUnit === null || !Number.isFinite(costPerUnit) || costPerUnit <= 0) {
+    return { available: false, reason: "MISSING_COST" };
+  }
+  return {
+    available: true,
+    unitCost: costPerUnit,
+    source: "INVENTORY_ITEM_COST_PER_UNIT",
+    capturedAt,
+  };
+}
+
 export function stockCostImpact(args: {
   varianceQuantity: number;
   costPerUnit: number | null;

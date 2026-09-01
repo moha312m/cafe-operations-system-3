@@ -1438,6 +1438,9 @@ model StockCountLine {
   costImpact            Decimal? @db.Decimal(12, 2)
   costImpactAvailable   Boolean  @default(false)
   costUnavailableReason String?
+  unitCostSnapshot      Decimal? @db.Decimal(12, 2)
+  unitCostSource        String?
+  unitCostCapturedAt    DateTime?
 
   reasonCodeId String?
   reasonNote   String?

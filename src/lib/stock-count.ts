@@ -44,6 +44,7 @@ import {
 } from "@/lib/count-evidence";
 import { openVarianceCase, resolveRecountPolicy } from "@/lib/variance-case";
 import {
+  captureUnitCost,
   confidenceForCountedItem,
   lastTrustedBaselineAt,
   stockCostImpact,
@@ -762,6 +763,7 @@ export async function submitCountSession(args: {
   let outside = 0;
   const verdicts: { id: string; disposition: CountLineDisposition }[] = [];
   const updates: { id: string; data: Prisma.StockCountLineUpdateInput }[] = [];
+  const judgedAt = new Date();
 
   for (const line of session.lines) {
     // The variance under judgement belongs to the observation in force: after
@@ -788,9 +790,11 @@ export async function submitCountSession(args: {
       windowFrom: window.at,
       countedAt: observedAt,
     });
+    const observedUnitCost = Number(line.inventoryItem.costPerUnit);
+    const unitCostSnapshot = captureUnitCost(observedUnitCost, judgedAt);
     const cost = stockCostImpact({
       varianceQuantity: variance,
-      costPerUnit: Number(line.inventoryItem.costPerUnit),
+      costPerUnit: observedUnitCost,
       confidence: rated.confidence,
     });
 
@@ -807,6 +811,9 @@ export async function submitCountSession(args: {
       costImpact: cost.available ? cost.value : null,
       costImpactAvailable: cost.available,
       costUnavailableReason: cost.available ? null : cost.reason,
+      unitCostSnapshot: unitCostSnapshot.available ? unitCostSnapshot.unitCost : null,
+      unitCostSource: unitCostSnapshot.available ? unitCostSnapshot.source : null,
+      unitCostCapturedAt: unitCostSnapshot.available ? unitCostSnapshot.capturedAt : null,
     };
 
     if (isTerminal(line.disposition)) {
@@ -846,7 +853,7 @@ export async function submitCountSession(args: {
 
   const needsRecount = verdicts.some((v) => v.disposition === "RECOUNT_REQUIRED");
   const status: SubmitCountResult["status"] = needsRecount ? "RECOUNT_REQUIRED" : "SUBMITTED";
-  const submittedAt = new Date();
+  const submittedAt = judgedAt;
 
   // One transaction: a submission that gave half the lines a verdict and then
   // failed would leave the count in a state nobody chose.
