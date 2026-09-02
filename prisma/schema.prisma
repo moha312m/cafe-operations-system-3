@@ -1300,6 +1300,14 @@ enum RequiredItemTrigger {
   MANUAL_FULL
 }
 
+/// How a boundary figure was arrived at. PHYSICAL_COUNT means somebody
+/// looked at the shelf; SYSTEM_CARRIED means the book figure was carried
+/// forward because nobody did.
+enum BoundarySource {
+  PHYSICAL_COUNT
+  SYSTEM_CARRIED
+}
+
 enum ReasonDomain {
   STOCK
   CASH
@@ -1493,6 +1501,7 @@ model StockCountLine {
   varianceCase             VarianceCase?
   rebase                   StockCountRebase?
   satisfiesRequiredItem    HandoverRequiredItem?          @relation("HandoverRequiredItemSatisfiedByLine")
+  stockBoundaries          HandoverStockBoundary[]        @relation("HandoverStockBoundaryEvidence")
 
   @@unique([sessionId, inventoryItemId])
   @@index([sessionId])
@@ -1967,6 +1976,7 @@ model HandoverSession {
   lockedCounts                StockCountSession[]            @relation("CountLockedByHandover")
   accountabilityCountSessions StockCountSession[]            @relation("HandoverAccountabilityCountSessions")
   requiredItems               HandoverRequiredItem[]
+  stockBoundaries             HandoverStockBoundary[]
   stockAcknowledgements       HandoverStockAcknowledgement[]
   openingExceptions           OpeningException[]
   inventoryFreeze             InventoryFreeze?
@@ -1996,6 +2006,42 @@ model HandoverRequiredItem {
   @@unique([handoverId, inventoryItemId])
   @@index([handoverId])
   @@index([inventoryItemId])
+}
+
+/// The complete closing position of a branch at one handover: one row per
+/// ACTIVE, non-archived inventory item, whether or not it was counted.
+///
+/// A StockCountLine only exists for an item that was in scope, so under
+/// SELECTED most of the shelf has no line at all — and reading "no line" as
+/// "no variance" is the silent zero this table exists to prevent. The
+/// boundary is the artifact rather than the count.
+///
+/// There is deliberately NO variance column and nobody is named: an
+/// unverified row carries the book figure and must have nowhere to record a
+/// difference it cannot know. `quantity` and `itemVersion` always describe
+/// the same instant — a counted figure paired with a later ledger cursor
+/// would be a boundary that looks like evidence and is not.
+model HandoverStockBoundary {
+  id               String         @id @default(cuid())
+  handoverId       String
+  inventoryItemId  String
+  source           BoundarySource
+  verified         Boolean
+  quantity         Decimal        @db.Decimal(12, 3)
+  itemVersion      BigInt
+  stockCountLineId String?
+  unitCostSnapshot Decimal?       @db.Decimal(12, 2)
+  unitCostSource   String?
+  createdAt        DateTime       @default(now())
+
+  handover       HandoverSession @relation(fields: [handoverId], references: [id], onDelete: Cascade)
+  inventoryItem  InventoryItem   @relation(fields: [inventoryItemId], references: [id], onDelete: Restrict)
+  stockCountLine StockCountLine? @relation("HandoverStockBoundaryEvidence", fields: [stockCountLineId], references: [id], onDelete: Restrict)
+
+  @@unique([handoverId, inventoryItemId])
+  @@index([handoverId])
+  @@index([inventoryItemId])
+  @@index([stockCountLineId])
 }
 
 /// A transactionally serialized stock-write boundary owned by one handover.
@@ -2156,15 +2202,16 @@ model InventoryItem {
   /// cannot express commit order and cannot serve as a count point.
   ledgerVersion BigInt @default(0)
 
-  cafe                  Cafe                   @relation(fields: [cafeId], references: [id], onDelete: Cascade)
-  branch                Branch                 @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  transactions          InventoryTransaction[]
-  recipeItems           RecipeItem[]
-  countLines            StockCountLine[]
-  toleranceRules        ToleranceRule[]
-  purchaseItems         PurchaseInvoiceItem[]
-  countRebases          StockCountRebase[]
-  handoverRequiredItems HandoverRequiredItem[]
+  cafe                    Cafe                    @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  branch                  Branch                  @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  transactions            InventoryTransaction[]
+  recipeItems             RecipeItem[]
+  countLines              StockCountLine[]
+  toleranceRules          ToleranceRule[]
+  purchaseItems           PurchaseInvoiceItem[]
+  countRebases            StockCountRebase[]
+  handoverRequiredItems   HandoverRequiredItem[]
+  handoverStockBoundaries HandoverStockBoundary[]
 
   @@index([cafeId])
   @@index([branchId])
