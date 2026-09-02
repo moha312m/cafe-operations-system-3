@@ -26,6 +26,7 @@
 import type {
   CountLineDisposition,
   Prisma,
+  StockCountAccountabilityContext,
   StockCountMode,
   StockCountStatus,
   StockCountType,
@@ -913,11 +914,29 @@ export async function submitCountSession(args: {
 // The refusal names the offending lines. A 409 saying only "some lines are
 // unsettled" leaves the person holding it with no move to make.
 
+/**
+ * What a count carrying an accountability context hands to the acceptance
+ * that will answer for it.
+ *
+ * A count taken FOR a handover, or for a branch opening verification, is a
+ * proposal nobody has accepted yet. Opening cases at confirmation would mean
+ * a shortage is investigated — and a custody named on it — before anyone
+ * agreed the figure was right. So confirmation opens nothing and returns this
+ * instead; SH-20/21/22 open the cases from the accepted evidence.
+ */
+export type DeferredAccountability = {
+  context: Exclude<StockCountAccountabilityContext, "NONE">;
+  handoverId: string | null;
+  openingBranchCustodyPeriodId: string | null;
+};
+
 export type ConfirmCountResult = {
   status: "CONFIRMED";
   confirmedAt: Date;
   varianceCaseIds: string[];
   alreadyConfirmed: boolean;
+  /** NULL on the ordinary path — a count answering to nobody but itself. */
+  deferred: DeferredAccountability | null;
 };
 
 export const COUNT_CONFIRMED_AUDIT_ACTION = "COUNT_CONFIRMED";
@@ -966,6 +985,9 @@ export async function confirmCountSession(args: {
       status: true,
       confirmedAt: true,
       idempotencyKey: true,
+      accountabilityContext: true,
+      handoverId: true,
+      openingBranchCustodyPeriodId: true,
       lines: {
         select: {
           ...EFFECTIVE_EVIDENCE_SELECT,
@@ -987,6 +1009,19 @@ export async function confirmCountSession(args: {
 
   const lineIds = session.lines.map((l) => l.id);
 
+  // Resolved once, from the session, and returned identically from every
+  // successful exit below. A retry that dropped the binding would leave the
+  // acceptance nothing to key on, which is the failure this whole deferral
+  // exists to prevent.
+  const deferred: DeferredAccountability | null =
+    session.accountabilityContext === "NONE"
+      ? null
+      : {
+          context: session.accountabilityContext,
+          handoverId: session.handoverId,
+          openingBranchCustodyPeriodId: session.openingBranchCustodyPeriodId,
+        };
+
   // Already done. Same key or not, the count is confirmed and saying so is
   // the truthful answer; what must never happen is a second set of cases.
   if (session.status === "CONFIRMED" || session.status === "LOCKED") {
@@ -995,6 +1030,7 @@ export async function confirmCountSession(args: {
       confirmedAt: session.confirmedAt ?? new Date(),
       varianceCaseIds: await casesFor(lineIds),
       alreadyConfirmed: true,
+      deferred,
     };
   }
 
@@ -1026,6 +1062,13 @@ export async function confirmCountSession(args: {
       },
     });
     if (claimed.count === 0) return { won: false, caseIds: [] as string[] };
+
+    // The deferral, and the whole of it. Everything above this point runs
+    // exactly as it did before M22 — the count is confirmed, its lines keep
+    // their dispositions, the audit row is written. Only NONE takes the
+    // generic case-opening path below; handover and branch-opening contexts
+    // are answered later, by different atomic custody transactions.
+    if (deferred) return { won: true, caseIds: [] as string[] };
 
     const caseIds: string[] = [];
     for (const line of accepted) {
@@ -1074,6 +1117,7 @@ export async function confirmCountSession(args: {
       confirmedAt: current.confirmedAt ?? confirmedAt,
       varianceCaseIds: await casesFor(lineIds),
       alreadyConfirmed: true,
+      deferred,
     };
   }
 
@@ -1088,6 +1132,7 @@ export async function confirmCountSession(args: {
       lineCount: session.lines.length,
       acceptedVarianceLines: accepted.length,
       varianceCaseIds: outcome.caseIds,
+      deferredContext: deferred?.context ?? null,
       idempotencyKey: args.idempotencyKey,
     },
   });
@@ -1097,6 +1142,7 @@ export async function confirmCountSession(args: {
     confirmedAt,
     varianceCaseIds: outcome.caseIds,
     alreadyConfirmed: false,
+    deferred,
   };
 }
 

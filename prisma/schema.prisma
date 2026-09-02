@@ -1209,15 +1209,16 @@ model CustodyPeriod {
   participants                     CustodyParticipant[]
   shiftLinks                       ShiftCustody[]
   countSessions                    StockCountSession[]
-  openingVerificationCountSessions StockCountSession[]    @relation("BranchOpeningVerificationCounts")
-  handoversOutCash                 HandoverSession[]      @relation("HandoverOutCash")
-  handoversOutStock                HandoverSession[]      @relation("HandoverOutStock")
-  handoversInCash                  HandoverSession[]      @relation("HandoverInCash")
-  handoversInStock                 HandoverSession[]      @relation("HandoverInStock")
+  openingVerificationCountSessions StockCountSession[]        @relation("BranchOpeningVerificationCounts")
+  handoversOutCash                 HandoverSession[]          @relation("HandoverOutCash")
+  handoversOutStock                HandoverSession[]          @relation("HandoverOutStock")
+  handoversInCash                  HandoverSession[]          @relation("HandoverInCash")
+  handoversInStock                 HandoverSession[]          @relation("HandoverInStock")
   openingExceptions                OpeningException[]
   varianceCases                    VarianceCase[]
+  varianceSpanLinks                StockVarianceSpanCustody[]
   inventoryTransactions            InventoryTransaction[]
-  servedOrders                     Order[]                @relation("OrderServedStockCustody")
+  servedOrders                     Order[]                    @relation("OrderServedStockCustody")
 
   @@index([cafeId, status])
   @@index([branchId, scope, status])
@@ -1722,6 +1723,24 @@ enum VarianceCaseType {
   OPENING_EXCEPTION
 }
 
+/// WHO a stock difference may be pinned on, decided once from the evidence
+/// and stored — never re-inferred at read time.
+///
+/// `NOT_APPLICABLE` is the absence of the question, not a negative answer to
+/// it: CASH, TENDER and OPENING_EXCEPTION cases carry it, and so does a stock
+/// case opened outside handover accountability. Only the two middle values
+/// are a statement that the difference cannot be pinned on a person.
+enum VarianceAttribution {
+  /// Verified opening AND verified closing, one custody throughout.
+  VERIFIED_SHIFT
+  /// The span crosses one or more boundaries nobody observed.
+  PERIOD_UNRESOLVED
+  /// It arose while the branch itself held the stock.
+  BRANCH_CUSTODY
+  /// CASH / TENDER / OPENING_EXCEPTION, and pre-accountability stock cases.
+  NOT_APPLICABLE
+}
+
 enum VarianceCaseStatus {
   OPEN
   UNDER_INVESTIGATION
@@ -1760,6 +1779,17 @@ model VarianceCase {
 
   confidence TheoreticalConfidence @default(UNVERIFIABLE)
 
+  /// The second, independent gate on responsibility. `confidence` says how
+  /// far the FIGURE can be trusted; this says whether the difference can be
+  /// pinned on one custody at all. Both must pass before a name is written.
+  attribution VarianceAttribution @default(NOT_APPLICABLE)
+
+  /// The handover acceptance that turned counted evidence into this case.
+  /// NULL on every case a count opened directly. SET NULL rather than
+  /// cascade: the investigation is a record of something that happened, and
+  /// must outlive the transfer that surfaced it.
+  acceptedHandoverId String?
+
   /// Investigation outcome ONLY. No payroll effect in this milestone, and
   /// never a side effect of a difference being found — responsibility
   /// follows custody and evidence, not attendance.
@@ -1794,6 +1824,11 @@ model VarianceCase {
   resolvedBy             User? @relation("VarianceResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
   assignedResponsibility User? @relation("VarianceResponsibility", fields: [assignedResponsibilityUserId], references: [id], onDelete: SetNull)
 
+  acceptedHandover HandoverSession? @relation("HandoverAcceptedVarianceCases", fields: [acceptedHandoverId], references: [id], onDelete: SetNull)
+
+  /// At most one. A case is about one item over one span.
+  varianceSpan StockVarianceSpan?
+
   /// The cash link, from the other side. `Shift.cashVarianceCaseId` is
   /// unique, so this is one-to-one.
   cashShift Shift? @relation("ShiftCashVariance")
@@ -1802,6 +1837,69 @@ model VarianceCase {
   @@index([branchId, type])
   @@index([custodyPeriodId])
   @@index([shiftId])
+  @@index([acceptedHandoverId])
+}
+
+/// The boundaries a PERIOD_UNRESOLVED difference actually crossed.
+///
+/// A period variance IS evidenced by a count line — the closing boundary that
+/// found the gap — so it stays a STOCK `VarianceCase` and Requirement 20
+/// holds. What differs is that it names no custody, and this row says why:
+/// between the last verified observation and this one there were boundaries
+/// nobody stood in front of, or the stock changed hands.
+///
+/// `fromBoundaryId` and `toBoundaryId` are deliberately plain columns rather
+/// than foreign keys. Boundaries cascade away with their handover, and
+/// `VarianceCase.acceptedHandoverId` is SET NULL precisely so the case
+/// survives that; a RESTRICT here would contradict it, and a CASCADE would
+/// delete the span out from under a case that still exists.
+model StockVarianceSpan {
+  id              String @id @default(cuid())
+  varianceCaseId  String @unique
+  inventoryItemId String
+
+  /// The last VERIFIED boundary before the gap. NULL means there has never
+  /// been one — which is not the same statement as a boundary of zero.
+  fromBoundaryId String?
+  fromVerifiedAt DateTime?
+  /// The verified closing boundary that found the difference.
+  toBoundaryId   String
+  toVerifiedAt   DateTime
+
+  /// How many unobserved boundaries the span crossed. Zero here with a span
+  /// present means the custody changed rather than the evidence lapsing.
+  unverifiedBoundaryCount Int
+
+  createdAt DateTime @default(now())
+
+  varianceCase  VarianceCase  @relation(fields: [varianceCaseId], references: [id], onDelete: Cascade)
+  inventoryItem InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Restrict)
+
+  custodyLinks StockVarianceSpanCustody[]
+
+  @@index([inventoryItemId])
+  @@index([toBoundaryId])
+}
+
+/// Every custody period the span crossed, one row each.
+///
+/// A join table rather than a JSON array because the Dashboard's "Responsible
+/// Shift / User Summary" must be a bounded aggregate query, and a JSON array
+/// cannot be joined. RESTRICT on the period for the same reason
+/// `VarianceCase.custodyPeriod` uses it: a period named in a span cannot be
+/// deleted out from under it.
+model StockVarianceSpanCustody {
+  id              String @id @default(cuid())
+  spanId          String
+  custodyPeriodId String
+
+  createdAt DateTime @default(now())
+
+  span          StockVarianceSpan @relation(fields: [spanId], references: [id], onDelete: Cascade)
+  custodyPeriod CustodyPeriod     @relation(fields: [custodyPeriodId], references: [id], onDelete: Restrict)
+
+  @@unique([spanId, custodyPeriodId])
+  @@index([custodyPeriodId])
 }
 
 /// A confirmed physical count becoming the operational baseline.
@@ -1983,6 +2081,7 @@ model HandoverSession {
   acceptedStockCountSession StockCountSession? @relation("HandoverAcceptedStockCountSession", fields: [acceptedStockCountSessionId], references: [id], onDelete: Restrict)
   rejectionReason           ReasonCode?        @relation(fields: [rejectionReasonCodeId], references: [id], onDelete: SetNull)
 
+  acceptedVarianceCases       VarianceCase[]                 @relation("HandoverAcceptedVarianceCases")
   lockedCounts                StockCountSession[]            @relation("CountLockedByHandover")
   accountabilityCountSessions StockCountSession[]            @relation("HandoverAccountabilityCountSessions")
   requiredItems               HandoverRequiredItem[]
@@ -2222,6 +2321,7 @@ model InventoryItem {
   countRebases            StockCountRebase[]
   handoverRequiredItems   HandoverRequiredItem[]
   handoverStockBoundaries HandoverStockBoundary[]
+  varianceSpans           StockVarianceSpan[]
 
   @@index([cafeId])
   @@index([branchId])

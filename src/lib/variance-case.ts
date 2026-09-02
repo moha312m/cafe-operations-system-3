@@ -34,7 +34,13 @@
 // through `applyStockMutation`. Responsibility is an investigation outcome
 // somebody records, never a side effect of a difference being found.
 
-import type { Prisma, TheoreticalConfidence, VarianceCaseStatus, VarianceCaseType } from "@prisma/client";
+import type {
+  Prisma,
+  TheoreticalConfidence,
+  VarianceAttribution,
+  VarianceCaseStatus,
+  VarianceCaseType,
+} from "@prisma/client";
 import { db } from "@/lib/db";
 import { ApiError } from "@/lib/api";
 import { auditInTransaction } from "@/lib/audit";
@@ -68,6 +74,14 @@ type OpenArgs = {
   amountVariance?: number | null;
   financialImpact: FinancialImpact;
   confidence?: TheoreticalConfidence;
+  /**
+   * Who the difference may be pinned on. Defaults to `NOT_APPLICABLE`, so the
+   * CASH, TENDER and OPENING call sites are untouched: attribution is a
+   * question about a stock span, and those cases are not one.
+   */
+  attribution?: VarianceAttribution;
+  /** The handover acceptance that turned counted evidence into this case. */
+  acceptedHandoverId?: string | null;
   openedById: string;
 };
 
@@ -321,6 +335,8 @@ export async function openVarianceCase(
         amountVariance: args.amountVariance ?? null,
         ...impactColumns(args.financialImpact),
         confidence: args.confidence ?? "UNVERIFIABLE",
+        attribution: args.attribution ?? "NOT_APPLICABLE",
+        acceptedHandoverId: args.acceptedHandoverId ?? null,
         blocking,
         openedById: args.openedById,
       },
@@ -402,6 +418,17 @@ const STATUS_LABEL: Record<VarianceCaseStatus, string> = {
  * then the status updated, rather than one read a moment earlier that a
  * concurrent move may already have changed.
  */
+/**
+ * Whether an attribution allows a name to be written on the case.
+ *
+ * VERIFIED_SHIFT allows it; PERIOD_UNRESOLVED and BRANCH_CUSTODY are the two
+ * verdicts that say the difference is not one person's, and they refuse.
+ * NOT_APPLICABLE is not a verdict at all — see the call site.
+ */
+export function mayAssignByAttribution(a: VarianceAttribution): boolean {
+  return a !== "PERIOD_UNRESOLVED" && a !== "BRANCH_CUSTODY";
+}
+
 export async function advanceVarianceCase(args: {
   caseId: string;
   to: VarianceCaseStatus;
@@ -412,7 +439,7 @@ export async function advanceVarianceCase(args: {
   return db.$transaction(async (tx) => {
     const current = await tx.varianceCase.findUnique({
       where: { id: args.caseId },
-      select: { id: true, cafeId: true, status: true, confidence: true },
+      select: { id: true, cafeId: true, status: true, confidence: true, attribution: true },
     });
     if (!current) throw new ApiError(404, "حالة الفرق غير موجودة");
 
@@ -430,6 +457,23 @@ export async function advanceVarianceCase(args: {
       throw new ApiError(
         400,
         "مينفعش تحدد مسؤولية على فرق تقديره غير مؤكد — لازم الأدلة تكون VERIFIED"
+      );
+    }
+
+    // The second gate, independent of the first. `confidence` says how far
+    // the FIGURE can be trusted; `attribution` says whether the difference can
+    // be pinned on one custody at all, and a shortage that spans boundaries
+    // nobody observed cannot be — whatever its figure is worth.
+    //
+    // Only the two verdicts that positively refuse refuse here.
+    // `NOT_APPLICABLE` is the absence of the question — it is what every CASH,
+    // TENDER and OPENING case carries, and what a stock case outside handover
+    // accountability carries — so it must not take behaviour away that those
+    // cases have always had.
+    if (args.to === "RESPONSIBILITY_ASSIGNED" && !mayAssignByAttribution(current.attribution)) {
+      throw new ApiError(
+        400,
+        `مينفعش تحدد مسؤولية على فرق مش منسوب لعهدة واحدة متحقق منها (${current.attribution})`
       );
     }
 
