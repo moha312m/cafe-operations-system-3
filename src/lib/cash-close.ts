@@ -72,7 +72,7 @@
 // away by rewriting the takings is the failure the whole feature exists to
 // make impossible.
 
-import type { Prisma } from "@prisma/client";
+import type { HandoverTarget, Prisma, ShiftStatus } from "@prisma/client";
 import { db } from "@/lib/db";
 import { ApiError } from "@/lib/api";
 import { auditInTransaction } from "@/lib/audit";
@@ -84,6 +84,18 @@ import {
   type PersistedTenderSettlement,
   type TenderSettlementInputs,
 } from "@/lib/tender-settlement";
+import { handoverStartBlockers } from "@/lib/handover-blockers";
+import {
+  resolveBranchHandoverConfigReadOnly,
+  type HandoverConfigError,
+} from "@/lib/handover-config";
+import { acquireInventoryExclusiveLock } from "@/lib/inventory-freeze";
+import {
+  createHandoverInClose,
+  finalizeCashCustodyAtFinancialClose,
+  HandoverBlockedError,
+  type CashCustodyFinalization,
+} from "@/lib/handover";
 
 /** The column is Decimal(10,2); every comparison happens at that resolution. */
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -140,6 +152,14 @@ export function resolveVarianceReason(
   return trimmed;
 }
 
+/** The two handover capabilities a close may need, resolved by the route. */
+export type CloseHandoverGrants = {
+  /** `handover.submit` — may hand the branch's stock to the next shift. */
+  handoverSubmit: boolean;
+  /** `handover.exception` — may end employee stock custody entirely. */
+  handoverException: boolean;
+};
+
 export type ShiftCloseArgs = {
   shiftId: string;
   /** The physically counted drawer. */
@@ -158,6 +178,32 @@ export type ShiftCloseArgs = {
   actorId: string;
   /** True when the closer is not the custodian — recorded, never blocked. */
   closedByManager: boolean;
+  /**
+   * Where the stock this shift held is going. Required when, and only
+   * when, the branch's effective policy requires a handover — a café that
+   * does not count at handover must not be made to answer a question about
+   * one.
+   *
+   * It is INTENT, stated by whoever pressed Close, and nothing here derives
+   * it: no clock, no count of open shifts, no readiness check, no query
+   * asking whether this is the day's last handover. A reconstruction would
+   * be this system guessing at responsibility, and responsibility is the
+   * one thing it is not allowed to guess at.
+   */
+  handoverTarget?: HandoverTarget | null;
+  /**
+   * What the ROUTE established this actor may do, resolved before the
+   * transaction opened.
+   *
+   * Authorization is the route's job and always was. It is passed in rather
+   * than re-read here because whether a handover is required at all is only
+   * settled INSIDE this transaction, under the shift lock — so the route
+   * cannot know in advance which permission to demand, and this function
+   * has no session to ask. Absent grants DENY: a caller that established
+   * nothing gets a handover-free close or a refusal, never an unchecked
+   * handover.
+   */
+  grants?: CloseHandoverGrants;
 };
 
 export type ShiftCloseResult = {
@@ -175,6 +221,25 @@ export type ShiftCloseResult = {
    * facts and the schema keeps them apart.
    */
   tenders: PersistedTenderSettlement[];
+  /**
+   * `CLOSED`, or `AWAITING_HANDOVER` when the money is settled and the
+   * shelf is frozen but the stock has still to change hands.
+   */
+  status: ShiftStatus;
+  handoverRequired: boolean;
+  handoverTarget: HandoverTarget | null;
+  handoverId: string | null;
+  freezeId: string | null;
+  requiredItemCount: number | null;
+  /**
+   * A configuration this feature cannot serve, recorded rather than thrown.
+   * Today that is `CYCLE` alone: the café keeps closing shifts exactly as it
+   * does now and simply does not get handovers until an owner changes the
+   * policy themselves.
+   */
+  handoverConfigIssue: HandoverConfigError | null;
+  /** The CASH discharge a BRANCH_CUSTODY close performed, if it performed one. */
+  cashCustodyFinalization: CashCustodyFinalization | null;
 };
 
 /**
@@ -205,6 +270,11 @@ async function lockShift(tx: Prisma.TransactionClient, shiftId: string): Promise
 export async function closeShiftWithSettlement(
   args: ShiftCloseArgs
 ): Promise<ShiftCloseResult> {
+  const grants = args.grants ?? {
+    handoverSubmit: false,
+    handoverException: false,
+  };
+
   return db.$transaction(async (tx) => {
     if (!(await lockShift(tx, args.shiftId))) {
       throw new ApiError(404, "الشيفت مش موجود");
@@ -212,10 +282,82 @@ export async function closeShiftWithSettlement(
 
     const locked = await tx.shift.findUniqueOrThrow({
       where: { id: args.shiftId },
-      select: { id: true, cafeId: true, branchId: true, shiftNumber: true, status: true },
+      select: {
+        id: true,
+        cafeId: true,
+        branchId: true,
+        cashierId: true,
+        shiftNumber: true,
+        status: true,
+      },
     });
-    if (locked.status === "CLOSED") {
+    // AWAITING_HANDOVER is refused as firmly as CLOSED: its money is settled
+    // and its snapshot is history, and a second close would rewrite both.
+    if (locked.status !== "OPEN") {
       throw new ApiError(400, "الشيفت مقفول بالفعل");
+    }
+
+    // ── Does this branch owe a handover, and where is the stock going? ──
+    //
+    // Resolved from the effective configuration inside this transaction, not
+    // from anything the caller asserted. `enabled` is the policy question
+    // (NO_SHIFT_COUNT closes as it always has); CYCLE is enabled but has no
+    // engine behind it, so it is recorded and stepped around rather than
+    // thrown — a café must not discover at 2 a.m., with a counted drawer in
+    // hand, that it cannot close a shift at all.
+    //
+    // Every OTHER configuration error stays a blocker below, where it was.
+    // Suppressing those would be silently closing over a broken setup.
+    const config = await resolveBranchHandoverConfigReadOnly(
+      tx,
+      locked.cafeId,
+      locked.branchId
+    );
+    const cycleIssue =
+      config.enabled && config.configError?.code === "CYCLE_POLICY_UNSUPPORTED"
+        ? config.configError
+        : null;
+    const handoverRequired = config.enabled && cycleIssue === null;
+
+    let target: HandoverTarget | null = null;
+    if (handoverRequired) {
+      const stated = args.handoverTarget ?? null;
+      if (stated !== "SHIFT_TO_SHIFT" && stated !== "BRANCH_CUSTODY") {
+        throw new ApiError(
+          400,
+          "لازم تحدد وجهة تسليم العهدة: SHIFT_TO_SHIFT أو BRANCH_CUSTODY"
+        );
+      }
+      target = stated;
+
+      // Authorization, before the lock and long before any write. Handing
+      // stock to the next shift is an ordinary custodial act; ENDING employee
+      // stock custody is not, and it takes the manager capability on top.
+      if (!grants.handoverSubmit) {
+        throw new ApiError(403, "مش مسموح لك تسلّم عهدة المخزن");
+      }
+      if (target === "BRANCH_CUSTODY" && !grants.handoverException) {
+        throw new ApiError(403, "تسليم عهدة الفرع محتاج موافقة مدير");
+      }
+
+      // The EXCLUSIVE branch inventory lock, BEFORE the blockers are read.
+      //
+      // Every ordinary stock mutator holds the SHARED form until its own
+      // commit, so this waits for all of them; every later one waits for this
+      // transaction and then sees the durable freeze. Taking it here rather
+      // than beside the freeze is the whole point: blockers read under it are
+      // answers about a shelf that cannot move while they are being read.
+      await acquireInventoryExclusiveLock(tx, locked.branchId);
+
+      const blockers = await handoverStartBlockers(tx, {
+        cafeId: locked.cafeId,
+        branchId: locked.branchId,
+      });
+      // Nothing has been written yet. A refusal here leaves the shift OPEN
+      // and fully operational rather than settled into a state it cannot
+      // leave — which is the only ordering that makes "reject BEFORE
+      // financial close" a true statement.
+      if (blockers.length > 0) throw new HandoverBlockedError(blockers);
     }
 
     // The authoritative figure, freshened inside this transaction so a
@@ -245,6 +387,9 @@ export async function closeShiftWithSettlement(
       args.tenders ?? {}
     );
 
+    const status: ShiftStatus = handoverRequired ? "AWAITING_HANDOVER" : "CLOSED";
+    const closedAt = new Date();
+
     // Status-guarded, so a racing second close updates zero rows rather than
     // overwriting the first completed one. The lock above makes this the
     // decisive check rather than a hopeful one.
@@ -259,8 +404,15 @@ export async function closeShiftWithSettlement(
         // note erase one the shift was already carrying.
         ...(args.notes === undefined ? {} : { notes: args.notes }),
         closedById: args.actorId,
-        closedAt: new Date(),
-        status: "CLOSED",
+        // The money became a fact on BOTH paths, so both stamp this.
+        // `closedAt` is the shift finishing, which on the handover path has
+        // not happened yet — acceptance answers for the shelf and writes
+        // `closedAt` and `stockClosedAt` together. A shift claiming it closed
+        // at a moment its stock was still in dispute would be a false record.
+        financiallyClosedAt: closedAt,
+        ...(handoverRequired ? {} : { closedAt }),
+        handoverRequired,
+        status,
         // `cashWithinTolerance` and `cashToleranceAmount` are deliberately not
         // written. See the header: the ERP records the difference, it does not
         // rule on it.
@@ -316,6 +468,43 @@ export async function closeShiftWithSettlement(
       settlements,
     });
 
+    // ── The handover half, in this same transaction ──
+    let handoverId: string | null = null;
+    let freezeId: string | null = null;
+    let requiredItemCount: number | null = null;
+    let cashCustodyFinalization: CashCustodyFinalization | null = null;
+
+    if (handoverRequired && target) {
+      // BRANCH_CUSTODY is the target that ends employee custody of the
+      // drawer, so the outgoing CASH period is discharged here at the counted
+      // figure and NO successor is opened — nobody has been appointed to hold
+      // it. SHIFT_TO_SHIFT leaves CASH open for SH-20's atomic transfer to
+      // the arriving custodian. STOCK is untouched by both.
+      if (target === "BRANCH_CUSTODY") {
+        cashCustodyFinalization = await finalizeCashCustodyAtFinancialClose(tx, {
+          cafeId: locked.cafeId,
+          branchId: locked.branchId,
+          outgoingShiftId: locked.id,
+          actualCash,
+        });
+      }
+
+      const created = await createHandoverInClose(tx, {
+        cafeId: locked.cafeId,
+        branchId: locked.branchId,
+        outgoingShiftId: locked.id,
+        // The custodian being discharged, not whoever signed the close. A
+        // manager closing somebody else's shift is ordinary and supervised,
+        // and naming them here would move the stock onto the wrong person.
+        outgoingUserId: locked.cashierId,
+        at: closedAt,
+        target,
+      });
+      handoverId = created.handoverId;
+      freezeId = created.freezeId;
+      requiredItemCount = created.requiredItemCount;
+    }
+
     const evidence = {
       branchId: locked.branchId,
       shiftId: locked.id,
@@ -350,6 +539,26 @@ export async function closeShiftWithSettlement(
           reconciliationId: t.reconciliationId,
           varianceCaseId: t.varianceCaseId,
         })),
+        // What this close decided about the stock, in the same row as what it
+        // decided about the money — including the CASH custody discharge,
+        // which gets no audit action of its own precisely so the two can
+        // never disagree about one act.
+        resultingStatus: status,
+        handoverRequired,
+        handoverTarget: target,
+        handoverId,
+        freezeId,
+        requiredItemCount,
+        handoverConfigIssue: cycleIssue
+          ? { code: cycleIssue.code, message: cycleIssue.message }
+          : null,
+        cashCustodyFinalization: cashCustodyFinalization
+          ? {
+              closedCashCustodyId: cashCustodyFinalization.closedCashCustodyId,
+              closingCashAmount: cashCustodyFinalization.closingCashAmount,
+              successorOpened: cashCustodyFinalization.successorOpened,
+            }
+          : null,
       },
     });
 
@@ -376,6 +585,14 @@ export async function closeShiftWithSettlement(
       reason,
       varianceCaseId,
       tenders,
+      status,
+      handoverRequired,
+      handoverTarget: target,
+      handoverId,
+      freezeId,
+      requiredItemCount,
+      handoverConfigIssue: cycleIssue,
+      cashCustodyFinalization,
     };
   });
 }

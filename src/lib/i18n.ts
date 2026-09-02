@@ -218,6 +218,7 @@ export const t = {
 
   shiftStatus: {
     OPEN: "مفتوح",
+    AWAITING_HANDOVER: "في انتظار تسليم العهدة",
     CLOSED: "مقفول",
   } satisfies Record<ShiftStatus, string>,
 

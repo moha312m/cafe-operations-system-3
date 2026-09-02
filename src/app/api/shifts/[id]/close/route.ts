@@ -5,6 +5,8 @@ import { getSession } from "@/lib/auth";
 import { hasPermission } from "@/lib/permissions";
 import { handleApiError, ApiError } from "@/lib/api";
 import { closeShiftWithSettlement } from "@/lib/cash-close";
+import { HandoverBlockedError } from "@/lib/handover";
+import { resolvePermissions } from "@/lib/perms/effective";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -44,6 +46,9 @@ const closeSchema = z
     actualWalletAmount: z.number().optional(),
     walletReason: z.string().max(1000).optional(),
     notes: z.string().max(1000).optional(),
+    // Where the stock is going, when the branch's policy says it has to go
+    // somewhere. Stated, never inferred — see `ShiftCloseArgs.handoverTarget`.
+    handoverTarget: z.enum(["SHIFT_TO_SHIFT", "BRANCH_CUSTODY"]).optional(),
   })
   .strip();
 
@@ -76,12 +81,26 @@ export async function POST(request: NextRequest, { params }: Params) {
       throw new ApiError(403, "مينفعش تقفل شيفت كاشير تاني");
     }
     // Re-checked under a row lock inside the transaction; refused here too so
-    // an obviously-settled shift costs nothing to turn away.
-    if (shift.status === "CLOSED") {
+    // an obviously-settled shift costs nothing to turn away. AWAITING_HANDOVER
+    // is refused for the same reason CLOSED is: its money is already settled.
+    if (shift.status !== "OPEN") {
       throw new ApiError(400, "الشيفت مقفول بالفعل");
     }
 
-    await closeShiftWithSettlement({
+    // The handover capabilities this actor holds, resolved once, here.
+    //
+    // The service cannot do this itself: whether a handover is required is
+    // only settled inside its transaction, under the shift lock, and it has
+    // no session to ask. So the route establishes what the actor MAY do and
+    // the service demands whichever of those it turns out to need — which
+    // keeps the refusal before any mutation on both paths.
+    const { keys } = await resolvePermissions(session);
+    const grants = {
+      handoverSubmit: keys.has("handover.submit"),
+      handoverException: keys.has("handover.exception"),
+    };
+
+    const result = await closeShiftWithSettlement({
       shiftId: id,
       actualCash: data.actualCashAmount,
       reason: data.reason,
@@ -92,6 +111,8 @@ export async function POST(request: NextRequest, { params }: Params) {
       notes: data.notes,
       actorId: session.id,
       closedByManager: !isOwnShift,
+      handoverTarget: data.handoverTarget,
+      grants,
     });
 
     // Read back what was COMMITTED, rather than reporting what we intended to
@@ -122,8 +143,34 @@ export async function POST(request: NextRequest, { params }: Params) {
       },
     });
 
-    return NextResponse.json({ shift: closed });
+    // The closer is told which of the two stages they completed. A shift in
+    // AWAITING_HANDOVER is settled but not finished, and a response that
+    // said only "closed" would send a custodian home believing they were
+    // discharged of stock they are still answerable for.
+    return NextResponse.json({
+      shift: closed,
+      handover: {
+        required: result.handoverRequired,
+        target: result.handoverTarget,
+        handoverId: result.handoverId,
+        freezeId: result.freezeId,
+        requiredItemCount: result.requiredItemCount,
+        configIssue: result.handoverConfigIssue,
+      },
+    });
   } catch (error) {
+    // The one error that carries a payload. `handleApiError` is shared by
+    // every route in the application and returns `{ error }` and nothing
+    // else; widening it so this feature can attach a list would change the
+    // error contract everywhere. So the blockers are serialised HERE,
+    // beside the same `error` field every other refusal uses — a café that
+    // is told one reason at a time learns to distrust the answer.
+    if (error instanceof HandoverBlockedError) {
+      return NextResponse.json(
+        { error: error.message, blockers: error.blockers },
+        { status: error.status }
+      );
+    }
     return handleApiError(error);
   }
 }

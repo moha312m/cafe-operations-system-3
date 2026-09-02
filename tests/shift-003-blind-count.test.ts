@@ -24,6 +24,7 @@ import assert from "node:assert/strict";
 import {
   db, fixture, clearOpenShifts, sessionFor, cleanup, policyProduct, cleanupProduct,
 } from "./helpers/db";
+import type { StockCountPolicy } from "@prisma/client";
 import { requireServer, login, as } from "./helpers/http";
 
 type ShiftPayload = Record<string, unknown> & { id: string; status: string };
@@ -48,16 +49,49 @@ const OWNER = "owner@demo.com";
  */
 let productId: string;
 
+/**
+ * The seeded café's policy while this suite runs, and what it was before.
+ *
+ * This suite drives the SEEDED café rather than one it owns, and it is
+ * about blind counting, not handovers. The seeded café carries the schema
+ * default, HYBRID, which SH-16 makes a handover-ENABLED configuration —
+ * every close here would be refused for a missing handover target, which
+ * is a correct refusal about something this suite does not test.
+ *
+ * So the legacy policy is declared for the duration and the original value
+ * is put back afterwards. Restoring matters: the café is shared, and a
+ * suite that silently repolicies it would decide the configuration of every
+ * suite that runs after it.
+ */
+let seededCafeId: string;
+let previousStockCountPolicy: StockCountPolicy;
 before(async () => {
   await requireServer();
   await login(CASHIER, "cashier123");
   await login(OWNER, "owner1234");
   const fx = await fixture();
   productId = (await policyProduct(fx, "PH1-SHIFT003")).id;
+
+  seededCafeId = fx.cafeId;
+  const settings = await db.cafeSettings.findUniqueOrThrow({
+    where: { cafeId: seededCafeId },
+    select: { stockCountPolicy: true },
+  });
+  previousStockCountPolicy = settings.stockCountPolicy;
+  await db.cafeSettings.update({
+    where: { cafeId: seededCafeId },
+    data: { stockCountPolicy: "NO_SHIFT_COUNT" },
+  });
 });
 
 after(async () => {
   await cleanupProduct(productId);
+  if (seededCafeId) {
+    await db.cafeSettings.update({
+      where: { cafeId: seededCafeId },
+      data: { stockCountPolicy: previousStockCountPolicy },
+    });
+  }
   await db.$disconnect();
 });
 

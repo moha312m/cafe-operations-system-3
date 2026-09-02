@@ -42,10 +42,35 @@ import { countCafe, type CountCafe } from "./helpers/count";
 let fx: CountCafe;
 let other: CountCafe;
 
+/**
+ * This suite is about MONEY, not about handovers.
+ *
+ * `countCafe` creates a café with the schema default policy, which is
+ * HYBRID — a handover-ENABLED configuration. Under SH-16 that is a real
+ * setting with real consequences: such a close must state where the stock
+ * is going and the closer must hold the handover capability, so every close
+ * below would be refused for reasons this suite is not about.
+ *
+ * Before SH-16 the distinction did not exist and these tests inherited
+ * whatever the default happened to be. Declaring `NO_SHIFT_COUNT` states
+ * the configuration they always meant: a café that settles its drawer and
+ * closes, with no stock handover in the picture. Nothing about the cash,
+ * card or wallet assertions changes — they are simply no longer resting on
+ * an accident.
+ */
+async function useLegacyNoHandoverPolicy(...cafeIds: string[]) {
+  for (const cafeId of cafeIds) {
+    await db.cafeSettings.update({
+      where: { cafeId },
+      data: { stockCountPolicy: "NO_SHIFT_COUNT" },
+    });
+  }
+}
 before(async () => {
   await requireServer();
   fx = await countCafe("CC001");
   other = await countCafe("CC001X");
+  await useLegacyNoHandoverPolicy(fx.cafeId, other.cafeId);
 });
 
 after(() =>

@@ -105,7 +105,14 @@ export async function recomputeShiftTotals(
   // rewrote expectedCash while leaving the counted cash and stored
   // difference frozen, leaving the record contradicting itself (SHIFT-002).
   // Money moving after the close belongs to the current period instead.
-  if (shift.status === "CLOSED") return shift;
+  //
+  // AWAITING_HANDOVER is the same fact one stage earlier: the money was
+  // settled and the drawer reconciled, and only the STOCK is still open.
+  // A shift waiting on its handover must not have the figures it was
+  // settled against rewritten underneath the custodian being discharged.
+  if (shift.status === "CLOSED" || shift.status === "AWAITING_HANDOVER") {
+    return shift;
+  }
 
   const payments = await client.payment.findMany({
     where: { shiftId },

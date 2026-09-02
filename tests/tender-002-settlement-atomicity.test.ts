@@ -39,9 +39,23 @@ import { countCafe, type CountCafe } from "./helpers/count";
 
 let fx: CountCafe;
 
+/**
+ * A money suite, not a handover one: state the legacy policy explicitly
+ * rather than inheriting the HYBRID default, which SH-16 makes a
+ * handover-enabled configuration. See CASHCLOSE-001 for the full reasoning.
+ */
+async function useLegacyNoHandoverPolicy(...cafeIds: string[]) {
+  for (const cafeId of cafeIds) {
+    await db.cafeSettings.update({
+      where: { cafeId },
+      data: { stockCountPolicy: "NO_SHIFT_COUNT" },
+    });
+  }
+}
 before(async () => {
   await requireServer();
   fx = await countCafe("TS002");
+  await useLegacyNoHandoverPolicy(fx.cafeId);
 });
 
 after(() =>

@@ -106,6 +106,9 @@ enum ChargeApplicationScope {
 
 enum ShiftStatus {
   OPEN
+  /// Money settled and the shelf frozen; stock custody not yet transferred.
+  /// Closed for cash, still open for the handover that has to follow it.
+  AWAITING_HANDOVER
   CLOSED
 }
 
@@ -1084,6 +1087,13 @@ model Shift {
   totalDiscounts      Decimal           @default(0) @db.Decimal(10, 2)
   orderCount          Int               @default(0)
   status              ShiftStatus       @default(OPEN)
+  /// The two-stage close (SH-16). `handoverRequired` records the verdict the
+  /// close itself reached, not what today's configuration would say;
+  /// `financiallyClosedAt` is when the money became a fact, on either path;
+  /// `stockClosedAt` is when the shelf did, which only acceptance can answer.
+  handoverRequired    Boolean           @default(false)
+  financiallyClosedAt DateTime?
+  stockClosedAt       DateTime?
   custodyReadyAt      DateTime?
   custodyGateReason   ShiftCustodyGate?
   notes               String?
