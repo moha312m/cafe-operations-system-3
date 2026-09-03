@@ -50,7 +50,14 @@
 // drawer is a fact about a shift that closed before custody existed, and
 // writing a plausible answer over it would be a worse record than the gap.
 
-import type { HandoverTarget, Prisma, StockCountType } from "@prisma/client";
+import type {
+  HandoverStockMode,
+  HandoverTarget,
+  Prisma,
+  RequiredItemTrigger,
+  StockCountStatus,
+  StockCountType,
+} from "@prisma/client";
 import { ApiError } from "@/lib/api";
 import { audit, auditInTransaction } from "@/lib/audit";
 import { db } from "@/lib/db";
@@ -59,6 +66,10 @@ import {
   persistRequiredItems,
   planRequiredItems,
 } from "@/lib/handover-required-items";
+import {
+  EFFECTIVE_EVIDENCE_SELECT,
+  effectiveCountEvidence,
+} from "@/lib/count-evidence";
 import { acquireInventoryFreeze, activeFreezeFor } from "@/lib/inventory-freeze";
 import { ACTIVE_COUNT_STATUSES, COUNT_STARTED_AUDIT_ACTION } from "@/lib/stock-count";
 
@@ -606,5 +617,183 @@ export async function startHandoverCount(args: {
     type: outcome.type,
     scopeItemIds: outcome.scopeItemIds,
     reused: outcome.reused,
+  };
+}
+
+// ──────────────────────── SH-18 · the closing position ───────────────────
+//
+// What the outgoing hand is SAYING about the shelf, read fresh from the
+// evidence every time it is asked. Nothing here is written down.
+//
+// The temptation is to persist it — a `satisfied` flag on the required item,
+// a `nonZeroVariances` count on the handover — and the reason not to is that
+// a persisted position stops being a reading of the evidence and becomes a
+// second claim that has to be kept in step with it. A correction approved
+// after the flag was written would leave the two disagreeing, with nothing to
+// say which one the business meant. `HandoverRequiredItem.satisfiedByLineId`
+// is real and stays empty here: SH-20's `settleRequiredItems` writes it at
+// ACCEPTANCE, when the answer stops changing.
+//
+// Historical intent comes from the immutable snapshot columns, never from the
+// live `InventoryItem`. An item renamed, re-unitted or archived after the
+// close is still the item this handover owes a count of, under the name it
+// had when the custodian was told what they were answerable for.
+//
+// No tolerance is resolved and no blocking policy is read. Both are answers
+// to "is this worth investigating", and a closing position asks the earlier
+// question — "what do you say is on the shelf".
+
+/** The outgoing hand's stated closing position. Derived, never persisted. */
+export type ClosingPosition = {
+  handoverId: string;
+  mode: HandoverStockMode;
+  requiredItemTrigger: RequiredItemTrigger;
+  required: { total: number; satisfied: number; missingItemIds: string[] };
+  stock: {
+    countSessionId: string | null;
+    countStatus: StockCountStatus | null;
+    countedLines: number;
+    nonZeroVarianceLines: number;
+    linesMissingReason: string[];
+    uncountedActiveItems: number;
+  };
+  prospectiveVariances: {
+    lineId: string;
+    quantityVariance: number;
+    /** NULL when the impact is unavailable. Never 0 — VAR-007's wire rule. */
+    amountVariance: number | null;
+    reasonPresent: boolean;
+  }[];
+  /** Pre-existing cases at the branch. Never this count's, and never blocking. */
+  openVarianceCaseIds: string[];
+};
+
+/** Everything the derivation reads from a bound count's lines. */
+const CLOSING_POSITION_LINE_SELECT = {
+  ...EFFECTIVE_EVIDENCE_SELECT,
+  inventoryItemId: true,
+  disposition: true,
+  reasonCodeId: true,
+  costImpact: true,
+  costImpactAvailable: true,
+} satisfies Prisma.StockCountLineSelect;
+
+/**
+ * Read the position off the evidence. Runs on the caller's transaction and
+ * opens none of its own, so a submit can evaluate it under the same row lock
+ * it is about to write under.
+ */
+export async function deriveClosingPosition(
+  tx: Prisma.TransactionClient,
+  handoverId: string
+): Promise<ClosingPosition> {
+  const handover = await tx.handoverSession.findUnique({
+    where: { id: handoverId },
+    select: {
+      id: true,
+      branchId: true,
+      stockMode: true,
+      requiredItemTrigger: true,
+      stockCountSessionId: true,
+      requiredItems: {
+        select: { inventoryItemId: true, itemNameSnapshot: true, omitted: true },
+        orderBy: { itemNameSnapshot: "asc" },
+      },
+    },
+  });
+  if (!handover) throw new ApiError(404, HANDOVER_NOT_FOUND);
+  // A position has no meaning without the snapshot it is measured against.
+  if (handover.stockMode === null || handover.requiredItemTrigger === null) {
+    throw new ApiError(409, "لقطة التسليم ناقصة — مفيش موقف إقفال ينفع يتقرا");
+  }
+
+  const session =
+    handover.stockCountSessionId === null
+      ? null
+      : await tx.stockCountSession.findUnique({
+          where: { id: handover.stockCountSessionId },
+          select: {
+            id: true,
+            status: true,
+            handoverId: true,
+            lines: {
+              select: CLOSING_POSITION_LINE_SELECT,
+              orderBy: { inventoryItem: { name: "asc" } },
+            },
+          },
+        });
+  // Evidence must be BOUND to be counted as this handover's. A session the
+  // pointer names but that answers to another handover is not this one's word.
+  const bound = session && session.handoverId === handover.id ? session : null;
+  const lines = bound?.lines ?? [];
+
+  // One resolution per line, reused by every figure below, so satisfaction
+  // and variance can never disagree about which observation is in force.
+  const resolved = lines.map((line) => ({
+    line,
+    evidence: effectiveCountEvidence(line),
+  }));
+  const counted = resolved.filter((r) => r.evidence.countedAt !== null);
+  // One line per item is a schema guarantee (`@@unique([sessionId,
+  // inventoryItemId])`), so the two readings below cannot disagree.
+  const countedItemIds = new Set(counted.map((r) => r.line.inventoryItemId));
+
+  const missingItemIds = handover.requiredItems
+    .filter((item) => !countedItemIds.has(item.inventoryItemId))
+    .map((item) => item.inventoryItemId);
+
+  const nonZero = resolved.filter((r) => r.evidence.varianceQuantity !== 0);
+
+  // Pre-existing cases at the branch, as information. A case whose evidence
+  // is one of THIS count's lines is not pre-existing, it is this count's own
+  // finding. `stockCountLineId` is nullable — a cash difference raises a case
+  // with no line at all — and `NOT IN` would silently drop those to SQL's
+  // three-valued logic, so the two arms are named explicitly.
+  const ownLineIds = lines.map((line) => line.id);
+  const cases = await tx.varianceCase.findMany({
+    where: {
+      branchId: handover.branchId,
+      status: { in: ["OPEN", "UNDER_INVESTIGATION"] },
+      ...(ownLineIds.length === 0
+        ? {}
+        : {
+            OR: [
+              { stockCountLineId: null },
+              { stockCountLineId: { notIn: ownLineIds } },
+            ],
+          }),
+    },
+    select: { id: true },
+    orderBy: { createdAt: "asc" },
+  });
+
+  return {
+    handoverId: handover.id,
+    mode: handover.stockMode,
+    requiredItemTrigger: handover.requiredItemTrigger,
+    required: {
+      total: handover.requiredItems.length,
+      satisfied: handover.requiredItems.length - missingItemIds.length,
+      missingItemIds,
+    },
+    stock: {
+      countSessionId: bound?.id ?? null,
+      countStatus: bound?.status ?? null,
+      countedLines: counted.length,
+      nonZeroVarianceLines: nonZero.length,
+      linesMissingReason: nonZero
+        .filter((r) => r.line.reasonCodeId === null)
+        .map((r) => r.line.id),
+      uncountedActiveItems: resolved.length - counted.length,
+    },
+    prospectiveVariances: nonZero.map((r) => ({
+      lineId: r.line.id,
+      quantityVariance: r.evidence.varianceQuantity,
+      // Unavailable is null, never zero: a shortage nobody can price is not
+      // a shortage that cost nothing.
+      amountVariance: r.line.costImpactAvailable ? Number(r.line.costImpact) : null,
+      reasonPresent: r.line.reasonCodeId !== null,
+    })),
+    openVarianceCaseIds: cases.map((c) => c.id),
   };
 }

@@ -576,3 +576,249 @@ describe("start_count", () => {
     assert.equal(shift.closedAt, null);
   });
 });
+
+// ────────────────────────── T2 · closing position ────────────────────────
+//
+// The position is DERIVED. Nothing here is allowed to write it down: the
+// moment a satisfaction is persisted it stops being a reading of the current
+// evidence and starts being a claim somebody has to keep in step.
+
+/** Write a line's figures directly. Capture is `count-010`'s subject, not this one. */
+async function fillLine(
+  sessionId: string,
+  inventoryItemId: string,
+  spec: {
+    counted?: number | null;
+    expected?: number;
+    reasonCodeId?: string | null;
+    costImpact?: number | null;
+    costImpactAvailable?: boolean;
+  },
+) {
+  const line = await db.stockCountLine.findFirstOrThrow({
+    where: { sessionId, inventoryItemId },
+    select: { id: true },
+  });
+  const counted = spec.counted === undefined ? null : spec.counted;
+  const expected = spec.expected ?? 0;
+  await db.stockCountLine.update({
+    where: { id: line.id },
+    data: {
+      expectedQuantity: expected,
+      countedQuantity: counted,
+      effectiveCountedQuantity: counted,
+      varianceQuantity: counted === null ? null : counted - expected,
+      countedAt: counted === null ? null : new Date(),
+      counterId: counted === null ? null : fx.cashier.id,
+      itemVersion: counted === null ? null : BigInt(1),
+      expectedBasis: counted === null ? null : "LOCKED_ITEM_VERSION",
+      disposition: counted === null ? "PENDING" : "WITHIN_TOLERANCE",
+      reasonCodeId: spec.reasonCodeId ?? null,
+      costImpact: spec.costImpact ?? null,
+      costImpactAvailable: spec.costImpactAvailable ?? false,
+    },
+  });
+  return line.id;
+}
+
+const position = async (handoverId: string) => {
+  const { deriveClosingPosition } = await handoverLib();
+  return db.$transaction((tx) => deriveClosingPosition(tx, handoverId));
+};
+
+/** A STOCK reason code this suite owns. */
+async function stockReason(label: string) {
+  return db.reasonCode.create({
+    data: { cafeId: fx.cafeId, domain: "STOCK", code: `${MARKER}-${label}`, label },
+  });
+}
+
+describe("closing position", () => {
+  test("counts required items satisfied and missing from bound evidence", async () => {
+    const h = await freshHandover();
+    const started = await startCount(h.handoverId);
+    await fillLine(started.countSessionId, items.alpha.id, { counted: 10, expected: 10 });
+    await fillLine(started.countSessionId, items.bravo.id, { counted: 4, expected: 4 });
+    // charlie is left as the fixture created it: PENDING, never counted.
+
+    const p = await position(h.handoverId);
+    assert.equal(p.handoverId, h.handoverId);
+    assert.equal(p.mode, "SELECTED");
+    assert.equal(p.requiredItemTrigger, "REGULAR_MODE");
+    assert.equal(p.required.total, 3);
+    assert.equal(p.required.satisfied, 2);
+    assert.deepEqual(p.required.missingItemIds, [items.charlie.id]);
+    assert.equal(p.stock.countSessionId, started.countSessionId);
+    assert.equal(p.stock.countedLines, 2);
+    assert.equal(p.stock.uncountedActiveItems, 1);
+    assert.equal(p.stock.nonZeroVarianceLines, 0);
+    assert.deepEqual(p.stock.linesMissingReason, []);
+    assert.deepEqual(p.prospectiveVariances, []);
+  });
+
+  test("derives satisfaction without persisting satisfiedByLineId", async () => {
+    const h = await freshHandover();
+    const started = await startCount(h.handoverId);
+    for (const key of ITEM_KEYS) {
+      await fillLine(started.countSessionId, items[key].id, { counted: 6, expected: 6 });
+    }
+
+    const p = await position(h.handoverId);
+    assert.equal(p.required.satisfied, 3);
+    assert.deepEqual(p.required.missingItemIds, []);
+    assert.equal(
+      await db.handoverRequiredItem.count({
+        where: { handoverId: h.handoverId, satisfiedByLineId: { not: null } },
+      }),
+      0,
+      "SH-20 owns satisfiedByLineId; SH-18 may only derive satisfaction",
+    );
+  });
+
+  test("measures variance through effective evidence", async () => {
+    const h = await freshHandover();
+    const started = await startCount(h.handoverId);
+    const reason = await stockReason("correction");
+    const alphaLine = await fillLine(started.countSessionId, items.alpha.id, {
+      counted: 10,
+      expected: 12,
+      reasonCodeId: reason.id,
+    });
+    await fillLine(started.countSessionId, items.bravo.id, { counted: 4, expected: 4 });
+    await fillLine(started.countSessionId, items.charlie.id, { counted: 7, expected: 7 });
+
+    // An approved correction supersedes the figure without a second look at
+    // the shelf: the corrected quantity is what the business acts on.
+    await db.stockCountCorrection.create({
+      data: {
+        lineId: alphaLine,
+        oldCountedQuantity: 10,
+        newCountedQuantity: 8,
+        reasonCodeId: reason.id,
+        actorId: fx.cashier.id,
+        status: "APPROVED",
+        approvedById: fx.manager.id,
+        approvedAt: new Date(),
+      },
+    });
+
+    const p = await position(h.handoverId);
+    assert.equal(p.stock.nonZeroVarianceLines, 1);
+    assert.equal(p.prospectiveVariances.length, 1);
+    const entry = p.prospectiveVariances[0];
+    assert.equal(entry.lineId, alphaLine);
+    assert.equal(
+      entry.quantityVariance,
+      -4,
+      "the corrected 8 against an expected 12, not the original 10",
+    );
+    assert.equal(entry.reasonPresent, true);
+  });
+
+  test("reports an unavailable amount as null, never zero", async () => {
+    const h = await freshHandover();
+    const started = await startCount(h.handoverId);
+    const reason = await stockReason("unpriced");
+    await fillLine(started.countSessionId, items.alpha.id, {
+      counted: 5,
+      expected: 8,
+      reasonCodeId: reason.id,
+      costImpact: null,
+      costImpactAvailable: false,
+    });
+    await fillLine(started.countSessionId, items.bravo.id, {
+      counted: 3,
+      expected: 5,
+      reasonCodeId: reason.id,
+      costImpact: 90,
+      costImpactAvailable: true,
+    });
+    await fillLine(started.countSessionId, items.charlie.id, { counted: 7, expected: 7 });
+
+    const p = await position(h.handoverId);
+    const byItem = new Map(
+      await Promise.all(
+        p.prospectiveVariances.map(async (v) => {
+          const line = await db.stockCountLine.findUniqueOrThrow({
+            where: { id: v.lineId },
+            select: { inventoryItemId: true },
+          });
+          return [line.inventoryItemId, v] as const;
+        }),
+      ),
+    );
+    assert.equal(byItem.get(items.alpha.id)!.amountVariance, null);
+    assert.equal(byItem.get(items.bravo.id)!.amountVariance, 90);
+    assert.equal(p.stock.nonZeroVarianceLines, 2);
+  });
+
+  test("lists pre-existing branch cases and excludes this count's lines", async () => {
+    const h = await freshHandover();
+    const started = await startCount(h.handoverId);
+    for (const key of ITEM_KEYS) {
+      await fillLine(started.countSessionId, items[key].id, { counted: 6, expected: 6 });
+    }
+    const ownLine = await db.stockCountLine.findFirstOrThrow({
+      where: { sessionId: started.countSessionId },
+      select: { id: true },
+    });
+
+    // An unrelated count at the same branch, and a case raised from it.
+    const unrelated = await db.stockCountSession.create({
+      data: {
+        cafeId: fx.cafeId,
+        branchId: fx.branchId,
+        type: "CRITICAL",
+        status: "CONFIRMED",
+        scopeDerivation: "CRITICAL_ONLY",
+        initiatedById: fx.cashier.id,
+        confirmedAt: new Date(),
+        lines: {
+          create: [{ inventoryItemId: ordinaryItemId, unit: "KG", disposition: "PENDING" }],
+        },
+      },
+      select: { id: true, lines: { select: { id: true } } },
+    });
+    const foreignCase = await db.varianceCase.create({
+      data: {
+        cafeId: fx.cafeId,
+        branchId: fx.branchId,
+        type: "STOCK",
+        status: "OPEN",
+        stockCountLineId: unrelated.lines[0].id,
+        openedById: fx.manager.id,
+      },
+    });
+    // A case with no line at all — a cash difference — is still a
+    // pre-existing case at this branch and must not vanish into SQL's NULL.
+    const cashCase = await db.varianceCase.create({
+      data: {
+        cafeId: fx.cafeId,
+        branchId: fx.branchId,
+        type: "CASH",
+        status: "UNDER_INVESTIGATION",
+        shiftId: h.shiftId,
+        openedById: fx.manager.id,
+      },
+    });
+    // And one raised from THIS count's own line, which is not "pre-existing".
+    const ownCase = await db.varianceCase.create({
+      data: {
+        cafeId: fx.cafeId,
+        branchId: fx.branchId,
+        type: "STOCK",
+        status: "OPEN",
+        stockCountLineId: ownLine.id,
+        openedById: fx.manager.id,
+      },
+    });
+
+    const p = await position(h.handoverId);
+    assert.ok(p.openVarianceCaseIds.includes(foreignCase.id));
+    assert.ok(p.openVarianceCaseIds.includes(cashCase.id));
+    assert.ok(
+      !p.openVarianceCaseIds.includes(ownCase.id),
+      "a case raised from this count's own line is not a pre-existing one",
+    );
+  });
+});
