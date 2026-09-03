@@ -460,20 +460,25 @@ describe("start_count", () => {
     assert.equal(await db.stockCountSession.count({ where: { handoverId: h.handoverId } }), 1);
   });
 
+  // `REJECTED` is deliberately NOT in this list.
+  //
+  // It was, at SH-18, because nothing could yet ask for a recount and a
+  // handover in that status had no way forward. SH-19 is the stage the
+  // adjacent comment in `startHandoverCount` always pointed at: the outgoing
+  // hand starts the replacement count, and `REJECTED → DRAFT` happens under
+  // the handover row lock. `handover-007` cases 6.1–6.9 own that contract in
+  // full — the fresh bound session, the pointer-only replacement, the
+  // untouched prior evidence and the concurrent restart.
+  //
+  // Every OTHER non-DRAFT status still refuses here, which is what this case
+  // is for now: the predicate must have widened by exactly one member.
   test("refuses a handover that is not DRAFT", async () => {
-    const reason = await db.reasonCode.create({
-      data: { cafeId: fx.cafeId, domain: "HANDOVER", code: `${MARKER}-REJ`, label: "refused" },
-    });
-
-    for (const status of ["OUTGOING_SUBMITTED", "INCOMING_REVIEW", "REJECTED", "COMPLETED"] as const) {
+    for (const status of ["OUTGOING_SUBMITTED", "INCOMING_REVIEW", "COMPLETED"] as const) {
       const h = await freshHandover();
       await db.handoverSession.update({
         where: { id: h.handoverId },
         data: {
           status,
-          ...(status === "REJECTED"
-            ? { rejectedAt: new Date(), rejectionReasonCodeId: reason.id }
-            : {}),
           ...(status === "COMPLETED" ? { completedAt: new Date() } : {}),
         },
       });

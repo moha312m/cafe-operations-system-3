@@ -418,6 +418,15 @@ async function lockHandover(
   return rows.length > 0;
 }
 
+/**
+ * The statuses a handover-bound count may be started from.
+ *
+ * `REJECTED` is SH-19's addition: a handover sent back for a recount is
+ * unfinished business rather than a closed record, and the partial unique
+ * index already treats it as live.
+ */
+const RESTARTABLE_STATUSES: readonly HandoverStatus[] = ["DRAFT", "REJECTED"];
+
 export type StartHandoverCountResult = {
   countSessionId: string;
   type: StockCountType;
@@ -486,9 +495,11 @@ export async function startHandoverCount(args: {
       throw new ApiError(403, FOREIGN_BRANCH);
     }
 
-    // DRAFT alone. `REJECTED → DRAFT` is SH-19's transition, and every later
-    // status has already consumed or discarded the evidence.
-    if (handover.status !== "DRAFT") {
+    // DRAFT, and REJECTED — the handover that was sent back to be counted
+    // again. Every later status has already consumed or discarded the
+    // evidence, so OUTGOING_SUBMITTED, INCOMING_REVIEW, ACCEPTED,
+    // MANAGER_EXCEPTION and COMPLETED still refuse with the same message.
+    if (!RESTARTABLE_STATUSES.includes(handover.status)) {
       throw new ApiError(409, "التسليم مش في حالة تسمح ببدء الجرد");
     }
 
@@ -547,9 +558,21 @@ export async function startHandoverCount(args: {
           started: null,
         };
       }
-      // CONFIRMED evidence is replaced by SH-19's `requestRecount`, not by
-      // starting a second count behind it, and LOCKED is closed history.
-      throw new ApiError(409, "في جرد متسجل للتسليم ده بالفعل");
+      // For a DRAFT handover this is still the refusal it always was:
+      // CONFIRMED evidence is replaced by `requestRecount`, not by starting a
+      // second count behind it, and LOCKED is closed history.
+      if (handover.status !== "REJECTED") {
+        throw new ApiError(409, "في جرد متسجل للتسليم ده بالفعل");
+      }
+      // REJECTED: the bound session IS the superseded evidence, and asking
+      // for the replacement is exactly what the rejection invited. Fall
+      // through to creation. The prior row is never read for update, never
+      // edited and never deleted — only the pointer below stops naming it.
+      //
+      // An ACTIVE bound session short-circuits above even from REJECTED,
+      // which is what makes two simultaneous restarts idempotent: the loser
+      // re-reads the pointer under its own lock and receives the winner's
+      // replacement.
     }
 
     // A session with no lines would submit and confirm vacuously, and read
@@ -622,11 +645,19 @@ export async function startHandoverCount(args: {
       throw e;
     }
 
-    // The current-count pointer, and nothing else. No earlier session row is
-    // edited or removed, which is what preserves recount history.
+    // The current-count pointer and the status, and nothing else. No earlier
+    // session row is edited or removed, which is what preserves recount
+    // history.
+    //
+    // `status` is written only because the row may be in REJECTED; writing
+    // "DRAFT" when it is already DRAFT is a no-op on the same column.
+    // `rejectionReasonCodeId`, `rejectionNote` and `rejectedAt` are
+    // deliberately ABSENT from `data`: they are the record of why a second
+    // count exists, and the migration's CHECK constrains only the REJECTED
+    // direction, so retaining them in DRAFT is legal.
     await tx.handoverSession.update({
       where: { id: handover.id },
-      data: { stockCountSessionId: created.id },
+      data: { stockCountSessionId: created.id, status: "DRAFT" },
     });
 
     return {

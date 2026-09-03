@@ -1986,3 +1986,355 @@ describe("request-recount route", () => {
     );
   });
 });
+
+// ───────────────────────── T6 · the REJECTED restart ─────────────────────
+//
+// The outgoing hand counts again. Under the handover row lock, that call
+// changes REJECTED to DRAFT, creates a fresh session bound to the SAME
+// handover, and replaces only the current-count pointer.
+//
+// It never edits the prior session. The first count stays CONFIRMED and
+// readable, which is what makes it history rather than a mistake, and because
+// a handover-bound confirmation defers accountability it carries no variance
+// case — so there is nothing about it to retract.
+//
+// The rejection fields are RETAINED across the restart. They are the record
+// of why a second count exists, and the migration's CHECK constrains only the
+// REJECTED direction, so keeping them in DRAFT is legal and honest.
+
+const post = <T = Record<string, unknown>>(email: string, body: unknown) =>
+  as<T>(email, "/api/handovers", { method: "POST", body: JSON.stringify(body) });
+
+const startCountHttp = (handoverId: string, email: string = fx.cashier.email) =>
+  post<{ countSession: { id: string; type: string; scopeItemIds: string[]; reused: boolean } }>(
+    email,
+    { action: "start_count", handoverId },
+  );
+
+const patchLine = (email: string, sessionId: string, lineId: string, countedQuantity: number) =>
+  as<{ error?: string }>(email, `/api/stock-counts/${sessionId}/lines/${lineId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ countedQuantity }),
+  });
+
+const submitCount = (email: string, sessionId: string) =>
+  as<{ error?: string }>(email, `/api/stock-counts/${sessionId}/submit`, {
+    method: "POST",
+    body: "{}",
+  });
+
+const acceptVariance = (email: string, sessionId: string, lineId: string, reasonCodeId: string) =>
+  as<{ error?: string }>(
+    email,
+    `/api/stock-counts/${sessionId}/lines/${lineId}/accept-variance`,
+    { method: "POST", body: JSON.stringify({ reasonCodeId }) },
+  );
+
+type ConfirmBody = {
+  status?: string;
+  varianceCaseIds?: string[];
+  alreadyConfirmed?: boolean;
+  deferred?: {
+    context: string;
+    handoverId: string | null;
+    openingBranchCustodyPeriodId: string | null;
+  } | null;
+  error?: string;
+};
+
+const confirmCount = (email: string, sessionId: string, idempotencyKey: string) =>
+  as<ConfirmBody>(email, `/api/stock-counts/${sessionId}/confirm`, {
+    method: "POST",
+    body: JSON.stringify({ idempotencyKey }),
+  });
+
+/**
+ * Capture, submit, settle and confirm a session through the real routes.
+ *
+ * The order is capture, submit, accept, confirm — the one the disposition
+ * state machine permits, and the one `count-012` drives. `counted` is applied
+ * to alpha; the rest are counted exactly.
+ */
+async function walkTheCount(sessionId: string, alphaCounted: number) {
+  const lines = await db.stockCountLine.findMany({
+    where: { sessionId },
+    select: { id: true, inventoryItemId: true },
+  });
+  for (const line of lines) {
+    const counted = line.inventoryItemId === items.alpha.id ? alphaCounted : 10;
+    const r = await patchLine(fx.manager.email, sessionId, line.id, counted);
+    assert.ok(r.status < 300, `capture failed: ${r.text}`);
+  }
+  const submitted = await submitCount(fx.manager.email, sessionId);
+  assert.ok(submitted.status < 300, `count submit failed: ${submitted.text}`);
+
+  const unsettled = await db.stockCountLine.findMany({
+    where: { sessionId, disposition: { in: ["OUTSIDE_TOLERANCE", "RECOUNT_REQUIRED"] } },
+    select: { id: true },
+  });
+  for (const line of unsettled) {
+    const r = await acceptVariance(fx.manager.email, sessionId, line.id, stockReasonId);
+    assert.ok(r.status < 300, `accept-variance failed: ${r.text}`);
+  }
+  return { lineIds: lines.map((l) => l.id), settled: unsettled.length };
+}
+
+/** A handover sent back for a recount, with its superseded evidence. */
+async function rejectedHandover() {
+  const h = await reviewedHandover();
+  const result = await requestRecount({
+    handoverId: h.handoverId,
+    reasonCodeId: handoverReasonId,
+    note: "الأرقام مش مظبوطة",
+  });
+  return { ...h, supersededSessionId: result.supersededSessionId };
+}
+
+describe("REJECTED restart", () => {
+  test("6.1 start_count on a REJECTED handover creates the replacement", async () => {
+    const h = await rejectedHandover();
+
+    const r = await startCountHttp(h.handoverId);
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.body.countSession.reused, false);
+    assert.notEqual(
+      r.body.countSession.id,
+      h.supersededSessionId,
+      "the replacement is a new session, not the old one reopened",
+    );
+
+    const handover = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: { status: true, stockCountSessionId: true },
+    });
+    assert.equal(handover.status, "DRAFT");
+    assert.equal(handover.stockCountSessionId, r.body.countSession.id);
+  });
+
+  test("6.2 the replacement is bound exactly as the first one was", async () => {
+    const h = await rejectedHandover();
+    const r = await startCountHttp(h.handoverId);
+    assert.equal(r.status, 200, r.text);
+
+    const session = await db.stockCountSession.findUniqueOrThrow({
+      where: { id: r.body.countSession.id },
+    });
+    assert.equal(session.accountabilityContext, "HANDOVER");
+    assert.equal(session.handoverId, h.handoverId);
+    assert.equal(session.status, "DRAFT");
+    assert.equal(session.mode, "BLIND");
+    assert.equal(session.shiftId, h.shiftId);
+    assert.equal(session.custodyPeriodId, h.outgoingStockCustodyId);
+    // Derived from the same immutable snapshot the first session used.
+    assert.equal(session.type, "CRITICAL");
+    assert.equal(session.scopeDerivation, "CRITICAL_ONLY");
+  });
+
+  test("6.3 the replacement's lines come from the required-item snapshot", async () => {
+    const h = await rejectedHandover();
+    // Between the rejection and the restart the shelf changes underneath: a
+    // unit is switched and an item is archived. Neither may reach a handover
+    // that was planned before either happened.
+    await db.inventoryItem.update({
+      where: { id: items.alpha.id },
+      data: { unit: "LITER" },
+    });
+    await db.inventoryItem.update({
+      where: { id: items.charlie.id },
+      data: { archivedAt: new Date(), isActive: false },
+    });
+
+    const r = await startCountHttp(h.handoverId);
+    assert.equal(r.status, 200, r.text);
+
+    const snapshot = await db.handoverRequiredItem.findMany({
+      where: { handoverId: h.handoverId, omitted: false },
+      select: { inventoryItemId: true, unitSnapshot: true },
+    });
+    const lines = await db.stockCountLine.findMany({
+      where: { sessionId: r.body.countSession.id },
+    });
+
+    assert.deepEqual(
+      lines.map((l) => l.inventoryItemId).sort(),
+      snapshot.map((s) => s.inventoryItemId).sort(),
+    );
+    for (const line of lines) {
+      const snap = snapshot.find((s) => s.inventoryItemId === line.inventoryItemId)!;
+      assert.equal(
+        line.unit,
+        snap.unitSnapshot,
+        "the unit is the one the handover was planned in, never today's",
+      );
+      assert.equal(line.disposition, "PENDING");
+      assert.equal(line.countedQuantity, null);
+      assert.equal(line.effectiveCountedQuantity, null);
+      assert.equal(line.expectedQuantity, null);
+      assert.equal(line.varianceQuantity, null);
+      assert.equal(line.itemVersion, null);
+      assert.equal(line.countedAt, null);
+    }
+  });
+
+  test("6.4 the restart moves exactly three columns on the handover", async () => {
+    const h = await rejectedHandover();
+    const before = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+    });
+
+    const r = await startCountHttp(h.handoverId);
+    assert.equal(r.status, 200, r.text);
+
+    const after_ = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+    });
+    const moved: string[] = [];
+    for (const key of Object.keys(before) as Array<keyof typeof before>) {
+      if (asText(before[key]) !== asText(after_[key])) moved.push(String(key));
+    }
+    assert.deepEqual(
+      moved.sort(),
+      ["status", "stockCountSessionId", "updatedAt"],
+      "the restart replaces the current-count pointer and the status, nothing else",
+    );
+  });
+
+  test("6.5 the superseded session survives untouched, and both exist", async () => {
+    const h = await rejectedHandover();
+    const sessionBefore = asText(
+      await db.stockCountSession.findUniqueOrThrow({ where: { id: h.supersededSessionId } }),
+    );
+    const linesBefore = await sessionLinesText(h.supersededSessionId);
+
+    const r = await startCountHttp(h.handoverId);
+    assert.equal(r.status, 200, r.text);
+
+    const superseded = await db.stockCountSession.findUniqueOrThrow({
+      where: { id: h.supersededSessionId },
+    });
+    assert.equal(superseded.status, "CONFIRMED");
+    assert.equal(asText(superseded), sessionBefore);
+    assert.equal(await sessionLinesText(h.supersededSessionId), linesBefore);
+
+    assert.equal(
+      await db.stockCountSession.count({ where: { handoverId: h.handoverId } }),
+      2,
+      "the superseded evidence and its replacement, and nothing else",
+    );
+  });
+
+  test("6.6 the freeze is still held and custody has not moved", async () => {
+    const h = await rejectedHandover();
+    const r = await startCountHttp(h.handoverId);
+    assert.equal(r.status, 200, r.text);
+
+    const { activeFreezeFor } = await import("@/lib/inventory-freeze");
+    const freeze = await activeFreezeFor(db, fx.branchId);
+    assert.ok(freeze);
+    assert.equal(freeze.handoverId, h.handoverId);
+
+    for (const id of [h.outgoingStockCustodyId, h.outgoingCashCustodyId] as string[]) {
+      const period = await db.custodyPeriod.findUniqueOrThrow({ where: { id } });
+      assert.equal(period.status, "OPEN");
+      assert.equal(period.acceptedById, null);
+    }
+  });
+
+  test("6.7 no accepted field is written, and the rejection is retained", async () => {
+    const h = await rejectedHandover();
+    const r = await startCountHttp(h.handoverId);
+    assert.equal(r.status, 200, r.text);
+
+    await assertNoLaterStageWrites(h, "after the restart");
+
+    const handover = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: {
+        status: true,
+        rejectionReasonCodeId: true,
+        rejectionNote: true,
+        rejectedAt: true,
+      },
+    });
+    assert.equal(handover.status, "DRAFT");
+    assert.equal(
+      handover.rejectionReasonCodeId,
+      handoverReasonId,
+      "the rejection fields are the record of WHY a second count exists",
+    );
+    assert.equal(handover.rejectionNote, "الأرقام مش مظبوطة");
+    assert.ok(handover.rejectedAt instanceof Date);
+  });
+
+  test("6.8 confirming the replacement still opens zero variance cases", async () => {
+    const h = await rejectedHandover();
+    // A blocking policy deliberately in force. SH-17's deferral is contextual
+    // and does not consult it, and this is the case that says so for the
+    // SECOND count as well as the first.
+    await db.cafeSettings.update({
+      where: { cafeId: fx.cafeId },
+      data: { varianceBlocksHandover: true, varianceHardBlockAmount: 1 },
+    });
+
+    const started = await startCountHttp(h.handoverId);
+    assert.equal(started.status, 200, started.text);
+    const sessionId = started.body.countSession.id;
+
+    const { lineIds, settled } = await walkTheCount(sessionId, 3);
+    assert.ok(settled > 0, "the fixture must produce a real difference to settle");
+
+    const confirmed = await confirmCount(fx.manager.email, sessionId, `${MARKER}-replacement-1`);
+    assert.ok(confirmed.status < 300, `confirm failed: ${confirmed.text}`);
+    assert.equal(confirmed.body.status, "CONFIRMED");
+    assert.deepEqual(confirmed.body.varianceCaseIds, []);
+    assert.deepEqual(confirmed.body.deferred, {
+      context: "HANDOVER",
+      handoverId: h.handoverId,
+      openingBranchCustodyPeriodId: null,
+    });
+    assert.equal(
+      await db.varianceCase.count({ where: { stockCountLineId: { in: lineIds } } }),
+      0,
+      "a second handover-bound confirmation is still a proposal, and opens no case",
+    );
+    assert.equal(
+      await db.varianceCase.count({
+        where: { stockCountLine: { sessionId: h.supersededSessionId } },
+      }),
+      0,
+      "and the first count still has none either",
+    );
+  });
+
+  test("6.9 two simultaneous restarts yield one replacement", async () => {
+    const h = await rejectedHandover();
+
+    const results = await Promise.allSettled([
+      startCountHttp(h.handoverId),
+      startCountHttp(h.handoverId),
+    ]);
+    for (const r of results) assert.equal(r.status, "fulfilled");
+    const bodies = results.map(
+      (r) =>
+        (r as PromiseFulfilledResult<Awaited<ReturnType<typeof startCountHttp>>>).value,
+    );
+    for (const r of bodies) assert.equal(r.status, 200, r.text);
+    assert.equal(
+      bodies[0].body.countSession.id,
+      bodies[1].body.countSession.id,
+      "both callers must receive the same replacement",
+    );
+
+    assert.equal(
+      await db.stockCountSession.count({ where: { handoverId: h.handoverId } }),
+      2,
+      "the superseded evidence and exactly one replacement",
+    );
+    const handover = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: { status: true, stockCountSessionId: true },
+    });
+    assert.equal(handover.status, "DRAFT");
+    assert.equal(handover.stockCountSessionId, bodies[0].body.countSession.id);
+  });
+});
