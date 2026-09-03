@@ -57,12 +57,15 @@ import type {
   InventoryUnit,
   Prisma,
   RequiredItemTrigger,
+  StockAckDecision,
   StockCountStatus,
   StockCountType,
 } from "@prisma/client";
 import { ApiError } from "@/lib/api";
 import { audit, auditInTransaction } from "@/lib/audit";
+import { round3 } from "@/lib/costing";
 import { db } from "@/lib/db";
+import { ledgerDeltaAbove } from "@/lib/ledger";
 import type { HandoverBlocker } from "@/lib/handover-blockers";
 import {
   persistRequiredItems,
@@ -1308,5 +1311,246 @@ export async function listHandoversForViewer(args: {
       createdAt: true,
     },
     orderBy: { createdAt: "desc" },
+  });
+}
+
+// ─────────────────── SH-19 · the incoming acknowledgement ────────────────
+//
+// The arriving custodian signs for one line at a time, and the signature is
+// the thing SH-18's blindness was protecting: until the first acknowledgement
+// exists, `incomingHandoverView` shows no figure at all. This function
+// CREATES that first row and therefore causes the disclosure; it does not
+// redesign it, and it touches neither the projection nor the redactor.
+//
+// What is signed for is not what was written down. `handedOverQuantity` is
+// the effective counted figure PLUS every ledger movement above that figure's
+// own cursor, which is the same arithmetic `rebaseFromCount` uses to land a
+// count on the shelf. A count is taken at a moment; a shelf is handed over
+// now, and the gap between the two is real stock.
+//
+// Three answers, and they are not interchangeable:
+//
+//   no spot count       → ACCEPTED, incomingCountedQuantity NULL, variance NULL
+//   spot count, equal   → ACCEPTED, variance 0
+//   spot count, differs → DISPUTED, and only with a HANDOVER reason
+//
+// NULL is not zero. "I signed for it without counting" and "I counted it and
+// we agree" are different claims about what the reviewer actually did.
+//
+// NOTHING here writes to `StockCountLine`, `StockCountSession`, custody, the
+// freeze or the shift. A dispute records disagreement with the outgoing
+// hand's figure; it never edits it. And `HandoverSession.incomingUserId` is
+// deliberately untouched — the actor is recorded on the acknowledgement row,
+// and the handover-level incoming party is set when custody actually moves,
+// which is SH-20's.
+
+export const HANDOVER_LINE_ACKNOWLEDGED_AUDIT_ACTION = "HANDOVER_LINE_ACKNOWLEDGED";
+
+export type AcknowledgeStockLineResult = {
+  /** effectiveCountedQuantity + ledgerDeltaAbove(evidence.itemVersion). */
+  handedOverQuantity: number;
+  /** NULL when no spot count was taken. NULL is not zero. */
+  varianceQuantity: number | null;
+  decision: StockAckDecision;
+};
+
+/** The statuses an incoming custodian may sign in. */
+const ACKNOWLEDGEABLE_STATUSES: readonly HandoverStatus[] = [
+  "OUTGOING_SUBMITTED",
+  "INCOMING_REVIEW",
+];
+
+const NOT_IN_REVIEW = "التسليم مش في مرحلة مراجعة";
+const NO_BOUND_COUNT = "مفيش جرد مربوط بالتسليم ده";
+const OLD_SESSION_LINE = "السطر ده من جرد قديم — الجرد الحالي هو اللي بيتراجع";
+const ALREADY_ACKNOWLEDGED = "السطر ده متسجل استلامه قبل كده";
+
+export async function acknowledgeStockLine(args: {
+  handoverId: string;
+  stockCountLineId: string;
+  acknowledgedById: string;
+  incomingCountedQuantity?: number | null;
+  disputeReasonCodeId?: string;
+  disputeNote?: string;
+  cafeId: string;
+  viewerBranchId: string | null;
+}): Promise<AcknowledgeStockLineResult> {
+  return db.$transaction(async (tx) => {
+    if (!(await lockHandover(tx, args.handoverId))) {
+      throw new ApiError(404, HANDOVER_NOT_FOUND);
+    }
+
+    // Re-read under the lock, so the state validated is the state written to.
+    const handover = await tx.handoverSession.findUniqueOrThrow({
+      where: { id: args.handoverId },
+      select: {
+        id: true,
+        cafeId: true,
+        branchId: true,
+        status: true,
+        stockCountSessionId: true,
+      },
+    });
+
+    // Another tenant's handover is not confirmed to exist. A 403 here would
+    // tell one café that an id belonging to another one is real.
+    if (handover.cafeId !== args.cafeId) {
+      throw new ApiError(404, HANDOVER_NOT_FOUND);
+    }
+    if (args.viewerBranchId !== null && handover.branchId !== args.viewerBranchId) {
+      throw new ApiError(403, FOREIGN_BRANCH);
+    }
+
+    if (!ACKNOWLEDGEABLE_STATUSES.includes(handover.status)) {
+      throw new ApiError(409, NOT_IN_REVIEW);
+    }
+    if (handover.stockCountSessionId === null) {
+      throw new ApiError(409, NO_BOUND_COUNT);
+    }
+
+    const line = await tx.stockCountLine.findUnique({
+      where: { id: args.stockCountLineId },
+      select: {
+        sessionId: true,
+        inventoryItemId: true,
+        ...EFFECTIVE_EVIDENCE_SELECT,
+      },
+    });
+    if (!line) throw new ApiError(404, "سطر الجرد غير موجود");
+
+    // ONE predicate, three of the stage's refusals: a line belonging to a
+    // different handover, a line from a session this handover has superseded,
+    // and a stale acknowledgement arriving after a recount. The current-count
+    // pointer is the single source of "which count is being reviewed", so a
+    // line the pointer does not name is not this review's subject.
+    if (line.sessionId !== handover.stockCountSessionId) {
+      throw new ApiError(409, OLD_SESSION_LINE);
+    }
+
+    // The quantity and its cursor come from ONE call, because they are only
+    // correct together: a recount's figure measured from the first count's
+    // cursor would replay the movements between them a second time.
+    const evidence = effectiveCountEvidence(line);
+
+    // Evaluated BEFORE any arithmetic. An uncounted line has no figure to
+    // hand over, and letting a null reach the sum would surface either as a
+    // NOT NULL violation on `handedOverQuantity` or as a silent zero — a
+    // claim that the shelf was empty, which nobody made. It is the same
+    // predicate `rebaseFromCount` uses to decide a line has nothing to act on.
+    if (line.countedQuantity === null && evidence.recountId === null) {
+      throw new ApiError(409, "السطر ده لسه ماتعدش — مش ينفع تستلمه");
+    }
+
+    const replay = await ledgerDeltaAbove(
+      tx,
+      line.inventoryItemId,
+      // `BigInt(0)`, never the literal `0n`: tsconfig targets ES2017 and a
+      // BigInt literal is TS2737.
+      evidence.itemVersion ?? BigInt(0)
+    );
+    const handedOverQuantity = round3(evidence.quantity + replay.delta);
+
+    let decision: StockAckDecision = "ACCEPTED";
+    let incomingCountedQuantity: number | null = null;
+    let varianceQuantity: number | null = null;
+    let disputeReasonCodeId: string | null = null;
+    let disputeNote: string | null = null;
+
+    if (
+      args.incomingCountedQuantity !== undefined &&
+      args.incomingCountedQuantity !== null
+    ) {
+      incomingCountedQuantity = round3(args.incomingCountedQuantity);
+      varianceQuantity = round3(incomingCountedQuantity - handedOverQuantity);
+      if (varianceQuantity !== 0) {
+        // Inside the lock, so the reason cannot be deactivated between the
+        // check and the write. A missing one raises 400 and the whole
+        // transaction rolls back, leaving no row and no transition.
+        await assertHandoverReason(
+          tx,
+          args.disputeReasonCodeId,
+          handover.cafeId,
+          "سبب الاختلاف"
+        );
+        decision = "DISPUTED";
+        disputeReasonCodeId = args.disputeReasonCodeId ?? null;
+        disputeNote = args.disputeNote ?? null;
+      }
+      // variance === 0 stays ACCEPTED. A dispute reason may have been sent
+      // and is ignored: there is nothing to disagree about.
+    }
+
+    // A courtesy check under the lock; the database's own
+    // `@@unique([handoverId, stockCountLineId])` is what actually decides,
+    // and the catch below converts the losing racer into the same refusal.
+    // An acknowledgement is a SIGNATURE — answering "yes, that is signed" to
+    // a second, possibly different, spot count would let a reviewer believe
+    // their figure was recorded when the first one stands.
+    const existing = await tx.handoverStockAcknowledgement.findUnique({
+      where: {
+        handoverId_stockCountLineId: {
+          handoverId: handover.id,
+          stockCountLineId: args.stockCountLineId,
+        },
+      },
+      select: { id: true },
+    });
+    if (existing) throw new ApiError(409, ALREADY_ACKNOWLEDGED);
+
+    let created: { id: string };
+    try {
+      created = await tx.handoverStockAcknowledgement.create({
+        data: {
+          handoverId: handover.id,
+          stockCountLineId: args.stockCountLineId,
+          acknowledgedById: args.acknowledgedById,
+          incomingCountedQuantity,
+          handedOverQuantity,
+          varianceQuantity,
+          decision,
+          disputeReasonCodeId,
+          disputeNote,
+        },
+        select: { id: true },
+      });
+    } catch (e) {
+      if (isUniqueViolation(e)) throw new ApiError(409, ALREADY_ACKNOWLEDGED);
+      throw e;
+    }
+
+    // Guard and write in ONE statement, so two racers cannot both observe
+    // `OUTGOING_SUBMITTED` and both stamp the moment the review opened.
+    // Matching zero rows is the correct no-op for a later acknowledgement:
+    // the status is already INCOMING_REVIEW and `reviewedAt` is left
+    // byte-identical. `reviewedAt` is never written outside this `where`.
+    await tx.handoverSession.updateMany({
+      where: { id: handover.id, status: "OUTGOING_SUBMITTED" },
+      data: { status: "INCOMING_REVIEW", reviewedAt: new Date() },
+    });
+
+    // Figures ARE recorded here, unlike `HANDOVER_SUBMITTED`, which withholds
+    // them: by the time this row exists the reviewer has been disclosed the
+    // whole session, so there is nothing left to leak — and the figure signed
+    // for is the entire point of the record.
+    await auditInTransaction(tx, {
+      cafeId: handover.cafeId,
+      userId: args.acknowledgedById,
+      action: HANDOVER_LINE_ACKNOWLEDGED_AUDIT_ACTION,
+      entity: "HandoverStockAcknowledgement",
+      entityId: created.id,
+      details: {
+        branchId: handover.branchId,
+        handoverId: handover.id,
+        stockCountLineId: args.stockCountLineId,
+        inventoryItemId: line.inventoryItemId,
+        sessionId: line.sessionId,
+        decision,
+        handedOverQuantity,
+        varianceQuantity,
+        disputeReasonCodeId,
+      },
+    });
+
+    return { handedOverQuantity, varianceQuantity, decision };
   });
 }

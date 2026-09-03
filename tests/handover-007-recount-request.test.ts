@@ -405,7 +405,683 @@ describe("HANDOVER reason validation", () => {
   });
 });
 
-// `freshHandover`, `incoming` and the handover reason ids above are consumed
-// from T2 onward, when there is a service to point them at. The reference
-// here keeps the fixture from reading as dead code until then.
-void freshHandover;
+// ──────────────────── T2 · the incoming acknowledgement ──────────────────
+//
+// The arriving custodian signs for one line at a time. Three shapes, and they
+// are not interchangeable:
+//
+//   no spot count      → ACCEPTED, incomingCountedQuantity NULL, variance NULL
+//   spot count, equal  → ACCEPTED, variance 0
+//   spot count, differs→ DISPUTED, and only with a HANDOVER reason
+//
+// NULL is not zero. "I signed for it without counting" and "I counted it and
+// we agree" are different claims about what the reviewer actually did, and an
+// implementation that coalesced the first into the second would manufacture
+// evidence nobody gave.
+//
+// What is signed for is `handedOverQuantity` — the effective counted figure
+// plus every ledger movement above that figure's own cursor. The count was
+// taken at a moment; the shelf is being handed over now.
+
+const statusIs = (status: number) => (error: unknown) =>
+  (error as { status?: number }).status === status;
+
+const refusalIs = (status: number, message: string) => (error: unknown) =>
+  (error as { status?: number }).status === status &&
+  (error as { message?: string }).message === message;
+
+const NOT_IN_REVIEW = "التسليم مش في مرحلة مراجعة";
+const NO_BOUND_COUNT = "مفيش جرد مربوط بالتسليم ده";
+const LINE_NOT_FOUND = "سطر الجرد غير موجود";
+const OLD_SESSION = "السطر ده من جرد قديم — الجرد الحالي هو اللي بيتراجع";
+const UNCOUNTED = "السطر ده لسه ماتعدش — مش ينفع تستلمه";
+const ALREADY_ACKNOWLEDGED = "السطر ده متسجل استلامه قبل كده";
+const HANDOVER_NOT_FOUND = "التسليم مش موجود";
+const FOREIGN_BRANCH = "ليس لديك صلاحية على فرع تاني";
+
+/**
+ * Write a line's figures directly. Capture is `count-010`'s subject.
+ *
+ * `itemVersion` is the item's REAL `ledgerVersion` at fill time rather than a
+ * constant, because the whole point of `handedOverQuantity` is that movements
+ * ABOVE that cursor are replayed — and a cursor that did not come from the
+ * ledger could not be moved past.
+ */
+async function fillLine(
+  sessionId: string,
+  inventoryItemId: string,
+  spec: {
+    counted?: number | null;
+    expected?: number;
+    reasonCodeId?: string | null;
+    costImpact?: number | null;
+    costImpactAvailable?: boolean;
+  },
+) {
+  const line = await db.stockCountLine.findFirstOrThrow({
+    where: { sessionId, inventoryItemId },
+    select: { id: true },
+  });
+  const item = await db.inventoryItem.findUniqueOrThrow({
+    where: { id: inventoryItemId },
+    select: { ledgerVersion: true },
+  });
+  const counted = spec.counted === undefined ? null : spec.counted;
+  const expected = spec.expected ?? 0;
+  await db.stockCountLine.update({
+    where: { id: line.id },
+    data: {
+      expectedQuantity: expected,
+      countedQuantity: counted,
+      effectiveCountedQuantity: counted,
+      varianceQuantity: counted === null ? null : counted - expected,
+      countedAt: counted === null ? null : new Date(),
+      counterId: counted === null ? null : fx.cashier.id,
+      itemVersion: counted === null ? null : item.ledgerVersion,
+      expectedBasis: counted === null ? null : "LOCKED_ITEM_VERSION",
+      disposition: counted === null ? "PENDING" : "WITHIN_TOLERANCE",
+      reasonCodeId: spec.reasonCodeId ?? null,
+      costImpact: spec.costImpact ?? null,
+      costImpactAvailable: spec.costImpactAvailable ?? false,
+    },
+  });
+  return line.id;
+}
+
+type FillSpec = Parameters<typeof fillLine>[2] & { itemId: string };
+
+async function startCount(
+  handoverId: string,
+  overrides: Partial<{ actorId: string; cafeId: string; viewerBranchId: string | null }> = {},
+) {
+  const { startHandoverCount } = await handoverLib();
+  return startHandoverCount({
+    handoverId,
+    actorId: overrides.actorId ?? fx.cashier.id,
+    cafeId: overrides.cafeId ?? fx.cafeId,
+    viewerBranchId:
+      overrides.viewerBranchId === undefined ? fx.branchId : overrides.viewerBranchId,
+  });
+}
+
+async function submit(
+  handoverId: string,
+  overrides: Partial<{ outgoingUserId: string; cafeId: string; viewerBranchId: string | null }> = {},
+) {
+  const { submitHandover } = await handoverLib();
+  return submitHandover({
+    handoverId,
+    outgoingUserId: overrides.outgoingUserId ?? fx.cashier.id,
+    cafeId: overrides.cafeId ?? fx.cafeId,
+    viewerBranchId:
+      overrides.viewerBranchId === undefined ? fx.branchId : overrides.viewerBranchId,
+  });
+}
+
+/** A bound count in a stated status, with the given lines written. */
+async function boundCount(
+  h: Handover,
+  specs: FillSpec[],
+  status: "DRAFT" | "SUBMITTED" | "CONFIRMED" = "CONFIRMED",
+  cafe: CountCafe = fx,
+) {
+  const started = await startCount(h.handoverId, {
+    actorId: cafe.cashier.id,
+    cafeId: cafe.cafeId,
+    viewerBranchId: null,
+  });
+  for (const spec of specs) {
+    await fillLine(started.countSessionId, spec.itemId, spec);
+  }
+  if (status !== "DRAFT") {
+    await db.stockCountSession.update({
+      where: { id: started.countSessionId },
+      data: {
+        status,
+        submittedAt: new Date(),
+        ...(status === "CONFIRMED"
+          ? { confirmedAt: new Date(), confirmedById: cafe.cashier.id }
+          : {}),
+      },
+    });
+  }
+  return started.countSessionId;
+}
+
+/**
+ * Every required item counted exactly.
+ *
+ * A function rather than a constant: `items` is populated in `before()`, and
+ * a module-level array would capture `undefined` ids at load time.
+ */
+const exactSpecs = (): FillSpec[] =>
+  ITEM_KEYS.map((k) => ({ itemId: items[k].id, counted: 10, expected: 10 }));
+
+/** A handover that has actually been submitted, with its confirmed evidence. */
+async function submittedHandover(
+  specs?: FillSpec[],
+): Promise<Handover & { sessionId: string }> {
+  const h = await freshHandover();
+  const sessionId = await boundCount(
+    h,
+    specs ?? exactSpecs(),
+  );
+  await submit(h.handoverId);
+  return { ...h, sessionId };
+}
+
+const lineOf = (sessionId: string, inventoryItemId: string) =>
+  db.stockCountLine.findFirstOrThrow({
+    where: { sessionId, inventoryItemId },
+    select: { id: true },
+  });
+
+/** The service call under test, with the arriving custodian as the actor. */
+async function acknowledge(args: {
+  handoverId: string;
+  stockCountLineId: string;
+  incomingCountedQuantity?: number | null;
+  disputeReasonCodeId?: string;
+  disputeNote?: string;
+  acknowledgedById?: string;
+  cafeId?: string;
+  viewerBranchId?: string | null;
+}) {
+  const { acknowledgeStockLine } = await handoverLib();
+  return acknowledgeStockLine({
+    handoverId: args.handoverId,
+    stockCountLineId: args.stockCountLineId,
+    acknowledgedById: args.acknowledgedById ?? incoming.id,
+    incomingCountedQuantity: args.incomingCountedQuantity,
+    disputeReasonCodeId: args.disputeReasonCodeId,
+    disputeNote: args.disputeNote,
+    cafeId: args.cafeId ?? fx.cafeId,
+    viewerBranchId: args.viewerBranchId === undefined ? fx.branchId : args.viewerBranchId,
+  });
+}
+
+const ackRow = (handoverId: string, stockCountLineId: string) =>
+  db.handoverStockAcknowledgement.findUnique({
+    where: { handoverId_stockCountLineId: { handoverId, stockCountLineId } },
+  });
+
+const ackCount = (handoverId: string) =>
+  db.handoverStockAcknowledgement.count({ where: { handoverId } });
+
+/**
+ * A row as a comparable string.
+ *
+ * Decimals through their own `toJSON`, so `12.500` and `12.5` are different
+ * strings and a silently re-scaled column cannot pass; BigInt tagged, because
+ * `JSON.stringify` throws on it rather than losing it quietly.
+ */
+const asText = (row: unknown) =>
+  JSON.stringify(row, (_key, value) =>
+    typeof value === "bigint" ? `bigint:${value.toString()}` : value,
+  );
+
+const lineText = async (lineId: string) =>
+  asText(await db.stockCountLine.findUniqueOrThrow({ where: { id: lineId } }));
+
+describe("acknowledgeStockLine", () => {
+  test("2.1 no spot count records ACCEPTED with a NULL variance, not zero", async () => {
+    const h = await submittedHandover();
+    const line = await lineOf(h.sessionId, items.alpha.id);
+
+    const result = await acknowledge({ handoverId: h.handoverId, stockCountLineId: line.id });
+    assert.equal(result.decision, "ACCEPTED");
+    assert.strictEqual(result.varianceQuantity, null);
+    assert.equal(result.handedOverQuantity, 10);
+
+    const row = await ackRow(h.handoverId, line.id);
+    assert.ok(row, "the acknowledgement must be persisted, not merely returned");
+    assert.equal(row.decision, "ACCEPTED");
+    assert.strictEqual(row.varianceQuantity, null, "NULL is not zero");
+    assert.strictEqual(row.incomingCountedQuantity, null);
+    assert.equal(Number(row.handedOverQuantity), 10);
+    assert.equal(row.acknowledgedById, incoming.id);
+    assert.ok(row.acknowledgedAt instanceof Date);
+  });
+
+  test("2.2 a matching spot count records ACCEPTED with variance 0", async () => {
+    const h = await submittedHandover();
+    const line = await lineOf(h.sessionId, items.alpha.id);
+
+    const result = await acknowledge({
+      handoverId: h.handoverId,
+      stockCountLineId: line.id,
+      incomingCountedQuantity: 10,
+    });
+    assert.equal(result.decision, "ACCEPTED");
+    assert.equal(result.varianceQuantity, 0);
+
+    const row = await ackRow(h.handoverId, line.id);
+    assert.ok(row);
+    assert.notStrictEqual(row.varianceQuantity, null, "counting and agreeing is not not-counting");
+    assert.equal(Number(row.varianceQuantity), 0);
+    assert.equal(Number(row.incomingCountedQuantity), 10);
+  });
+
+  test("2.3 a differing spot count with no reason is refused, and rolls back", async () => {
+    const h = await submittedHandover();
+    const line = await lineOf(h.sessionId, items.alpha.id);
+
+    await assert.rejects(
+      acknowledge({
+        handoverId: h.handoverId,
+        stockCountLineId: line.id,
+        incomingCountedQuantity: 7,
+      }),
+      refusalIs(400, "لازم تحدد سبب الاختلاف"),
+    );
+
+    // The rollback is asserted, not assumed: the acknowledgement row and the
+    // transition are written in the same transaction as the reason check.
+    assert.equal(await ackCount(h.handoverId), 0);
+    const handover = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: { status: true, reviewedAt: true },
+    });
+    assert.equal(handover.status, "OUTGOING_SUBMITTED");
+    assert.equal(handover.reviewedAt, null);
+  });
+
+  test("2.4 a differing spot count with a valid reason records DISPUTED", async () => {
+    const h = await submittedHandover();
+    const line = await lineOf(h.sessionId, items.alpha.id);
+
+    const result = await acknowledge({
+      handoverId: h.handoverId,
+      stockCountLineId: line.id,
+      incomingCountedQuantity: 7,
+      disputeReasonCodeId: handoverReasonId,
+      disputeNote: "لقيت ٧ بس",
+    });
+    assert.equal(result.decision, "DISPUTED");
+    // A lower spot count is a NEGATIVE variance. The sign is the direction of
+    // the disagreement and reversing it would blame the wrong hand.
+    assert.equal(result.varianceQuantity, -3);
+    assert.equal(result.handedOverQuantity, 10);
+
+    const row = await ackRow(h.handoverId, line.id);
+    assert.ok(row);
+    assert.equal(row.decision, "DISPUTED");
+    assert.equal(Number(row.varianceQuantity), -3);
+    assert.equal(row.disputeReasonCodeId, handoverReasonId);
+    assert.equal(row.disputeNote, "لقيت ٧ بس");
+  });
+
+  test("2.5 a dispute leaves the counted line byte-identical", async () => {
+    const h = await submittedHandover();
+    const line = await lineOf(h.sessionId, items.alpha.id);
+    const before = await lineText(line.id);
+
+    await acknowledge({
+      handoverId: h.handoverId,
+      stockCountLineId: line.id,
+      incomingCountedQuantity: 2,
+      disputeReasonCodeId: handoverReasonId,
+    });
+
+    assert.equal(
+      await lineText(line.id),
+      before,
+      "the outgoing hand's figure is evidence — a dispute records disagreement with it, never a correction of it",
+    );
+  });
+
+  test("2.6 handedOverQuantity replays ledger movement above the count cursor", async () => {
+    const h = await submittedHandover();
+    const line = await db.stockCountLine.findFirstOrThrow({
+      where: { sessionId: h.sessionId, inventoryItemId: items.alpha.id },
+      select: { id: true, itemVersion: true, effectiveCountedQuantity: true },
+    });
+
+    // A real movement, through the single writer, above the line's cursor.
+    // The freeze token is the handover's own — the same trusted path the
+    // orchestration uses; an untokened write would be refused by the freeze.
+    const { applyStockMutation } = await import("@/lib/ledger");
+    const moved = await db.$transaction((tx) =>
+      applyStockMutation(tx, {
+        inventoryItemId: items.alpha.id,
+        type: "ADJUSTMENT",
+        quantity: -2.5,
+        cafeId: fx.cafeId,
+        branchId: fx.branchId,
+        createdById: fx.cashier.id,
+        freezeToken: h.handoverId,
+        allowNegative: true,
+      }),
+    );
+    assert.ok(
+      moved.itemVersion > (line.itemVersion ?? BigInt(0)),
+      "the fixture movement must land above the count cursor",
+    );
+
+    const result = await acknowledge({ handoverId: h.handoverId, stockCountLineId: line.id });
+    assert.equal(result.handedOverQuantity, 7.5);
+    assert.notEqual(
+      result.handedOverQuantity,
+      Number(line.effectiveCountedQuantity),
+      "a figure that ignored the replay would hand over stock that has already left",
+    );
+  });
+
+  test("2.7 handedOverQuantity equals what a real rebase produces", async () => {
+    const h = await submittedHandover();
+    const line = await db.stockCountLine.findFirstOrThrow({
+      where: { sessionId: h.sessionId, inventoryItemId: items.alpha.id },
+      select: { id: true, itemVersion: true },
+    });
+    const { applyStockMutation } = await import("@/lib/ledger");
+    await db.$transaction((tx) =>
+      applyStockMutation(tx, {
+        inventoryItemId: items.alpha.id,
+        type: "ADJUSTMENT",
+        quantity: 1.25,
+        cafeId: fx.cafeId,
+        branchId: fx.branchId,
+        createdById: fx.cashier.id,
+        freezeToken: h.handoverId,
+        allowNegative: true,
+      }),
+    );
+
+    const result = await acknowledge({ handoverId: h.handoverId, stockCountLineId: line.id });
+
+    // The reference figure, from the real rebase rather than from a second
+    // copy of the same arithmetic. It runs against a CLONE — session, lines
+    // and recounts under new ids — because rebasing the real session is
+    // SH-20's act and would consume the evidence this handover still needs.
+    //
+    // The freeze is released first because `rebaseFromCount` at this HEAD
+    // takes no freeze token, so it cannot run against a frozen branch. That
+    // is a property of the reference call, not of the acknowledgement: the
+    // acknowledgement above already committed with the freeze fully in force.
+    await db.inventoryFreeze.update({
+      where: { id: h.freezeId },
+      data: { releasedAt: new Date(), releasedById: fx.manager.id },
+    });
+
+    const source = await db.stockCountSession.findUniqueOrThrow({
+      where: { id: h.sessionId },
+      include: { lines: { include: { recounts: true, corrections: true } } },
+    });
+    // The clone is complete only if there is nothing else to clone. Recounts
+    // and approved corrections would each move the effective figure, so a
+    // fixture that grew one and did not copy it would compare two different
+    // pieces of evidence and still pass.
+    for (const l of source.lines) {
+      assert.equal(l.recounts.length, 0, "clone the recounts too if the fixture grows one");
+      assert.equal(l.corrections.length, 0, "clone the corrections too if the fixture grows one");
+    }
+    const clone = await db.stockCountSession.create({
+      data: {
+        cafeId: source.cafeId,
+        branchId: source.branchId,
+        shiftId: source.shiftId,
+        type: source.type,
+        status: "CONFIRMED",
+        mode: source.mode,
+        scopeDerivation: source.scopeDerivation,
+        initiatedById: source.initiatedById,
+        confirmedAt: source.confirmedAt,
+        confirmedById: source.confirmedById,
+        lines: {
+          create: source.lines.map((l) => ({
+            inventoryItemId: l.inventoryItemId,
+            unit: l.unit,
+            expectedQuantity: l.expectedQuantity,
+            countedQuantity: l.countedQuantity,
+            effectiveCountedQuantity: l.effectiveCountedQuantity,
+            varianceQuantity: l.varianceQuantity,
+            itemVersion: l.itemVersion,
+            expectedBasis: l.expectedBasis,
+            countedAt: l.countedAt,
+            counterId: l.counterId,
+            disposition: l.disposition,
+            reasonCodeId: l.reasonCodeId,
+          })),
+        },
+      },
+      select: { id: true },
+    });
+
+    const { rebaseFromCount } = await import("@/lib/stock-rebase");
+    await rebaseFromCount({
+      sessionId: clone.id,
+      actorId: fx.manager.id,
+      idempotencyKey: `${MARKER}-clone-rebase`,
+    });
+
+    const rebased = await db.stockCountRebase.findFirstOrThrow({
+      where: { sessionId: clone.id, inventoryItemId: items.alpha.id },
+      select: { stockAfter: true },
+    });
+    assert.equal(
+      Number(rebased.stockAfter),
+      result.handedOverQuantity,
+      "the acknowledged figure and the rebase must be the same arithmetic, proved rather than asserted in a comment",
+    );
+  });
+
+  test("2.8 a line from another handover's session is refused", async () => {
+    const mine = await submittedHandover();
+    // A genuinely separate handover, in the café's other branch, so building
+    // it cannot disturb the one under test.
+    const annexItem = await db.inventoryItem.findFirstOrThrow({
+      where: { branchId: fx.otherBranchId, isCritical: true },
+      select: { id: true },
+    });
+    const annex = await freshHandover(fx, fx.otherBranchId);
+    const annexSession = await boundCount(annex, [
+      { itemId: annexItem.id, counted: 8, expected: 8 },
+    ]);
+    const foreignLine = await lineOf(annexSession, annexItem.id);
+
+    await assert.rejects(
+      acknowledge({
+        handoverId: mine.handoverId,
+        stockCountLineId: foreignLine.id,
+        viewerBranchId: null,
+      }),
+      refusalIs(409, OLD_SESSION),
+    );
+    assert.equal(await ackCount(mine.handoverId), 0);
+  });
+
+  test("2.9 a line from a superseded session of this handover is refused", async () => {
+    const h = await submittedHandover();
+    const stale = await lineOf(h.sessionId, items.alpha.id);
+
+    // The superseded state, built directly: `requestRecount` does not exist
+    // until T4, and case 7.6 re-asserts this through the real recount path.
+    const replacement = await db.stockCountSession.create({
+      data: {
+        cafeId: fx.cafeId,
+        branchId: fx.branchId,
+        shiftId: h.shiftId,
+        type: "CRITICAL",
+        status: "CONFIRMED",
+        scopeDerivation: "CRITICAL_ONLY",
+        initiatedById: fx.cashier.id,
+        accountabilityContext: "HANDOVER",
+        handoverId: h.handoverId,
+      },
+      select: { id: true },
+    });
+    await db.handoverSession.update({
+      where: { id: h.handoverId },
+      data: { stockCountSessionId: replacement.id },
+    });
+
+    await assert.rejects(
+      acknowledge({ handoverId: h.handoverId, stockCountLineId: stale.id }),
+      refusalIs(409, OLD_SESSION),
+    );
+    assert.equal(await ackCount(h.handoverId), 0);
+  });
+
+  test("2.10 an uncounted line is refused with a controlled business error", async () => {
+    // The handover has to SUBMIT before anything can be acknowledged, and
+    // `submitHandover` refuses a required item with no figure — so the
+    // uncounted line is produced after the submit, by a direct write. It is
+    // the state the guard exists for: a line the current session names, whose
+    // `countedQuantity` is null with no recount and no approved correction.
+    const h = await submittedHandover();
+    const line = await lineOf(h.sessionId, items.charlie.id);
+    await db.stockCountLine.update({
+      where: { id: line.id },
+      data: {
+        countedQuantity: null,
+        effectiveCountedQuantity: null,
+        varianceQuantity: null,
+        countedAt: null,
+        counterId: null,
+        itemVersion: null,
+        expectedBasis: null,
+        disposition: "PENDING",
+      },
+    });
+
+    let thrown: unknown;
+    try {
+      await acknowledge({ handoverId: h.handoverId, stockCountLineId: line.id });
+      assert.fail("acknowledging an uncounted line must be refused");
+    } catch (error) {
+      thrown = error;
+    }
+    assert.equal((thrown as { status?: number }).status, 409);
+    assert.equal((thrown as { message?: string }).message, UNCOUNTED);
+    assert.equal(
+      (thrown as { constructor: { name: string } }).constructor.name,
+      "ApiError",
+      "a null figure must not reach the database and come back as a constraint violation",
+    );
+    assert.ok(!(thrown instanceof TypeError));
+    assert.equal(await ackCount(h.handoverId), 0);
+  });
+
+  test("2.11 the first acknowledgement opens the review", async () => {
+    const h = await submittedHandover();
+    const line = await lineOf(h.sessionId, items.alpha.id);
+
+    const before = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: { status: true, reviewedAt: true },
+    });
+    assert.equal(before.status, "OUTGOING_SUBMITTED");
+    assert.equal(before.reviewedAt, null);
+
+    await acknowledge({ handoverId: h.handoverId, stockCountLineId: line.id });
+
+    const after_ = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: { status: true, reviewedAt: true, incomingUserId: true },
+    });
+    assert.equal(after_.status, "INCOMING_REVIEW");
+    assert.ok(after_.reviewedAt instanceof Date);
+    // The acknowledgement actor is recorded on the acknowledgement. The
+    // handover-level incoming party is set when custody actually moves, which
+    // is SH-20's.
+    assert.equal(after_.incomingUserId, null);
+  });
+
+  test("2.12 a later acknowledgement does not re-stamp the review", async () => {
+    const h = await submittedHandover();
+    const first = await lineOf(h.sessionId, items.alpha.id);
+    const second = await lineOf(h.sessionId, items.bravo.id);
+
+    await acknowledge({ handoverId: h.handoverId, stockCountLineId: first.id });
+    const stamped = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: { reviewedAt: true },
+    });
+
+    await acknowledge({ handoverId: h.handoverId, stockCountLineId: second.id });
+    const after_ = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: { status: true, reviewedAt: true },
+    });
+    assert.equal(after_.status, "INCOMING_REVIEW");
+    assert.deepEqual(
+      after_.reviewedAt,
+      stamped.reviewedAt,
+      "the moment the review opened is a fact about the first look, not the latest one",
+    );
+    assert.equal(await ackCount(h.handoverId), 2);
+  });
+
+  test("2.13 the same line cannot be acknowledged twice", async () => {
+    const h = await submittedHandover();
+    const line = await lineOf(h.sessionId, items.alpha.id);
+
+    await acknowledge({
+      handoverId: h.handoverId,
+      stockCountLineId: line.id,
+      incomingCountedQuantity: 10,
+    });
+
+    await assert.rejects(
+      acknowledge({
+        handoverId: h.handoverId,
+        stockCountLineId: line.id,
+        incomingCountedQuantity: 4,
+        disputeReasonCodeId: handoverReasonId,
+      }),
+      refusalIs(409, ALREADY_ACKNOWLEDGED),
+    );
+
+    assert.equal(await ackCount(h.handoverId), 1);
+    const row = await ackRow(h.handoverId, line.id);
+    assert.ok(row);
+    assert.equal(
+      Number(row.incomingCountedQuantity),
+      10,
+      "a signature stands; the second call must not overwrite the first figure",
+    );
+    assert.equal(row.decision, "ACCEPTED");
+  });
+
+  test("2.14 a handover that is not in review refuses", async () => {
+    const h = await freshHandover();
+    const sessionId = await boundCount(h, exactSpecs());
+    const line = await lineOf(sessionId, items.alpha.id);
+
+    await assert.rejects(
+      acknowledge({ handoverId: h.handoverId, stockCountLineId: line.id }),
+      refusalIs(409, NOT_IN_REVIEW),
+    );
+    assert.equal(await ackCount(h.handoverId), 0);
+  });
+
+  test("2.15 tenancy and branch scope are enforced", async () => {
+    const h = await submittedHandover();
+    const line = await lineOf(h.sessionId, items.alpha.id);
+
+    // Another tenant's view of our id is not confirmed to exist at all.
+    await assert.rejects(
+      acknowledge({
+        handoverId: h.handoverId,
+        stockCountLineId: line.id,
+        cafeId: other.cafeId,
+        viewerBranchId: null,
+      }),
+      refusalIs(404, HANDOVER_NOT_FOUND),
+    );
+    // The café is the viewer's; the branch is not.
+    await assert.rejects(
+      acknowledge({
+        handoverId: h.handoverId,
+        stockCountLineId: line.id,
+        viewerBranchId: fx.otherBranchId,
+      }),
+      refusalIs(403, FOREIGN_BRANCH),
+    );
+    assert.equal(await ackCount(h.handoverId), 0);
+  });
+});
+
+void statusIs;
+void NO_BOUND_COUNT;
+void LINE_NOT_FOUND;
