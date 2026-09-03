@@ -2338,3 +2338,505 @@ describe("REJECTED restart", () => {
     assert.equal(handover.stockCountSessionId, bodies[0].body.countSession.id);
   });
 });
+
+// ──────────────── T7 · end to end, and the concurrency matrix ────────────
+//
+// Every step an HTTP request. The two business walks the roadmap names —
+// shortage then recount then exact, and overage then recount then a
+// DIFFERENT non-zero variance — proved against the real application rather
+// than against the services they call.
+//
+// What is being proved is a negative as much as a positive: the first
+// evidence produces no accountability case, the recount neither creates nor
+// retracts one, the replacement's confirmation still produces none, the old
+// evidence stays readable history, and only the replacement is eligible for
+// the acceptance SH-20 will build.
+
+const submitHandoverHttp = (handoverId: string, email: string = fx.cashier.email) =>
+  post<{ status?: string; error?: string }>(email, { action: "submit", handoverId });
+
+/** The arriving cashier's shift, still unable to sell a shelf nobody gave it. */
+async function assertGateClosed(shiftId: string, step: string) {
+  const shift = await db.shift.findUniqueOrThrow({ where: { id: shiftId } });
+  assert.ok(
+    shift.custodyGateReason,
+    `${step}: the arriving shift must still be gated — custody has not moved`,
+  );
+  assert.equal(shift.custodyReadyAt, null, `${step}: and cannot be ready`);
+}
+
+const caseCountFor = (sessionId: string) =>
+  db.varianceCase.count({ where: { stockCountLine: { sessionId } } });
+
+/**
+ * The whole disagreement, over HTTP: count, confirm, submit, acknowledge with
+ * a differing figure, and send it back.
+ *
+ * `gatedShiftId`, when given, is checked after every one of the eight steps.
+ */
+async function walkToRecount(
+  h: Handover,
+  alphaCounted: number,
+  spotCount: number,
+  gatedShiftId?: string,
+) {
+  const check = async (step: string) => {
+    if (gatedShiftId) await assertGateClosed(gatedShiftId, step);
+  };
+
+  const started = await startCountHttp(h.handoverId);
+  assert.equal(started.status, 200, started.text);
+  const sessionId = started.body.countSession.id;
+  await check("1 start_count");
+
+  const { lineIds } = await walkTheCount(sessionId, alphaCounted);
+  await check("2-4 capture, submit, settle");
+
+  const confirmed = await confirmCount(fx.manager.email, sessionId, `${MARKER}-${sessionId}`);
+  assert.ok(confirmed.status < 300, `confirm failed: ${confirmed.text}`);
+  assert.deepEqual(confirmed.body.varianceCaseIds, []);
+  assert.equal(
+    await caseCountFor(sessionId),
+    0,
+    "the first evidence is a proposal, and opens no accountability case",
+  );
+  await check("5 confirm");
+
+  const submitted = await submitHandoverHttp(h.handoverId);
+  assert.equal(submitted.status, 200, submitted.text);
+  assert.equal(submitted.body.status, "OUTGOING_SUBMITTED");
+  await check("6 handover submit");
+
+  const alphaLine = await lineOf(sessionId, items.alpha.id);
+  const acked = await ackPost(incoming.email, h.handoverId, {
+    stockCountLineId: alphaLine.id,
+    incomingCountedQuantity: spotCount,
+    disputeReasonCodeId: handoverReasonId,
+    disputeNote: "مش متفقين",
+  });
+  assert.equal(acked.status, 200, acked.text);
+  assert.equal(acked.body.decision, "DISPUTED");
+  await check("7 acknowledge");
+
+  const recount = await recountPost(incoming.email, h.handoverId, {
+    reasonCodeId: handoverReasonId,
+    note: "نعيد",
+  });
+  assert.equal(recount.status, 200, recount.text);
+  assert.deepEqual(recount.body.disputedLineIds, [alphaLine.id]);
+  assert.equal(recount.body.supersededSessionId, sessionId);
+  assert.equal(
+    await caseCountFor(sessionId),
+    0,
+    "the recount neither creates a case nor retracts one",
+  );
+  await check("8 request-recount");
+
+  return { sessionId, lineIds, alphaLineId: alphaLine.id, ackId: alphaLine.id };
+}
+
+/** Start the replacement, count it, and confirm it. */
+async function restartAndConfirm(h: Handover, alphaCounted: number, gatedShiftId?: string) {
+  const restarted = await startCountHttp(h.handoverId);
+  assert.equal(restarted.status, 200, restarted.text);
+  const sessionId = restarted.body.countSession.id;
+  if (gatedShiftId) await assertGateClosed(gatedShiftId, "9 restart");
+
+  const { lineIds } = await walkTheCount(sessionId, alphaCounted);
+  const confirmed = await confirmCount(fx.manager.email, sessionId, `${MARKER}-${sessionId}`);
+  assert.ok(confirmed.status < 300, `replacement confirm failed: ${confirmed.text}`);
+  assert.equal(confirmed.body.status, "CONFIRMED");
+  assert.deepEqual(
+    confirmed.body.varianceCaseIds,
+    [],
+    "the replacement's confirmation opens no case either",
+  );
+  if (gatedShiftId) await assertGateClosed(gatedShiftId, "10 replacement confirm");
+  return { sessionId, lineIds };
+}
+
+describe("recount end-to-end", () => {
+  test("7.1 shortage, recount, then an exact count", async () => {
+    const h = await freshHandover();
+    const gated = await openIncomingShift();
+
+    // 3 against a shelf of 10 — a shortage of seven, explained and settled.
+    const first = await walkToRecount(h, 3, 9, gated.id);
+    const replacement = await restartAndConfirm(h, 10, gated.id);
+
+    assert.notEqual(replacement.sessionId, first.sessionId);
+    assert.equal(await caseCountFor(first.sessionId), 0, "the shortage session, still no case");
+    assert.equal(
+      await caseCountFor(replacement.sessionId),
+      0,
+      "and the exact replacement opens none",
+    );
+
+    const handover = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: { status: true, stockCountSessionId: true, acceptedStockCountSessionId: true },
+    });
+    assert.equal(handover.status, "DRAFT");
+    assert.equal(handover.stockCountSessionId, replacement.sessionId);
+    assert.equal(handover.acceptedStockCountSessionId, null, "acceptance is SH-20's");
+
+    // The replacement agrees with the shelf: every line's variance is zero.
+    const lines = await db.stockCountLine.findMany({
+      where: { sessionId: replacement.sessionId },
+      select: { varianceQuantity: true },
+    });
+    for (const line of lines) assert.equal(Number(line.varianceQuantity), 0);
+  });
+
+  test("7.2 overage, recount, then a different non-zero variance", async () => {
+    const h = await freshHandover();
+    const gated = await openIncomingShift();
+
+    // 14 against a shelf of 10 — an overage of four.
+    const first = await walkToRecount(h, 14, 11, gated.id);
+    const firstAlpha = await db.stockCountLine.findFirstOrThrow({
+      where: { sessionId: first.sessionId, inventoryItemId: items.alpha.id },
+      select: { varianceQuantity: true, reasonCodeId: true },
+    });
+    assert.equal(Number(firstAlpha.varianceQuantity), 4);
+
+    // The recount finds twelve: a real, different, non-zero variance.
+    const replacement = await restartAndConfirm(h, 12, gated.id);
+    const secondAlpha = await db.stockCountLine.findFirstOrThrow({
+      where: { sessionId: replacement.sessionId, inventoryItemId: items.alpha.id },
+      select: { varianceQuantity: true, reasonCodeId: true },
+    });
+    assert.equal(Number(secondAlpha.varianceQuantity), 2);
+    assert.notEqual(
+      Number(secondAlpha.varianceQuantity),
+      Number(firstAlpha.varianceQuantity),
+      "the replacement carries the recount's own figure, not the first count's",
+    );
+    assert.equal(secondAlpha.reasonCodeId, stockReasonId, "and its own reason");
+
+    assert.equal(
+      await caseCountFor(first.sessionId),
+      0,
+      "the first overage produced no final accountability case, and still has none",
+    );
+    assert.equal(await caseCountFor(replacement.sessionId), 0);
+  });
+
+  test("7.3 the arriving shift is non-operational throughout both walks", async () => {
+    // The walks above assert the gate after each of their steps through
+    // `gatedShiftId`; this case states the invariant on its own and proves it
+    // survives the whole sequence rather than only the moments sampled.
+    const h = await freshHandover();
+    const gated = await openIncomingShift();
+    await assertGateClosed(gated.id, "0 before anything");
+
+    await walkToRecount(h, 3, 9, gated.id);
+    await restartAndConfirm(h, 10, gated.id);
+
+    const shift = await db.shift.findUniqueOrThrow({ where: { id: gated.id } });
+    assert.equal(shift.custodyGateReason, "AWAITING_CUSTODY_TRANSFER");
+    assert.equal(shift.custodyReadyAt, null);
+    assert.equal(shift.status, "OPEN");
+  });
+
+  test("7.4 the superseded session is still readable, with its figures unchanged", async () => {
+    const h = await freshHandover();
+    const first = await walkToRecount(h, 3, 9);
+    const before = await sessionLinesText(first.sessionId);
+
+    await restartAndConfirm(h, 10);
+
+    const r = await as<{ session: { id: string; status: string; lines: unknown[] } }>(
+      fx.manager.email,
+      `/api/stock-counts/${first.sessionId}`,
+    );
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.body.session.id, first.sessionId);
+    assert.equal(r.body.session.status, "CONFIRMED");
+    assert.equal(
+      await sessionLinesText(first.sessionId),
+      before,
+      "history is kept, not tidied up",
+    );
+  });
+
+  test("7.5 only the replacement is eligible for later acceptance", async () => {
+    const h = await freshHandover();
+    const first = await walkToRecount(h, 3, 9);
+    const replacement = await restartAndConfirm(h, 10);
+
+    const handover = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: { stockCountSessionId: true, acceptedStockCountSessionId: true },
+    });
+    assert.equal(handover.stockCountSessionId, replacement.sessionId);
+    assert.equal(handover.acceptedStockCountSessionId, null);
+
+    const superseded = await db.stockCountSession.findUniqueOrThrow({
+      where: { id: first.sessionId },
+      select: { lockedByHandoverId: true, status: true },
+    });
+    assert.equal(superseded.lockedByHandoverId, null, "locking the evidence is acceptance");
+    assert.equal(superseded.status, "CONFIRMED");
+
+    assert.equal(
+      await db.stockCountRebase.count({ where: { session: { handoverId: h.handoverId } } }),
+      0,
+    );
+    assert.equal(
+      await db.handoverStockBoundary.count({ where: { handoverId: h.handoverId } }),
+      0,
+    );
+  });
+
+  test("7.6 a stale acknowledgement is refused, and the old ones are kept", async () => {
+    const h = await freshHandover();
+    const first = await walkToRecount(h, 3, 9);
+    const acksBefore = asText(
+      await db.handoverStockAcknowledgement.findMany({
+        where: { handoverId: h.handoverId },
+        orderBy: { id: "asc" },
+      }),
+    );
+    assert.notEqual(acksBefore, "[]", "the walk must have produced an acknowledgement");
+
+    // The replacement is counted, confirmed and submitted, so the handover is
+    // back in review — and the refusal below is therefore about the SESSION
+    // the line belongs to rather than about the handover's status.
+    const replacement = await restartAndConfirm(h, 10);
+    const resubmitted = await submitHandoverHttp(h.handoverId);
+    assert.equal(resubmitted.status, 200, resubmitted.text);
+
+    const staleLine = await lineOf(first.sessionId, items.bravo.id);
+    const r = await ackPost(incoming.email, h.handoverId, { stockCountLineId: staleLine.id });
+    assert.equal(r.status, 409, r.text);
+    assert.equal(r.body.error, OLD_SESSION);
+
+    // The current session's own line still signs perfectly well.
+    const liveLine = await lineOf(replacement.sessionId, items.bravo.id);
+    const ok = await ackPost(incoming.email, h.handoverId, { stockCountLineId: liveLine.id });
+    assert.equal(ok.status, 200, ok.text);
+
+    const acksAfter = await db.handoverStockAcknowledgement.findMany({
+      where: { handoverId: h.handoverId, line: { sessionId: first.sessionId } },
+      orderBy: { id: "asc" },
+    });
+    assert.equal(
+      asText(acksAfter),
+      acksBefore,
+      "the acknowledgements made before the recount are history, and are unmodified",
+    );
+  });
+});
+
+// ────────────────────────────── T7 · concurrency ─────────────────────────
+//
+// Real PostgreSQL, real concurrent HTTP requests. The handover row lock, the
+// acknowledgement's `@@unique(handoverId, stockCountLineId)` and the branch's
+// partial unique index are exercised as the database rather than as a mock: a
+// serialisation bug here produces two reviews of one handover, two rejections
+// of one count, or an acknowledgement of evidence nobody is reviewing, and
+// none of those is visible to a single-threaded test.
+
+const settledBodies = <T>(results: PromiseSettledResult<T>[]): T[] => {
+  for (const r of results) assert.equal(r.status, "fulfilled", "no request may reject outright");
+  return results.map((r) => (r as PromiseFulfilledResult<T>).value);
+};
+
+describe("concurrency", () => {
+  test("7.7 two first acknowledgements on different lines open the review once", async () => {
+    const h = await submittedHandover();
+    const alpha = await lineOf(h.sessionId, items.alpha.id);
+    const bravo = await lineOf(h.sessionId, items.bravo.id);
+
+    const bodies = settledBodies(
+      await Promise.allSettled([
+        ackPost(incoming.email, h.handoverId, { stockCountLineId: alpha.id }),
+        ackPost(incoming.email, h.handoverId, { stockCountLineId: bravo.id }),
+      ]),
+    );
+    for (const r of bodies) assert.equal(r.status, 200, r.text);
+
+    const handover = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: { status: true, reviewedAt: true },
+    });
+    assert.equal(handover.status, "INCOMING_REVIEW");
+    assert.ok(handover.reviewedAt instanceof Date);
+
+    const rows = await db.handoverStockAcknowledgement.findMany({
+      where: { handoverId: h.handoverId },
+      select: { id: true, stockCountLineId: true },
+    });
+    assert.equal(rows.length, 2);
+    assert.deepEqual(
+      rows.map((r) => r.stockCountLineId).sort(),
+      [alpha.id, bravo.id].sort(),
+    );
+    // One acknowledgement, one record of it.
+    for (const row of rows) {
+      assert.equal(
+        await db.auditLog.count({
+          where: { entityId: row.id, action: "HANDOVER_LINE_ACKNOWLEDGED" },
+        }),
+        1,
+      );
+    }
+  });
+
+  test("7.8 two acknowledgements of the same line produce one signature", async () => {
+    const h = await submittedHandover();
+    const alpha = await lineOf(h.sessionId, items.alpha.id);
+
+    const bodies = settledBodies(
+      await Promise.allSettled([
+        ackPost(incoming.email, h.handoverId, { stockCountLineId: alpha.id }),
+        ackPost(incoming.email, h.handoverId, { stockCountLineId: alpha.id }),
+      ]),
+    );
+    const codes = bodies.map((r) => r.status).sort();
+    assert.deepEqual(codes, [200, 409], bodies.map((b) => b.text).join(" | "));
+    const refused = bodies.find((b) => b.status === 409)!;
+    assert.equal(
+      refused.body.error,
+      ALREADY_ACKNOWLEDGED,
+      "the losing racer gets the business refusal, never a raw constraint violation",
+    );
+
+    assert.equal(await ackCount(h.handoverId), 1);
+  });
+
+  test("7.9 an acknowledgement racing a recount leaves a consistent record", async () => {
+    const h = await submittedHandover();
+    const alpha = await lineOf(h.sessionId, items.alpha.id);
+
+    const bodies = settledBodies(
+      await Promise.allSettled([
+        ackPost(incoming.email, h.handoverId, { stockCountLineId: alpha.id }),
+        recountPost(incoming.email, h.handoverId, { reasonCodeId: handoverReasonId }),
+      ]),
+    );
+    for (const r of bodies) {
+      assert.ok(r.status < 500, `no request may fail with a server error: ${r.text}`);
+    }
+    const [ackResult, recountResult] = bodies;
+
+    const handover = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: { status: true, rejectedAt: true },
+    });
+
+    if (recountResult.status === 200) {
+      assert.equal(handover.status, "REJECTED");
+      assert.ok(handover.rejectedAt instanceof Date);
+      const rows = await db.handoverStockAcknowledgement.findMany({
+        where: { handoverId: h.handoverId },
+        select: { acknowledgedAt: true },
+      });
+      // The acknowledgement either landed BEFORE the rejection or not at all.
+      // A row created after `rejectedAt` would mean somebody signed for
+      // evidence that had already been sent back.
+      for (const row of rows) {
+        assert.ok(
+          row.acknowledgedAt <= handover.rejectedAt!,
+          "no acknowledgement may be created after the handover was rejected",
+        );
+      }
+      if (ackResult.status !== 200) assert.equal(ackResult.status, 409, ackResult.text);
+    } else {
+      // The recount lost: the acknowledgement holds and the handover is in
+      // review, with the refusal explaining why the recount could not run.
+      assert.equal(ackResult.status, 200, ackResult.text);
+      assert.equal(recountResult.status, 409, recountResult.text);
+      assert.equal(handover.status, "INCOMING_REVIEW");
+    }
+  });
+
+  test("7.10 two recount requests reject exactly once", async () => {
+    const h = await submittedHandover();
+
+    const bodies = settledBodies(
+      await Promise.allSettled([
+        recountPost(incoming.email, h.handoverId, { reasonCodeId: handoverReasonId }),
+        recountPost(incoming.email, h.handoverId, { reasonCodeId: handoverReasonId }),
+      ]),
+    );
+    assert.deepEqual(
+      bodies.map((r) => r.status).sort(),
+      [200, 409],
+      bodies.map((b) => b.text).join(" | "),
+    );
+
+    const handover = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: { status: true, rejectedAt: true },
+    });
+    assert.equal(handover.status, "REJECTED");
+    assert.ok(handover.rejectedAt instanceof Date);
+    assert.equal(
+      await db.auditLog.count({
+        where: { entityId: h.handoverId, action: "HANDOVER_RECOUNT_REQUESTED" },
+      }),
+      1,
+      "one rejection, one record of it",
+    );
+  });
+
+  test("7.11 an acknowledgement delivered after the recount is refused", async () => {
+    const h = await submittedHandover();
+    // The line id is resolved BEFORE the recount — the caller is holding a
+    // page that was rendered against the pre-recount pointer.
+    const stale = await lineOf(h.sessionId, items.alpha.id);
+
+    const recount = await recountPost(incoming.email, h.handoverId, {
+      reasonCodeId: handoverReasonId,
+    });
+    assert.equal(recount.status, 200, recount.text);
+
+    const late = await ackPost(incoming.email, h.handoverId, { stockCountLineId: stale.id });
+    assert.equal(late.status, 409, late.text);
+    assert.equal(await ackCount(h.handoverId), 0, "and nothing was written");
+  });
+
+  test("7.12 an acknowledgement racing the replacement never signs a superseded line", async () => {
+    const h = await submittedHandover();
+    const stale = await lineOf(h.sessionId, items.alpha.id);
+    const recount = await recountPost(incoming.email, h.handoverId, {
+      reasonCodeId: handoverReasonId,
+    });
+    assert.equal(recount.status, 200, recount.text);
+    const supersededSessionId = recount.body.supersededSessionId!;
+
+    // The restart and a late acknowledgement, in flight together.
+    const bodies = settledBodies(
+      await Promise.allSettled([
+        startCountHttp(h.handoverId),
+        ackPost(incoming.email, h.handoverId, { stockCountLineId: stale.id }),
+      ]),
+    );
+    for (const r of bodies) assert.ok(r.status < 500, `no server error: ${r.text}`);
+
+    // Asserted as an invariant over the resulting rows rather than over the
+    // response codes, because either ordering is legitimate.
+    const pointer = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: { stockCountSessionId: true },
+    });
+    const rows = await db.handoverStockAcknowledgement.findMany({
+      where: { handoverId: h.handoverId },
+      select: { line: { select: { sessionId: true } } },
+    });
+    for (const row of rows) {
+      assert.equal(
+        row.line.sessionId,
+        pointer.stockCountSessionId,
+        "no acknowledgement may name a session the pointer does not",
+      );
+    }
+    assert.equal(
+      rows.filter((r) => r.line.sessionId === supersededSessionId).length,
+      0,
+      "and none may name the superseded one",
+    );
+  });
+});
