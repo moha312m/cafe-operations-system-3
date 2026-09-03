@@ -36,7 +36,7 @@ import assert from "node:assert/strict";
 import bcrypt from "bcryptjs";
 import { db, tag, teardownTaggedCafe } from "./helpers/db";
 import { countCafe, countItem, COUNT_PASSWORD, type CountCafe } from "./helpers/count";
-import { login, requireServer } from "./helpers/http";
+import { as, login, requireServer } from "./helpers/http";
 
 const MARKER = tag("HANDOVER007");
 
@@ -68,6 +68,10 @@ const items: Record<ItemKey, { id: string; name: string }> = {} as never;
  * both SH-19 routes are guarded by the accept key and not the submit key.
  */
 let incoming: { id: string; email: string };
+/** The same grant, pinned to the cafe's OTHER branch. */
+let annexIncoming: { id: string; email: string };
+/** A live handover belonging to the second tenant. */
+let otherHandoverId: string;
 
 /** The reason vocabulary the whole suite draws on. */
 let handoverReasonId: string;
@@ -274,6 +278,19 @@ before(async () => {
   });
   await login(incoming.email, COUNT_PASSWORD);
 
+  annexIncoming = await db.user.create({
+    data: {
+      email: `${fx.marker.toLowerCase()}-annex@example.invalid`,
+      name: `${fx.marker}-annex`,
+      passwordHash: hash,
+      role: "CASHIER",
+      cafeId: fx.cafeId,
+      branchId: fx.otherBranchId,
+    },
+    select: { id: true, email: true },
+  });
+  await login(annexIncoming.email, COUNT_PASSWORD);
+
   // The reason vocabulary. Two HANDOVER reasons of this café's — one active,
   // one stopped — a STOCK reason of this café's, and an active HANDOVER
   // reason belonging to the OTHER café, which must be indistinguishable from
@@ -323,6 +340,8 @@ before(async () => {
       periodicFullCountWeekday: null,
     },
   });
+  const foreignHandover = await freshHandover(other, other.branchId);
+  otherHandoverId = foreignHandover.handoverId;
 });
 
 beforeEach(async () => {
@@ -331,7 +350,24 @@ beforeEach(async () => {
 });
 
 after(async () => {
-  await teardownTaggedCafe([fx?.cafeId, other?.cafeId], [], { disconnect: true });
+  // The branch resets run FIRST, as teardown steps.
+  //
+  // `purgeCafe` deletes every table carrying a `cafeId` column, and
+  // `CustodyParticipant` carries none — it hangs off `CustodyPeriod` and
+  // `User`. A café left holding a live handover therefore cannot have its
+  // custody periods removed, and `User` then fails on
+  // `CustodyParticipant_userId_fkey`. Emptying the branches the way every
+  // case already empties them leaves the purge nothing it cannot reach.
+  await teardownTaggedCafe(
+    [fx?.cafeId, other?.cafeId],
+    [
+      () => resetBranch(fx.branchId),
+      () => resetBranch(fx.otherBranchId),
+      () => resetBranch(other.branchId),
+      () => resetBranch(other.otherBranchId),
+    ],
+    { disconnect: true },
+  );
 });
 
 // ──────────────────────── T1 · HANDOVER reason validation ────────────────
@@ -1079,6 +1115,292 @@ describe("acknowledgeStockLine", () => {
       refusalIs(403, FOREIGN_BRANCH),
     );
     assert.equal(await ackCount(h.handoverId), 0);
+  });
+});
+
+// ────────────────── T3 · the acknowledge route, and blindness ────────────
+//
+// The service is unreachable without a door, and a door SH-24's UI cannot
+// open is not production reachability. `handover.accept` guards it — the act
+// belongs to the ARRIVING custodian, which is exactly what that key names.
+//
+// `.strict()` is the other half. A body carrying `handedOverQuantity`,
+// `varianceQuantity`, `decision` or `acknowledgedById` is refused BY NAME
+// rather than quietly dropped: obeying would let the person being measured
+// write their own result, and ignoring would let them believe they had.
+// `acknowledgedById` is never read from the body — it is the session's own id.
+//
+// And the blindness regression, from SH-19's own suite: before the first
+// acknowledgement the whole-handover view names no quantity column at all;
+// after it, EVERY line is disclosed, including the ones nobody acknowledged.
+// The boundary is whole-handover and always was — SH-19 causes it rather than
+// redesigning it.
+
+const QUANTITY_KEYS = [
+  "expectedQuantity",
+  "varianceQuantity",
+  "costImpact",
+  "costImpactAvailable",
+  "costUnavailableReason",
+  "countedQuantity",
+  "effectiveCountedQuantity",
+  "itemVersion",
+  "expectedBasis",
+] as const;
+
+/**
+ * Walk anything — the live object or a parsed HTTP body — and refuse a
+ * quantity key wherever it hides.
+ */
+function assertNoQuantityKeys(value: unknown, path = "view") {
+  if (value === null || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    value.forEach((entry, i) => assertNoQuantityKeys(entry, `${path}[${i}]`));
+    return;
+  }
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    assert.ok(
+      !(QUANTITY_KEYS as readonly string[]).includes(key),
+      `${path}.${key} leaks a count target to a reviewer who has not looked yet`,
+    );
+    assertNoQuantityKeys(child, `${path}.${key}`);
+  }
+}
+
+type AckBody = {
+  handedOverQuantity?: number;
+  varianceQuantity?: number | null;
+  decision?: string;
+  error?: string;
+};
+
+const ackPost = (email: string, handoverId: string, body: unknown) =>
+  as<AckBody>(email, `/api/handovers/${handoverId}/acknowledge`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
+const handoverGet = (email: string, handoverId: string) =>
+  as<{ handover: { acknowledged: boolean; count: { lines: Array<Record<string, unknown>> } } }>(
+    email,
+    `/api/handovers/${handoverId}`,
+  );
+
+describe("acknowledge route", () => {
+  test("3.1 POST returns the verdict and nothing else", async () => {
+    const h = await submittedHandover();
+    const line = await lineOf(h.sessionId, items.alpha.id);
+
+    const r = await ackPost(incoming.email, h.handoverId, { stockCountLineId: line.id });
+    assert.equal(r.status, 200, r.text);
+    assert.deepEqual(
+      Object.keys(r.body).sort(),
+      ["decision", "handedOverQuantity", "varianceQuantity"],
+      "an extra key in the response is a leak, not a convenience",
+    );
+    assert.equal(r.body.decision, "ACCEPTED");
+    assert.equal(r.body.handedOverQuantity, 10);
+    assert.strictEqual(r.body.varianceQuantity, null);
+    assert.equal(await ackCount(h.handoverId), 1);
+  });
+
+  test("3.2 the schema refuses a body that writes its own result", async () => {
+    const h = await submittedHandover();
+    const line = await lineOf(h.sessionId, items.alpha.id);
+
+    for (const [field, value] of [
+      ["handedOverQuantity", 999],
+      ["varianceQuantity", 0],
+      ["decision", "ACCEPTED"],
+      ["acknowledgedById", fx.cashier.id],
+    ] as const) {
+      const r = await ackPost(incoming.email, h.handoverId, {
+        stockCountLineId: line.id,
+        [field]: value,
+      });
+      assert.equal(r.status, 400, `${field} -> ${r.text}`);
+      assert.ok(
+        (r.body.error ?? "").includes(field),
+        `the refusal must name the unrecognised key, got: ${r.body.error}`,
+      );
+    }
+    assert.equal(
+      await ackCount(h.handoverId),
+      0,
+      "a refused body must not have signed for anything",
+    );
+  });
+
+  test("3.3 a same-café account without handover.accept is refused", async () => {
+    const h = await submittedHandover();
+    const line = await lineOf(h.sessionId, items.alpha.id);
+
+    const r = await ackPost(fx.waiter.email, h.handoverId, { stockCountLineId: line.id });
+    assert.equal(r.status, 403, r.text);
+    assert.equal(await ackCount(h.handoverId), 0);
+  });
+
+  test("3.4 another café's handover id is not confirmed to exist", async () => {
+    const r = await ackPost(incoming.email, otherHandoverId, {
+      stockCountLineId: "whatever-line-id",
+    });
+    assert.equal(r.status, 404, r.text);
+  });
+
+  test("3.5 a caller pinned to another branch is refused", async () => {
+    const h = await submittedHandover();
+    const line = await lineOf(h.sessionId, items.alpha.id);
+
+    const r = await ackPost(annexIncoming.email, h.handoverId, { stockCountLineId: line.id });
+    assert.equal(r.status, 403, r.text);
+    assert.equal(await ackCount(h.handoverId), 0);
+  });
+
+  test("3.6 a differing spot count with no reason reaches HTTP as 400", async () => {
+    const h = await submittedHandover();
+    const line = await lineOf(h.sessionId, items.alpha.id);
+
+    const r = await ackPost(incoming.email, h.handoverId, {
+      stockCountLineId: line.id,
+      incomingCountedQuantity: 3,
+    });
+    assert.equal(r.status, 400, r.text);
+    assert.equal(
+      r.body.error,
+      "لازم تحدد سبب الاختلاف",
+      "the service's own wording must survive the route",
+    );
+    assert.equal(await ackCount(h.handoverId), 0);
+  });
+
+  test("3.7 the state refusals reach HTTP as 409, not 400 and not 500", async () => {
+    // Uncounted, produced after the submit for the reason case 2.10 records.
+    const uncounted = await submittedHandover();
+    const charlie = await lineOf(uncounted.sessionId, items.charlie.id);
+    await db.stockCountLine.update({
+      where: { id: charlie.id },
+      data: {
+        countedQuantity: null,
+        effectiveCountedQuantity: null,
+        varianceQuantity: null,
+        countedAt: null,
+        counterId: null,
+        itemVersion: null,
+        expectedBasis: null,
+        disposition: "PENDING",
+      },
+    });
+    const uncountedResponse = await ackPost(incoming.email, uncounted.handoverId, {
+      stockCountLineId: charlie.id,
+    });
+    assert.equal(uncountedResponse.status, 409, uncountedResponse.text);
+    assert.equal(uncountedResponse.body.error, UNCOUNTED);
+
+    // Superseded: the pointer has moved on.
+    const stale = await lineOf(uncounted.sessionId, items.alpha.id);
+    const replacement = await db.stockCountSession.create({
+      data: {
+        cafeId: fx.cafeId,
+        branchId: fx.branchId,
+        shiftId: uncounted.shiftId,
+        type: "CRITICAL",
+        status: "CONFIRMED",
+        scopeDerivation: "CRITICAL_ONLY",
+        initiatedById: fx.cashier.id,
+        accountabilityContext: "HANDOVER",
+        handoverId: uncounted.handoverId,
+      },
+      select: { id: true },
+    });
+    await db.handoverSession.update({
+      where: { id: uncounted.handoverId },
+      data: { stockCountSessionId: replacement.id },
+    });
+    const staleResponse = await ackPost(incoming.email, uncounted.handoverId, {
+      stockCountLineId: stale.id,
+    });
+    assert.equal(staleResponse.status, 409, staleResponse.text);
+    assert.equal(staleResponse.body.error, OLD_SESSION);
+  });
+});
+
+describe("blindness boundary", () => {
+  test("3.8 before any acknowledgement, no quantity key exists in the view", async () => {
+    const h = await submittedHandover([
+      // A real, priced, non-zero difference — the most valuable thing to leak.
+      {
+        itemId: items.alpha.id,
+        counted: 2,
+        expected: 9,
+        reasonCodeId: stockReasonId,
+        costImpact: 1234,
+        costImpactAvailable: true,
+      },
+      { itemId: items.bravo.id, counted: 4, expected: 4 },
+      { itemId: items.charlie.id, counted: 7, expected: 7 },
+    ]);
+
+    const r = await handoverGet(incoming.email, h.handoverId);
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.body.handover.acknowledged, false);
+    assertNoQuantityKeys(r.body.handover, "handover");
+    // And the raw text, so no serialiser can smuggle one through a key the
+    // walk did not visit.
+    for (const key of QUANTITY_KEYS) {
+      assert.ok(!r.text.includes(key), `the serialised body names ${key}`);
+    }
+    assert.equal(r.body.handover.count.lines.length, 3);
+  });
+
+  test("3.9 one acknowledgement discloses the whole handover, not one line", async () => {
+    const h = await submittedHandover([
+      { itemId: items.alpha.id, counted: 2, expected: 9, reasonCodeId: stockReasonId },
+      { itemId: items.bravo.id, counted: 4, expected: 4 },
+      { itemId: items.charlie.id, counted: 7, expected: 7 },
+    ]);
+    const line = await lineOf(h.sessionId, items.alpha.id);
+
+    const posted = await ackPost(incoming.email, h.handoverId, { stockCountLineId: line.id });
+    assert.equal(posted.status, 200, posted.text);
+
+    const r = await handoverGet(incoming.email, h.handoverId);
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.body.handover.acknowledged, true);
+
+    const lines = r.body.handover.count.lines;
+    assert.equal(lines.length, 3);
+    for (const l of lines) {
+      assert.ok(
+        "countedQuantity" in l && "expectedQuantity" in l,
+        "disclosure is whole-handover: the lines nobody acknowledged are disclosed too",
+      );
+    }
+    const alpha = lines.find((l) => l.inventoryItemId === items.alpha.id)!;
+    assert.equal(Number(alpha.expectedQuantity), 9);
+    assert.equal(Number(alpha.varianceQuantity), -7);
+  });
+
+  test("3.10 the acknowledge response discloses only its own verdict", async () => {
+    const h = await submittedHandover([
+      { itemId: items.alpha.id, counted: 2, expected: 9, reasonCodeId: stockReasonId },
+      { itemId: items.bravo.id, counted: 4, expected: 4 },
+      { itemId: items.charlie.id, counted: 7, expected: 7 },
+    ]);
+    const line = await lineOf(h.sessionId, items.alpha.id);
+
+    const r = await ackPost(incoming.email, h.handoverId, { stockCountLineId: line.id });
+    assert.equal(r.status, 200, r.text);
+    // `varianceQuantity` is the acknowledgement's OWN key and legitimately
+    // present, so the scan is by name against the leak list minus that one.
+    for (const key of QUANTITY_KEYS) {
+      if (key === "varianceQuantity") continue;
+      assert.ok(!r.text.includes(key), `the acknowledgement response names ${key}`);
+    }
+    // No other line's figures, and no session projection.
+    assert.ok(!r.text.includes(h.sessionId));
+    for (const itemId of [items.bravo.id, items.charlie.id]) {
+      assert.ok(!r.text.includes(itemId), "another line has nothing to do with this verdict");
+    }
   });
 });
 
