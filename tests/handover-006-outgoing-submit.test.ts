@@ -1835,3 +1835,252 @@ describe("concurrency", () => {
     );
   });
 });
+
+// ─────────────────────── T6 · SH-17 reachability ─────────────────────────
+//
+// SH-17 built deferred accountability and nothing could reach it. A count
+// answering to a handover confirms WITHOUT opening a single generic variance
+// case, because a proposal nobody has accepted is not a finding to
+// investigate and naming a custody on it would be an accusation made before
+// the evidence was agreed. That behaviour has existed since SH-17 and had no
+// caller: `POST /api/stock-counts` creates `accountabilityContext = NONE`.
+//
+// This block walks the real application path — every step an HTTP request,
+// none a service call — and proves the deferral is now reachable, that it
+// still opens nothing, and that the ordinary count path was left exactly as
+// it was.
+
+type ConfirmBody = {
+  status?: string;
+  varianceCaseIds?: string[];
+  alreadyConfirmed?: boolean;
+  deferred?: {
+    context: string;
+    handoverId: string | null;
+    openingBranchCustodyPeriodId: string | null;
+  } | null;
+  error?: string;
+};
+
+const patchLine = (email: string, sessionId: string, lineId: string, countedQuantity: number) =>
+  as(email, `/api/stock-counts/${sessionId}/lines/${lineId}`, {
+    method: "PATCH",
+    body: JSON.stringify({ countedQuantity }),
+  });
+
+const submitCount = (email: string, sessionId: string) =>
+  as<{ error?: string }>(email, `/api/stock-counts/${sessionId}/submit`, {
+    method: "POST",
+    body: "{}",
+  });
+
+const confirmCount = (email: string, sessionId: string, idempotencyKey: string) =>
+  as<ConfirmBody>(email, `/api/stock-counts/${sessionId}/confirm`, {
+    method: "POST",
+    body: JSON.stringify({ idempotencyKey }),
+  });
+
+const acceptVariance = (email: string, sessionId: string, lineId: string, reasonCodeId: string) =>
+  as<{ error?: string }>(
+    email,
+    `/api/stock-counts/${sessionId}/lines/${lineId}/accept-variance`,
+    { method: "POST", body: JSON.stringify({ reasonCodeId }) },
+  );
+
+/**
+ * The whole SH-18 → SH-17 walk, over HTTP.
+ *
+ * Capture leaves a line COUNTED, and `COUNTED → VARIANCE_CONFIRMED` is not a
+ * legal move: submission is what turns a figure into a verdict, and only a
+ * line already judged OUTSIDE_TOLERANCE — or sent to RECOUNT_REQUIRED by the
+ * café's recount policy — may then be accepted. So the order is capture,
+ * submit, accept, confirm: the same order `count-012` drives, and the one the
+ * disposition map in `count-disposition.ts` permits.
+ */
+async function walkTheRealPath(h: Handover, reasonCodeId: string) {
+  const started = await post<{ countSession: { id: string } }>(fx.cashier.email, {
+    action: "start_count",
+    handoverId: h.handoverId,
+  });
+  assert.equal(started.status, 200, started.text);
+  const sessionId = started.body.countSession.id;
+
+  const lines = await db.stockCountLine.findMany({
+    where: { sessionId },
+    select: { id: true, inventoryItemId: true },
+  });
+  assert.equal(lines.length, 3);
+
+  // One deliberate, real difference; the rest exact.
+  for (const line of lines) {
+    const counted = line.inventoryItemId === items.alpha.id ? 3 : 0;
+    const r = await patchLine(fx.manager.email, sessionId, line.id, counted);
+    assert.ok(r.status < 300, `capture failed: ${r.text}`);
+  }
+
+  const submitted = await submitCount(fx.manager.email, sessionId);
+  assert.ok(submitted.status < 300, `count submit failed: ${submitted.text}`);
+
+  const unsettled = await db.stockCountLine.findMany({
+    where: { sessionId, disposition: { in: ["OUTSIDE_TOLERANCE", "RECOUNT_REQUIRED"] } },
+    select: { id: true },
+  });
+  assert.ok(unsettled.length > 0, "the fixture must produce a real difference to accept");
+  for (const line of unsettled) {
+    const r = await acceptVariance(fx.manager.email, sessionId, line.id, reasonCodeId);
+    assert.ok(r.status < 300, `accept-variance failed: ${r.text}`);
+  }
+
+  return { sessionId, lineIds: lines.map((l) => l.id) };
+}
+
+describe("SH-17 reachability", () => {
+  test("the real HTTP path reaches HANDOVER-bound confirmation", async () => {
+    const h = await freshHandover();
+    const reason = await stockReason("sh17-walk");
+    const { sessionId, lineIds } = await walkTheRealPath(h, reason.id);
+
+    // Bound, and bound to THIS handover.
+    const bound = await db.stockCountSession.findUniqueOrThrow({
+      where: { id: sessionId },
+      select: { accountabilityContext: true, handoverId: true },
+    });
+    assert.equal(bound.accountabilityContext, "HANDOVER");
+    assert.equal(bound.handoverId, h.handoverId);
+
+    const confirmed = await confirmCount(fx.manager.email, sessionId, `${MARKER}-walk-1`);
+    assert.ok(confirmed.status < 300, `confirm failed: ${confirmed.text}`);
+    assert.equal(confirmed.body.status, "CONFIRMED");
+
+    // Deferred accountability, returned rather than acted on.
+    assert.deepEqual(confirmed.body.deferred, {
+      context: "HANDOVER",
+      handoverId: h.handoverId,
+      openingBranchCustodyPeriodId: null,
+    });
+
+    // And every later-stage field still nobody's.
+    const handover = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: { acceptedStockCountSessionId: true, resolvedTarget: true, status: true },
+    });
+    assert.equal(handover.acceptedStockCountSessionId, null);
+    assert.equal(handover.resolvedTarget, null);
+    assert.equal(handover.status, "DRAFT");
+
+    const session = await db.stockCountSession.findUniqueOrThrow({
+      where: { id: sessionId },
+      select: { lockedByHandoverId: true, openingBranchCustodyPeriodId: true },
+    });
+    assert.equal(session.lockedByHandoverId, null);
+    assert.equal(session.openingBranchCustodyPeriodId, null);
+
+    assert.equal(await db.handoverStockBoundary.count({ where: { handoverId: h.handoverId } }), 0);
+    assert.equal(
+      await db.handoverRequiredItem.count({
+        where: { handoverId: h.handoverId, satisfiedByLineId: { not: null } },
+      }),
+      0,
+    );
+    const freeze = await db.inventoryFreeze.findUniqueOrThrow({ where: { id: h.freezeId } });
+    assert.equal(freeze.releasedAt, null);
+    const shift = await db.shift.findUniqueOrThrow({ where: { id: h.shiftId } });
+    assert.equal(shift.status, "AWAITING_HANDOVER");
+    assert.equal(shift.stockClosedAt, null);
+    assert.ok(lineIds.length > 0);
+  });
+
+  test("contextual confirmation creates zero generic variance cases", async () => {
+    const h = await freshHandover();
+    const reason = await stockReason("sh17-nocases");
+    const { sessionId, lineIds } = await walkTheRealPath(h, reason.id);
+
+    const confirmed = await confirmCount(fx.manager.email, sessionId, `${MARKER}-nocases-1`);
+    assert.ok(confirmed.status < 300, confirmed.text);
+
+    assert.equal(
+      await db.varianceCase.count({ where: { stockCountLineId: { in: lineIds } } }),
+      0,
+      "a handover-bound confirmation is a proposal, and opens no case",
+    );
+    assert.deepEqual(confirmed.body.varianceCaseIds, []);
+  });
+
+  test("confirmation returns deferred accountability on first call and on replay", async () => {
+    const h = await freshHandover();
+    const reason = await stockReason("sh17-replay");
+    const { sessionId, lineIds } = await walkTheRealPath(h, reason.id);
+
+    const key = `${MARKER}-replay-1`;
+    const first = await confirmCount(fx.manager.email, sessionId, key);
+    assert.ok(first.status < 300, first.text);
+    assert.equal(first.body.alreadyConfirmed, false);
+
+    const replay = await confirmCount(fx.manager.email, sessionId, key);
+    assert.ok(replay.status < 300, replay.text);
+    assert.equal(replay.body.alreadyConfirmed, true);
+    assert.deepEqual(
+      replay.body.deferred,
+      first.body.deferred,
+      "a retry that dropped the binding would leave acceptance nothing to key on",
+    );
+    assert.equal(
+      await db.varianceCase.count({ where: { stockCountLineId: { in: lineIds } } }),
+      0,
+      "and still no case on the replay",
+    );
+  });
+
+  test("an ordinary count start is still accountabilityContext NONE", async () => {
+    // No handover, no freeze: the branch as it is on an ordinary day.
+    await resetBranch(fx.branchId);
+    const reason = await stockReason("ordinary");
+
+    const started = await as<{ session: { id: string } }>(
+      fx.manager.email,
+      "/api/stock-counts",
+      { method: "POST", body: JSON.stringify({ type: "CRITICAL" }) },
+    );
+    assert.equal(started.status, 201, started.text);
+    const sessionId = started.body.session.id;
+
+    const ordinary = await db.stockCountSession.findUniqueOrThrow({
+      where: { id: sessionId },
+      select: { accountabilityContext: true, handoverId: true },
+    });
+    assert.equal(ordinary.accountabilityContext, "NONE");
+    assert.equal(ordinary.handoverId, null);
+
+    const lines = await db.stockCountLine.findMany({
+      where: { sessionId },
+      select: { id: true, inventoryItemId: true },
+    });
+    for (const line of lines) {
+      const counted = line.inventoryItemId === items.alpha.id ? 3 : 0;
+      const r = await patchLine(fx.manager.email, sessionId, line.id, counted);
+      assert.ok(r.status < 300, `capture failed: ${r.text}`);
+    }
+    const submitted = await submitCount(fx.manager.email, sessionId);
+    assert.ok(submitted.status < 300, submitted.text);
+    const unsettled = await db.stockCountLine.findMany({
+      where: { sessionId, disposition: { in: ["OUTSIDE_TOLERANCE", "RECOUNT_REQUIRED"] } },
+      select: { id: true },
+    });
+    for (const line of unsettled) {
+      const r = await acceptVariance(fx.manager.email, sessionId, line.id, reason.id);
+      assert.ok(r.status < 300, r.text);
+    }
+
+    const confirmed = await confirmCount(fx.manager.email, sessionId, `${MARKER}-ordinary-1`);
+    assert.ok(confirmed.status < 300, confirmed.text);
+    assert.equal(
+      confirmed.body.deferred,
+      null,
+      "a count answering to nobody defers nothing",
+    );
+    assert.ok(
+      (confirmed.body.varianceCaseIds ?? []).length > 0,
+      "and opens its cases the ordinary way, immediately",
+    );
+  });
+});
