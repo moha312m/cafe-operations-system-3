@@ -1218,3 +1218,295 @@ describe("submit", () => {
     }
   });
 });
+
+// ────────────────────── T4 · incoming blind review ───────────────────────
+//
+// The reviewer counts before they are told what to find, or the count they
+// take is not evidence. `redactCountTargets` cannot deliver that here and the
+// tests are built so a naive call to it fails: the bound session is CONFIRMED
+// and the reviewer neither started it nor counted a line, so `countIsBlindTo`
+// is false and the redactor is a no-op. Blindness has to be in the shape of
+// the response.
+
+/** The nine keys a pre-acknowledgement view may not contain, at any depth. */
+const QUANTITY_KEYS = [
+  "expectedQuantity",
+  "varianceQuantity",
+  "costImpact",
+  "costImpactAvailable",
+  "costUnavailableReason",
+  "countedQuantity",
+  "effectiveCountedQuantity",
+  "itemVersion",
+  "expectedBasis",
+] as const;
+
+/**
+ * Walk anything — the live object or a parsed HTTP body — and refuse a
+ * quantity key wherever it hides.
+ *
+ * The live object is walked directly rather than through `JSON.stringify`,
+ * because a leaked `itemVersion` is a BigInt and would make serialisation
+ * throw before the assertion could name the field.
+ */
+function assertNoQuantityKeys(value: unknown, path = "view") {
+  if (value === null || typeof value !== "object") return;
+  if (Array.isArray(value)) {
+    value.forEach((entry, i) => assertNoQuantityKeys(entry, `${path}[${i}]`));
+    return;
+  }
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    assert.ok(
+      !(QUANTITY_KEYS as readonly string[]).includes(key),
+      `${path}.${key} leaks a count target to a reviewer who has not looked yet`,
+    );
+    assertNoQuantityKeys(child, `${path}.${key}`);
+  }
+}
+
+async function incomingView(
+  handoverId: string,
+  overrides: Partial<{ viewerId: string; cafeId: string; viewerBranchId: string | null }> = {},
+) {
+  const { incomingHandoverView } = await handoverLib();
+  return incomingHandoverView(handoverId, overrides.viewerId ?? fx.manager.id, {
+    cafeId: overrides.cafeId ?? fx.cafeId,
+    viewerBranchId:
+      overrides.viewerBranchId === undefined ? fx.branchId : overrides.viewerBranchId,
+  });
+}
+
+/** A handover that has actually been submitted, with its confirmed evidence. */
+async function submittedHandover(
+  specs?: FillSpec[],
+): Promise<Handover & { sessionId: string }> {
+  const h = await freshHandover();
+  const sessionId = await boundCount(
+    h,
+    specs ?? ITEM_KEYS.map((k) => ({ itemId: items[k].id, counted: 6, expected: 6 })),
+  );
+  await submit(h.handoverId);
+  return { ...h, sessionId };
+}
+
+/** The reviewer takes their own look at one line. SH-19 writes these for real. */
+async function acknowledgeOneLine(handoverId: string, sessionId: string) {
+  const line = await db.stockCountLine.findFirstOrThrow({
+    where: { sessionId },
+    select: { id: true },
+    orderBy: { id: "asc" },
+  });
+  return db.handoverStockAcknowledgement.create({
+    data: {
+      handoverId,
+      stockCountLineId: line.id,
+      incomingCountedQuantity: 6,
+      handedOverQuantity: 6,
+      varianceQuantity: 0,
+      decision: "ACCEPTED",
+      acknowledgedById: fx.manager.id,
+    },
+  });
+}
+
+describe("incoming blind review", () => {
+  test("pre-acknowledgement, no quantity key exists anywhere in the view", async () => {
+    const h = await submittedHandover([
+      // A real, priced, non-zero difference — the most valuable thing to leak.
+      {
+        itemId: items.alpha.id,
+        counted: 2,
+        expected: 9,
+        reasonCodeId: (await stockReason("blind-leak")).id,
+        costImpact: 1234,
+        costImpactAvailable: true,
+      },
+      { itemId: items.bravo.id, counted: 4, expected: 4 },
+      { itemId: items.charlie.id, counted: 7, expected: 7 },
+    ]);
+
+    const view = await incomingView(h.handoverId);
+    assert.equal(view.acknowledged, false);
+    assertNoQuantityKeys(view);
+    assert.equal(view.count?.sessionId, h.sessionId);
+    assert.equal(view.count?.status, "CONFIRMED");
+    assert.equal(
+      view.count?.lines.length,
+      3,
+      "blindness withholds the figures, not the existence of the lines",
+    );
+  });
+
+  test("pre-acknowledgement still shows what there is to review", async () => {
+    const h = await submittedHandover();
+    const view = await incomingView(h.handoverId);
+
+    assert.equal(view.handoverId, h.handoverId);
+    assert.equal(view.status, "OUTGOING_SUBMITTED");
+    assert.equal(view.branchId, fx.branchId);
+    assert.equal(view.target, "SHIFT_TO_SHIFT");
+    assert.equal(view.mode, "SELECTED");
+    assert.equal(view.requiredItemTrigger, "REGULAR_MODE");
+    assert.equal(view.outgoingUserId, fx.cashier.id);
+    assert.ok(view.submittedAt instanceof Date);
+
+    assert.equal(view.requiredItems.length, 3);
+    const alpha = view.requiredItems.find((r) => r.inventoryItemId === items.alpha.id)!;
+    assert.equal(alpha.itemNameSnapshot, items.alpha.name);
+    assert.equal(alpha.unitSnapshot, "KG");
+    assert.equal(alpha.isCriticalSnapshot, true);
+
+    const lines = view.count!.lines as Array<Record<string, unknown>>;
+    for (const line of lines) {
+      assert.ok(line.id, "a reviewer needs the line to acknowledge against");
+      assert.ok(line.inventoryItemId);
+      assert.ok(line.unit);
+      assert.ok(line.disposition);
+      assert.ok(line.countedAt, "whether it was counted is not a target");
+      assert.ok((line.inventoryItem as { name?: string })?.name);
+    }
+  });
+
+  test("post-acknowledgement discloses the count through the existing redactor", async () => {
+    const h = await submittedHandover([
+      { itemId: items.alpha.id, counted: 2, expected: 9, reasonCodeId: (await stockReason("ack")).id },
+      { itemId: items.bravo.id, counted: 4, expected: 4 },
+      { itemId: items.charlie.id, counted: 7, expected: 7 },
+    ]);
+    await acknowledgeOneLine(h.handoverId, h.sessionId);
+
+    // The reviewer neither initiated the session nor counted a line, so the
+    // existing redactor lets them see it once they have looked for themselves.
+    const view = await incomingView(h.handoverId, { viewerId: fx.manager.id });
+    assert.equal(view.acknowledged, true);
+    const lines = view.count!.lines as Array<Record<string, unknown>>;
+    const alphaLine = lines.find((l) => l.inventoryItemId === items.alpha.id)!;
+    assert.ok("expectedQuantity" in alphaLine);
+    assert.ok("varianceQuantity" in alphaLine);
+    assert.ok("effectiveCountedQuantity" in alphaLine);
+    assert.equal(Number(alphaLine.expectedQuantity), 9);
+    assert.equal(Number(alphaLine.varianceQuantity), -7);
+  });
+
+  test("the redaction rule is the existing one", async () => {
+    const h = await freshHandover();
+    const sessionId = await boundCount(
+      h,
+      ITEM_KEYS.map((k) => ({ itemId: items[k].id, counted: 6, expected: 6 })),
+    );
+    await submit(h.handoverId);
+    // A still-blind session, and a viewer who is its initiator: the one case
+    // `countIsBlindTo` is actually true for.
+    await db.stockCountSession.update({
+      where: { id: sessionId },
+      data: { status: "DRAFT", mode: "BLIND", confirmedAt: null, confirmedById: null },
+    });
+    await acknowledgeOneLine(h.handoverId, sessionId);
+
+    const view = await incomingView(h.handoverId, { viewerId: fx.cashier.id });
+    assert.equal(view.acknowledged, true);
+
+    const { getCountSessionForViewer } = await import("@/lib/stock-count");
+    const reference = await getCountSessionForViewer({
+      sessionId,
+      cafeId: fx.cafeId,
+      viewerId: fx.cashier.id,
+      viewerBranchId: fx.branchId,
+    });
+    assert.equal(reference.blind, true, "the fixture must exercise a genuinely blind session");
+
+    const referenceLine = reference.lines[0] as Record<string, unknown>;
+    const viewLine = (view.count!.lines as Array<Record<string, unknown>>).find(
+      (l) => l.id === referenceLine.id,
+    )!;
+    for (const field of ["expectedQuantity", "varianceQuantity", "costImpact"]) {
+      assert.equal(
+        field in viewLine,
+        field in referenceLine,
+        `${field} must be withheld by exactly the rule the count route already applies`,
+      );
+      assert.equal(field in viewLine, false);
+    }
+  });
+
+  test("refuses statuses outside the review window", async () => {
+    const reason = await db.reasonCode.create({
+      data: { cafeId: fx.cafeId, domain: "HANDOVER", code: `${MARKER}-REV`, label: "refused" },
+    });
+
+    // DRAFT: there is nothing to review yet.
+    const draft = await freshHandover();
+    await assert.rejects(incomingView(draft.handoverId), statusIs(409), "DRAFT must refuse");
+
+    for (const status of ["ACCEPTED", "COMPLETED", "MANAGER_EXCEPTION", "REJECTED"] as const) {
+      const h = await submittedHandover();
+      await db.handoverSession.update({
+        where: { id: h.handoverId },
+        data: {
+          status,
+          ...(status === "REJECTED"
+            ? { rejectedAt: new Date(), rejectionReasonCodeId: reason.id }
+            : {}),
+          ...(status === "MANAGER_EXCEPTION"
+            ? { exceptionById: fx.manager.id, exceptionAt: new Date(), exceptionReason: "test" }
+            : {}),
+          ...(status === "ACCEPTED" ? { acceptedAt: new Date() } : {}),
+          ...(status === "COMPLETED" ? { completedAt: new Date() } : {}),
+        },
+      });
+      await assert.rejects(incomingView(h.handoverId), statusIs(409), `${status} must refuse`);
+    }
+  });
+
+  test("enforces tenancy and branch scope", async () => {
+    const h = await submittedHandover();
+
+    // Another tenant's handover is not confirmed to exist at all.
+    await assert.rejects(
+      incomingView(h.handoverId, { cafeId: other.cafeId }),
+      statusIs(404),
+    );
+    await assert.rejects(
+      incomingView(otherHandoverId, { cafeId: fx.cafeId }),
+      statusIs(404),
+    );
+    // The café is the viewer's; the branch is not.
+    await assert.rejects(
+      incomingView(h.handoverId, { viewerBranchId: fx.otherBranchId }),
+      statusIs(403),
+    );
+  });
+
+  test("viewing writes nothing", async () => {
+    const h = await submittedHandover();
+    const before = await db.handoverSession.findUniqueOrThrow({ where: { id: h.handoverId } });
+    const sessionBefore = await db.stockCountSession.findUniqueOrThrow({
+      where: { id: h.sessionId },
+    });
+
+    await incomingView(h.handoverId);
+    await incomingView(h.handoverId, { viewerId: fx.storekeeper.id });
+
+    assert.deepEqual(
+      await db.handoverSession.findUniqueOrThrow({ where: { id: h.handoverId } }),
+      before,
+    );
+    assert.deepEqual(
+      await db.stockCountSession.findUniqueOrThrow({ where: { id: h.sessionId } }),
+      sessionBefore,
+    );
+    assert.equal(
+      await db.handoverStockAcknowledgement.count({ where: { handoverId: h.handoverId } }),
+      0,
+      "SH-19 writes acknowledgements; looking at a handover must not",
+    );
+    assert.equal(before.reviewedAt, null);
+    assert.equal(await db.handoverStockBoundary.count({ where: { handoverId: h.handoverId } }), 0);
+    assert.equal(
+      await db.handoverRequiredItem.count({
+        where: { handoverId: h.handoverId, satisfiedByLineId: { not: null } },
+      }),
+      0,
+    );
+  });
+});

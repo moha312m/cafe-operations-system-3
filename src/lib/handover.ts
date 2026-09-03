@@ -51,8 +51,10 @@
 // writing a plausible answer over it would be a worse record than the gap.
 
 import type {
+  HandoverStatus,
   HandoverStockMode,
   HandoverTarget,
+  InventoryUnit,
   Prisma,
   RequiredItemTrigger,
   StockCountStatus,
@@ -71,7 +73,12 @@ import {
   effectiveCountEvidence,
 } from "@/lib/count-evidence";
 import { acquireInventoryFreeze, activeFreezeFor } from "@/lib/inventory-freeze";
-import { ACTIVE_COUNT_STATUSES, COUNT_STARTED_AUDIT_ACTION } from "@/lib/stock-count";
+import {
+  ACTIVE_COUNT_STATUSES,
+  BLIND_LINE_FIELDS,
+  COUNT_STARTED_AUDIT_ACTION,
+  redactCountTargets,
+} from "@/lib/stock-count";
 
 export const HANDOVER_STARTED_AUDIT_ACTION = "HANDOVER_STARTED";
 
@@ -1004,4 +1011,225 @@ export async function submitHandover(args: {
       alreadySubmitted: false,
     };
   });
+}
+
+// ─────────────────────── SH-18 · the incoming blind review ───────────────
+//
+// The arriving custodian is about to sign for a shelf. If they can read the
+// outgoing hand's figures first, the count they take is not evidence — it is
+// a transcription, and the whole accountability chain rests on it.
+//
+// THE TRAP, stated plainly because it is the one a careful implementation
+// walks into. `redactCountTargets` is the project's blindness primitive and
+// it is EXACTLY WRONG here. It only removes anything when `countIsBlindTo` is
+// true, which needs the session to be `BLIND` mode, in `DRAFT`/`IN_PROGRESS`,
+// and the viewer to be its initiator or one of its counters. The incoming
+// reviewer is none of those: the session they review is CONFIRMED, and they
+// neither started it nor counted a line. Called here it returns the session
+// untouched, so a view built on it would pass a blindness test while handing
+// over every target in the response.
+//
+// So the pre-acknowledgement blindness is STRUCTURAL. The projection names no
+// quantity column at all, which is `getCountSessionForViewer`'s own stated
+// principle — "a field that is never selected cannot be forgotten by a
+// redactor" — applied one step further out. `BLIND_LINE_FIELDS` is imported
+// and asserted against the projection at module load, so the two cannot drift
+// apart silently.
+//
+// Once the reviewer HAS looked — at least one `HandoverStockAcknowledgement`
+// row for this handover — the count is disclosed through the one existing
+// rule, applied unconditionally exactly as the count route applies it. There
+// is no second redaction shape in the codebase after this file.
+//
+// This function writes NOTHING. It creates no acknowledgement, stamps no
+// `reviewedAt`, and moves no status: `OUTGOING_SUBMITTED → INCOMING_REVIEW`
+// is SH-19's transition, and acknowledgement rows are SH-19's to create.
+
+/**
+ * The pre-acknowledgement line projection: identity and progress, no figures.
+ *
+ * `countedQuantity`, `effectiveCountedQuantity`, `expectedQuantity`,
+ * `varianceQuantity`, `costImpact`, `costImpactAvailable`,
+ * `costUnavailableReason`, `itemVersion` and `expectedBasis` are absent from
+ * the QUERY. Nothing downstream has to remember to remove them.
+ */
+const BLIND_HANDOVER_LINE_SELECT = {
+  id: true,
+  inventoryItemId: true,
+  unit: true,
+  disposition: true,
+  countedAt: true,
+  counterId: true,
+  reasonCodeId: true,
+  inventoryItem: { select: { id: true, name: true, category: true, unit: true } },
+} satisfies Prisma.StockCountLineSelect;
+
+// The drift guard, at module load. If somebody adds a blind field to
+// `BLIND_LINE_FIELDS` and this projection ever grows it, the application
+// refuses to start rather than quietly leaking it to a reviewer.
+for (const field of BLIND_LINE_FIELDS) {
+  if (field in BLIND_HANDOVER_LINE_SELECT) {
+    throw new Error(`blind handover projection leaks ${field}`);
+  }
+}
+
+/** The post-acknowledgement projection — the count route's own line shape. */
+const DISCLOSED_HANDOVER_LINE_SELECT = {
+  ...BLIND_HANDOVER_LINE_SELECT,
+  countedQuantity: true,
+  effectiveCountedQuantity: true,
+  expectedQuantity: true,
+  varianceQuantity: true,
+  costImpact: true,
+  costImpactAvailable: true,
+  costUnavailableReason: true,
+  expectedBasis: true,
+  confidence: true,
+  reasonNote: true,
+} satisfies Prisma.StockCountLineSelect;
+
+export type IncomingHandoverView = {
+  handoverId: string;
+  status: HandoverStatus;
+  branchId: string;
+  target: HandoverTarget | null;
+  mode: HandoverStockMode | null;
+  requiredItemTrigger: RequiredItemTrigger | null;
+  outgoingUserId: string;
+  submittedAt: Date | null;
+  acknowledged: boolean;
+  requiredItems: {
+    inventoryItemId: string;
+    itemNameSnapshot: string;
+    unitSnapshot: InventoryUnit;
+    isCriticalSnapshot: boolean;
+  }[];
+  count: {
+    sessionId: string;
+    status: StockCountStatus;
+    type: StockCountType;
+    confirmedAt: Date | null;
+    /** Pre-acknowledgement, no quantity key exists on these objects at all. */
+    lines: unknown[];
+  } | null;
+};
+
+/** The statuses there is something to review in. */
+const REVIEWABLE_HANDOVER_STATUSES: readonly HandoverStatus[] = [
+  "OUTGOING_SUBMITTED",
+  "INCOMING_REVIEW",
+];
+
+/**
+ * What the arriving custodian may see, which is blind until they have taken
+ * their own look.
+ *
+ * "Taken their own look" is defined exactly: at least one
+ * `HandoverStockAcknowledgement` row naming this handover. Nothing else is
+ * consulted — not `reviewedAt`, not the `INCOMING_REVIEW` status — because
+ * SH-19 sets both of those FROM the first acknowledgement, and a view keyed
+ * on a derived signal could disclose before the reviewer had actually counted.
+ */
+export async function incomingHandoverView(
+  handoverId: string,
+  viewerId: string,
+  scope: { cafeId: string; viewerBranchId: string | null }
+): Promise<IncomingHandoverView> {
+  const handover = await db.handoverSession.findUnique({
+    where: { id: handoverId },
+    select: {
+      id: true,
+      cafeId: true,
+      branchId: true,
+      status: true,
+      target: true,
+      stockMode: true,
+      requiredItemTrigger: true,
+      outgoingUserId: true,
+      submittedAt: true,
+      stockCountSessionId: true,
+      requiredItems: {
+        select: {
+          inventoryItemId: true,
+          itemNameSnapshot: true,
+          unitSnapshot: true,
+          isCriticalSnapshot: true,
+        },
+        orderBy: { itemNameSnapshot: "asc" },
+      },
+      // Existence, not content. One row is enough to answer the question.
+      stockAcknowledgements: { select: { id: true }, take: 1 },
+    },
+  });
+  if (!handover || handover.cafeId !== scope.cafeId) {
+    throw new ApiError(404, HANDOVER_NOT_FOUND);
+  }
+  if (scope.viewerBranchId !== null && handover.branchId !== scope.viewerBranchId) {
+    throw new ApiError(403, FOREIGN_BRANCH);
+  }
+  if (!REVIEWABLE_HANDOVER_STATUSES.includes(handover.status)) {
+    throw new ApiError(409, "التسليم مش في مرحلة مراجعة");
+  }
+
+  const acknowledged = handover.stockAcknowledgements.length > 0;
+
+  const session =
+    handover.stockCountSessionId === null
+      ? null
+      : await db.stockCountSession.findUnique({
+          where: { id: handover.stockCountSessionId },
+          select: {
+            id: true,
+            status: true,
+            type: true,
+            mode: true,
+            confirmedAt: true,
+            initiatedById: true,
+            handoverId: true,
+            lines: {
+              select: acknowledged
+                ? DISCLOSED_HANDOVER_LINE_SELECT
+                : BLIND_HANDOVER_LINE_SELECT,
+              orderBy: { inventoryItem: { name: "asc" } },
+            },
+          },
+        });
+  // Evidence that answers to another handover is not this review's subject.
+  const bound = session && session.handoverId === handover.id ? session : null;
+
+  // Applied unconditionally on the disclosed path, exactly as the count route
+  // applies it: the residual case — a reviewer who is also the counter of a
+  // still-blind session — is handled by the one existing rule rather than by
+  // a second copy of it here.
+  const lines =
+    bound === null
+      ? []
+      : acknowledged
+        ? redactCountTargets(bound, viewerId).lines
+        : bound.lines;
+
+  return {
+    handoverId: handover.id,
+    status: handover.status,
+    branchId: handover.branchId,
+    target: handover.target,
+    mode: handover.stockMode,
+    requiredItemTrigger: handover.requiredItemTrigger,
+    outgoingUserId: handover.outgoingUserId,
+    submittedAt: handover.submittedAt,
+    acknowledged,
+    // From the immutable snapshot columns. An item renamed or archived since
+    // the close is still the item this handover was planned around.
+    requiredItems: handover.requiredItems,
+    count:
+      bound === null
+        ? null
+        : {
+            sessionId: bound.id,
+            status: bound.status,
+            type: bound.type,
+            confirmedAt: bound.confirmedAt,
+            lines,
+          },
+  };
 }
