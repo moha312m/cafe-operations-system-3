@@ -355,6 +355,48 @@ function isUniqueViolation(e: unknown): boolean {
   return code === "P2002" || code === "23505";
 }
 
+// ────────────────── SH-19 · the reason a refusal has to carry ─────────────
+
+/**
+ * A HANDOVER-domain reason code of this café's, active, or a refusal that
+ * says which of those it failed.
+ *
+ * Takes a client rather than reaching for `db`, because both callers run
+ * inside the handover row lock and a validation read outside that transaction
+ * could pass against a reason another request is deactivating.
+ * `assertStockReason` (`src/lib/stock-count.ts`) is the shape being followed;
+ * it takes no client only because its one caller needs none.
+ *
+ * `subject` is the Arabic noun phrase the three messages are built from, so
+ * one gate serves both callers — the recount request and the line dispute —
+ * without either of them borrowing the other's wording.
+ *
+ * "No such reason", "another café's reason" and "wrong domain" share ONE
+ * message on purpose: three distinguishable answers would let a caller probe
+ * whether an id exists in a café that is not theirs. "Stopped" gets its own,
+ * because it is the only one of the four the caller can act on.
+ */
+export async function assertHandoverReason(
+  client: Prisma.TransactionClient | typeof db,
+  reasonCodeId: string | null | undefined,
+  cafeId: string,
+  subject: string
+): Promise<void> {
+  // The empty string takes this arm too. A body carrying `""` that slipped
+  // past a truthiness check would reach `findUnique` on an empty id and be
+  // refused as somebody else's rather than as missing.
+  if (!reasonCodeId) throw new ApiError(400, `لازم تحدد ${subject}`);
+
+  const reason = await client.reasonCode.findUnique({
+    where: { id: reasonCodeId },
+    select: { cafeId: true, domain: true, isActive: true },
+  });
+  if (!reason || reason.cafeId !== cafeId || reason.domain !== "HANDOVER") {
+    throw new ApiError(400, `${subject} مش من أسباب التسليم بتاعة الكافيه`);
+  }
+  if (!reason.isActive) throw new ApiError(400, `${subject} ده متوقف`);
+}
+
 /**
  * Take the handover's row lock for the rest of the transaction.
  *
