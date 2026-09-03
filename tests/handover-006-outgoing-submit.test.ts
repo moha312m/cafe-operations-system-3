@@ -32,7 +32,9 @@ import { after, before, beforeEach, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { db, tag, teardownTaggedCafe } from "./helpers/db";
-import { countCafe, countItem, type CountCafe } from "./helpers/count";
+import bcrypt from "bcryptjs";
+import { countCafe, countItem, COUNT_PASSWORD, type CountCafe } from "./helpers/count";
+import { as, login, requireServer } from "./helpers/http";
 
 const MARKER = tag("HANDOVER006");
 
@@ -60,6 +62,14 @@ const items: Record<ItemKey, { id: string; name: string }> = {} as never;
 /** One ordinary item, so FULL and SELECTED are observably different scopes. */
 let ordinaryItemId: string;
 let otherHandoverId: string;
+/**
+ * A café account that may READ a handover and not submit one.
+ *
+ * No system role holds `handover.view` without `handover.submit`, so the
+ * distinction is made the way the application itself makes it — a per-user
+ * override on top of a role — rather than by inventing a role for the test.
+ */
+let viewerOnly: { id: string; email: string };
 
 // ───────────────────────────── the SH-16 reality ─────────────────────────
 //
@@ -251,6 +261,7 @@ async function startCount(
 }
 
 before(async () => {
+  await requireServer();
   fx = await countCafe("HANDOVER006");
   other = await countCafe("HANDOVER006X");
 
@@ -260,6 +271,26 @@ before(async () => {
   }
   const ordinary = await countItem(fx, "ordinary", { stock: 5, isCritical: false });
   ordinaryItemId = ordinary.id;
+  // The annex needs a critical item of its own, or its SELECTED-mode config
+  // has no scope and no shift there could ever close into a handover.
+  await countItem(fx, "annex", { stock: 8, isCritical: true, branchId: fx.otherBranchId });
+
+  const hash = await bcrypt.hash(COUNT_PASSWORD, 10);
+  viewerOnly = await db.user.create({
+    data: {
+      email: `${fx.marker.toLowerCase()}-viewer@example.invalid`,
+      name: `${fx.marker}-viewer`,
+      passwordHash: hash,
+      role: "CASHIER",
+      cafeId: fx.cafeId,
+      branchId: fx.branchId,
+      permissionOverrides: {
+        create: [{ permissionKey: "handover.submit", allowed: false }],
+      },
+    },
+    select: { id: true, email: true },
+  });
+  await login(viewerOnly.email, COUNT_PASSWORD);
 
   // The foreign tenant needs a live handover of its own, so a cross-café
   // refusal is about tenancy rather than about an id that matches nothing.
@@ -1507,6 +1538,300 @@ describe("incoming blind review", () => {
         where: { handoverId: h.handoverId, satisfiedByLineId: { not: null } },
       }),
       0,
+    );
+  });
+});
+
+// ──────────────────────────────── T5 · routes ────────────────────────────
+//
+// Two actions, one handover named explicitly, and nothing else accepted. The
+// route may not infer WHICH handover from the branch: a café with a handover
+// open is exactly the situation where guessing is most plausible and most
+// dangerous, and there is no code path here that creates a `HandoverSession`.
+
+const post = <T = Record<string, unknown>>(email: string, body: unknown) =>
+  as<T>(email, "/api/handovers", { method: "POST", body: JSON.stringify(body) });
+
+describe("routes", () => {
+  test("POST start_count returns the bound session", async () => {
+    const h = await freshHandover();
+    const r = await post<{ countSession: { id: string; type: string; scopeItemIds: string[]; reused: boolean } }>(
+      fx.cashier.email,
+      { action: "start_count", handoverId: h.handoverId },
+    );
+
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.body.countSession.reused, false);
+    assert.equal(r.body.countSession.type, "CRITICAL");
+    assert.deepEqual(
+      [...r.body.countSession.scopeItemIds].sort(),
+      [...h.requiredItemIds].sort(),
+    );
+    const session = await db.stockCountSession.findUniqueOrThrow({
+      where: { id: r.body.countSession.id },
+      select: { accountabilityContext: true, handoverId: true },
+    });
+    assert.equal(session.accountabilityContext, "HANDOVER");
+    assert.equal(session.handoverId, h.handoverId);
+  });
+
+  test("POST submit returns the closing position", async () => {
+    const h = await freshHandover();
+    await boundCount(
+      h,
+      ITEM_KEYS.map((k) => ({ itemId: items[k].id, counted: 6, expected: 6 })),
+    );
+
+    const r = await post<{
+      status: string;
+      alreadySubmitted: boolean;
+      position: { handoverId: string; required: { total: number } };
+    }>(fx.cashier.email, { action: "submit", handoverId: h.handoverId });
+
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.body.status, "OUTGOING_SUBMITTED");
+    assert.equal(r.body.alreadySubmitted, false);
+    assert.equal(r.body.position.handoverId, h.handoverId);
+    assert.equal(r.body.position.required.total, 3);
+  });
+
+  test("POST refuses an unknown key", async () => {
+    const h = await freshHandover();
+    const before = await db.handoverSession.findUniqueOrThrow({ where: { id: h.handoverId } });
+
+    const r = await post<{ error: string }>(fx.cashier.email, {
+      action: "submit",
+      handoverId: h.handoverId,
+      countedQuantity: 5,
+    });
+
+    assert.equal(r.status, 400, r.text);
+    assert.ok(
+      r.body.error.includes("countedQuantity"),
+      `the refusal must name the unrecognised key, got: ${r.body.error}`,
+    );
+    assert.deepEqual(
+      await db.handoverSession.findUniqueOrThrow({ where: { id: h.handoverId } }),
+      before,
+    );
+  });
+
+  test("POST refuses an unknown action and creates no handover", async () => {
+    const h = await freshHandover();
+    const handoversBefore = await db.handoverSession.count();
+
+    for (const body of [
+      { action: "start", handoverId: h.handoverId },
+      { action: "accept", handoverId: h.handoverId },
+      { action: "start_count" },
+    ]) {
+      const r = await post(fx.cashier.email, body);
+      assert.equal(r.status, 400, `${JSON.stringify(body)} -> ${r.text}`);
+    }
+
+    assert.equal(
+      await db.handoverSession.count(),
+      handoversBefore,
+      "no route action may create a HandoverSession — the close is its only writer",
+    );
+  });
+
+  test("POST requires handover.submit; GET requires handover.view", async () => {
+    const h = await freshHandover();
+
+    for (const action of ["start_count", "submit"] as const) {
+      const r = await post(viewerOnly.email, { action, handoverId: h.handoverId });
+      assert.equal(r.status, 403, `${action} -> ${r.text}`);
+    }
+    // The same account can still read.
+    const readable = await as(viewerOnly.email, `/api/handovers?branchId=${fx.branchId}`);
+    assert.equal(readable.status, 200, readable.text);
+
+    // A waiter holds no handover key at all.
+    const denied = await as(fx.waiter.email, `/api/handovers?branchId=${fx.branchId}`);
+    assert.equal(denied.status, 403, denied.text);
+    const deniedDetail = await as(fx.waiter.email, `/api/handovers/${h.handoverId}`);
+    assert.equal(deniedDetail.status, 403, deniedDetail.text);
+  });
+
+  test("GET /api/handovers lists without a single quantity", async () => {
+    const mine = await freshHandover();
+    const annex = await freshHandover(fx, fx.otherBranchId);
+
+    const r = await as<{ handovers: Array<{ id: string; branchId: string }> }>(
+      fx.manager.email,
+      "/api/handovers",
+    );
+    assert.equal(r.status, 200, r.text);
+    assertNoQuantityKeys(r.body.handovers, "handovers");
+
+    const ids = r.body.handovers.map((x) => x.id);
+    assert.ok(ids.includes(mine.handoverId));
+    assert.ok(
+      !ids.includes(annex.handoverId),
+      "a branch-pinned reader sees their own branch and no other",
+    );
+    assert.ok(!ids.includes(otherHandoverId), "another café's handovers are not listed");
+    for (const row of r.body.handovers) assert.equal(row.branchId, fx.branchId);
+
+    // The status filter narrows rather than widens.
+    const filtered = await as<{ handovers: Array<{ id: string; status: string }> }>(
+      fx.manager.email,
+      "/api/handovers?status=OUTGOING_SUBMITTED",
+    );
+    assert.equal(filtered.status, 200, filtered.text);
+    for (const row of filtered.body.handovers) assert.equal(row.status, "OUTGOING_SUBMITTED");
+  });
+
+  test("GET /api/handovers/[id] is the blind review over HTTP", async () => {
+    const h = await submittedHandover([
+      {
+        itemId: items.alpha.id,
+        counted: 2,
+        expected: 9,
+        reasonCodeId: (await stockReason("http-blind")).id,
+        costImpact: 4321,
+        costImpactAvailable: true,
+      },
+      { itemId: items.bravo.id, counted: 4, expected: 4 },
+      { itemId: items.charlie.id, counted: 7, expected: 7 },
+    ]);
+
+    const r = await as<{ handover: { acknowledged: boolean; count: { lines: unknown[] } } }>(
+      fx.manager.email,
+      `/api/handovers/${h.handoverId}`,
+    );
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.body.handover.acknowledged, false);
+    assertNoQuantityKeys(r.body.handover, "handover");
+    // And the raw text, so no serialiser can smuggle one through a key the
+    // walk did not visit.
+    for (const key of QUANTITY_KEYS) {
+      assert.ok(!r.text.includes(key), `the serialised body names ${key}`);
+    }
+    assert.equal(r.body.handover.count.lines.length, 3);
+
+    // Another café's id is not confirmed to exist.
+    const foreign = await as(fx.manager.email, `/api/handovers/${otherHandoverId}`);
+    assert.equal(foreign.status, 404, foreign.text);
+  });
+
+  test("the refusal aggregate survives serialisation", async () => {
+    const h = await freshHandover();
+    await boundCount(
+      h,
+      [
+        { itemId: items.alpha.id, counted: 8, expected: 10 },
+        { itemId: items.bravo.id, counted: 4, expected: 4 },
+      ],
+      "SUBMITTED",
+    );
+
+    const r = await post<{
+      error: string;
+      refusals: Array<{ code: string; count: number; ids: string[]; message: string }>;
+      position: { required: { total: number } };
+    }>(fx.cashier.email, { action: "submit", handoverId: h.handoverId });
+
+    assert.equal(r.status, 409, r.text);
+    assert.ok(Array.isArray(r.body.refusals));
+    assert.deepEqual(r.body.refusals.map((x) => x.code).sort(), [
+      "COUNT_NOT_CONFIRMED",
+      "REQUIRED_ITEMS_MISSING",
+      "VARIANCE_REASON_MISSING",
+    ]);
+    assert.ok(r.body.error, "the ordinary { error } shape is preserved beside the list");
+    assert.equal(r.body.position.required.total, 3);
+  });
+});
+
+// ───────────────────────────── T5 · concurrency ──────────────────────────
+//
+// Real PostgreSQL, two real HTTP requests in flight at once. The row lock and
+// both partial unique indexes are exercised as the database, not as a mock:
+// a serialisation bug here produces two counts of one shelf, or two
+// transitions of one handover, and neither is visible to a single-threaded
+// test.
+
+describe("concurrency", () => {
+  test("two simultaneous start_count requests yield one session", async () => {
+    const h = await freshHandover();
+
+    const [a, b] = await Promise.allSettled([
+      post<{ countSession: { id: string } }>(fx.cashier.email, {
+        action: "start_count",
+        handoverId: h.handoverId,
+      }),
+      post<{ countSession: { id: string } }>(fx.cashier.email, {
+        action: "start_count",
+        handoverId: h.handoverId,
+      }),
+    ]);
+    assert.equal(a.status, "fulfilled");
+    assert.equal(b.status, "fulfilled");
+    const first = (a as PromiseFulfilledResult<Awaited<ReturnType<typeof post>>>).value;
+    const second = (b as PromiseFulfilledResult<Awaited<ReturnType<typeof post>>>).value;
+    assert.equal(first.status, 200, first.text);
+    assert.equal(second.status, 200, second.text);
+
+    const idA = (first.body as { countSession: { id: string } }).countSession.id;
+    const idB = (second.body as { countSession: { id: string } }).countSession.id;
+    assert.equal(idA, idB, "both callers must receive the same count");
+
+    assert.equal(
+      await db.stockCountSession.count({ where: { handoverId: h.handoverId } }),
+      1,
+      "exactly one session may exist for the handover",
+    );
+    const handover = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: { stockCountSessionId: true },
+    });
+    assert.equal(handover.stockCountSessionId, idA);
+  });
+
+  test("two simultaneous submits transition once", async () => {
+    const h = await freshHandover();
+    await boundCount(
+      h,
+      ITEM_KEYS.map((k) => ({ itemId: items[k].id, counted: 6, expected: 6 })),
+    );
+
+    const results = await Promise.allSettled([
+      post<{ status: string; alreadySubmitted: boolean }>(fx.cashier.email, {
+        action: "submit",
+        handoverId: h.handoverId,
+      }),
+      post<{ status: string; alreadySubmitted: boolean }>(fx.cashier.email, {
+        action: "submit",
+        handoverId: h.handoverId,
+      }),
+    ]);
+    for (const r of results) assert.equal(r.status, "fulfilled");
+    const bodies = results.map(
+      (r) => (r as PromiseFulfilledResult<{ status: number; body: { status: string; alreadySubmitted: boolean }; text: string }>).value,
+    );
+    for (const r of bodies) assert.equal(r.status, 200, r.text);
+    for (const r of bodies) assert.equal(r.body.status, "OUTGOING_SUBMITTED");
+
+    assert.equal(
+      bodies.filter((r) => r.body.alreadySubmitted === false).length,
+      1,
+      "exactly one caller may perform the transition",
+    );
+
+    const handover = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: { status: true, submittedAt: true },
+    });
+    assert.equal(handover.status, "OUTGOING_SUBMITTED");
+    assert.ok(handover.submittedAt instanceof Date);
+    assert.equal(
+      await db.auditLog.count({
+        where: { entityId: h.handoverId, action: "HANDOVER_SUBMITTED" },
+      }),
+      1,
+      "one transition, one record of it",
     );
   });
 });

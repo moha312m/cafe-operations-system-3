@@ -1233,3 +1233,38 @@ export async function incomingHandoverView(
           },
   };
 }
+
+/**
+ * The branch's handovers, as a list with no figure in it.
+ *
+ * The same rule `COUNT_SESSION_SUMMARY` follows: a list is read by whoever is
+ * about to count or about to review, so the safe shape is one that has no
+ * target in it to leak rather than one a redactor is trusted to clean.
+ * `requiredItemCount` is a count of items, not a quantity of anything.
+ */
+export async function listHandoversForViewer(args: {
+  cafeId: string;
+  branchId: string;
+  status?: HandoverStatus;
+}) {
+  return db.handoverSession.findMany({
+    where: {
+      cafeId: args.cafeId,
+      branchId: args.branchId,
+      ...(args.status ? { status: args.status } : {}),
+    },
+    select: {
+      id: true,
+      branchId: true,
+      status: true,
+      target: true,
+      outgoingShiftId: true,
+      outgoingUserId: true,
+      stockCountSessionId: true,
+      requiredItemCount: true,
+      submittedAt: true,
+      createdAt: true,
+    },
+    orderBy: { createdAt: "desc" },
+  });
+}
