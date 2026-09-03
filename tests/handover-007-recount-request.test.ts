@@ -1847,3 +1847,142 @@ async function assertStillSubmitted(handoverId: string) {
   assert.equal(handover.rejectionReasonCodeId, null);
   assert.equal(handover.rejectionNote, null);
 }
+
+// ───────────────────── T5 · the request-recount route ────────────────────
+//
+// The roadmap's own **Files to create** entry for this stage. `handover.accept`
+// guards it, and case 5.6 proves that literally: the account that succeeds
+// here holds the accept key and is refused by the submit-guarded route in the
+// same test.
+
+const recountPost = (email: string, handoverId: string, body: unknown) =>
+  as<{
+    status?: string;
+    disputedLineIds?: string[];
+    supersededSessionId?: string;
+    error?: string;
+  }>(email, `/api/handovers/${handoverId}/request-recount`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
+describe("request-recount route", () => {
+  test("5.1 POST with a valid reason returns the rejection", async () => {
+    const h = await reviewedHandover();
+
+    const r = await recountPost(incoming.email, h.handoverId, {
+      reasonCodeId: handoverReasonId,
+      note: "نعيد الجرد",
+    });
+    assert.equal(r.status, 200, r.text);
+    assert.deepEqual(Object.keys(r.body).sort(), [
+      "disputedLineIds",
+      "status",
+      "supersededSessionId",
+    ]);
+    assert.equal(r.body.status, "REJECTED");
+    assert.deepEqual(r.body.disputedLineIds, [h.alphaLineId]);
+    assert.equal(r.body.supersededSessionId, h.sessionId);
+
+    const handover = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: { status: true, rejectionNote: true },
+    });
+    assert.equal(handover.status, "REJECTED");
+    assert.equal(handover.rejectionNote, "نعيد الجرد");
+  });
+
+  test("5.2 the schema refuses a body that writes its own answer", async () => {
+    const h = await submittedHandover();
+    const before = asText(
+      await db.handoverSession.findUniqueOrThrow({ where: { id: h.handoverId } }),
+    );
+
+    for (const [field, value] of [
+      ["status", "REJECTED"],
+      ["disputedLineIds", []],
+      ["handoverId", h.handoverId],
+    ] as const) {
+      const r = await recountPost(incoming.email, h.handoverId, {
+        reasonCodeId: handoverReasonId,
+        [field]: value,
+      });
+      assert.equal(r.status, 400, `${field} -> ${r.text}`);
+      assert.ok(
+        (r.body.error ?? "").includes(field),
+        `the refusal must name the unrecognised key, got: ${r.body.error}`,
+      );
+    }
+    assert.equal(
+      asText(await db.handoverSession.findUniqueOrThrow({ where: { id: h.handoverId } })),
+      before,
+      "a refused body must leave the handover exactly where it was",
+    );
+  });
+
+  test("5.3 an account without handover.accept is refused", async () => {
+    const h = await submittedHandover();
+    const before = asText(
+      await db.handoverSession.findUniqueOrThrow({ where: { id: h.handoverId } }),
+    );
+
+    const r = await recountPost(fx.waiter.email, h.handoverId, {
+      reasonCodeId: handoverReasonId,
+    });
+    assert.equal(r.status, 403, r.text);
+    assert.equal(
+      asText(await db.handoverSession.findUniqueOrThrow({ where: { id: h.handoverId } })),
+      before,
+    );
+  });
+
+  test("5.4 a body with no reason is refused by the schema", async () => {
+    const h = await submittedHandover();
+
+    const r = await recountPost(incoming.email, h.handoverId, {});
+    assert.equal(r.status, 400, r.text);
+    assert.ok(
+      (r.body.error ?? "").includes("لازم تحدد سبب إعادة الجرد"),
+      `the refusal must say what is missing, got: ${r.body.error}`,
+    );
+    await assertStillSubmitted(h.handoverId);
+  });
+
+  test("5.5 tenancy and branch scope are enforced over HTTP", async () => {
+    const h = await submittedHandover();
+
+    const foreign = await recountPost(incoming.email, otherHandoverId, {
+      reasonCodeId: handoverReasonId,
+    });
+    assert.equal(foreign.status, 404, foreign.text);
+
+    const wrongBranch = await recountPost(annexIncoming.email, h.handoverId, {
+      reasonCodeId: handoverReasonId,
+    });
+    assert.equal(wrongBranch.status, 403, wrongBranch.text);
+
+    await assertStillSubmitted(h.handoverId);
+  });
+
+  test("5.6 the guard is the accept key, not the submit key", async () => {
+    const h = await submittedHandover();
+
+    // The same account, in the same request pair. It may ask for a recount…
+    const recount = await recountPost(incoming.email, h.handoverId, {
+      reasonCodeId: handoverReasonId,
+    });
+    assert.equal(recount.status, 200, recount.text);
+
+    // …and may not submit a handover, because it does not hold that key. A
+    // route guarded by `handover.submit` would have refused the call above.
+    const submitAttempt = await as<{ error?: string }>(incoming.email, "/api/handovers", {
+      method: "POST",
+      body: JSON.stringify({ action: "submit", handoverId: h.handoverId }),
+    });
+    assert.equal(
+      submitAttempt.status,
+      403,
+      "the fixture account must genuinely lack handover.submit",
+    );
+  });
+});
