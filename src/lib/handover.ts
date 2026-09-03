@@ -50,15 +50,17 @@
 // drawer is a fact about a shift that closed before custody existed, and
 // writing a plausible answer over it would be a worse record than the gap.
 
-import type { HandoverTarget, Prisma } from "@prisma/client";
+import type { HandoverTarget, Prisma, StockCountType } from "@prisma/client";
 import { ApiError } from "@/lib/api";
-import { auditInTransaction } from "@/lib/audit";
+import { audit, auditInTransaction } from "@/lib/audit";
+import { db } from "@/lib/db";
 import type { HandoverBlocker } from "@/lib/handover-blockers";
 import {
   persistRequiredItems,
   planRequiredItems,
 } from "@/lib/handover-required-items";
-import { acquireInventoryFreeze } from "@/lib/inventory-freeze";
+import { acquireInventoryFreeze, activeFreezeFor } from "@/lib/inventory-freeze";
+import { ACTIVE_COUNT_STATUSES, COUNT_STARTED_AUDIT_ACTION } from "@/lib/stock-count";
 
 export const HANDOVER_STARTED_AUDIT_ACTION = "HANDOVER_STARTED";
 
@@ -306,4 +308,303 @@ export async function createHandoverInClose(
   });
 
   return { handoverId, freezeId, requiredItemCount };
+}
+
+// ─────────────────── SH-18 · the count that answers to a handover ────────
+//
+// SH-17 built deferred accountability — a count whose `accountabilityContext`
+// is HANDOVER confirms without opening a single generic variance case,
+// because nobody has accepted the figure yet. Nothing could reach it. The
+// ordinary `POST /api/stock-counts` derives its scope from TODAY's branch
+// configuration and creates `accountabilityContext = NONE`, and widening it
+// to sometimes mean something else would have made every ordinary count a
+// question about whether a handover happened to be open.
+//
+// So the handover-bound start lives here, in the module that owns the
+// handover, and it takes the handover's id explicitly. It never creates a
+// `HandoverSession` — the close is still the only writer of those — and it
+// never asks the branch what should be counted. The answer to that was fixed
+// at close time, in `HandoverRequiredItem`, and re-deriving it now would let
+// an owner flipping a policy at 2 a.m. silently change what the custodian who
+// closed an hour ago is answerable for.
+
+const HANDOVER_NOT_FOUND = "التسليم مش موجود";
+const FOREIGN_BRANCH = "ليس لديك صلاحية على فرع تاني";
+
+/** Postgres unique-violation, however it reaches us. */
+function isUniqueViolation(e: unknown): boolean {
+  const code = (e as { code?: string }).code;
+  return code === "P2002" || code === "23505";
+}
+
+/**
+ * Take the handover's row lock for the rest of the transaction.
+ *
+ * The same idiom `lockShift` uses (`src/lib/cash-close.ts`), and for the same
+ * reason: the caller re-reads through Prisma once the lock is held, so the
+ * state it validates is the state it is about to write rather than one read a
+ * moment earlier that a concurrent request may already have moved.
+ */
+async function lockHandover(
+  tx: Prisma.TransactionClient,
+  handoverId: string
+): Promise<boolean> {
+  const rows = await tx.$queryRaw<{ id: string }[]>`
+    SELECT "id" FROM "HandoverSession" WHERE "id" = ${handoverId} FOR UPDATE
+  `;
+  return rows.length > 0;
+}
+
+export type StartHandoverCountResult = {
+  countSessionId: string;
+  type: StockCountType;
+  scopeItemIds: string[];
+  /** True when a retry found the count already open and created nothing. */
+  reused: boolean;
+};
+
+/**
+ * Open the stock count this handover is answerable for, or return the one
+ * that is already open.
+ *
+ * Idempotent by design rather than by idempotency key: the handover already
+ * carries a single-count pointer, and the retry answer is "here is the count
+ * you started", not a second count. Two simultaneous callers serialise on the
+ * row lock; the loser re-reads the pointer under the lock it now holds and
+ * receives the winner's session. The branch's partial unique index
+ * (`StockCountSession_one_active_per_branch`) is the backstop, and a
+ * violation that still escapes is answered by re-reading the pointer rather
+ * than by surfacing a 409 to somebody who asked for a state that now exists.
+ */
+export async function startHandoverCount(args: {
+  handoverId: string;
+  actorId: string;
+  cafeId: string;
+  viewerBranchId: string | null;
+}): Promise<StartHandoverCountResult> {
+  const outcome = await db.$transaction(async (tx) => {
+    if (!(await lockHandover(tx, args.handoverId))) {
+      throw new ApiError(404, HANDOVER_NOT_FOUND);
+    }
+
+    const handover = await tx.handoverSession.findUniqueOrThrow({
+      where: { id: args.handoverId },
+      select: {
+        id: true,
+        cafeId: true,
+        branchId: true,
+        status: true,
+        target: true,
+        stockMode: true,
+        requiredItemTrigger: true,
+        outgoingShiftId: true,
+        outgoingStockCustodyId: true,
+        stockCountSessionId: true,
+        requiredItems: {
+          select: { inventoryItemId: true, unitSnapshot: true, omitted: true },
+          orderBy: { itemNameSnapshot: "asc" },
+        },
+        outgoingShift: {
+          select: {
+            status: true,
+            financiallyClosedAt: true,
+            stockClosedAt: true,
+          },
+        },
+      },
+    });
+
+    // Another tenant's handover is not confirmed to exist. A 403 here would
+    // tell one café that an id belonging to another one is real.
+    if (handover.cafeId !== args.cafeId) {
+      throw new ApiError(404, HANDOVER_NOT_FOUND);
+    }
+    if (args.viewerBranchId !== null && handover.branchId !== args.viewerBranchId) {
+      throw new ApiError(403, FOREIGN_BRANCH);
+    }
+
+    // DRAFT alone. `REJECTED → DRAFT` is SH-19's transition, and every later
+    // status has already consumed or discarded the evidence.
+    if (handover.status !== "DRAFT") {
+      throw new ApiError(409, "التسليم مش في حالة تسمح ببدء الجرد");
+    }
+
+    // The snapshot is the scope. Without it there is nothing to count that is
+    // not a fresh reading of today's configuration.
+    if (
+      handover.target === null ||
+      handover.stockMode === null ||
+      handover.requiredItemTrigger === null
+    ) {
+      throw new ApiError(409, "لقطة التسليم ناقصة — مش ينفع نبدأ جرد عليها");
+    }
+
+    // The SH-16 boundary, exactly: money settled, shelf not yet handed over.
+    // The shift is read and never written — re-closing it here would move the
+    // boundary this count exists to measure.
+    const shift = handover.outgoingShift;
+    if (
+      shift.status !== "AWAITING_HANDOVER" ||
+      shift.financiallyClosedAt === null ||
+      shift.stockClosedAt !== null
+    ) {
+      throw new ApiError(409, "الشيفت مش في حالة تسليم عهدة");
+    }
+
+    // The freeze is what makes a count of this shelf meaningful. One that
+    // names a different handover means the shelf is being held for somebody
+    // else, and this count would describe a boundary it does not own.
+    const freeze = await activeFreezeFor(tx, handover.branchId);
+    if (!freeze || freeze.handoverId !== handover.id) {
+      throw new ApiError(409, "تجميد المخزون مش مفتوح لهذا التسليم");
+    }
+
+    // Scope from the snapshot and nowhere else, in its recorded order.
+    const scope = handover.requiredItems.filter((item) => !item.omitted);
+    const scopeItemIds = scope.map((item) => item.inventoryItemId);
+
+    // A retry, under the lock. The pointer is the single source of "which
+    // count is current", so the answer comes from it rather than from a
+    // search that could find a session belonging to a different handover.
+    if (handover.stockCountSessionId !== null) {
+      const existing = await tx.stockCountSession.findUnique({
+        where: { id: handover.stockCountSessionId },
+        select: { id: true, status: true, type: true, handoverId: true },
+      });
+      if (
+        existing &&
+        existing.handoverId === handover.id &&
+        (ACTIVE_COUNT_STATUSES as readonly string[]).includes(existing.status)
+      ) {
+        return {
+          countSessionId: existing.id,
+          type: existing.type,
+          scopeItemIds,
+          reused: true,
+          started: null,
+        };
+      }
+      // CONFIRMED evidence is replaced by SH-19's `requestRecount`, not by
+      // starting a second count behind it, and LOCKED is closed history.
+      throw new ApiError(409, "في جرد متسجل للتسليم ده بالفعل");
+    }
+
+    // A session with no lines would submit and confirm vacuously, and read
+    // afterwards as a branch that had been counted — `startCountSession`'s
+    // own stated reason for the same refusal.
+    if (scopeItemIds.length === 0) {
+      throw new ApiError(400, "مفيش أصناف في لقطة التسليم ينفع تتعد");
+    }
+
+    const type: StockCountType = handover.stockMode === "FULL" ? "FULL" : "CRITICAL";
+    const scopeDerivation =
+      handover.stockMode === "FULL" ? "ALL_ELIGIBLE" : "CRITICAL_ONLY";
+
+    let created: { id: string };
+    try {
+      created = await tx.stockCountSession.create({
+        data: {
+          cafeId: handover.cafeId,
+          branchId: handover.branchId,
+          // The shift being discharged and the STOCK custody it held — not
+          // "whatever is open at the branch now", which is a different fact
+          // the moment a branch runs more than one shift.
+          shiftId: handover.outgoingShiftId,
+          custodyPeriodId: handover.outgoingStockCustodyId,
+          type,
+          status: "DRAFT",
+          scopeDerivation,
+          initiatedById: args.actorId,
+          // The whole point of SH-17, finally reachable from an application.
+          accountabilityContext: "HANDOVER",
+          handoverId: handover.id,
+          // `mode` is deliberately omitted so the schema default BLIND
+          // applies. Resolving the live blindness policy would be a second
+          // read of current configuration inside a function whose contract
+          // forbids one, and BLIND is the conservative answer either way.
+          lines: {
+            create: scope.map((item) => ({
+              inventoryItemId: item.inventoryItemId,
+              // The unit the handover was planned in, never today's.
+              unit: item.unitSnapshot,
+              disposition: "PENDING" as const,
+            })),
+          },
+        },
+        select: { id: true },
+      });
+    } catch (e) {
+      // Somebody else's count claimed the branch's partial unique index. If
+      // it was this handover's, the pointer now names it, and that is the
+      // answer this caller asked for.
+      if (isUniqueViolation(e)) {
+        const raced = await tx.handoverSession.findUniqueOrThrow({
+          where: { id: handover.id },
+          select: { stockCountSessionId: true },
+        });
+        if (raced.stockCountSessionId) {
+          const session = await tx.stockCountSession.findUniqueOrThrow({
+            where: { id: raced.stockCountSessionId },
+            select: { id: true, type: true },
+          });
+          return {
+            countSessionId: session.id,
+            type: session.type,
+            scopeItemIds,
+            reused: true,
+            started: null,
+          };
+        }
+      }
+      throw e;
+    }
+
+    // The current-count pointer, and nothing else. No earlier session row is
+    // edited or removed, which is what preserves recount history.
+    await tx.handoverSession.update({
+      where: { id: handover.id },
+      data: { stockCountSessionId: created.id },
+    });
+
+    return {
+      countSessionId: created.id,
+      type,
+      scopeItemIds,
+      reused: false,
+      // Everything the audit row needs, resolved where it is known to be
+      // true. A reuse produced none of it and carries none of it.
+      started: { branchId: handover.branchId, scopeDerivation },
+    };
+  });
+
+  // Fire-and-forget, exactly as `startCountSession` audits its own start: the
+  // session row is its own evidence, so losing the note would be worse than
+  // losing the thing it describes. A reuse writes nothing and says nothing.
+  if (outcome.started) {
+    await audit({
+      cafeId: args.cafeId,
+      userId: args.actorId,
+      action: COUNT_STARTED_AUDIT_ACTION,
+      entity: "StockCountSession",
+      entityId: outcome.countSessionId,
+      details: {
+        branchId: outcome.started.branchId,
+        handoverId: args.handoverId,
+        accountabilityContext: "HANDOVER",
+        type: outcome.type,
+        scopeDerivation: outcome.started.scopeDerivation,
+        lineCount: outcome.scopeItemIds.length,
+        // The derivation and the ids. An audit row is not a place to publish
+        // a blind count's targets.
+        inventoryItemIds: outcome.scopeItemIds,
+      },
+    });
+  }
+
+  return {
+    countSessionId: outcome.countSessionId,
+    type: outcome.type,
+    scopeItemIds: outcome.scopeItemIds,
+    reused: outcome.reused,
+  };
 }
