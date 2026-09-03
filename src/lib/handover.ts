@@ -1554,3 +1554,153 @@ export async function acknowledgeStockLine(args: {
     return { handedOverQuantity, varianceQuantity, decision };
   });
 }
+
+// ────────────────────────── SH-19 · the recount request ──────────────────
+//
+// Disagreeing sends the count back. It never rewrites it, and it never leaves
+// a case behind.
+//
+// This function writes to `HandoverSession` and to NOTHING else. Not to a
+// `StockCountLine`, not to the `StockCountSession`, not to a `Shift`, a
+// `CustodyPeriod`, an `InventoryItem`, an `InventoryFreeze`, a `VarianceCase`
+// or a `TenderReconciliation`. Custody does not move. The freeze is retained
+// by omission — the shelf must stay still between the disputed count and its
+// replacement, and releasing it here would let the room change under a count
+// that has been asked for and not yet taken.
+//
+// The pointer is deliberately NOT moved either. It still names the superseded
+// session until the outgoing hand starts the replacement, which is what keeps
+// the prior evidence readable and what lets a stale acknowledgement be
+// refused by the current-session predicate rather than accepted against a
+// count nobody is reviewing any more.
+//
+// And because §2.5 gave a handover-bound confirmation deferred accountability,
+// the superseded session carries no `VarianceCase` at all — so there is
+// nothing here to retract, which is the R1 defect meeting its fix.
+
+export const HANDOVER_RECOUNT_REQUESTED_AUDIT_ACTION = "HANDOVER_RECOUNT_REQUESTED";
+
+export type RequestRecountResult = {
+  status: "REJECTED";
+  /** Line ids of this handover's DISPUTED acknowledgements, ascending. */
+  disputedLineIds: string[];
+  /** The session the pointer named when the rejection committed. */
+  supersededSessionId: string;
+};
+
+/** The statuses a recount may be asked for from. */
+const RECOUNTABLE_STATUSES: readonly HandoverStatus[] = [
+  "OUTGOING_SUBMITTED",
+  "INCOMING_REVIEW",
+];
+
+const NOT_RECOUNTABLE = "التسليم مش في حالة تسمح بطلب إعادة الجرد";
+
+export async function requestRecount(args: {
+  handoverId: string;
+  /**
+   * The actor for the audit row, and nothing else.
+   *
+   * `HandoverSession.incomingUserId` — the column of the same name — is NOT
+   * written here. The handover-level incoming party is recorded when custody
+   * actually moves, which is SH-20's; somebody who asked for a recount has
+   * not taken the shelf.
+   */
+  incomingUserId: string;
+  reasonCodeId: string;
+  note?: string;
+  cafeId: string;
+  viewerBranchId: string | null;
+}): Promise<RequestRecountResult> {
+  return db.$transaction(async (tx) => {
+    if (!(await lockHandover(tx, args.handoverId))) {
+      throw new ApiError(404, HANDOVER_NOT_FOUND);
+    }
+
+    const handover = await tx.handoverSession.findUniqueOrThrow({
+      where: { id: args.handoverId },
+      select: {
+        id: true,
+        cafeId: true,
+        branchId: true,
+        status: true,
+        stockCountSessionId: true,
+      },
+    });
+
+    if (handover.cafeId !== args.cafeId) {
+      throw new ApiError(404, HANDOVER_NOT_FOUND);
+    }
+    if (args.viewerBranchId !== null && handover.branchId !== args.viewerBranchId) {
+      throw new ApiError(403, FOREIGN_BRANCH);
+    }
+
+    if (!RECOUNTABLE_STATUSES.includes(handover.status)) {
+      throw new ApiError(409, NOT_RECOUNTABLE);
+    }
+    if (handover.stockCountSessionId === null) {
+      throw new ApiError(409, NO_BOUND_COUNT);
+    }
+    // Captured before any write, so the answer names the session that was
+    // current when the rejection committed rather than whatever the pointer
+    // says by the time the caller reads it.
+    const supersededSessionId = handover.stockCountSessionId;
+
+    // Inside the lock, so the reason cannot be deactivated between the check
+    // and the write.
+    await assertHandoverReason(tx, args.reasonCodeId, handover.cafeId, "سبب إعادة الجرد");
+
+    // Restricted to the session being superseded. An acknowledgement against
+    // an EARLIER session is not evidence about the count being sent back, and
+    // listing it would tell the outgoing hand to re-examine a line that is no
+    // longer part of what they are being asked to count again.
+    const disputed = await tx.handoverStockAcknowledgement.findMany({
+      where: {
+        handoverId: handover.id,
+        decision: "DISPUTED",
+        line: { sessionId: supersededSessionId },
+      },
+      select: { stockCountLineId: true },
+      orderBy: { stockCountLineId: "asc" },
+    });
+    const disputedLineIds = disputed.map((row) => row.stockCountLineId);
+
+    // Status and reason move in ONE statement, which is what keeps the
+    // migration's CHECK — status <> 'REJECTED' OR rejectionReasonCodeId IS
+    // NOT NULL — satisfied at every instant rather than only between two
+    // writes. The guard in the same `where` is what makes two simultaneous
+    // requests produce exactly one rejection.
+    const moved = await tx.handoverSession.updateMany({
+      where: {
+        id: handover.id,
+        status: { in: ["OUTGOING_SUBMITTED", "INCOMING_REVIEW"] },
+      },
+      data: {
+        status: "REJECTED",
+        rejectionReasonCodeId: args.reasonCodeId,
+        rejectionNote: args.note ?? null,
+        rejectedAt: new Date(),
+      },
+    });
+    if (moved.count === 0) throw new ApiError(409, NOT_RECOUNTABLE);
+
+    // Ids and counts. The figures that were disagreed about live on the
+    // acknowledgement rows, which are the record of the disagreement itself.
+    await auditInTransaction(tx, {
+      cafeId: handover.cafeId,
+      userId: args.incomingUserId,
+      action: HANDOVER_RECOUNT_REQUESTED_AUDIT_ACTION,
+      entity: "HandoverSession",
+      entityId: handover.id,
+      details: {
+        branchId: handover.branchId,
+        supersededSessionId,
+        reasonCodeId: args.reasonCodeId,
+        disputedLineIds,
+        disputedCount: disputedLineIds.length,
+      },
+    });
+
+    return { status: "REJECTED" as const, disputedLineIds, supersededSessionId };
+  });
+}

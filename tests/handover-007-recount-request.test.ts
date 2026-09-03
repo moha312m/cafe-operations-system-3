@@ -1404,6 +1404,446 @@ describe("blindness boundary", () => {
   });
 });
 
-void statusIs;
 void NO_BOUND_COUNT;
 void LINE_NOT_FOUND;
+
+// ─────────────────────────── T4 · the recount request ────────────────────
+//
+// Disagreeing sends the count back. It does not rewrite it, and it does not
+// leave a case behind.
+//
+// `requestRecount` writes to `HandoverSession` and to nothing else. The
+// superseded session stays CONFIRMED and byte-identical; custody stays where
+// it is; the freeze is RETAINED, because the shelf must stay still between
+// the disputed count and its replacement; and no `VarianceCase` is created or
+// retracted — the R1 defect, pinned before and after.
+//
+// The pointer is deliberately NOT moved. It still names the superseded
+// session until the replacement is created, which is what keeps the prior
+// evidence readable and what makes a stale acknowledgement refusable.
+
+const NOT_RECOUNTABLE = "التسليم مش في حالة تسمح بطلب إعادة الجرد";
+const RECOUNT_SUBJECT_MISSING = "لازم تحدد سبب إعادة الجرد";
+
+async function requestRecount(args: {
+  handoverId: string;
+  reasonCodeId?: string;
+  note?: string;
+  incomingUserId?: string;
+  cafeId?: string;
+  viewerBranchId?: string | null;
+}) {
+  const { requestRecount: service } = await handoverLib();
+  return service({
+    handoverId: args.handoverId,
+    incomingUserId: args.incomingUserId ?? incoming.id,
+    reasonCodeId: args.reasonCodeId as string,
+    note: args.note,
+    cafeId: args.cafeId ?? fx.cafeId,
+    viewerBranchId: args.viewerBranchId === undefined ? fx.branchId : args.viewerBranchId,
+  });
+}
+
+/** An operational shift opened at the branch while the handover is pending. */
+async function openIncomingShift(branchId: string = fx.branchId) {
+  return openOperationalShift(fx.cafeId, branchId, incoming.id);
+}
+
+/** Every line of a session, as one comparable string. */
+async function sessionLinesText(sessionId: string) {
+  return asText(
+    await db.stockCountLine.findMany({ where: { sessionId }, orderBy: { id: "asc" } }),
+  );
+}
+
+/**
+ * Every field SH-20 owns, still nobody's.
+ *
+ * Extracted rather than inlined because case 6.7 re-runs the whole set after
+ * the restart: a field that stayed null through the rejection and then moved
+ * during the replacement would be the same defect, one step later.
+ */
+async function assertNoLaterStageWrites(h: Handover, note: string) {
+  const handover = await db.handoverSession.findUniqueOrThrow({
+    where: { id: h.handoverId },
+    select: {
+      acceptedStockCountSessionId: true,
+      resolvedTarget: true,
+      incomingUserId: true,
+      incomingStockCustodyId: true,
+      incomingCashCustodyId: true,
+      acceptedAt: true,
+      completedAt: true,
+      idempotencyKey: true,
+      stockCountSessionId: true,
+    },
+  });
+  for (const [field, value] of Object.entries(handover)) {
+    if (field === "stockCountSessionId") continue;
+    assert.equal(value, null, `${note}: HandoverSession.${field} belongs to SH-20`);
+  }
+  assert.equal(
+    await db.handoverStockBoundary.count({ where: { handoverId: h.handoverId } }),
+    0,
+    `${note}: the stock boundary is written by acceptance`,
+  );
+  assert.equal(
+    await db.stockCountSession.count({
+      where: { handoverId: h.handoverId, lockedByHandoverId: { not: null } },
+    }),
+    0,
+    `${note}: locking the evidence is acceptance`,
+  );
+  assert.equal(
+    await db.handoverRequiredItem.count({
+      where: { handoverId: h.handoverId, satisfiedByLineId: { not: null } },
+    }),
+    0,
+    `${note}: settling the required items is acceptance`,
+  );
+  assert.equal(
+    await db.stockCountRebase.count({ where: { session: { handoverId: h.handoverId } } }),
+    0,
+    `${note}: rebasing the shelf is acceptance`,
+  );
+}
+
+/** A submitted handover whose alpha line is DISPUTED and bravo ACCEPTED. */
+async function reviewedHandover() {
+  const h = await submittedHandover();
+  const alpha = await lineOf(h.sessionId, items.alpha.id);
+  const bravo = await lineOf(h.sessionId, items.bravo.id);
+  await acknowledge({
+    handoverId: h.handoverId,
+    stockCountLineId: alpha.id,
+    incomingCountedQuantity: 6,
+    disputeReasonCodeId: handoverReasonId,
+  });
+  await acknowledge({ handoverId: h.handoverId, stockCountLineId: bravo.id });
+  return { ...h, alphaLineId: alpha.id, bravoLineId: bravo.id };
+}
+
+describe("requestRecount", () => {
+  test("4.1 a recount with no reason is refused and writes nothing", async () => {
+    const h = await submittedHandover();
+
+    await assert.rejects(
+      requestRecount({ handoverId: h.handoverId }),
+      refusalIs(400, RECOUNT_SUBJECT_MISSING),
+    );
+    const handover = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: { status: true, rejectedAt: true, rejectionReasonCodeId: true },
+    });
+    assert.equal(handover.status, "OUTGOING_SUBMITTED");
+    assert.equal(handover.rejectedAt, null);
+    assert.equal(handover.rejectionReasonCodeId, null);
+  });
+
+  test("4.2 a STOCK-domain reason is not a handover reason", async () => {
+    const h = await submittedHandover();
+    await assert.rejects(
+      requestRecount({ handoverId: h.handoverId, reasonCodeId: stockReasonId }),
+      statusIs(400),
+    );
+    await assertStillSubmitted(h.handoverId);
+  });
+
+  test("4.3 a stopped HANDOVER reason is refused", async () => {
+    const h = await submittedHandover();
+    await assert.rejects(
+      requestRecount({ handoverId: h.handoverId, reasonCodeId: inactiveHandoverReasonId }),
+      statusIs(400),
+    );
+    await assertStillSubmitted(h.handoverId);
+  });
+
+  test("4.4 another café's HANDOVER reason is refused", async () => {
+    const h = await submittedHandover();
+    await assert.rejects(
+      requestRecount({ handoverId: h.handoverId, reasonCodeId: foreignHandoverReasonId }),
+      statusIs(400),
+    );
+    await assertStillSubmitted(h.handoverId);
+  });
+
+  test("4.5 from OUTGOING_SUBMITTED the handover moves to REJECTED", async () => {
+    const h = await submittedHandover();
+    const result = await requestRecount({
+      handoverId: h.handoverId,
+      reasonCodeId: handoverReasonId,
+    });
+    assert.equal(result.status, "REJECTED");
+    const handover = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: { status: true },
+    });
+    assert.equal(handover.status, "REJECTED");
+  });
+
+  test("4.6 from INCOMING_REVIEW it moves to REJECTED too", async () => {
+    const h = await reviewedHandover();
+    const before = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: { status: true },
+    });
+    assert.equal(before.status, "INCOMING_REVIEW", "the fixture must have opened the review");
+
+    const result = await requestRecount({
+      handoverId: h.handoverId,
+      reasonCodeId: handoverReasonId,
+    });
+    assert.equal(result.status, "REJECTED");
+  });
+
+  test("4.7 the rejection records why, and when", async () => {
+    const h = await submittedHandover();
+    await requestRecount({
+      handoverId: h.handoverId,
+      reasonCodeId: handoverReasonId,
+      note: "العدد مش مظبوط",
+    });
+
+    const handover = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: { rejectionReasonCodeId: true, rejectionNote: true, rejectedAt: true },
+    });
+    assert.equal(handover.rejectionReasonCodeId, handoverReasonId);
+    assert.equal(handover.rejectionNote, "العدد مش مظبوط");
+    assert.ok(handover.rejectedAt instanceof Date);
+  });
+
+  test("4.8 disputedLineIds names the current session's disputes and no others", async () => {
+    const h = await reviewedHandover();
+
+    // A DISPUTED acknowledgement against an EARLIER session of this same
+    // handover. It is not evidence about the count being sent back.
+    const earlier = await db.stockCountSession.create({
+      data: {
+        cafeId: fx.cafeId,
+        branchId: fx.branchId,
+        shiftId: h.shiftId,
+        type: "CRITICAL",
+        status: "CONFIRMED",
+        scopeDerivation: "CRITICAL_ONLY",
+        initiatedById: fx.cashier.id,
+        accountabilityContext: "HANDOVER",
+        handoverId: h.handoverId,
+        lines: {
+          create: [{ inventoryItemId: items.charlie.id, unit: "KG", disposition: "PENDING" }],
+        },
+      },
+      select: { id: true, lines: { select: { id: true } } },
+    });
+    const earlierLineId = earlier.lines[0].id;
+    await db.handoverStockAcknowledgement.create({
+      data: {
+        handoverId: h.handoverId,
+        stockCountLineId: earlierLineId,
+        handedOverQuantity: 1,
+        varianceQuantity: -1,
+        decision: "DISPUTED",
+        disputeReasonCodeId: handoverReasonId,
+        acknowledgedById: incoming.id,
+      },
+    });
+
+    const result = await requestRecount({
+      handoverId: h.handoverId,
+      reasonCodeId: handoverReasonId,
+    });
+
+    assert.deepEqual(result.disputedLineIds, [h.alphaLineId]);
+    assert.ok(
+      !result.disputedLineIds.includes(h.bravoLineId),
+      "an ACCEPTED acknowledgement is not a dispute",
+    );
+    assert.ok(
+      !result.disputedLineIds.includes(earlierLineId),
+      "a dispute about a superseded count is not evidence about this one",
+    );
+    // Ascending, so a caller may compare the array directly.
+    assert.deepEqual(result.disputedLineIds, [...result.disputedLineIds].sort());
+  });
+
+  test("4.9 the pointer is reported, and not moved", async () => {
+    const h = await submittedHandover();
+    const pointerBefore = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: { stockCountSessionId: true },
+    });
+    assert.equal(pointerBefore.stockCountSessionId, h.sessionId);
+
+    const result = await requestRecount({
+      handoverId: h.handoverId,
+      reasonCodeId: handoverReasonId,
+    });
+    assert.equal(result.supersededSessionId, h.sessionId);
+
+    const pointerAfter = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: { stockCountSessionId: true },
+    });
+    assert.equal(
+      pointerAfter.stockCountSessionId,
+      h.sessionId,
+      "the pointer still names the superseded session until a replacement exists",
+    );
+  });
+
+  test("4.10 the superseded session and every line are byte-identical", async () => {
+    const h = await reviewedHandover();
+    const sessionBefore = asText(
+      await db.stockCountSession.findUniqueOrThrow({ where: { id: h.sessionId } }),
+    );
+    const linesBefore = await sessionLinesText(h.sessionId);
+
+    await requestRecount({ handoverId: h.handoverId, reasonCodeId: handoverReasonId });
+
+    const session = await db.stockCountSession.findUniqueOrThrow({
+      where: { id: h.sessionId },
+    });
+    assert.equal(session.status, "CONFIRMED");
+    assert.equal(asText(session), sessionBefore);
+    assert.equal(await sessionLinesText(h.sessionId), linesBefore);
+  });
+
+  test("4.11 the superseded session has zero variance cases, before and after", async () => {
+    const h = await reviewedHandover();
+    const where = { stockCountLine: { sessionId: h.sessionId } };
+    assert.equal(await db.varianceCase.count({ where }), 0, "before the recount");
+
+    await requestRecount({ handoverId: h.handoverId, reasonCodeId: handoverReasonId });
+
+    assert.equal(
+      await db.varianceCase.count({ where }),
+      0,
+      "a recount neither opens a case nor retracts one — there was never one to retract",
+    );
+  });
+
+  test("4.12 custody has not moved", async () => {
+    const h = await submittedHandover();
+    assert.ok(h.outgoingStockCustodyId, "the fixture must produce a STOCK custody");
+    assert.ok(h.outgoingCashCustodyId, "and a CASH custody");
+
+    await requestRecount({ handoverId: h.handoverId, reasonCodeId: handoverReasonId });
+
+    for (const id of [h.outgoingStockCustodyId, h.outgoingCashCustodyId] as string[]) {
+      const period = await db.custodyPeriod.findUniqueOrThrow({ where: { id } });
+      assert.equal(period.status, "OPEN", "the outgoing custodian still holds it");
+      assert.equal(period.acceptedById, null);
+      assert.equal(period.endedAt, null);
+    }
+  });
+
+  test("4.13 the freeze is still held", async () => {
+    const h = await submittedHandover();
+    await requestRecount({ handoverId: h.handoverId, reasonCodeId: handoverReasonId });
+
+    const { activeFreezeFor } = await import("@/lib/inventory-freeze");
+    const freeze = await activeFreezeFor(db, fx.branchId);
+    assert.ok(freeze, "the shelf must stay still between the disputed count and its replacement");
+    assert.equal(freeze.handoverId, h.handoverId);
+
+    const row = await db.inventoryFreeze.findUniqueOrThrow({ where: { id: h.freezeId } });
+    assert.equal(row.releasedAt, null);
+  });
+
+  test("4.14 neither shift moves, and the arriving one is still gated", async () => {
+    const h = await submittedHandover();
+    const gated = await openIncomingShift();
+    const outgoingBefore = asText(
+      await db.shift.findUniqueOrThrow({ where: { id: h.shiftId } }),
+    );
+
+    await requestRecount({ handoverId: h.handoverId, reasonCodeId: handoverReasonId });
+
+    const outgoing = await db.shift.findUniqueOrThrow({ where: { id: h.shiftId } });
+    assert.equal(outgoing.status, "AWAITING_HANDOVER");
+    assert.ok(outgoing.financiallyClosedAt instanceof Date);
+    assert.equal(outgoing.stockClosedAt, null);
+    assert.equal(outgoing.closedAt, null);
+    assert.equal(asText(outgoing), outgoingBefore);
+
+    const incomingShift = await db.shift.findUniqueOrThrow({ where: { id: gated.id } });
+    assert.ok(
+      incomingShift.custodyGateReason,
+      "the arriving cashier cannot sell a shelf nobody has handed them",
+    );
+    assert.equal(incomingShift.custodyReadyAt, null);
+  });
+
+  test("4.15 no field SH-20 owns is written", async () => {
+    const h = await reviewedHandover();
+    await requestRecount({ handoverId: h.handoverId, reasonCodeId: handoverReasonId });
+    await assertNoLaterStageWrites(h, "after the recount request");
+  });
+
+  test("4.16 a handover outside the review window refuses", async () => {
+    const draft = await freshHandover();
+    await boundCount(draft, exactSpecs());
+    await assert.rejects(
+      requestRecount({ handoverId: draft.handoverId, reasonCodeId: handoverReasonId }),
+      refusalIs(409, NOT_RECOUNTABLE),
+    );
+    const stillDraft = await db.handoverSession.findUniqueOrThrow({
+      where: { id: draft.handoverId },
+      select: { status: true, rejectedAt: true },
+    });
+    assert.equal(stillDraft.status, "DRAFT");
+    assert.equal(stillDraft.rejectedAt, null);
+
+    const done = await submittedHandover();
+    await db.handoverSession.update({
+      where: { id: done.handoverId },
+      data: { status: "COMPLETED", completedAt: new Date() },
+    });
+    await assert.rejects(
+      requestRecount({ handoverId: done.handoverId, reasonCodeId: handoverReasonId }),
+      refusalIs(409, NOT_RECOUNTABLE),
+    );
+    const stillDone = await db.handoverSession.findUniqueOrThrow({
+      where: { id: done.handoverId },
+      select: { status: true, rejectedAt: true, rejectionReasonCodeId: true },
+    });
+    assert.equal(stillDone.status, "COMPLETED");
+    assert.equal(stillDone.rejectedAt, null);
+    assert.equal(stillDone.rejectionReasonCodeId, null);
+  });
+
+  test("4.17 tenancy and branch scope are enforced", async () => {
+    const h = await submittedHandover();
+
+    await assert.rejects(
+      requestRecount({
+        handoverId: h.handoverId,
+        reasonCodeId: handoverReasonId,
+        cafeId: other.cafeId,
+        viewerBranchId: null,
+      }),
+      refusalIs(404, HANDOVER_NOT_FOUND),
+    );
+    await assert.rejects(
+      requestRecount({
+        handoverId: h.handoverId,
+        reasonCodeId: handoverReasonId,
+        viewerBranchId: fx.otherBranchId,
+      }),
+      refusalIs(403, FOREIGN_BRANCH),
+    );
+    await assertStillSubmitted(h.handoverId);
+  });
+});
+
+/** The handover has not moved out of the outgoing hand's submission. */
+async function assertStillSubmitted(handoverId: string) {
+  const handover = await db.handoverSession.findUniqueOrThrow({
+    where: { id: handoverId },
+    select: { status: true, rejectedAt: true, rejectionReasonCodeId: true, rejectionNote: true },
+  });
+  assert.equal(handover.status, "OUTGOING_SUBMITTED");
+  assert.equal(handover.rejectedAt, null);
+  assert.equal(handover.rejectionReasonCodeId, null);
+  assert.equal(handover.rejectionNote, null);
+}
