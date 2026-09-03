@@ -797,3 +797,211 @@ export async function deriveClosingPosition(
     openVarianceCaseIds: cases.map((c) => c.id),
   };
 }
+
+// ───────────────────────── SH-18 · the outgoing submit ───────────────────
+//
+// `DRAFT → OUTGOING_SUBMITTED`, and the three questions that gate it.
+//
+// THE RULE THAT IS EASY TO GET WRONG. Every non-zero variance requires a
+// reason, regardless of the tolerance verdict. Tolerance is the answer to "is
+// this worth investigating" — it decides whether a case opens, and a café
+// sets it precisely so small drifts do not generate paperwork. A handover
+// asks the earlier and different question: "what do you say happened to the
+// shelf you are handing over". "It was within tolerance" is not an answer to
+// that, it is a statement that nobody needs to hear the answer. Wiring the
+// reason requirement to tolerance would mean a custodian could hand over a
+// shelf that had quietly drifted every single day, each drift individually
+// unremarkable, with nothing on the record about any of them.
+//
+// For the same reason the predicate never asks whether an existing case is a
+// blocking one, and never reads the café's variance blocking policy. Those
+// govern whether an OPEN CASE stops the shop; they are about findings that
+// already exist. A submit that
+// consulted them would refuse a custodian for somebody else's unresolved
+// investigation — including one raised on a different count entirely — and
+// leave them with no action that could clear it. Pre-existing cases travel in
+// `position.openVarianceCaseIds` as information, and never as a refusal.
+//
+// The refusal is the whole list, never the first one found. A café told to
+// fix one thing, then another, then another, learns to distrust the answer —
+// which is the reasoning `HandoverBlockedError` already applies to the close.
+
+export const HANDOVER_SUBMITTED_AUDIT_ACTION = "HANDOVER_SUBMITTED";
+
+export type HandoverSubmitRefusalCode =
+  | "COUNT_NOT_CONFIRMED"
+  | "REQUIRED_ITEMS_MISSING"
+  | "VARIANCE_REASON_MISSING";
+
+export type HandoverSubmitRefusal = {
+  code: HandoverSubmitRefusalCode;
+  count: number;
+  message: string;
+  /** The rows the code is about — item ids, or line ids. Empty when neither. */
+  ids: string[];
+};
+
+/**
+ * A 409 carrying EVERY applicable refusal, and the position that produced
+ * them.
+ *
+ * A sibling of `HandoverBlockedError` and for the same stated reason:
+ * `ApiError` holds nothing but a status and a message, and widening it so one
+ * feature can attach a payload would change the error contract everywhere.
+ * The route unwraps this subclass itself.
+ */
+export class HandoverSubmitRefusedError extends ApiError {
+  readonly refusals: HandoverSubmitRefusal[];
+  readonly position: ClosingPosition;
+
+  constructor(refusals: HandoverSubmitRefusal[], position: ClosingPosition) {
+    super(409, "مش ينفع تسلّم العهدة: في حاجات لسه ناقصة");
+    this.name = "HandoverSubmitRefusedError";
+    this.refusals = refusals;
+    this.position = position;
+  }
+}
+
+export type SubmitHandoverResult = {
+  status: "OUTGOING_SUBMITTED";
+  position: ClosingPosition;
+  /** True when somebody had already submitted and this call wrote nothing. */
+  alreadySubmitted: boolean;
+};
+
+/**
+ * State the closing position, or refuse with every reason at once.
+ *
+ * The predicate is evaluated inside the same transaction and under the same
+ * row lock as the transition, so a refusal cannot be computed against one
+ * state and applied to another. A refusal rolls the transaction back, which
+ * is what makes "a refused submit writes nothing" a property of the database
+ * rather than of the ordering of the code.
+ */
+export async function submitHandover(args: {
+  handoverId: string;
+  outgoingUserId: string;
+  cafeId: string;
+  viewerBranchId: string | null;
+}): Promise<SubmitHandoverResult> {
+  return db.$transaction(async (tx) => {
+    if (!(await lockHandover(tx, args.handoverId))) {
+      throw new ApiError(404, HANDOVER_NOT_FOUND);
+    }
+
+    const handover = await tx.handoverSession.findUniqueOrThrow({
+      where: { id: args.handoverId },
+      select: { id: true, cafeId: true, branchId: true, status: true },
+    });
+    if (handover.cafeId !== args.cafeId) {
+      throw new ApiError(404, HANDOVER_NOT_FOUND);
+    }
+    if (args.viewerBranchId !== null && handover.branchId !== args.viewerBranchId) {
+      throw new ApiError(403, FOREIGN_BRANCH);
+    }
+
+    // Already stated. Saying so is the truthful answer to somebody asking for
+    // a state that exists; what must never happen is a second transition.
+    if (handover.status === "OUTGOING_SUBMITTED") {
+      return {
+        status: "OUTGOING_SUBMITTED" as const,
+        position: await deriveClosingPosition(tx, handover.id),
+        alreadySubmitted: true,
+      };
+    }
+    if (handover.status !== "DRAFT") {
+      throw new ApiError(409, "التسليم مش في حالة تسمح بالتسليم");
+    }
+
+    const position = await deriveClosingPosition(tx, handover.id);
+
+    // Every predicate is evaluated. None of them returns early, because the
+    // list is the feature.
+    const refusals: HandoverSubmitRefusal[] = [];
+
+    if (position.stock.countSessionId === null || position.stock.countStatus !== "CONFIRMED") {
+      refusals.push({
+        code: "COUNT_NOT_CONFIRMED",
+        count: 1,
+        message: "لازم تأكد جرد التسليم الأول",
+        ids: [],
+      });
+    }
+
+    if (position.required.missingItemIds.length > 0) {
+      // Named from the immutable snapshot, so a custodian reads the names the
+      // handover was planned with rather than whatever the shelf calls them
+      // today.
+      const missing = await tx.handoverRequiredItem.findMany({
+        where: {
+          handoverId: handover.id,
+          inventoryItemId: { in: position.required.missingItemIds },
+        },
+        select: { itemNameSnapshot: true },
+        orderBy: { itemNameSnapshot: "asc" },
+      });
+      refusals.push({
+        code: "REQUIRED_ITEMS_MISSING",
+        count: position.required.missingItemIds.length,
+        message: `في أصناف مطلوبة لسه ماتعدتش (${missing.length}): ${missing
+          .map((item) => item.itemNameSnapshot)
+          .join("، ")}`,
+        ids: position.required.missingItemIds,
+      });
+    }
+
+    if (position.stock.linesMissingReason.length > 0) {
+      refusals.push({
+        code: "VARIANCE_REASON_MISSING",
+        count: position.stock.linesMissingReason.length,
+        message: `في فروقات من غير سبب (${position.stock.linesMissingReason.length}) — كل فرق لازم يتقال سببه`,
+        ids: position.stock.linesMissingReason,
+      });
+    }
+
+    if (refusals.length > 0) {
+      refusals.sort((a, b) => a.code.localeCompare(b.code));
+      throw new HandoverSubmitRefusedError(refusals, position);
+    }
+
+    // The guard and the write are one statement, so two callers racing cannot
+    // both see DRAFT and both transition.
+    const moved = await tx.handoverSession.updateMany({
+      where: { id: handover.id, status: "DRAFT" },
+      data: { status: "OUTGOING_SUBMITTED", submittedAt: new Date() },
+    });
+    if (moved.count === 0) {
+      // Somebody else moved it between the lock being released upstream and
+      // this write. Their transition stands; this call wrote nothing.
+      return {
+        status: "OUTGOING_SUBMITTED" as const,
+        position,
+        alreadySubmitted: true,
+      };
+    }
+
+    await auditInTransaction(tx, {
+      cafeId: handover.cafeId,
+      userId: args.outgoingUserId,
+      action: HANDOVER_SUBMITTED_AUDIT_ACTION,
+      entity: "HandoverSession",
+      entityId: handover.id,
+      details: {
+        branchId: handover.branchId,
+        countSessionId: position.stock.countSessionId,
+        requiredTotal: position.required.total,
+        requiredSatisfied: position.required.satisfied,
+        nonZeroVarianceLines: position.stock.nonZeroVarianceLines,
+        // Counts and ids. A submit record is not a place to publish figures
+        // the incoming reviewer has not been shown yet.
+        openVarianceCaseIds: position.openVarianceCaseIds,
+      },
+    });
+
+    return {
+      status: "OUTGOING_SUBMITTED" as const,
+      position,
+      alreadySubmitted: false,
+    };
+  });
+}

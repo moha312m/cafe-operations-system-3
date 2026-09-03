@@ -30,6 +30,7 @@
 
 import { after, before, beforeEach, describe, test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { db, tag, teardownTaggedCafe } from "./helpers/db";
 import { countCafe, countItem, type CountCafe } from "./helpers/count";
 
@@ -76,6 +77,10 @@ async function configureBranch() {
       handoverCountType: "CRITICAL",
       periodicFullCountSchedule: "MANUAL_ONLY",
       periodicFullCountWeekday: null,
+      // Stated rather than inherited: the submit predicate must be provably
+      // independent of it, and a case that turns it on must start from off.
+      varianceBlocksHandover: false,
+      varianceHardBlockAmount: null,
     },
   });
   await db.branch.update({
@@ -820,5 +825,396 @@ describe("closing position", () => {
       !p.openVarianceCaseIds.includes(ownCase.id),
       "a case raised from this count's own line is not a pre-existing one",
     );
+  });
+});
+
+// ─────────────────────────────── T3 · submit ─────────────────────────────
+//
+// The rule this block exists to pin: EVERY non-zero variance needs a reason,
+// whatever tolerance says and whatever the blocking policy says. Tolerance
+// answers "is this worth investigating"; a handover asks "what do you say
+// happened", and "it was within tolerance" is not an answer to that.
+
+type Refused = InstanceType<HandoverLib["HandoverSubmitRefusedError"]>;
+
+async function submit(
+  handoverId: string,
+  overrides: Partial<{ outgoingUserId: string; cafeId: string; viewerBranchId: string | null }> = {},
+) {
+  const { submitHandover } = await handoverLib();
+  return submitHandover({
+    handoverId,
+    outgoingUserId: overrides.outgoingUserId ?? fx.cashier.id,
+    cafeId: overrides.cafeId ?? fx.cafeId,
+    viewerBranchId:
+      overrides.viewerBranchId === undefined ? fx.branchId : overrides.viewerBranchId,
+  });
+}
+
+/**
+ * The refusal a submit produced, or a failure saying it produced none.
+ *
+ * The shape is checked rather than assumed: any thrown value would otherwise
+ * satisfy a test whose point is that the REFUSAL carried its evidence.
+ */
+async function refusalFrom(handoverId: string): Promise<Refused> {
+  try {
+    await submit(handoverId);
+  } catch (error) {
+    const refused = error as Refused;
+    assert.ok(
+      Array.isArray(refused?.refusals) && refused?.position !== undefined,
+      `expected a HandoverSubmitRefusedError carrying its evidence, got: ${String(error)}`,
+    );
+    return refused;
+  }
+  throw new Error("expected the submit to be refused, but it succeeded");
+}
+
+const codesOf = (r: Refused) => r.refusals.map((x) => x.code).sort();
+
+type FillSpec = Parameters<typeof fillLine>[2] & { itemId: string };
+
+/** A bound count in a stated status, with the given lines written. */
+async function boundCount(
+  h: Handover,
+  specs: FillSpec[],
+  status: "DRAFT" | "SUBMITTED" | "CONFIRMED" = "CONFIRMED",
+) {
+  const started = await startCount(h.handoverId);
+  for (const spec of specs) {
+    await fillLine(started.countSessionId, spec.itemId, spec);
+  }
+  if (status !== "DRAFT") {
+    await db.stockCountSession.update({
+      where: { id: started.countSessionId },
+      data: {
+        status,
+        submittedAt: new Date(),
+        ...(status === "CONFIRMED"
+          ? { confirmedAt: new Date(), confirmedById: fx.cashier.id }
+          : {}),
+      },
+    });
+  }
+  return started.countSessionId;
+}
+
+describe("submit", () => {
+  test("returns every applicable refusal in one result", async () => {
+    const h = await freshHandover();
+    await boundCount(
+      h,
+      [
+        // A difference nobody explained…
+        { itemId: items.alpha.id, counted: 8, expected: 10 },
+        { itemId: items.bravo.id, counted: 4, expected: 4 },
+        // …and charlie never counted at all.
+      ],
+      "SUBMITTED", // …on a count nobody confirmed.
+    );
+
+    const refused = await refusalFrom(h.handoverId);
+    assert.equal(refused.status, 409);
+    assert.deepEqual(codesOf(refused), [
+      "COUNT_NOT_CONFIRMED",
+      "REQUIRED_ITEMS_MISSING",
+      "VARIANCE_REASON_MISSING",
+    ]);
+    assert.equal(
+      new Set(codesOf(refused)).size,
+      refused.refusals.length,
+      "a code may appear at most once",
+    );
+    assert.equal(refused.position.handoverId, h.handoverId);
+    assert.equal(refused.position.required.total, 3);
+  });
+
+  test("refuses COUNT_NOT_CONFIRMED", async () => {
+    const h = await freshHandover();
+    await boundCount(
+      h,
+      ITEM_KEYS.map((k) => ({ itemId: items[k].id, counted: 6, expected: 6 })),
+      "SUBMITTED",
+    );
+
+    const refused = await refusalFrom(h.handoverId);
+    assert.deepEqual(codesOf(refused), ["COUNT_NOT_CONFIRMED"]);
+
+    const handover = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: { status: true, submittedAt: true },
+    });
+    assert.equal(handover.status, "DRAFT");
+    assert.equal(handover.submittedAt, null);
+  });
+
+  test("refuses REQUIRED_ITEMS_MISSING and names the items", async () => {
+    const h = await freshHandover();
+    await boundCount(h, [
+      { itemId: items.alpha.id, counted: 6, expected: 6 },
+      // bravo and charlie left uncounted.
+    ]);
+
+    const refused = await refusalFrom(h.handoverId);
+    assert.deepEqual(codesOf(refused), ["REQUIRED_ITEMS_MISSING"]);
+    const missing = refused.refusals.find((r) => r.code === "REQUIRED_ITEMS_MISSING")!;
+    assert.deepEqual([...missing.ids].sort(), [items.bravo.id, items.charlie.id].sort());
+    assert.equal(missing.count, 2);
+    assert.ok(
+      missing.message.includes(items.bravo.name) && missing.message.includes(items.charlie.name),
+      `the refusal must name the items, got: ${missing.message}`,
+    );
+  });
+
+  test("an inside-tolerance non-zero variance still requires a reason", async () => {
+    const h = await freshHandover();
+    // A bound so wide the difference below is comfortably inside it.
+    const rule = await db.toleranceRule.create({
+      data: { cafeId: fx.cafeId, scope: "CAFE", quantityTolerance: 50, percentTolerance: 90 },
+    });
+    try {
+      await boundCount(h, [
+        { itemId: items.alpha.id, counted: 8, expected: 10 },
+        { itemId: items.bravo.id, counted: 4, expected: 4 },
+        { itemId: items.charlie.id, counted: 7, expected: 7 },
+      ]);
+
+      const refused = await refusalFrom(h.handoverId);
+      assert.deepEqual(
+        codesOf(refused),
+        ["VARIANCE_REASON_MISSING"],
+        "tolerance answers a different question and may not excuse a missing reason",
+      );
+      const missing = refused.refusals.find((r) => r.code === "VARIANCE_REASON_MISSING")!;
+      assert.equal(missing.ids.length, 1);
+      assert.deepEqual(missing.ids, refused.position.stock.linesMissingReason);
+    } finally {
+      await db.toleranceRule.delete({ where: { id: rule.id } });
+    }
+  });
+
+  test("zero variance requires no reason", async () => {
+    const h = await freshHandover();
+    await boundCount(
+      h,
+      ITEM_KEYS.map((k) => ({ itemId: items[k].id, counted: 6, expected: 6 })),
+    );
+
+    const result = await submit(h.handoverId);
+    assert.equal(result.status, "OUTGOING_SUBMITTED");
+    assert.equal(result.alreadySubmitted, false);
+    assert.equal(result.position.stock.nonZeroVarianceLines, 0);
+    assert.deepEqual(result.position.stock.linesMissingReason, []);
+  });
+
+  test("a very large priced variance with a valid reason submits", async () => {
+    const h = await freshHandover();
+    // The café's policy says a priced difference of 1 or more stops a
+    // handover. The submit predicate must not be reading it.
+    await db.cafeSettings.update({
+      where: { cafeId: fx.cafeId },
+      data: { varianceBlocksHandover: true, varianceHardBlockAmount: 1 },
+    });
+    const reason = await stockReason("large-shortage");
+    await boundCount(h, [
+      {
+        itemId: items.alpha.id,
+        counted: 0,
+        expected: 500,
+        reasonCodeId: reason.id,
+        costImpact: 99999,
+        costImpactAvailable: true,
+      },
+      { itemId: items.bravo.id, counted: 4, expected: 4 },
+      { itemId: items.charlie.id, counted: 7, expected: 7 },
+    ]);
+
+    const result = await submit(h.handoverId);
+    assert.equal(result.status, "OUTGOING_SUBMITTED");
+    assert.equal(result.position.stock.nonZeroVarianceLines, 1);
+    const entry = result.position.prospectiveVariances[0];
+    assert.equal(entry.quantityVariance, -500);
+    assert.equal(entry.amountVariance, 99999);
+    assert.equal(entry.reasonPresent, true);
+  });
+
+  test("existing OPEN and UNDER_INVESTIGATION cases do not block", async () => {
+    const h = await freshHandover();
+    await boundCount(
+      h,
+      ITEM_KEYS.map((k) => ({ itemId: items[k].id, counted: 6, expected: 6 })),
+    );
+
+    const unrelated = await db.stockCountSession.create({
+      data: {
+        cafeId: fx.cafeId,
+        branchId: fx.branchId,
+        type: "CRITICAL",
+        status: "CONFIRMED",
+        scopeDerivation: "CRITICAL_ONLY",
+        initiatedById: fx.cashier.id,
+        confirmedAt: new Date(),
+        lines: {
+          create: [{ inventoryItemId: ordinaryItemId, unit: "KG", disposition: "PENDING" }],
+        },
+      },
+      select: { lines: { select: { id: true } } },
+    });
+    const openCase = await db.varianceCase.create({
+      data: {
+        cafeId: fx.cafeId,
+        branchId: fx.branchId,
+        type: "STOCK",
+        status: "OPEN",
+        blocking: true,
+        financialImpact: 5000,
+        financialImpactAvailable: true,
+        amountVariance: -5000,
+        stockCountLineId: unrelated.lines[0].id,
+        openedById: fx.manager.id,
+      },
+    });
+    const investigating = await db.varianceCase.create({
+      data: {
+        cafeId: fx.cafeId,
+        branchId: fx.branchId,
+        type: "CASH",
+        status: "UNDER_INVESTIGATION",
+        blocking: true,
+        shiftId: h.shiftId,
+        openedById: fx.manager.id,
+      },
+    });
+
+    const result = await submit(h.handoverId);
+    assert.equal(result.status, "OUTGOING_SUBMITTED");
+    assert.ok(result.position.openVarianceCaseIds.includes(openCase.id));
+    assert.ok(result.position.openVarianceCaseIds.includes(investigating.id));
+  });
+
+  test("moves DRAFT to OUTGOING_SUBMITTED and sets submittedAt", async () => {
+    const h = await freshHandover();
+    await boundCount(
+      h,
+      ITEM_KEYS.map((k) => ({ itemId: items[k].id, counted: 6, expected: 6 })),
+    );
+
+    await submit(h.handoverId);
+    const handover = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: {
+        status: true,
+        submittedAt: true,
+        reviewedAt: true,
+        acceptedAt: true,
+        completedAt: true,
+        rejectedAt: true,
+        resolvedTarget: true,
+        acceptedStockCountSessionId: true,
+      },
+    });
+    assert.equal(handover.status, "OUTGOING_SUBMITTED");
+    assert.ok(handover.submittedAt instanceof Date);
+    assert.equal(handover.reviewedAt, null);
+    assert.equal(handover.acceptedAt, null);
+    assert.equal(handover.completedAt, null);
+    assert.equal(handover.rejectedAt, null);
+    assert.equal(handover.resolvedTarget, null);
+    assert.equal(handover.acceptedStockCountSessionId, null);
+
+    // The later-stage stock facts are still nobody's.
+    assert.equal(await db.handoverStockBoundary.count({ where: { handoverId: h.handoverId } }), 0);
+    assert.equal(
+      await db.handoverStockAcknowledgement.count({ where: { handoverId: h.handoverId } }),
+      0,
+    );
+    const shift = await db.shift.findUniqueOrThrow({ where: { id: h.shiftId } });
+    assert.equal(shift.status, "AWAITING_HANDOVER");
+    assert.equal(shift.stockClosedAt, null);
+    const freeze = await db.inventoryFreeze.findUniqueOrThrow({ where: { id: h.freezeId } });
+    assert.equal(freeze.releasedAt, null);
+  });
+
+  test("a refused submit writes nothing", async () => {
+    const h = await freshHandover();
+    const sessionId = await boundCount(
+      h,
+      [
+        { itemId: items.alpha.id, counted: 8, expected: 10 },
+        { itemId: items.bravo.id, counted: 4, expected: 4 },
+        { itemId: items.charlie.id, counted: 7, expected: 7 },
+      ],
+    );
+    const handoverBefore = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+    });
+    const sessionBefore = await db.stockCountSession.findUniqueOrThrow({
+      where: { id: sessionId },
+    });
+    const requiredBefore = await db.handoverRequiredItem.findMany({
+      where: { handoverId: h.handoverId },
+      orderBy: { id: "asc" },
+    });
+
+    await refusalFrom(h.handoverId);
+
+    assert.deepEqual(
+      await db.handoverSession.findUniqueOrThrow({ where: { id: h.handoverId } }),
+      handoverBefore,
+    );
+    assert.deepEqual(
+      await db.stockCountSession.findUniqueOrThrow({ where: { id: sessionId } }),
+      sessionBefore,
+    );
+    assert.deepEqual(
+      await db.handoverRequiredItem.findMany({
+        where: { handoverId: h.handoverId },
+        orderBy: { id: "asc" },
+      }),
+      requiredBefore,
+    );
+  });
+
+  test("a repeated submit is idempotent", async () => {
+    const h = await freshHandover();
+    await boundCount(
+      h,
+      ITEM_KEYS.map((k) => ({ itemId: items[k].id, counted: 6, expected: 6 })),
+    );
+
+    const first = await submit(h.handoverId);
+    const stamped = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: { submittedAt: true },
+    });
+
+    const second = await submit(h.handoverId);
+    assert.equal(first.alreadySubmitted, false);
+    assert.equal(second.alreadySubmitted, true);
+    assert.equal(second.status, "OUTGOING_SUBMITTED");
+    assert.equal(second.position.handoverId, h.handoverId);
+
+    const after = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: { submittedAt: true },
+    });
+    assert.deepEqual(after.submittedAt, stamped.submittedAt);
+  });
+
+  test("submitHandover depends on no blocking policy and no tolerance", () => {
+    const source = readFileSync("src/lib/handover.ts", "utf8");
+    for (const pattern of [
+      /\bcaseIsBlocking\b/,
+      /\bwithinTolerance\b/,
+      /\bresolveStockTolerance\b/,
+      /from\s+["']@\/lib\/tolerance["']/,
+      /from\s+["']@\/lib\/variance-case["']/,
+    ]) {
+      assert.ok(
+        !pattern.test(source),
+        `src/lib/handover.ts must not reach for ${pattern}: a handover asks what happened, not whether it was tolerable`,
+      );
+    }
   });
 });
