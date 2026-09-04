@@ -1858,6 +1858,8 @@ type AcceptedEvidence = {
   outgoingStockCustodyId: string;
   outgoingCashCustodyId: string | null;
   incomingShiftId: string;
+  /** The arriving shift's own cashier. SH-21's recipient when no session supplies one. */
+  incomingShiftCashierId: string;
   countedLineIds: string[];
 };
 
@@ -1951,7 +1953,7 @@ async function resolveAcceptableEvidence(
     throw new ApiError(409, NO_OUTGOING_STOCK_CUSTODY);
   }
 
-  const incomingShiftId = await resolveIncomingShift(tx, handover, args.incomingShiftId);
+  const incomingShift = await resolveIncomingShift(tx, handover, args.incomingShiftId);
 
   // Acceptance releases the freeze at step 15, so it must be releasing its
   // own. A branch frozen by a different handover is not this one's to reopen.
@@ -1965,7 +1967,8 @@ async function resolveAcceptableEvidence(
     acceptedSessionId,
     outgoingStockCustodyId: outgoingStock.id,
     outgoingCashCustodyId: handover.outgoingCashCustodyId,
-    incomingShiftId,
+    incomingShiftId: incomingShift.id,
+    incomingShiftCashierId: incomingShift.cashierId,
     countedLineIds: countedLines.map((line) => line.id),
   };
 }
@@ -1983,7 +1986,7 @@ async function resolveIncomingShift(
   tx: Prisma.TransactionClient,
   handover: LockedHandover,
   requested: string | null | undefined
-): Promise<string> {
+): Promise<{ id: string; cashierId: string }> {
   const candidates = await tx.shift.findMany({
     where: {
       branchId: handover.branchId,
@@ -1991,11 +1994,14 @@ async function resolveIncomingShift(
       custodyGateReason: "AWAITING_CUSTODY_TRANSFER",
       ...(requested ? { id: requested } : {}),
     },
-    select: { id: true },
+    // `cashierId` comes back because SH-21 has no arriving custodian in its
+    // session — the manager is the caller — so the shift's own cashier is the
+    // only authoritative answer to who is taking the room.
+    select: { id: true, cashierId: true },
     orderBy: { shiftNumber: "asc" },
   });
   if (candidates.length !== 1) throw new ApiError(409, NO_INCOMING_SHIFT);
-  return candidates[0].id;
+  return candidates[0];
 }
 
 /**
@@ -2238,6 +2244,146 @@ function narrowAcceptResult(outcome: AcceptanceOutcome): AcceptResult {
   void _e;
   void _m;
   return rest;
+}
+
+const EXCEPTION_NOTE_REQUIRED = "لازم تكتب سبب الاستثناء بالتفصيل";
+const EXCEPTION_RECIPIENT_MISMATCH =
+  "المستلم المحدد مش صاحب الوردية اللي مستنية العهدة";
+const NOT_AN_EXCEPTION =
+  "التسليم ده اتقفل استلام عادي — مفيش استثناء مدير متسجل عليه";
+
+/**
+ * Finish a handover the evidence does not justify, and say exactly what was
+ * skipped.
+ *
+ * SH-20's transaction, unchanged, plus a manager's authority. It is the
+ * `SHIFT_TO_SHIFT` form only: `resolveAcceptableEvidence` refuses an immutable
+ * `BRANCH_CUSTODY` target several lines before anything is written, and SH-22
+ * owns branch acceptance with its own explicit missing-item evidence.
+ *
+ * ── WHAT AN OVERRIDE IS NOT ──
+ *
+ * It is not a count. Nothing here writes a `StockCountLine`, carries a
+ * previous session's figure forward, or estimates. An item nobody counted
+ * gets a `SYSTEM_CARRIED` / `verified: false` boundary — the truthful
+ * statement that the shelf was not observed — and an unverified boundary
+ * opens no variance case and names nobody. A manager may waive the
+ * requirement to count; nobody may waive having counted.
+ *
+ * ── WHO IS WHO ──
+ *
+ * Two different people, and conflating them is the failure this signature
+ * exists to prevent. The MANAGER authorises: `exceptionById`, the
+ * `OpeningException.authorizedById`, the reason, the note, and the audit
+ * actor. The arriving CUSTODIAN still performs SH-20's operational
+ * acceptance: the rebase, the count lock, the variance cases, the custody
+ * transfer, the outgoing close and the freeze release. A manager who signed
+ * the exception did not thereby take the shelf, and a record saying they did
+ * would misname whoever answers for it tomorrow.
+ *
+ * `incomingUserId` is an assertion, never an instruction: it must equal the
+ * arriving shift's own cashier, and when omitted it is read from that shift.
+ * The manager can never be substituted for it.
+ */
+export async function overrideAcceptHandover(args: {
+  handoverId: string;
+  /** The authenticated manager. From `session.id`; never from a request body. */
+  managerId: string;
+  /** Optional consistency assertion. Must equal the arriving shift's cashier. */
+  incomingUserId?: string | null;
+  reasonCodeId: string;
+  note: string;
+  kind: Extract<OpeningExceptionKind, "MANAGER_ADJUSTMENT" | "NO_INCOMING">;
+  idempotencyKey: string;
+  cafeId: string;
+  viewerBranchId: string | null;
+  /** Test-only failure seam. See {@link AcceptanceCheckpoint}. */
+  __afterStep?: AcceptanceCheckpoint;
+}): Promise<OverrideAcceptResult> {
+  // Before the transaction, because a caller who sent whitespace should not
+  // first take a row lock to be told so. `resolveVarianceReason` refuses a
+  // blank cash-variance note the same way.
+  const note = args.note?.trim() ?? "";
+  if (note.length === 0) throw new ApiError(400, EXCEPTION_NOTE_REQUIRED);
+
+  return db.$transaction(async (tx) => {
+    // 1. The row lock, first, exactly as the ordinary accept takes it.
+    if (!(await lockHandover(tx, args.handoverId))) {
+      throw new ApiError(404, HANDOVER_NOT_FOUND);
+    }
+
+    const handover = await tx.handoverSession.findUniqueOrThrow({
+      where: { id: args.handoverId },
+      select: LOCKED_HANDOVER_SELECT,
+    });
+
+    // Tenancy before everything, including before the replay: reading back a
+    // completed acceptance is still reading somebody's record.
+    if (handover.cafeId !== args.cafeId) throw new ApiError(404, HANDOVER_NOT_FOUND);
+    if (args.viewerBranchId !== null && handover.branchId !== args.viewerBranchId) {
+      throw new ApiError(403, FOREIGN_BRANCH);
+    }
+
+    // 2. Replay. A retry under the SAME key hears the same answer; a different
+    //    key is a claim to a second acceptance of one handover.
+    if (handover.status === "COMPLETED") {
+      if (handover.idempotencyKey !== args.idempotencyKey) {
+        throw new ApiError(409, ALREADY_ACCEPTED);
+      }
+      const replay = await buildReplayResult(tx, handover);
+      // The key belongs to an ordinary accept that committed with no
+      // exception. Answering with a fabricated `openingExceptionId`, or
+      // writing one now onto a completed handover, would both be inventions:
+      // no manager authorised anything on this record.
+      if (replay.openingExceptionId === null) {
+        throw new ApiError(409, NOT_AN_EXCEPTION);
+      }
+      return { ...replay, openingExceptionId: replay.openingExceptionId };
+    }
+
+    // The reason is validated against the HANDOVER domain of the handover's
+    // OWN café, read from the locked row rather than from the caller — so a
+    // reason code belonging to somebody else cannot authorise this exception.
+    await assertHandoverReason(tx, args.reasonCodeId, handover.cafeId, "سبب الاستثناء");
+
+    // 3–4. SH-20's gate, unchanged and unweakened. The status, the target, the
+    // bound and CONFIRMED count, the acknowledgement of every counted line of
+    // the CURRENT round, the absence of a dispute, the outgoing custody, the
+    // arriving shift and the freeze are all still required. A manager's
+    // authority reaches exactly one of SH-20's refusals — the uncounted
+    // required item at step 5 — and none of the others.
+    const evidence = await resolveAcceptableEvidence(tx, handover, {
+      cafeId: args.cafeId,
+      viewerBranchId: args.viewerBranchId,
+    });
+
+    // The recipient is the arriving shift's cashier. When the caller named
+    // one it is checked rather than believed, and a mismatch is refused
+    // instead of silently preferring either answer.
+    const incomingUserId = evidence.incomingShiftCashierId;
+    if (args.incomingUserId && args.incomingUserId !== incomingUserId) {
+      throw new ApiError(409, EXCEPTION_RECIPIENT_MISMATCH);
+    }
+
+    const outcome = await runAcceptance(tx, evidence, {
+      handoverId: args.handoverId,
+      incomingUserId,
+      idempotencyKey: args.idempotencyKey,
+      exception: {
+        managerId: args.managerId,
+        reasonCodeId: args.reasonCodeId,
+        note,
+        kind: args.kind,
+      },
+      __afterStep: args.__afterStep,
+    });
+
+    // Non-null by construction: `runAcceptance` creates the exception on every
+    // path that carries one, and throws on every path that does not commit.
+    /* c8 ignore next */
+    if (outcome.openingExceptionId === null) throw new ApiError(409, NOT_AN_EXCEPTION);
+    return { ...outcome, openingExceptionId: outcome.openingExceptionId };
+  });
 }
 
 /**
