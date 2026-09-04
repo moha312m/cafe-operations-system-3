@@ -37,6 +37,7 @@
 
 import { test, after, before, describe } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { db, teardownTaggedCafe } from "./helpers/db";
 import { requireServer, as } from "./helpers/http";
 import { countCafe, countItem, type CountCafe } from "./helpers/count";
@@ -615,5 +616,30 @@ describe("COUNT-018 confirm strictness outside HANDOVER", () => {
       "and the refusal names the line, not the gap"
     );
     assert.ok(!(r.body.error ?? "").includes(s.unobservedLineIds[0]));
+  });
+});
+
+// ─────────────────── the gate, read off the source (A3) ───────────────────
+
+describe("COUNT-018 the relaxation is spelled the narrow way", () => {
+  test("every accountability gate in the count engine names HANDOVER exactly", () => {
+    // Behavioural tests above prove NONE and BRANCH_OPENING_VERIFICATION are
+    // strict TODAY. This one is about tomorrow: `!== "NONE"` would pass every
+    // test in this file and would silently hand the relaxation to whatever
+    // context SH-22 adds next, before anybody had decided who answers for its
+    // gaps. Read off the source so the spelling itself is the guarantee.
+    const source = readFileSync("src/lib/stock-count.ts", "utf8");
+    const gates = source.match(/accountabilityContext\s*[!=]==\s*"[A-Z_]+"/g) ?? [];
+    assert.ok(gates.length >= 3, `expected the context gates, found ${gates.length}`);
+    for (const gate of gates) {
+      assert.ok(
+        /accountabilityContext\s*===\s*"(HANDOVER|NONE)"/.test(gate),
+        `a context gate must name its context positively, found: ${gate}`,
+      );
+    }
+    assert.ok(
+      !/accountabilityContext\s*!==\s*"NONE"/.test(source),
+      "`!== \"NONE\"` would grant the relaxation to every context added later",
+    );
   });
 });

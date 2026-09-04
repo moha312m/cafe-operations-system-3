@@ -318,6 +318,20 @@ async function countNineOfTwelve(sessionId: string) {
   return lines;
 }
 
+/** Count all twelve — the replacement round, after a recount is requested. */
+async function countTheWholeSet(sessionId: string) {
+  const lines = await db.stockCountLine.findMany({
+    where: { sessionId }, select: { id: true, inventoryItemId: true },
+  });
+  const shortId = items[SHORT].id;
+  for (const line of lines) {
+    const figure = line.inventoryItemId === shortId ? 10 - SHORT_BY : 10;
+    const r = await patchLine(sessionId, line.id, figure);
+    assert.ok(r.status < 300, `capture failed: ${r.text}`);
+  }
+  return lines;
+}
+
 /** Settle whatever tolerance contested, and give every difference a reason. */
 async function settleContested(sessionId: string) {
   const contested = await db.stockCountLine.findMany({
@@ -825,5 +839,166 @@ describe("HANDOVER-013 the manager finishes it, and the record says what was ski
 
     const freeze = await db.inventoryFreeze.findUniqueOrThrow({ where: { id: h.freezeId } });
     assert.ok(freeze.releasedAt !== null, "the freeze is lifted");
+  });
+});
+
+// ══════════════════ the alternative the manager did not take ═════════════
+//
+// An override is not the only way out of a refused acceptance, and it must
+// not become the easy one. The incoming custodian may send the round back
+// instead, and this describes what that costs and what it preserves: the
+// replacement is a whole new count over the whole required set, the
+// signatures on the superseded round do not carry over, and when every shelf
+// is finally reached an ORDINARY acceptance completes it — with no omission
+// committed anywhere, because in the end nothing was omitted.
+
+const requestRecountPost = (handoverId: string) =>
+  as<{ status?: string; supersededSessionId?: string; disputedLineIds?: string[]; error?: string }>(
+    incoming.email, `/api/handovers/${handoverId}/request-recount`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        reasonCodeId: handoverReasonId,
+        note: "تلات أرفف ماتعدّوش — عد تاني كامل",
+      }),
+    },
+  );
+
+describe("HANDOVER-013 the recount is still a real alternative", () => {
+  test("sending it back reaches an ordinary acceptance, and omits nothing", async () => {
+    const h = await walkToTheAcceptance();
+
+    // The refusal that presents the choice.
+    assert.equal((await acceptPost(h.handoverId, `${MARKER}-r1-${h.handoverId}`)).status, 409);
+
+    // ── the incoming custodian sends it back instead of escalating ──
+    const sentBack = await requestRecountPost(h.handoverId);
+    assert.equal(sentBack.status, 200, sentBack.text);
+    assert.equal(sentBack.body.status, "REJECTED");
+    assert.equal(sentBack.body.supersededSessionId, h.sessionId);
+
+    const rejected = await db.handoverSession.findUniqueOrThrow({ where: { id: h.handoverId } });
+    assert.equal(rejected.status, "REJECTED");
+    assert.ok(rejected.rejectedAt !== null);
+    // Nothing was consumed on the way out: no custody moved, no omission was
+    // written, and the shelf is still frozen for the replacement round.
+    assert.equal(rejected.incomingStockCustodyId, null);
+    assert.equal(rejected.acceptedStockCountSessionId, null);
+    assert.equal(
+      await db.handoverRequiredItem.count({ where: { handoverId: h.handoverId, omitted: true } }),
+      0, "sending it back commits no omission",
+    );
+    assert.equal(
+      await db.openingException.count({ where: { handoverId: h.handoverId } }), 0,
+    );
+    const freeze = await db.inventoryFreeze.findUniqueOrThrow({ where: { id: h.freezeId } });
+    assert.equal(freeze.releasedAt, null, "the shelf stays still between the two rounds");
+
+    // ── the replacement round ──
+    const restarted = await startCountHttp(h.handoverId);
+    assert.equal(restarted.status, 200, restarted.text);
+    const replacementId = restarted.body.countSession.id;
+    assert.notEqual(replacementId, h.sessionId, "a replacement, not a reopening");
+
+    const replacementLines = await db.stockCountLine.findMany({
+      where: { sessionId: replacementId },
+      select: { id: true, inventoryItemId: true, disposition: true },
+    });
+    assert.equal(
+      replacementLines.length, 12,
+      "the replacement covers the whole required set, including the three nobody reached",
+    );
+    assert.deepEqual(
+      replacementLines.map((l) => l.inventoryItemId).sort(),
+      [...h.requiredItemIds].sort(),
+    );
+    assert.ok(
+      replacementLines.every((l) => l.disposition === "PENDING"),
+      "and starts blank — no figure carries over from the round that was disputed",
+    );
+
+    // The superseded round is still readable, and still says what it said.
+    const superseded = await db.stockCountLine.findMany({
+      where: { sessionId: h.sessionId }, select: { countedQuantity: true },
+    });
+    assert.equal(superseded.length, 12, "the disputed evidence is kept, not erased");
+    assert.equal(superseded.filter((l) => l.countedQuantity !== null).length, 9);
+
+    // ── stale acknowledgements do not carry ──
+    //
+    // Nine signatures exist against the superseded round. None of them is a
+    // signature on THIS one, and the gate must say so rather than counting
+    // them.
+    assert.equal(
+      await db.handoverStockAcknowledgement.count({ where: { handoverId: h.handoverId } }), 9,
+      "the old signatures are still on file",
+    );
+    await countTheWholeSet(replacementId);
+    assert.ok((await submitCount(replacementId)).status < 300);
+    await settleContested(replacementId);
+    assert.ok((await confirmCount(replacementId, `${MARKER}-re-${replacementId}`)).status < 300);
+    assert.equal((await submitHandoverHttp(h.handoverId)).status, 200);
+
+    const stale = await acceptPost(h.handoverId, `${MARKER}-stale-${h.handoverId}`);
+    assert.equal(stale.status, 409, `expected the unsigned refusal, got ${stale.text}`);
+    assert.match(
+      stale.body.error ?? "", /ماتسجلش استلامها/,
+      "nine signatures on a superseded round do not sign for this one",
+    );
+
+    // ── signed properly, the ordinary acceptance completes it ──
+    const signed = await acknowledgeWhatExists(h.handoverId, replacementId);
+    assert.equal(signed.length, 12, "every shelf was reached this time, so every line is signed");
+
+    const accepted = await acceptPost(h.handoverId, `${MARKER}-ok-${h.handoverId}`);
+    assert.equal(accepted.status, 200, `ordinary accept failed: ${accepted.text}`);
+    assert.equal(accepted.body.status, "COMPLETED");
+    assert.equal(accepted.body.requiredItems?.satisfied, 12);
+    assert.deepEqual(accepted.body.requiredItems?.omitted, []);
+
+    // ── and no omission was ever committed ──
+    const required = await db.handoverRequiredItem.findMany({
+      where: { handoverId: h.handoverId },
+    });
+    assert.equal(required.length, 12);
+    assert.ok(
+      required.every((r) => r.omitted === false && r.omissionNote === null),
+      "the round that could not be finished was replaced, not waived",
+    );
+    assert.ok(
+      required.every((r) => r.satisfiedByLineId !== null),
+      "and every required item cites the line that observed it",
+    );
+    assert.equal(
+      await db.openingException.count({ where: { handoverId: h.handoverId } }), 0,
+      "no manager authority was needed, so none is on the record",
+    );
+    assert.equal(
+      await db.auditLog.count({
+        where: { entityId: h.handoverId, action: "HANDOVER_MANAGER_EXCEPTION" },
+      }),
+      0,
+    );
+
+    // The accepted evidence is the REPLACEMENT, and the superseded session
+    // stays CONFIRMED and unlocked — history, not the record.
+    const handover = await db.handoverSession.findUniqueOrThrow({ where: { id: h.handoverId } });
+    assert.equal(handover.acceptedStockCountSessionId, replacementId);
+    const first = await db.stockCountSession.findUniqueOrThrow({ where: { id: h.sessionId } });
+    assert.equal(first.status, "CONFIRMED");
+    assert.equal(first.lockedByHandoverId, null);
+    const second = await db.stockCountSession.findUniqueOrThrow({ where: { id: replacementId } });
+    assert.equal(second.status, "LOCKED");
+    assert.equal(second.lockedByHandoverId, h.handoverId);
+
+    // The three shelves nobody reached the first time are verified now.
+    const boundaries = await db.handoverStockBoundary.findMany({
+      where: { handoverId: h.handoverId, inventoryItemId: { in: unreachedIds() } },
+    });
+    assert.equal(boundaries.length, 3);
+    assert.ok(
+      boundaries.every((b) => b.source === "PHYSICAL_COUNT" && b.verified),
+      "somebody went and looked, so the boundary says observed",
+    );
   });
 });
