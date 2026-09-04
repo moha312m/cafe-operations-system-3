@@ -271,15 +271,49 @@ export async function linkShiftCustody(
  * Deliberately does NOT touch variance cases. A variance belongs to the
  * custody under which it arose; carrying it forward would make the incoming
  * custodian answerable for a shortage created before they held anything.
+ *
+ * Two things the transfer records, both of which are the substance of an
+ * acceptance rather than bookkeeping around it:
+ *
+ * `acceptedById`/`acceptedAt` land on the PREDECESSOR. Acceptance is an act
+ * performed upon the custody being handed over — somebody looked at what was
+ * there and took it on. The successor has not itself been accepted by anyone,
+ * and stamping it would claim an event that has not happened.
+ *
+ * `responsibleShiftId` lands on a STOCK successor, because
+ * `resolveStockAttribution` reads it and stamps it on every subsequent stock
+ * movement. A successor without one makes each later sale unattributable and
+ * SERVE refuses outright, so where a shift is named at all it is used: the
+ * caller's explicit answer first, then the shift the successor is attached to
+ * — the same rule `openShiftCustody` applies at its own STOCK open. A
+ * successor attached to no shift stays shift-less, which is the state that
+ * already existed and that SERVE already refuses; refusing to create it here
+ * would be a new restriction rather than a repair.
+ *
+ * Cash carries none of that: responsibility for stock movement is a stock
+ * concept, and a drawer has no shelf. Neither does a BRANCH holder — the point
+ * of branch custody is that no shift was answerable, and inventing one to fill
+ * the column would be the exact false attribution it exists to avoid.
  */
 export async function transferCustody(
   tx: Prisma.TransactionClient,
   args: {
     outgoingPeriodId: string;
     scope: CustodyScope;
-    incoming: { participants: Participant[]; shiftId: string | null };
+    incoming: {
+      participants: Participant[];
+      shiftId: string | null;
+      /** STOCK only — the shift answerable for the successor period. */
+      responsibleShiftId?: string | null;
+      /** Defaults to USER. BRANCH is stock-only, and SH-22 is its consumer. */
+      holderType?: CustodyHolderType;
+      openedById?: string | null;
+    };
     closingCashAmount?: number | null;
     actorId: string;
+    /** Written onto the PREDECESSOR: who accepted this custody, and when. */
+    acceptedById?: string | null;
+    acceptedAt?: Date | null;
   }
 ): Promise<{ outgoingPeriodId: string; incomingPeriodId: string }> {
   const outgoing = await tx.custodyPeriod.findUnique({
@@ -294,7 +328,16 @@ export async function transferCustody(
     throw new ApiError(409, "العهدة دي اتسلّمت خلاص");
   }
 
+  const holderType = args.incoming.holderType ?? "USER";
+  // See the note above: a shift-owned stock custody names the shift that
+  // answers for it, and nothing else ever does.
+  const responsibleShiftId =
+    args.scope === "STOCK" && holderType === "USER"
+      ? args.incoming.responsibleShiftId ?? args.incoming.shiftId ?? null
+      : null;
+
   const endedAt = new Date();
+  const acceptedAt = args.acceptedById ? args.acceptedAt ?? endedAt : args.acceptedAt ?? null;
 
   // Close first, so the partial unique index sees the slot free when the
   // successor is created a moment later in this same transaction.
@@ -303,6 +346,8 @@ export async function transferCustody(
     data: {
       status: "TRANSFERRED",
       endedAt,
+      acceptedById: args.acceptedById ?? null,
+      acceptedAt,
       closingCashAmount:
         args.scope === "CASH" ? args.closingCashAmount ?? null : null,
     },
@@ -315,6 +360,9 @@ export async function transferCustody(
     participants: args.incoming.participants,
     shiftId: args.incoming.shiftId,
     previousPeriodId: outgoing.id,
+    holderType,
+    openedById: args.incoming.openedById ?? null,
+    responsibleShiftId,
     // The incoming custodian starts holding what the outgoing one closed at.
     openingCashAmount: args.scope === "CASH" ? args.closingCashAmount ?? null : null,
   });
@@ -337,6 +385,13 @@ export async function transferCustody(
         incomingPeriodId,
         incomingParticipants: args.incoming.participants.map((p) => p.userId),
         closingCashAmount: args.closingCashAmount ?? null,
+        // Who accepted the custody that closed, and what answers for the one
+        // that opened — the two facts an accountability reader needs and
+        // could not previously reconstruct from this row.
+        acceptedById: args.acceptedById ?? null,
+        acceptedAt: acceptedAt?.toISOString() ?? null,
+        responsibleShiftId,
+        holderType,
       },
     },
   });
