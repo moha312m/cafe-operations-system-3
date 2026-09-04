@@ -240,6 +240,13 @@ async function readyToOverride(): Promise<Ready> {
     where: { sessionId }, select: { id: true, inventoryItemId: true },
   });
   for (const line of lines) {
+    // charlie is never PATCHed: nobody reached that shelf. The line stays in
+    // scope and PENDING, which is what makes the required item omitted and
+    // gives the manager something to override. It used to be DELETED here,
+    // after the round was signed for, because the count engine refused to
+    // submit a session carrying a null figure — a corruption standing in for
+    // a workflow, and the thing that hid SH-21 being unreachable.
+    if (line.inventoryItemId === items.charlie.id) continue;
     const figure = line.inventoryItemId === items.alpha.id ? 9 : 10;
     const r = await patchLine(sessionId, line.id, figure);
     assert.ok(r.status < 300, `capture failed: ${r.text}`);
@@ -266,19 +273,14 @@ async function readyToOverride(): Promise<Ready> {
   assert.equal(handoverSubmitted.status, 200, handoverSubmitted.text);
 
   const incomingShift = await openOperationalShift(incoming.id);
+  // Only the lines carrying a figure need signing. charlie has none, and the
+  // evidence gate does not ask for a signature on a shelf nobody reached — so
+  // the ONLY refusal left is the omission SH-21 authorises past.
   for (const line of lines) {
+    if (line.inventoryItemId === items.charlie.id) continue;
     const r = await ackPost(handoverId, { stockCountLineId: line.id });
     assert.equal(r.status, 200, `acknowledge failed: ${r.text}`);
   }
-
-  // The omission, opened after the round was signed for, so the evidence gate
-  // is satisfied and the ONLY refusal left is the one SH-21 authorises past.
-  const orphan = lines.find((l) => l.inventoryItemId === items.charlie.id);
-  assert.ok(orphan, "the fixture must have a charlie line to remove");
-  await db.handoverStockAcknowledgement.deleteMany({
-    where: { stockCountLineId: orphan.id },
-  });
-  await db.stockCountLine.delete({ where: { id: orphan.id } });
 
   const handover = await db.handoverSession.findUniqueOrThrow({ where: { id: handoverId } });
   const alpha = await db.inventoryItem.findUniqueOrThrow({ where: { id: items.alpha.id } });

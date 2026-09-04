@@ -41,18 +41,24 @@
 //
 // ── HOW A REQUIRED ITEM GOES UNCOUNTED ──
 //
-// `settleRequiredItems` calls an item omitted when the accepted session has no
-// LINE for it — not when a line is uncounted, because `submit` already refuses
-// a session carrying a null figure, and not when the item leaves the count's
-// scope, because `startHandoverCount` builds its lines from the required-item
-// snapshot itself rather than from a fresh reading of configuration.
+// Nobody reaches the shelf. That is the whole of it, and it is now the way
+// this suite opens the gap: `walkTheCount` is told which items to leave
+// alone, and simply never captures a figure for them. The lines exist, in
+// scope and PENDING, and `settleRequiredItems` calls the item omitted because
+// there is no authoritative observation behind it.
 //
-// So the gap is opened the way SH-20's own suite opens it, in
-// `handover-008`'s "a required item with no line refuses the acceptance": the
-// line disappears between the review and the acceptance. The items stay
-// ACTIVE, so the boundary still owes each of them a row, and that row is the
-// `SYSTEM_CARRIED` one this suite checks. Deactivating them instead would drop
-// them from the boundary too, and would prove nothing about carried evidence.
+// It used to be otherwise. `submitCountSession` refused any session carrying
+// a null figure, so this state could not be produced at all, and the fixture
+// DELETED the three lines between the review and the acceptance instead. That
+// was a corruption standing in for a workflow, and it hid the fact that SH-21
+// was unreachable from production. HANDOVER-013 walks the same path end to
+// end through routes; the direct-deletion case survives only where it belongs,
+// as an integrity test of its own in `handover-008` and `handover-009b`.
+//
+// The items stay ACTIVE, so the boundary still owes each of them a row, and
+// that row is the `SYSTEM_CARRIED` one this suite checks. Deactivating them
+// instead would drop them from the boundary too, and would prove nothing
+// about carried evidence.
 //
 // The rollback and concurrency matrices live in the sibling
 // `handover-009b-override-rollback.test.ts`.
@@ -306,11 +312,19 @@ const goodBody = (extra: Record<string, unknown> = {}) => ({
 
 // ────────────────────────── count / review walks ─────────────────────────
 
-async function walkTheCount(sessionId: string, counted: Record<string, number> = {}) {
+async function walkTheCount(
+  sessionId: string,
+  counted: Record<string, number> = {},
+  skip: readonly ItemKey[] = [],
+) {
+  const skipIds = new Set(skip.map((k) => items[k].id));
   const lines = await db.stockCountLine.findMany({
     where: { sessionId }, select: { id: true, inventoryItemId: true },
   });
   for (const line of lines) {
+    // Never captured, never PATCHed — which is exactly what happens when
+    // nobody gets to that stockroom before the shift ends.
+    if (skipIds.has(line.inventoryItemId)) continue;
     const figure = counted[line.inventoryItemId] ?? 10;
     const r = await patchLine(fx.manager.email, sessionId, line.id, figure);
     assert.ok(r.status < 300, `capture failed: ${r.text}`);
@@ -339,38 +353,16 @@ async function walkTheCount(sessionId: string, counted: Record<string, number> =
   return lines.map((l) => l.id);
 }
 
-/**
- * Leave three required items with no line in the accepted session.
- *
- * The same manoeuvre `handover-008` uses to reach SH-20's step-5 refusal: the
- * line disappears between the review and the acceptance, and settlement is the
- * only thing that can notice. The acknowledgement goes with it, so the
- * evidence gate still sees a fully signed round and the ONLY refusal left for
- * a manager to override is the omission itself.
- *
- * The inventory items are untouched and stay active, which is what makes the
- * boundary assertions meaningful.
- */
-async function orphanRequiredItems(sessionId: string) {
-  for (const key of DROPPED) {
-    const line = await db.stockCountLine.findFirstOrThrow({
-      where: { sessionId, inventoryItemId: items[key].id },
-      select: { id: true },
-    });
-    await db.handoverStockAcknowledgement.deleteMany({
-      where: { stockCountLineId: line.id },
-    });
-    await db.stockCountLine.delete({ where: { id: line.id } });
-  }
-}
-
 /** A confirmed, bound count and a handover at OUTGOING_SUBMITTED. */
-async function reviewedHandover(counted: Record<string, number> = {}) {
+async function reviewedHandover(
+  counted: Record<string, number> = {},
+  skip: readonly ItemKey[] = [],
+) {
   const h = await freshHandover();
   const started = await startCountHttp(h.handoverId);
   assert.equal(started.status, 200, started.text);
   const sessionId = started.body.countSession.id;
-  await walkTheCount(sessionId, counted);
+  await walkTheCount(sessionId, counted, skip);
   const confirmed = await confirmCount(fx.manager.email, sessionId, `${MARKER}-${sessionId}`);
   assert.ok(confirmed.status < 300, `confirm failed: ${confirmed.text}`);
   const submitted = await submitHandoverHttp(h.handoverId);
@@ -403,10 +395,11 @@ async function acknowledgeAll(handoverId: string, sessionId: string) {
  * items were snapshotted at close and are not in the count.
  */
 async function overridableHandover(counted: Record<string, number> = {}) {
-  const h = await reviewedHandover(counted);
+  const h = await reviewedHandover(counted, DROPPED);
   const incomingShift = await openIncomingShift();
+  // Only the lines that have a figure need signing. The three nobody reached
+  // have nothing to sign for, and the evidence gate knows it.
   const lineIds = await acknowledgeAll(h.handoverId, h.sessionId);
-  await orphanRequiredItems(h.sessionId);
   return { ...h, incomingShiftId: incomingShift.id, lineIds };
 }
 
@@ -547,14 +540,19 @@ describe("SH-21 the exception gate", () => {
     // Six items were required at close; the count reached three of them.
     assert.equal(h.requiredItemIds.length, 6);
     const lines = await db.stockCountLine.findMany({
-      where: { sessionId: h.sessionId }, select: { inventoryItemId: true },
+      where: { sessionId: h.sessionId },
+      select: {
+        inventoryItemId: true, disposition: true,
+        countedQuantity: true, itemVersion: true,
+      },
     });
-    assert.equal(lines.length, 3, "three of the six required items have no line");
+    assert.equal(lines.length, 6, "all six required items have a line, start to finish");
     for (const id of droppedIds()) {
-      assert.ok(
-        !lines.some((l) => l.inventoryItemId === id),
-        "a dropped item must have no count line at all",
-      );
+      const line = lines.find((l) => l.inventoryItemId === id);
+      assert.ok(line, "a dropped item still has its line — nothing was deleted");
+      assert.equal(line.disposition, "PENDING", "in scope, and nobody reached it");
+      assert.equal(line.countedQuantity, null, "a NULL figure is not a zero one");
+      assert.equal(line.itemVersion, null, "and there is no count point behind it");
     }
     // Every line that remains is signed for, so the acknowledgement gate is
     // not what any refusal below is about.
@@ -660,7 +658,6 @@ describe("SH-21 the exception gate", () => {
   test("an unsigned line of the current round still refuses the override", async () => {
     const h = await reviewedHandover();
     await openIncomingShift();
-    await orphanRequiredItems(h.sessionId);
     const lines = await db.stockCountLine.findMany({
       where: { sessionId: h.sessionId, countedQuantity: { not: null } },
       select: { id: true },
@@ -675,8 +672,7 @@ describe("SH-21 the exception gate", () => {
   });
 
   test("with no arriving shift the override is refused, not redirected to the branch", async () => {
-    const h = await reviewedHandover();
-    await orphanRequiredItems(h.sessionId);
+    const h = await reviewedHandover({}, DROPPED);
     // No `openIncomingShift`, so there is nobody to receive custody. NO_INCOMING
     // classifies the manager's reason; it does not conjure a recipient.
     await assert.rejects(() => override(h.handoverId, { kind: "NO_INCOMING" }), statusIs(409));
@@ -739,16 +735,32 @@ describe("SH-21 omission settlement", () => {
     await override(h.handoverId);
 
     const lines = await db.stockCountLine.findMany({
-      where: { sessionId: h.sessionId }, select: { inventoryItemId: true },
+      where: { sessionId: h.sessionId },
+      select: {
+        inventoryItemId: true, disposition: true, countedQuantity: true,
+        effectiveCountedQuantity: true, varianceQuantity: true, itemVersion: true,
+        confidence: true, costImpact: true, unitCostSnapshot: true,
+      },
     });
-    assert.equal(lines.length, 3, "still exactly the three the count reached");
+    assert.equal(lines.length, 6, "six lines, and the override wrote to none of them");
     for (const id of droppedIds()) {
-      assert.ok(!lines.some((l) => l.inventoryItemId === id));
+      const line = lines.find((l) => l.inventoryItemId === id)!;
+      // The override waives the REQUIREMENT to count. It does not count.
+      assert.equal(line.disposition, "PENDING");
+      assert.equal(line.countedQuantity, null, "no figure was manufactured");
+      assert.equal(line.effectiveCountedQuantity, null);
+      assert.equal(line.varianceQuantity, null, "and no gap was invented to blame anyone for");
+      assert.equal(line.itemVersion, null);
+      assert.equal(line.confidence, "UNVERIFIABLE", "unchanged from creation");
+      assert.equal(line.costImpact, null);
+      assert.equal(line.unitCostSnapshot, null);
       assert.equal(
         await db.stockCountRebase.count({ where: { sessionId: h.sessionId, inventoryItemId: id } }),
         0,
         "an uncounted item is not rebased",
       );
+      const item = await db.inventoryItem.findUniqueOrThrow({ where: { id } });
+      assert.equal(Number(item.currentStock), 10, "and its shelf never moved");
     }
   });
 

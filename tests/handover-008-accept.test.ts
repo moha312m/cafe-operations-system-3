@@ -277,11 +277,18 @@ const recountPost = (email: string, handoverId: string, body: unknown) =>
  *
  * `counted` maps item id to figure; anything unnamed is counted exactly at 10.
  */
-async function walkTheCount(sessionId: string, counted: Record<string, number> = {}) {
+async function walkTheCount(
+  sessionId: string,
+  counted: Record<string, number> = {},
+  skip: readonly ItemKey[] = [],
+) {
+  const skipIds = new Set(skip.map((k) => items[k].id));
   const lines = await db.stockCountLine.findMany({
     where: { sessionId }, select: { id: true, inventoryItemId: true },
   });
   for (const line of lines) {
+    // Never PATCHed — what happens when nobody reaches that shelf.
+    if (skipIds.has(line.inventoryItemId)) continue;
     const figure = counted[line.inventoryItemId] ?? 10;
     const r = await patchLine(fx.manager.email, sessionId, line.id, figure);
     assert.ok(r.status < 300, `capture failed: ${r.text}`);
@@ -316,12 +323,15 @@ async function walkTheCount(sessionId: string, counted: Record<string, number> =
 }
 
 /** A confirmed, bound count and a handover at OUTGOING_SUBMITTED. */
-async function reviewedHandover(counted: Record<string, number> = {}) {
+async function reviewedHandover(
+  counted: Record<string, number> = {},
+  skip: readonly ItemKey[] = [],
+) {
   const h = await freshHandover();
   const started = await startCountHttp(h.handoverId);
   assert.equal(started.status, 200, started.text);
   const sessionId = started.body.countSession.id;
-  await walkTheCount(sessionId, counted);
+  await walkTheCount(sessionId, counted, skip);
   const confirmed = await confirmCount(fx.manager.email, sessionId, `${MARKER}-${sessionId}`);
   assert.ok(confirmed.status < 300, `confirm failed: ${confirmed.text}`);
   const submitted = await submitHandoverHttp(h.handoverId);
@@ -354,8 +364,11 @@ async function acknowledgeAll(handoverId: string, sessionId: string) {
 }
 
 /** A handover ready for an ordinary acceptance, with its arriving shift. */
-async function acceptableHandover(counted: Record<string, number> = {}) {
-  const h = await reviewedHandover(counted);
+async function acceptableHandover(
+  counted: Record<string, number> = {},
+  skip: readonly ItemKey[] = [],
+) {
+  const h = await reviewedHandover(counted, skip);
   const incomingShift = await openIncomingShift();
   const lineIds = await acknowledgeAll(h.handoverId, h.sessionId);
   return { ...h, incomingShiftId: incomingShift.id, lineIds };
@@ -912,11 +925,55 @@ describe("SH-20 required-item settlement", () => {
     }
   });
 
-  test("a required item with no line refuses the acceptance and writes nothing", async () => {
+  test("a required item nobody counted refuses the acceptance and writes nothing", async () => {
+    // THE PRODUCTION PATH to SH-20's step-5 refusal, and the reason the
+    // deletion case below is now only an integrity test. Nobody reaches
+    // charlie's shelf; the line stays in scope and PENDING; the count still
+    // submits and confirms; the handover still states its position. The
+    // refusal lands here, at the acceptance, where somebody is named — and
+    // SH-21 is the authorised way past it. HANDOVER-013 walks the whole thing
+    // end to end through the routes.
+    const h = await acceptableHandover({}, ["charlie"]);
+
+    // The line exists throughout. Nothing was deleted to make the gap.
+    const line = await db.stockCountLine.findFirstOrThrow({
+      where: { sessionId: h.sessionId, inventoryItemId: items.charlie.id },
+    });
+    assert.equal(line.disposition, "PENDING");
+    assert.equal(line.countedQuantity, null, "a NULL is not a zero");
+
+    await assert.rejects(() => accept(h.handoverId), statusIs(409));
+
+    const required = await db.handoverRequiredItem.findMany({
+      where: { handoverId: h.handoverId },
+    });
+    assert.equal(required.length, 3);
+    for (const item of required) {
+      assert.equal(
+        item.satisfiedByLineId, null,
+        "the settlement that ran moments ago rolled back with the refusal",
+      );
+      assert.equal(item.omitted, false, "`omitted` is untouched by a refused accept");
+      assert.equal(item.omissionNote, null);
+    }
+    const handover = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+    });
+    assert.equal(handover.acceptedStockCountSessionId, null);
+    assert.notEqual(handover.status, "COMPLETED");
+    assert.equal(
+      await db.handoverStockBoundary.count({ where: { handoverId: h.handoverId } }), 0,
+    );
+    assert.equal(await db.stockCountRebase.count({ where: { sessionId: h.sessionId } }), 0);
+  });
+
+  test("a required item whose line was DELETED underneath it refuses too", async () => {
+    // AN INTEGRITY TEST, not a workflow. `startHandoverCount` builds one line
+    // per required item from the immutable snapshot, so a required item with
+    // no line at all cannot arise from any sequence of real actions — it means
+    // a row went missing. Settlement is the last thing that can notice, and it
+    // must refuse rather than treat the absence as nothing to answer for.
     const h = await acceptableHandover();
-    // The line that satisfied one required item disappears between review and
-    // acceptance. Settlement is the only thing that can notice, and its
-    // refusal must leave the required rows exactly as it found them.
     const orphaned = await db.stockCountLine.findFirstOrThrow({
       where: { sessionId: h.sessionId, inventoryItemId: items.charlie.id },
       select: { id: true, inventoryItemId: true },
