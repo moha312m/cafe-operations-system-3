@@ -66,6 +66,7 @@ import { audit, auditInTransaction } from "@/lib/audit";
 import { round3 } from "@/lib/costing";
 import { db } from "@/lib/db";
 import { ledgerDeltaAbove } from "@/lib/ledger";
+import type { RebaseResult } from "@/lib/stock-rebase";
 import type { HandoverBlocker } from "@/lib/handover-blockers";
 import {
   persistRequiredItems,
@@ -1734,4 +1735,408 @@ export async function requestRecount(args: {
 
     return { status: "REJECTED" as const, disputedLineIds, supersededSessionId };
   });
+}
+
+// ═══════════════════ SH-20 · the accepted evidence becomes the record ═════
+//
+// Acceptance is one transaction, from the handover's row lock to the freeze
+// release. That is not a performance decision. A partial accept — stock
+// rebased but custody not transferred, a boundary written but the arriving
+// shift still gated — would leave the branch in a state no later operation
+// could read: a shelf whose balance came from a count nobody accepted, or a
+// custodian holding stock they are not recorded as answerable for.
+//
+// ── WHAT ACCEPTANCE IS JUDGED AGAINST ──
+//
+// The count in front of it, and nothing else. A handover that was sent back
+// for a recount carries every round's acknowledgements forever — they are the
+// record of what was disagreed about and when — so "does an acknowledgement
+// exist on this handover?" is the wrong question in both directions. A
+// signature on a superseded round must not satisfy a line of the replacement
+// nobody has signed for; and a DISPUTED row on a round that was already sent
+// back must not block the replacement, because that dispute can never be
+// withdrawn and the handover would be permanently unacceptable.
+//
+// Both follow from ONE clause — `line: { sessionId: acceptedSessionId }` —
+// which is the idiom `requestRecount` already reads acknowledgements through.
+// A count of acknowledgements is never compared against a count of lines.
+//
+// ── WHICH LINES NEED A SIGNATURE ──
+//
+// The ones carrying a figure somebody recorded. `acknowledgeStockLine`
+// refuses to sign for an uncounted line at all, so requiring one would make
+// acceptance unreachable; the predicate here is the same one it and
+// `rebaseFromCount` already share.
+//
+// ── WHAT THIS ROUTE DOES NOT DO ──
+//
+// It does not accept a `BRANCH_CUSTODY` target. That target ends employee
+// custody rather than moving it, and the branch-held successor, the opening
+// verification and the gate release that discharges it are SH-22's whole
+// subject. Refusing it here is what keeps SH-20 from constructing half of a
+// lifecycle it does not own.
+//
+// It writes no `omissionNote`, no exception authority and no override. A
+// required item that was not counted refuses the acceptance; the audited way
+// past is SH-21's, and it is not reachable from here.
+
+/** The statuses an acceptance may be performed from. */
+const ACCEPTABLE_STATUSES: readonly HandoverStatus[] = [
+  "OUTGOING_SUBMITTED",
+  "INCOMING_REVIEW",
+];
+
+const NOT_ACCEPTABLE = "التسليم مش في حالة تسمح بالاستلام";
+const ALREADY_ACCEPTED = "التسليم ده اتقفل خلاص";
+const BRANCH_TARGET_ELSEWHERE =
+  "التسليم ده للعهدة المركزية — الاستلام العادي مش بيغطيه";
+const COUNT_NOT_CONFIRMED = "الجرد المربوط لسه متأكدش";
+const COUNT_NOT_OURS = "الجرد ده مش مربوط بالتسليم ده";
+const LINES_UNACKNOWLEDGED = "في سطور من الجرد الحالي لسه ماتسجلش استلامها";
+const LINES_DISPUTED = "في اعتراض على الجرد الحالي — لازم إعادة جرد";
+const NO_OUTGOING_STOCK_CUSTODY = "مفيش عهدة مخزن مربوطة بالتسليم ده";
+const NO_INCOMING_SHIFT = "مفيش وردية مستلمة مستنية العهدة";
+const FREEZE_NOT_OURS = "تجميد المخزون مش تابع للتسليم ده";
+
+/** The handover row this acceptance validated and is about to write. */
+type LockedHandover = {
+  id: string;
+  cafeId: string;
+  branchId: string;
+  status: HandoverStatus;
+  target: HandoverTarget | null;
+  stockCountSessionId: string | null;
+  outgoingShiftId: string;
+  outgoingStockCustodyId: string | null;
+  outgoingCashCustodyId: string | null;
+  acceptedStockCountSessionId: string | null;
+  idempotencyKey: string | null;
+};
+
+const LOCKED_HANDOVER_SELECT = {
+  id: true,
+  cafeId: true,
+  branchId: true,
+  status: true,
+  target: true,
+  stockCountSessionId: true,
+  outgoingShiftId: true,
+  outgoingStockCustodyId: true,
+  outgoingCashCustodyId: true,
+  acceptedStockCountSessionId: true,
+  idempotencyKey: true,
+} satisfies Prisma.HandoverSessionSelect;
+
+/**
+ * Everything the acceptance needs, resolved once and refused loudly.
+ *
+ * `acceptedSessionId` is held HERE and persisted at step 14, never at step 4.
+ * `settleRequiredItems` re-reads `HandoverSession.acceptedStockCountSessionId`
+ * and takes its immutability branch the moment it is non-null: on a first
+ * acceptance every `satisfiedByLineId` is still NULL while the desired state
+ * is a line id, so the state is not already exact and it would throw "final
+ * required-item settlement is immutable". Persisting the pointer before
+ * settlement would therefore make every first acceptance impossible. Step 4
+ * resolves and pins; step 14 records.
+ */
+type AcceptedEvidence = {
+  handover: LockedHandover;
+  acceptedSessionId: string;
+  outgoingStockCustodyId: string;
+  outgoingCashCustodyId: string | null;
+  incomingShiftId: string;
+  countedLineIds: string[];
+};
+
+/**
+ * Read-only. Every refusal is thrown before the first write, so a gate that
+ * says no has changed nothing about the branch.
+ */
+async function resolveAcceptableEvidence(
+  tx: Prisma.TransactionClient,
+  handover: LockedHandover,
+  args: { cafeId: string; viewerBranchId: string | null; incomingShiftId?: string | null }
+): Promise<AcceptedEvidence> {
+  // Another tenant's handover is not confirmed to exist. A 403 here would
+  // tell one café that an id belonging to another one is real.
+  if (handover.cafeId !== args.cafeId) throw new ApiError(404, HANDOVER_NOT_FOUND);
+  if (args.viewerBranchId !== null && handover.branchId !== args.viewerBranchId) {
+    throw new ApiError(403, FOREIGN_BRANCH);
+  }
+  if (!ACCEPTABLE_STATUSES.includes(handover.status)) {
+    throw new ApiError(409, NOT_ACCEPTABLE);
+  }
+  if (handover.target !== "SHIFT_TO_SHIFT") {
+    throw new ApiError(409, BRANCH_TARGET_ELSEWHERE);
+  }
+  if (handover.stockCountSessionId === null) throw new ApiError(409, NO_BOUND_COUNT);
+
+  // Step 4. The pointer names the evidence — never "the newest confirmed
+  // session", which after a recount would silently accept a round the
+  // arriving custodian was never shown.
+  const acceptedSessionId = handover.stockCountSessionId;
+  const session = await tx.stockCountSession.findUnique({
+    where: { id: acceptedSessionId },
+    select: {
+      id: true, cafeId: true, branchId: true, status: true,
+      accountabilityContext: true, handoverId: true,
+    },
+  });
+  if (!session) throw new ApiError(409, NO_BOUND_COUNT);
+  if (session.cafeId !== handover.cafeId || session.branchId !== handover.branchId) {
+    throw new ApiError(409, COUNT_NOT_OURS);
+  }
+  if (session.status !== "CONFIRMED") throw new ApiError(409, COUNT_NOT_CONFIRMED);
+  if (session.accountabilityContext !== "HANDOVER" || session.handoverId !== handover.id) {
+    throw new ApiError(409, COUNT_NOT_OURS);
+  }
+
+  // Step 3's evidence test, against the CURRENT session only.
+  const lines = await tx.stockCountLine.findMany({
+    where: { sessionId: acceptedSessionId },
+    select: { ...EFFECTIVE_EVIDENCE_SELECT, id: true },
+    orderBy: { id: "asc" },
+  });
+  // A line nobody counted has no figure to sign for, and
+  // `acknowledgeStockLine` refuses to sign one. Requiring an acknowledgement
+  // for it would make acceptance unreachable rather than careful.
+  const countedLines = lines.filter(
+    (line) => !(line.countedQuantity === null && effectiveCountEvidence(line).recountId === null)
+  );
+
+  // THE amendment, in one clause. An acknowledgement reaches a session only
+  // through its line, so a row belonging to a superseded round is invisible
+  // here: it can neither satisfy a missing line nor block on a stale dispute.
+  const acknowledgements = await tx.handoverStockAcknowledgement.findMany({
+    where: { handoverId: handover.id, line: { sessionId: acceptedSessionId } },
+    select: { stockCountLineId: true, decision: true },
+  });
+  const acknowledged = new Set(acknowledgements.map((a) => a.stockCountLineId));
+  if (countedLines.some((line) => !acknowledged.has(line.id))) {
+    throw new ApiError(409, LINES_UNACKNOWLEDGED);
+  }
+  if (acknowledgements.some((a) => a.decision === "DISPUTED")) {
+    throw new ApiError(409, LINES_DISPUTED);
+  }
+
+  // The custody being discharged is the one the CLOSING shift held, named on
+  // the handover at close. "Whatever is open at the branch now" is a different
+  // fact, and only the first one says who is being discharged.
+  if (handover.outgoingStockCustodyId === null) {
+    throw new ApiError(409, NO_OUTGOING_STOCK_CUSTODY);
+  }
+  const outgoingStock = await tx.custodyPeriod.findUnique({
+    where: { id: handover.outgoingStockCustodyId },
+    select: { id: true, branchId: true, scope: true, status: true },
+  });
+  if (
+    !outgoingStock
+    || outgoingStock.branchId !== handover.branchId
+    || outgoingStock.scope !== "STOCK"
+    || outgoingStock.status !== "OPEN"
+  ) {
+    throw new ApiError(409, NO_OUTGOING_STOCK_CUSTODY);
+  }
+
+  const incomingShiftId = await resolveIncomingShift(tx, handover, args.incomingShiftId);
+
+  // Acceptance releases the freeze at step 15, so it must be releasing its
+  // own. A branch frozen by a different handover is not this one's to reopen.
+  const freeze = await activeFreezeFor(tx, handover.branchId);
+  if (!freeze || freeze.handoverId !== handover.id) {
+    throw new ApiError(409, FREEZE_NOT_OURS);
+  }
+
+  return {
+    handover,
+    acceptedSessionId,
+    outgoingStockCustodyId: outgoingStock.id,
+    outgoingCashCustodyId: handover.outgoingCashCustodyId,
+    incomingShiftId,
+    countedLineIds: countedLines.map((line) => line.id),
+  };
+}
+
+/**
+ * The shift that is waiting to receive custody.
+ *
+ * Named explicitly, or the branch's single OPEN shift gated on
+ * `AWAITING_CUSTODY_TRANSFER` — the state `ensureCustodyForShift` puts a shift
+ * into when it opens mid-handover. Two such shifts is an ambiguity rather than
+ * a choice to make silently: handing the room to the wrong one would record
+ * the wrong custodian.
+ */
+async function resolveIncomingShift(
+  tx: Prisma.TransactionClient,
+  handover: LockedHandover,
+  requested: string | null | undefined
+): Promise<string> {
+  const candidates = await tx.shift.findMany({
+    where: {
+      branchId: handover.branchId,
+      status: "OPEN",
+      custodyGateReason: "AWAITING_CUSTODY_TRANSFER",
+      ...(requested ? { id: requested } : {}),
+    },
+    select: { id: true },
+    orderBy: { shiftNumber: "asc" },
+  });
+  if (candidates.length !== 1) throw new ApiError(409, NO_INCOMING_SHIFT);
+  return candidates[0].id;
+}
+
+export const HANDOVER_ACCEPTED_AUDIT_ACTION = "HANDOVER_ACCEPTED";
+
+export type AcceptResult = {
+  status: "COMPLETED";
+  handoverTarget: HandoverTarget;
+  acceptedStockCountSessionId: string | null;
+  incomingCashCustodyId: string | null;
+  incomingStockCustodyId: string | null;
+  incomingShiftId: string | null;
+  boundary: { written: number; verified: number; carried: number };
+  requiredItems: { satisfied: number; omitted: string[] };
+  rebase: RebaseResult | null;
+  varianceCaseIds: string[];
+  spanIds: string[];
+  outgoingShiftStatus: "CLOSED";
+  alreadyAccepted: boolean;
+};
+
+/**
+ * The answer to a caller whose acceptance committed and whose response was
+ * lost.
+ *
+ * Every figure is read back from persisted state rather than remembered,
+ * because a retry may arrive in a different process weeks later. `rebase` is
+ * NULL on purpose: this call rebased nothing, and restating an earlier call's
+ * `RebaseResult` would describe work that did not happen here.
+ */
+async function buildReplayResult(
+  tx: Prisma.TransactionClient,
+  handover: LockedHandover
+): Promise<AcceptResult> {
+  const [boundaries, required, cases] = await Promise.all([
+    tx.handoverStockBoundary.findMany({
+      where: { handoverId: handover.id },
+      select: { verified: true },
+    }),
+    tx.handoverRequiredItem.findMany({
+      where: { handoverId: handover.id },
+      select: { satisfiedByLineId: true, omitted: true, itemNameSnapshot: true },
+      orderBy: { itemNameSnapshot: "asc" },
+    }),
+    tx.varianceCase.findMany({
+      where: { acceptedHandoverId: handover.id },
+      select: { id: true, varianceSpan: { select: { id: true } } },
+      orderBy: { id: "asc" },
+    }),
+  ]);
+
+  const persisted = await tx.handoverSession.findUniqueOrThrow({
+    where: { id: handover.id },
+    select: {
+      target: true, resolvedTarget: true, acceptedStockCountSessionId: true,
+      incomingCashCustodyId: true, incomingStockCustodyId: true, incomingShiftId: true,
+    },
+  });
+
+  return {
+    status: "COMPLETED",
+    handoverTarget: persisted.resolvedTarget ?? persisted.target ?? "SHIFT_TO_SHIFT",
+    acceptedStockCountSessionId: persisted.acceptedStockCountSessionId,
+    incomingCashCustodyId: persisted.incomingCashCustodyId,
+    incomingStockCustodyId: persisted.incomingStockCustodyId,
+    incomingShiftId: persisted.incomingShiftId,
+    boundary: {
+      written: boundaries.length,
+      verified: boundaries.filter((b) => b.verified).length,
+      carried: boundaries.filter((b) => !b.verified).length,
+    },
+    requiredItems: {
+      satisfied: required.filter((r) => r.satisfiedByLineId !== null).length,
+      omitted: required.filter((r) => r.omitted).map((r) => r.itemNameSnapshot),
+    },
+    rebase: null,
+    varianceCaseIds: cases.map((c) => c.id),
+    spanIds: cases.flatMap((c) => (c.varianceSpan ? [c.varianceSpan.id] : [])),
+    outgoingShiftStatus: "CLOSED",
+    alreadyAccepted: true,
+  };
+}
+
+/**
+ * Accept the handover: one transaction, sixteen steps, all or none of it.
+ *
+ * `cafeId` and `viewerBranchId` are additive to the roadmap's published
+ * signature, matching every sibling service in this module — tenancy is the
+ * caller's to state and the service's to enforce.
+ */
+export async function acceptHandover(args: {
+  handoverId: string;
+  incomingUserId: string;
+  incomingShiftId?: string | null;
+  idempotencyKey: string;
+  cafeId: string;
+  viewerBranchId: string | null;
+}): Promise<AcceptResult> {
+  return db.$transaction(async (tx) => {
+    // 1. The row lock, first, so everything read below is the state written to.
+    if (!(await lockHandover(tx, args.handoverId))) {
+      throw new ApiError(404, HANDOVER_NOT_FOUND);
+    }
+
+    const handover = await tx.handoverSession.findUniqueOrThrow({
+      where: { id: args.handoverId },
+      select: LOCKED_HANDOVER_SELECT,
+    });
+
+    // Tenancy before anything else, including before the replay: reading back
+    // a completed acceptance is still reading somebody's record.
+    if (handover.cafeId !== args.cafeId) throw new ApiError(404, HANDOVER_NOT_FOUND);
+    if (args.viewerBranchId !== null && handover.branchId !== args.viewerBranchId) {
+      throw new ApiError(403, FOREIGN_BRANCH);
+    }
+
+    // 2. Already accepted. A retry under the SAME key hears the same answer;
+    //    a different key is a claim to a second acceptance of one handover,
+    //    and there is only ever one.
+    if (handover.status === "COMPLETED") {
+      if (handover.idempotencyKey !== args.idempotencyKey) {
+        throw new ApiError(409, ALREADY_ACCEPTED);
+      }
+      return buildReplayResult(tx, handover);
+    }
+
+    // 3–4. The gate. Every refusal is thrown before the first write.
+    const evidence = await resolveAcceptableEvidence(tx, handover, {
+      cafeId: args.cafeId,
+      viewerBranchId: args.viewerBranchId,
+      incomingShiftId: args.incomingShiftId,
+    });
+
+    return runAcceptance(tx, evidence, args);
+  });
+}
+
+/**
+ * Steps 5 through 16, in the roadmap's order.
+ *
+ * Split out from `acceptHandover` so the entry — lock, tenancy, replay, gate —
+ * stays readable, and so the failure-injection seam T14 needs has one obvious
+ * home rather than being threaded through the whole function.
+ */
+async function runAcceptance(
+  tx: Prisma.TransactionClient,
+  evidence: AcceptedEvidence,
+  args: {
+    handoverId: string;
+    incomingUserId: string;
+    idempotencyKey: string;
+  }
+): Promise<AcceptResult> {
+  void tx;
+  void evidence;
+  void args;
+  throw new ApiError(501, "SH-20 acceptance steps 5-16 are not implemented yet");
 }
