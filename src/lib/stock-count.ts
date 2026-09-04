@@ -41,6 +41,7 @@ import { isTerminal } from "@/lib/count-disposition";
 import {
   EFFECTIVE_EVIDENCE_SELECT,
   effectiveCountEvidence,
+  hasAuthoritativeObservation,
   hasSupersedingRecount,
 } from "@/lib/count-evidence";
 import { openVarianceCase, resolveRecountPolicy } from "@/lib/variance-case";
@@ -687,6 +688,26 @@ export async function recordCountLine(args: {
 // collapse. Submitting with one outstanding is refused rather than treated
 // as a total loss on that item, which is what reading NULL as 0 would report.
 //
+// WITH ONE EXCEPTION, AND IT IS NOT A WEAKENING OF THAT RULE. A count whose
+// `accountabilityContext` is `HANDOVER` may be submitted with lines nobody
+// reached. The gap is not treated as a zero; it is carried forward as a gap.
+// Those lines are skipped BEFORE any tolerance is resolved, so nothing is
+// judged, no variance is computed, no cost is priced and no column on them is
+// written at all — they stay exactly as the count created them, which is the
+// truthful statement "this was in scope and nobody looked".
+//
+// Why the exception exists: a handover count is answered for downstream by a
+// named acceptance. SH-20 refuses an incomplete required set outright; SH-21
+// lets a manager waive it on the record, with a reason and an
+// `OpeningException` in their name. Before this, neither could be reached —
+// the refusal here made an incomplete handover count unsubmittable, so the
+// state SH-20 refuses and SH-21 overrides could not be produced by any
+// sequence of real actions. An ordinary count has no such acceptance behind
+// it: nobody would be named, so it stays strict. So does
+// `BRANCH_OPENING_VERIFICATION` — SH-22 has not said who answers for it. The
+// gate is spelled `=== "HANDOVER"` rather than `!== "NONE"` so that a context
+// added later inherits strictness rather than permission.
+//
 // The dispositions set here follow `DISPOSITION_TRANSITIONS` (T13) exactly.
 // An outside-tolerance line becomes `OUTSIDE_TOLERANCE` first and only then
 // `RECOUNT_REQUIRED`, when the owner requires a recount — there is no
@@ -697,6 +718,8 @@ export type SubmitCountResult = {
   status: "SUBMITTED" | "RECOUNT_REQUIRED";
   within: number;
   outside: number;
+  /** Lines left as gaps rather than judged. Always 0 outside HANDOVER. */
+  skippedUnobserved: number;
 };
 
 /** Sessions that may still be submitted. CONFIRMED and LOCKED may not. */
@@ -729,6 +752,7 @@ export async function submitCountSession(args: {
       cafeId: true,
       branchId: true,
       status: true,
+      accountabilityContext: true,
       lines: {
         select: {
           ...EFFECTIVE_EVIDENCE_SELECT,
@@ -749,24 +773,51 @@ export async function submitCountSession(args: {
     throw new ApiError(409, "الجرد ده اتقفل خلاص");
   }
 
-  const uncounted = session.lines.filter((l) => l.countedQuantity === null);
-  if (uncounted.length > 0) {
-    const names = uncounted.map((l) => l.inventoryItem.name).slice(0, 5).join("، ");
-    throw new ApiError(
-      400,
-      `في أصناف لسه ما اتعدتش (${uncounted.length}): ${names}`
-    );
+  // See the note above the type: HANDOVER, and only HANDOVER, may state a gap
+  // rather than be refused for having one.
+  const mayStateGaps = session.accountabilityContext === "HANDOVER";
+
+  if (!mayStateGaps) {
+    const uncounted = session.lines.filter((l) => l.countedQuantity === null);
+    if (uncounted.length > 0) {
+      const names = uncounted.map((l) => l.inventoryItem.name).slice(0, 5).join("، ");
+      throw new ApiError(
+        400,
+        `في أصناف لسه ما اتعدتش (${uncounted.length}): ${names}`
+      );
+    }
   }
 
   const policy = await resolveRecountPolicy(session.cafeId);
 
   let within = 0;
   let outside = 0;
+  let skippedUnobserved = 0;
   const verdicts: { id: string; disposition: CountLineDisposition }[] = [];
   const updates: { id: string; data: Prisma.StockCountLineUpdateInput }[] = [];
   const judgedAt = new Date();
 
   for (const line of session.lines) {
+    // ── A shelf nobody reached ──
+    //
+    // Skipped HERE, at the top, before a tolerance is resolved, before a
+    // confidence window is opened and before an update is queued — so there
+    // is no path by which the collapsed `quantity: 0` the resolver returns
+    // for an absent figure could become a variance, a cost, a confidence
+    // rating or a disposition. The line leaves this loop with every column
+    // exactly as the count created it, which is the whole representation:
+    // a gap stated as a gap.
+    //
+    // Still PENDING as well as unobserved: the relaxation admits a line the
+    // count never touched, not a line that was touched and left half-written.
+    // Anything else — an outside-tolerance line, or the malformed
+    // figure-without-cursor a fixture can construct — falls through and is
+    // judged exactly as it always was.
+    if (mayStateGaps && line.disposition === "PENDING" && !hasAuthoritativeObservation(line)) {
+      skippedUnobserved += 1;
+      continue;
+    }
+
     // The variance under judgement belongs to the observation in force: after
     // a resolving recount that is the recount's gap, not the discredited
     // first count's.
@@ -881,10 +932,13 @@ export async function submitCountSession(args: {
       outside,
       recountRequired: needsRecount,
       lineCount: session.lines.length,
+      // Named in the record, so a reader can tell a count of six from a count
+      // of nine with three shelves nobody reached.
+      skippedUnobserved,
     },
   });
 
-  return { status, within, outside };
+  return { status, within, outside, skippedUnobserved };
 }
 
 // ───────────────────────── Confirming a count ────────────────────────
