@@ -55,6 +55,7 @@ import type {
   HandoverStockMode,
   HandoverTarget,
   InventoryUnit,
+  OpeningExceptionKind,
   Prisma,
   RequiredItemTrigger,
   StockAckDecision,
@@ -2018,6 +2019,29 @@ export type AcceptanceCheckpoint = (
 ) => Promise<void>;
 
 export const HANDOVER_ACCEPTED_AUDIT_ACTION = "HANDOVER_ACCEPTED";
+export const HANDOVER_MANAGER_EXCEPTION_AUDIT_ACTION = "HANDOVER_MANAGER_EXCEPTION";
+
+/**
+ * A manager's authority to finish an acceptance the evidence does not justify.
+ *
+ * This is the ONLY difference between SH-20's acceptance and SH-21's. It is
+ * optional, and when it is absent every line below behaves exactly as it did
+ * before it existed — which is the point: there is one acceptance transaction,
+ * not two that must be kept in step.
+ *
+ * `note` arrives already trimmed and already refused if blank. Validating it
+ * here as well would put the refusal inside the transaction, after the row
+ * lock, where a caller who sent whitespace would hold a lock to be told so.
+ */
+export type AcceptanceException = {
+  /** The authenticated manager. Never the arriving custodian, never a body field. */
+  managerId: string;
+  reasonCodeId: string;
+  /** Trimmed, non-empty. Written to every omitted row and to the exception. */
+  note: string;
+  kind: Extract<OpeningExceptionKind, "MANAGER_ADJUSTMENT" | "NO_INCOMING">;
+};
+
 
 export type AcceptResult = {
   status: "COMPLETED";
@@ -2036,6 +2060,27 @@ export type AcceptResult = {
 };
 
 /**
+ * SH-21's answer, and the shape `runAcceptance` actually returns.
+ *
+ * The two extra fields are the exception's evidence, so they are NOT folded
+ * into `AcceptResult`: an ordinary accept has no exception to report, and a
+ * `null` id on every ordinary response would invite a reader to wonder which
+ * accepts were overridden. `acceptHandover` returns the narrow type; only the
+ * override path widens it.
+ */
+export type OverrideAcceptResult = AcceptResult & {
+  openingExceptionId: string;
+  /** `inventoryItemId` of every required item nobody counted, ascending. */
+  missingItemIds: string[];
+};
+
+/** What the shared core produces; `openingExceptionId` is null with no exception. */
+type AcceptanceOutcome = AcceptResult & {
+  openingExceptionId: string | null;
+  missingItemIds: string[];
+};
+
+/**
  * The answer to a caller whose acceptance committed and whose response was
  * lost.
  *
@@ -2047,7 +2092,7 @@ export type AcceptResult = {
 async function buildReplayResult(
   tx: Prisma.TransactionClient,
   handover: LockedHandover
-): Promise<AcceptResult> {
+): Promise<AcceptanceOutcome> {
   const [boundaries, required, cases] = await Promise.all([
     tx.handoverStockBoundary.findMany({
       where: { handoverId: handover.id },
@@ -2055,8 +2100,14 @@ async function buildReplayResult(
     }),
     tx.handoverRequiredItem.findMany({
       where: { handoverId: handover.id },
-      select: { satisfiedByLineId: true, omitted: true, itemNameSnapshot: true },
-      orderBy: { itemNameSnapshot: "asc" },
+      select: {
+        satisfiedByLineId: true, omitted: true,
+        itemNameSnapshot: true, inventoryItemId: true,
+      },
+      // Ascending by `inventoryItemId`, matching the order
+      // `settleRequiredItems` sorts its omissions into, so a replay names the
+      // missing items in exactly the order the first call did.
+      orderBy: { inventoryItemId: "asc" },
     }),
     tx.varianceCase.findMany({
       where: { acceptedHandoverId: handover.id },
@@ -2064,6 +2115,16 @@ async function buildReplayResult(
       orderBy: { id: "asc" },
     }),
   ]);
+
+  // At most one, and `findFirst` rather than `findUnique` because exactly-once
+  // is enforced by the status guard at step 14 rather than by a unique index —
+  // SH-21 adds no schema. An ordinary completed accept has none, and this
+  // stays null rather than inventing one.
+  const exceptionRow = await tx.openingException.findFirst({
+    where: { handoverId: handover.id },
+    select: { id: true },
+    orderBy: { createdAt: "asc" },
+  });
 
   const persisted = await tx.handoverSession.findUniqueOrThrow({
     where: { id: handover.id },
@@ -2094,6 +2155,10 @@ async function buildReplayResult(
     spanIds: cases.flatMap((c) => (c.varianceSpan ? [c.varianceSpan.id] : [])),
     outgoingShiftStatus: "CLOSED",
     alreadyAccepted: true,
+    // Read back, never remembered. A retry may arrive in another process
+    // weeks later, and the persisted rows are the only honest source.
+    openingExceptionId: exceptionRow?.id ?? null,
+    missingItemIds: required.filter((r) => r.omitted).map((r) => r.inventoryItemId),
   };
 }
 
@@ -2144,7 +2209,7 @@ export async function acceptHandover(args: {
       if (handover.idempotencyKey !== args.idempotencyKey) {
         throw new ApiError(409, ALREADY_ACCEPTED);
       }
-      return buildReplayResult(tx, handover);
+      return narrowAcceptResult(await buildReplayResult(tx, handover));
     }
 
     // 3–4. The gate. Every refusal is thrown before the first write.
@@ -2154,8 +2219,25 @@ export async function acceptHandover(args: {
       incomingShiftId: args.incomingShiftId,
     });
 
-    return runAcceptance(tx, evidence, args);
+    // No `exception`: an ordinary accept has no manager authority to carry,
+    // and step 5 keeps its refusal.
+    return narrowAcceptResult(await runAcceptance(tx, evidence, args));
   });
+}
+
+/**
+ * Drop SH-21's two fields from an ordinary accept's answer.
+ *
+ * `AcceptResult` is a published contract, and an ordinary acceptance that
+ * started reporting `openingExceptionId: null` and `missingItemIds: []` would
+ * be widening it for callers who never asked. The shared core computes both
+ * because the override path needs them; this is where they stop.
+ */
+function narrowAcceptResult(outcome: AcceptanceOutcome): AcceptResult {
+  const { openingExceptionId: _e, missingItemIds: _m, ...rest } = outcome;
+  void _e;
+  void _m;
+  return rest;
 }
 
 /**
@@ -2209,30 +2291,50 @@ async function runAcceptance(
     handoverId: string;
     incomingUserId: string;
     idempotencyKey: string;
+    /** SH-21 only. Absent on every ordinary accept. See {@link AcceptanceException}. */
+    exception?: AcceptanceException;
     __afterStep?: AcceptanceCheckpoint;
   }
-): Promise<AcceptResult> {
+): Promise<AcceptanceOutcome> {
   const { handover, acceptedSessionId } = evidence;
+  const exception = args.exception;
+  // Filled at step 14a, after the guarded completion write has won. Declared
+  // here only so the result below can name it.
+  let openingExceptionId: string | null = null;
   const checkpoint = async (step: number) => {
     if (args.__afterStep) await args.__afterStep(step, tx);
   };
 
   // ── 5. Required items ──
   //
-  // SH-14's settlement authority is used rather than reimplemented, and
-  // `omissionNote` is NOT passed: a note is SH-21's authorisation evidence,
-  // and an ordinary accept that supplied one would be an unaudited override.
+  // SH-14's settlement authority is used rather than reimplemented. The note
+  // is passed ONLY when a manager authorised the exception: a note is SH-21's
+  // authorisation evidence, and an ordinary accept that supplied one would be
+  // an unaudited override. With no exception this call is byte-for-byte the
+  // one SH-20 made.
   //
   // The refusal below is a `throw` inside the transaction, so the `omitted:
   // true` rows settlement wrote moments ago never commit. After a refused
   // acceptance `omitted` and `omissionNote` are exactly as they were.
+  //
+  // SH-21 bypasses the refusal and nothing else. It does NOT invent a count
+  // line for the missing item, does not guess a quantity, and does not carry
+  // the previous session's figure forward as though somebody had looked: step
+  // 7 writes those items `SYSTEM_CARRIED` / `verified: false`, which is the
+  // truthful statement that nobody counted them.
   const settled = await settleRequiredItems(tx, {
     handoverId: handover.id,
     acceptedSessionId,
+    ...(exception ? { omissionNote: exception.note } : {}),
   });
-  if (settled.omitted.length > 0) {
+  if (!exception && settled.omitted.length > 0) {
     throw new ApiError(409, REQUIRED_ITEMS_OMITTED);
   }
+  // Ascending by `inventoryItemId`, the order `settleRequiredItems` already
+  // sorted them into, so the result, the audit row and a later replay all
+  // name the same items in the same order.
+  const missingItemIds = settled.omitted.map((entry) => entry.inventoryItemId);
+  const missingItemNames = settled.omitted.map((entry) => entry.itemNameSnapshot);
   await checkpoint(5);
 
   // ── 6. Rebase, under the freeze that protected the count ──
@@ -2420,7 +2522,7 @@ async function runAcceptance(
     actorId: args.incomingUserId,
   });
 
-  const result: AcceptResult = {
+  const result: AcceptanceOutcome = {
     status: "COMPLETED",
     handoverTarget: "SHIFT_TO_SHIFT",
     acceptedStockCountSessionId: acceptedSessionId,
@@ -2436,15 +2538,18 @@ async function runAcceptance(
       satisfied: await tx.handoverRequiredItem.count({
         where: { handoverId: handover.id, satisfiedByLineId: { not: null } },
       }),
-      // Empty by construction: a non-empty list refused the acceptance at
-      // step 5. Named rather than omitted, because it is the answer.
-      omitted: [],
+      // Empty on every ordinary accept BY CONSTRUCTION: a non-empty list
+      // refused it at step 5. Only a manager's exception can put a name here,
+      // and then the name is the whole point of the record.
+      omitted: missingItemNames,
     },
     rebase,
     varianceCaseIds: variance.caseIds,
     spanIds: variance.spanIds,
     outgoingShiftStatus: outgoing.outgoingShiftStatus,
     alreadyAccepted: false,
+    openingExceptionId,
+    missingItemIds,
   };
 
   // ── 16. One audit row, carrying the whole shape ──
