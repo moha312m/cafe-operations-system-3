@@ -89,6 +89,12 @@ async function createCountSession(args: {
     unitCostSnapshot?: number | null;
     unitCostSource?: string | null;
   }>;
+  /**
+   * Items given a line and never observed: in scope, PENDING, no figure and
+   * no count point. What a handover count leaves behind for a shelf nobody
+   * reached (SH-21).
+   */
+  unobserved?: string[];
 }) {
   const session = await db.stockCountSession.create({
     data: {
@@ -126,6 +132,17 @@ async function createCountSession(args: {
       },
     });
     lines[spec.key] = line.id;
+  }
+  for (const key of args.unobserved ?? []) {
+    const item = ITEM_SPECS.find((i) => i.key === key);
+    const line = await db.stockCountLine.create({
+      data: {
+        sessionId: session.id,
+        inventoryItemId: itemIds[key],
+        unit: item ? item.unit : "KG",
+      },
+    });
+    lines[key] = line.id;
   }
   return { session, lines };
 }
@@ -468,6 +485,70 @@ describe("HANDOVER-005 the shelf, and the evidence it will not invent", () => {
     assert.equal(built.carriedCount, 7);
     assert.ok(built.lines.every((l) => l.source === "SYSTEM_CARRIED" && !l.verified));
     assert.ok(built.lines.every((l) => l.stockCountLineId === null));
+  });
+
+  test("an unobserved shelf carries, it does not count", async () => {
+    // SH-21 reachability. A handover count may close over shelves nobody
+    // reached, and each of those still has a LINE — so "has a line" routed
+    // them into the counted path, where the pairing rule found a NULL cursor
+    // and refused the whole boundary. The acceptance could not be written at
+    // all, which is another way the SH-21 override was unreachable.
+    //
+    // The truthful row for such an item is the one the boundary already has a
+    // name for: SYSTEM_CARRIED, unverified. Not a counted zero, which would
+    // report the shelf as empty; not a counted figure taken from the book,
+    // which would report as observed something nobody observed.
+    const handover = await createHandover();
+    const counted = await createCountSession({
+      handoverId: handover.id,
+      lines: [
+        { key: "alpha", countedQuantity: 12, itemVersion: BigInt(41), unitCostSnapshot: 91,
+          unitCostSource: "INVENTORY_ITEM_COST_PER_UNIT" },
+        { key: "bravo", countedQuantity: 3, itemVersion: BigInt(42) },
+      ],
+      unobserved: ["charlie", "delta"],
+    });
+
+    const { built } = await buildAndPersist(handover.id, counted.session.id);
+    assert.equal(built.lines.length, 7, "one row per eligible item, counted or not");
+    assert.equal(built.verifiedCount, 2, "two shelves were observed");
+    assert.equal(built.carriedCount, 5, "two unreached, three never in scope — all carried");
+
+    const byItem = new Map(built.lines.map((l) => [l.inventoryItemId, l]));
+    for (const key of ["charlie", "delta"] as const) {
+      const row = byItem.get(itemIds[key])!;
+      const spec = ITEM_SPECS.find((i) => i.key === key)!;
+      assert.equal(row.source, "SYSTEM_CARRIED", `${key} carries`);
+      assert.equal(row.verified, false, `${key} is not verified`);
+      assert.equal(
+        row.stockCountLineId, null,
+        `${key} cites no evidence, because a line nobody reached is not evidence`,
+      );
+      // From the same locked read the never-in-scope items get — never a
+      // fabricated 0, and never a cursor from somewhere else.
+      assert.equal(row.quantity, spec.stock, `${key} carries the book figure`);
+      assert.equal(row.itemVersion, spec.version, `${key} carries the book cursor`);
+      assert.equal(row.unitCostSnapshot, spec.cost);
+      assert.equal(row.unitCostSource, "INVENTORY_ITEM_COST_PER_UNIT");
+    }
+
+    // The two shelves somebody did reach are byte-for-byte what they were.
+    const alpha = byItem.get(itemIds.alpha)!;
+    assert.equal(alpha.source, "PHYSICAL_COUNT");
+    assert.equal(alpha.verified, true);
+    assert.equal(alpha.quantity, 12);
+    assert.equal(alpha.itemVersion, BigInt(41));
+    assert.equal(alpha.stockCountLineId, counted.lines.alpha);
+    assert.equal(alpha.unitCostSnapshot, 91);
+
+    // And the persisted rows say the same thing.
+    const rows = await rowsFor(handover.id);
+    assert.equal(rows.length, 7);
+    assert.equal(rows.filter((r) => r.verified).length, 2);
+    const charlieRow = rows.find((r) => r.inventoryItemId === itemIds.charlie)!;
+    assert.equal(charlieRow.source, "SYSTEM_CARRIED");
+    assert.equal(charlieRow.stockCountLineId, null);
+    assert.equal(Number(charlieRow.quantity), 8);
   });
 
   test("counted evidence with no count point is refused, not repaired", async () => {

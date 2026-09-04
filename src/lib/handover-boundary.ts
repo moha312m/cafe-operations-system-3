@@ -44,7 +44,11 @@
 import type { BoundarySource, Prisma } from "@prisma/client";
 import { ApiError } from "@/lib/api";
 import { db } from "@/lib/db";
-import { EFFECTIVE_EVIDENCE_SELECT, effectiveCountEvidence } from "@/lib/count-evidence";
+import {
+  EFFECTIVE_EVIDENCE_SELECT,
+  effectiveCountEvidence,
+  hasAuthoritativeObservation,
+} from "@/lib/count-evidence";
 import { round3 } from "@/lib/costing";
 import { lockItemForUpdate } from "@/lib/ledger";
 import { captureUnitCost } from "@/lib/variance-confidence";
@@ -128,7 +132,7 @@ export async function buildStockBoundary(
   for (const item of items) {
     const line = evidence.get(item.id);
     lines.push(
-      line
+      line && !isUnreached(line)
         ? countedBoundary(line)
         : await carriedBoundary(tx, item.id)
     );
@@ -162,6 +166,37 @@ async function acceptedEvidence(
     select: ACCEPTED_LINE_SELECT,
   });
   return new Map(lines.map((line) => [line.inventoryItemId, line]));
+}
+
+/**
+ * A line the count never reached: in scope, and nothing written to it.
+ *
+ * HAVING A LINE IS NOT HAVING BEEN COUNTED. A handover count may close over
+ * shelves nobody reached (SH-21), and each of those still has a line.
+ * Routing by line-existence sent them into the counted path, where the
+ * pairing rule found a NULL cursor and refused the whole boundary — so the
+ * acceptance could not be written at all. Their truthful row is the one this
+ * module already has a name for: the book figure, carried, unverified,
+ * opening no variance and naming nobody.
+ *
+ * THE MALFORMED CASE IS DELIBERATELY EXCLUDED. A figure written with no
+ * cursor is somebody's observation, badly recorded — not an empty round. It
+ * still goes to `countedBoundary` and is still REFUSED there, because
+ * silently downgrading it to SYSTEM_CARRIED would throw away a real
+ * observation, which is exactly the repair the pairing rule at the top of
+ * this file forbids. Hence the raw-column reading beside the shared
+ * predicate: "no observation" and "nothing here at all" are different
+ * questions, and only the second one may carry.
+ */
+function isUnreached(
+  line: Prisma.StockCountLineGetPayload<{ select: typeof ACCEPTED_LINE_SELECT }>
+): boolean {
+  return (
+    !hasAuthoritativeObservation(line) &&
+    line.countedQuantity === null &&
+    line.recounts.length === 0 &&
+    line.corrections.length === 0
+  );
 }
 
 /**
