@@ -44,6 +44,23 @@ const TRUSTED_STATUSES = ["CONFIRMED", "LOCKED"] as const;
  * Falls back to the item's `createdAt` rather than to the epoch or to now: an
  * item that has never been counted has been drifting since it existed, and
  * that whole span is exactly the window worth judging.
+ *
+ * A CONFIRMED SESSION IS NOT THE SAME CLAIM AS A COUNTED LINE. A handover
+ * count may be confirmed while some of its lines were never observed — the
+ * truthful record of a shelf nobody reached (SH-21). Those lines are rows in
+ * a trusted session, and taking one as the baseline would say this item was
+ * last physically verified at a moment when nobody looked at it: every later
+ * window would start there, the drift before it would go unexamined, and a
+ * theoretical figure would be rated VERIFIED on the strength of a gap. Since
+ * `mayAssignResponsibility` is true for VERIFIED alone, that is the exact
+ * path by which somebody's name could be attached to a variance no evidence
+ * supports. So the line itself has to have been counted.
+ *
+ * `countedAt` is the test because capture writes it in the same locked
+ * transaction as the figure and the cursor, and nothing nulls it afterwards —
+ * a correction changes the number, not the moment the shelf was looked at.
+ * On every line an ordinary count can produce it is already non-null, so this
+ * filter is a no-op for the NONE-context history it inherits.
  */
 export async function lastTrustedBaselineAt(args: {
   branchId: string;
@@ -53,6 +70,7 @@ export async function lastTrustedBaselineAt(args: {
   const line = await db.stockCountLine.findFirst({
     where: {
       inventoryItemId: args.inventoryItemId,
+      countedAt: { not: null },
       session: {
         branchId: args.branchId,
         status: { in: [...TRUSTED_STATUSES] },

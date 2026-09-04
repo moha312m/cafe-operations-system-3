@@ -305,6 +305,99 @@ describe("VAR-004 cost trust and baseline-window confidence", () => {
     }
   });
 
+  test("a line nobody counted, in a confirmed handover count, is not a baseline", async () => {
+    // SH-21 reachability. A HANDOVER count may now be CONFIRMED while some of
+    // its lines were never observed — the truthful record of a shelf nobody
+    // reached. Those lines are still rows in a CONFIRMED session, and this
+    // query used to see nothing else: it would take the omitting count as the
+    // last time this item was physically verified, shorten every later
+    // confidence window to start there, and rate the theoretical figure
+    // against a gap nobody ever looked into. A confident rating built on an
+    // unlooked-at shelf is exactly what would let responsibility be assigned
+    // for a variance no evidence supports.
+    const item = await db.inventoryItem.create({
+      data: {
+        cafeId, branchId: quietBranchId, name: `${MARKER} carried`, unit: "KG",
+        costPerUnit: 90, currentStock: "4.000",
+      },
+    });
+    const observedAt = new Date("2026-08-10T09:00:00Z");
+    const omittedAt = new Date("2026-08-24T09:00:00Z");
+
+    // The real earlier observation: somebody stood in front of this shelf.
+    const observedId = (await db.stockCountSession.create({
+      data: {
+        cafeId, branchId: quietBranchId, type: "FULL", scopeDerivation: "ALL_ELIGIBLE",
+        initiatedById: openerId, status: "CONFIRMED", confirmedAt: observedAt,
+        lines: {
+          create: [{
+            inventoryItemId: item.id, unit: "KG", countedQuantity: "4.000",
+            countedAt: observedAt, itemVersion: BigInt(3), disposition: "WITHIN_TOLERANCE",
+          }],
+        },
+      },
+    })).id;
+
+    // The later handover count that closed over this shelf without reaching
+    // it: line present, in scope, PENDING, no figure and no count point.
+    const shift = await db.shift.create({
+      data: {
+        cafeId, branchId: quietBranchId, cashierId: openerId,
+        shiftNumber: 940411, openingCashAmount: 0, expectedCashAmount: 0,
+      },
+    });
+    const handover = await db.handoverSession.create({
+      data: {
+        cafeId, branchId: quietBranchId,
+        outgoingShiftId: shift.id, outgoingUserId: openerId,
+      },
+    });
+    const omittingId = (await db.stockCountSession.create({
+      data: {
+        cafeId, branchId: quietBranchId, type: "CRITICAL", scopeDerivation: "CRITICAL_ONLY",
+        initiatedById: openerId, status: "CONFIRMED", confirmedAt: omittedAt,
+        accountabilityContext: "HANDOVER", handoverId: handover.id,
+        lines: { create: [{ inventoryItemId: item.id, unit: "KG" }] },
+      },
+    })).id;
+
+    const baseline = await lastTrustedBaselineAt({
+      branchId: quietBranchId, inventoryItemId: item.id,
+      before: new Date("2026-09-01T00:00:00Z"),
+    });
+    assert.notEqual(
+      baseline.sessionId, omittingId,
+      "a count that admits it never reached this shelf is not evidence it was verified"
+    );
+    assert.equal(baseline.sessionId, observedId, "the window falls through to the real observation");
+    assert.equal(baseline.at.toISOString(), observedAt.toISOString());
+
+    // And the same session IS a baseline for an item it did observe, so the
+    // filter is about the line rather than about the session.
+    const alsoCounted = await db.inventoryItem.create({
+      data: {
+        cafeId, branchId: quietBranchId, name: `${MARKER} reached`, unit: "KG",
+        costPerUnit: 90, currentStock: "2.000",
+      },
+    });
+    await db.stockCountLine.create({
+      data: {
+        sessionId: omittingId, inventoryItemId: alsoCounted.id, unit: "KG",
+        countedQuantity: "2.000", countedAt: omittedAt, itemVersion: BigInt(5),
+        disposition: "WITHIN_TOLERANCE",
+      },
+    });
+    const reached = await lastTrustedBaselineAt({
+      branchId: quietBranchId, inventoryItemId: alsoCounted.id,
+      before: new Date("2026-09-01T00:00:00Z"),
+    });
+    assert.equal(reached.sessionId, omittingId, "the shelves it did reach are still verified");
+
+    await db.stockCountLine.deleteMany({ where: { sessionId: { in: [observedId, omittingId] } } });
+    await db.stockCountSession.deleteMany({ where: { id: { in: [observedId, omittingId] } } });
+    await db.handoverSession.delete({ where: { id: handover.id } });
+  });
+
   test("an unmapped add-on sold outside this shift, inside the window, yields PARTIAL", async () => {
     // The heart of it. A shift-scoped roll-up would examine today's orders,
     // find them clean, and report VERIFIED — while the gap that actually
