@@ -31,7 +31,11 @@
 import type { CustodyHolderType, Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { ApiError } from "@/lib/api";
-import { EFFECTIVE_EVIDENCE_SELECT, effectiveCountEvidence } from "@/lib/count-evidence";
+import {
+  EFFECTIVE_EVIDENCE_SELECT,
+  effectiveCountEvidence,
+  hasAuthoritativeObservation,
+} from "@/lib/count-evidence";
 import { openVarianceCase } from "@/lib/variance-case";
 
 export type AttributionInput = {
@@ -301,7 +305,13 @@ export async function openHandoverVarianceCases(
     boundaryByItemId: Map<string, string>;
     openedById: string;
   }
-): Promise<{ caseIds: string[]; spanIds: string[]; skippedZeroVariance: number }> {
+): Promise<{
+  caseIds: string[];
+  spanIds: string[];
+  skippedZeroVariance: number;
+  /** Lines nobody reached. Counted separately — see the loop below. */
+  skippedUnobserved: number;
+}> {
   const handover = await tx.handoverSession.findUnique({
     where: { id: args.handoverId },
     select: { id: true, cafeId: true, branchId: true, acceptedAt: true, outgoingShiftId: true },
@@ -321,8 +331,33 @@ export async function openHandoverVarianceCases(
   const caseIds: string[] = [];
   const spanIds: string[] = [];
   let skippedZeroVariance = 0;
+  let skippedUnobserved = 0;
 
   for (const line of lines) {
+    // ── A shelf nobody reached ──
+    //
+    // The accepted session of a handover may carry lines for items nobody
+    // counted (SH-21). Before this, they fell out of the loop by coincidence:
+    // `effectiveCountEvidence` collapses an absent figure to 0, and an absent
+    // expectation to 0, so the variance came to 0 and the guard below skipped
+    // them as "zero variance".
+    //
+    // That is the wrong label for the wrong reason, and it was one arithmetic
+    // change away from becoming an accusation. Let an unobserved line ever
+    // carry a non-null `expectedQuantity` — a stale write, a later feature
+    // that fills in the book figure when scope is resolved — and the
+    // collapsed 0 reads as a total loss of everything the book says is
+    // there: a case opened, a custody named, a cost attached. Nobody looked
+    // at the shelf, and somebody would answer for it.
+    //
+    // So the skip is explicit, comes before any variance is computed, and
+    // reports itself under its own name rather than borrowing one that says
+    // something untrue about it.
+    if (!hasAuthoritativeObservation(line)) {
+      skippedUnobserved += 1;
+      continue;
+    }
+
     const variance = effectiveCountEvidence(line).varianceQuantity;
     if (variance === 0) {
       skippedZeroVariance += 1;
@@ -379,5 +414,5 @@ export async function openHandoverVarianceCases(
     }
   }
 
-  return { caseIds, spanIds, skippedZeroVariance };
+  return { caseIds, spanIds, skippedZeroVariance, skippedUnobserved };
 }

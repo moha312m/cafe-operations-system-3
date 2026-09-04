@@ -77,6 +77,12 @@ async function submittedSession(args: {
   openingBranchCustodyPeriodId?: string | null;
   status?: "SUBMITTED" | "CONFIRMED";
   lines: LineSpec[];
+  /**
+   * Items given a line and never observed: in scope, PENDING, no figure and
+   * no count point. What a handover count leaves behind for a shelf nobody
+   * reached (SH-21).
+   */
+  unobserved?: string[];
 }): Promise<{ id: string; lineIds: Record<string, string> }> {
   const session = await db.stockCountSession.create({
     data: {
@@ -92,19 +98,30 @@ async function submittedSession(args: {
       handoverId: args.handoverId ?? null,
       openingBranchCustodyPeriodId: args.openingBranchCustodyPeriodId ?? null,
       lines: {
-        create: args.lines.map((l) => ({
-          inventoryItemId: l.itemId,
-          unit: "KG" as const,
-          expectedQuantity: l.expected,
-          countedQuantity: l.counted,
-          effectiveCountedQuantity: l.counted,
-          varianceQuantity: Number((l.counted - l.expected).toFixed(3)),
-          disposition: l.disposition,
-          confidence: "VERIFIED" as const,
-          costImpact: Math.abs(l.counted - l.expected) * 450,
-          costImpactAvailable: true,
-          countedAt: ACCEPTED_AT,
-        })),
+        create: [
+          ...args.lines.map((l) => ({
+            inventoryItemId: l.itemId,
+            unit: "KG" as const,
+            expectedQuantity: l.expected,
+            countedQuantity: l.counted,
+            effectiveCountedQuantity: l.counted,
+            varianceQuantity: Number((l.counted - l.expected).toFixed(3)),
+            disposition: l.disposition,
+            confidence: "VERIFIED" as const,
+            costImpact: Math.abs(l.counted - l.expected) * 450,
+            costImpactAvailable: true,
+            countedAt: ACCEPTED_AT,
+            // The count point capture takes under the item's row lock. A
+            // figure and its cursor are one observation; capture never writes
+            // one without the other.
+            itemVersion: BigInt(41),
+            expectedBasis: "LOCKED_ITEM_VERSION",
+          })),
+          ...(args.unobserved ?? []).map((itemId) => ({
+            inventoryItemId: itemId,
+            unit: "KG" as const,
+          })),
+        ],
       },
     },
     select: { id: true, lines: { select: { id: true, inventoryItemId: true } } },
@@ -491,6 +508,134 @@ describe("VAR-010 the accepted handover writer", () => {
         where: { stockCountLineId: { in: [s.lineIds[outside], s.lineIds[inside]] } },
       }),
       2
+    );
+  });
+
+  test("a shelf nobody looked at accuses nobody", async () => {
+    // SH-21 reachability. The accepted session of a handover may now carry
+    // lines for shelves nobody reached. Those lines were kept out of this
+    // writer only by coincidence: `effectiveCountEvidence` collapses an
+    // absent figure to 0, 0 - 0 is 0, and `variance === 0` skipped them under
+    // the label "zero variance".
+    //
+    // That is the wrong label for the wrong reason, and it was one arithmetic
+    // change away from becoming an accusation. If an unobserved line ever
+    // carried a non-null `expectedQuantity` — a stale write, a later feature
+    // that fills in the book figure at scope time — the collapsed 0 would
+    // become a full shortage of everything the book says is there, opened as
+    // a case, attributed to a custody and costed. Nobody looked at the shelf,
+    // and somebody would answer for it.
+    //
+    // So the skip is explicit and comes first, and it reports itself under
+    // its own name.
+    const observed = await newItem();
+    const unreached = await newItem();
+    const alsoUnreached = await newItem();
+    await priorVerifiedBoundary(observed);
+    const boundaryByItemId = new Map<string, string>();
+    boundaryByItemId.set(observed, await closingBoundary(observed));
+    // The unreached items get carried, unverified boundaries — what SH-15
+    // writes for them.
+    for (const id of [unreached, alsoUnreached]) {
+      const row = await db.handoverStockBoundary.create({
+        data: {
+          handoverId: acceptingHandoverId, inventoryItemId: id,
+          source: "SYSTEM_CARRIED", verified: false,
+          quantity: "12.000", itemVersion: BigInt(42),
+        },
+      });
+      boundaryByItemId.set(id, row.id);
+    }
+
+    const s = await submittedSession({
+      status: "CONFIRMED",
+      context: "HANDOVER",
+      handoverId: acceptingHandoverId,
+      lines: [{ itemId: observed, counted: 9, expected: 12, disposition: "VARIANCE_CONFIRMED" }],
+      unobserved: [unreached, alsoUnreached],
+    });
+
+    const result = await db.$transaction((tx) =>
+      openHandoverVarianceCases(tx, {
+        cafeId,
+        branchId,
+        handoverId: acceptingHandoverId,
+        acceptedSessionId: s.id,
+        outgoingCustodyPeriodId: custodyId,
+        boundaryByItemId,
+        openedById: managerId,
+      })
+    );
+
+    assert.equal(result.caseIds.length, 1, "only the shelf somebody stood in front of");
+    assert.equal(
+      result.skippedUnobserved, 2,
+      "the two gaps are skipped under their own name, not as zero variances",
+    );
+    assert.equal(
+      result.skippedZeroVariance, 0,
+      "and are not miscounted as differences that happened to come to nothing",
+    );
+
+    for (const id of [unreached, alsoUnreached]) {
+      assert.equal(
+        await db.varianceCase.count({ where: { stockCountLineId: s.lineIds[id] } }), 0,
+        "no case",
+      );
+    }
+    assert.equal(
+      await db.stockVarianceSpan.count({
+        where: { inventoryItemId: { in: [unreached, alsoUnreached] } },
+      }),
+      0,
+      "no span",
+    );
+
+    // The observed line keeps SH-17 semantics untouched, custody linkage
+    // included.
+    const opened = await db.varianceCase.findUniqueOrThrow({
+      where: { stockCountLineId: s.lineIds[observed] },
+    });
+    assert.equal(opened.attribution, "VERIFIED_SHIFT");
+    assert.equal(opened.custodyPeriodId, custodyId);
+    assert.equal(opened.acceptedHandoverId, acceptingHandoverId);
+    assert.equal(Number(opened.quantityVariance), -3);
+  });
+
+  test("an unobserved line is skipped even when the book figure would make it a shortage", async () => {
+    // The failure the explicit skip exists to prevent, constructed directly:
+    // a line nobody reached whose `expectedQuantity` says twelve. Under the
+    // old `variance === 0` guard the resolver would read this as counted-zero
+    // against expected-twelve — a total loss, opened as a case, attributed
+    // and costed, for a shelf nobody looked at.
+    const itemId = await newItem();
+    await priorVerifiedBoundary(itemId);
+    const boundaryByItemId = new Map([[itemId, await closingBoundary(itemId)]]);
+
+    const s = await submittedSession({
+      status: "CONFIRMED",
+      context: "HANDOVER",
+      handoverId: acceptingHandoverId,
+      lines: [],
+      unobserved: [itemId],
+    });
+    await db.stockCountLine.update({
+      where: { id: s.lineIds[itemId] },
+      data: { expectedQuantity: "12.000" },
+    });
+
+    const result = await db.$transaction((tx) =>
+      openHandoverVarianceCases(tx, {
+        cafeId, branchId, handoverId: acceptingHandoverId, acceptedSessionId: s.id,
+        outgoingCustodyPeriodId: custodyId, boundaryByItemId, openedById: managerId,
+      })
+    );
+
+    assert.deepEqual(result.caseIds, [], "nobody is accused of losing what nobody counted");
+    assert.deepEqual(result.spanIds, []);
+    assert.equal(result.skippedUnobserved, 1);
+    assert.equal(
+      await db.varianceCase.count({ where: { stockCountLineId: s.lineIds[itemId] } }), 0
     );
   });
 
