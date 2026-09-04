@@ -1732,3 +1732,161 @@ describe("SH-20 completion, freeze release and audit", () => {
     );
   });
 });
+
+// ════════ T13 · accepting the handover has a door, behind its own key ════
+
+const acceptPost = (email: string, handoverId: string, body: unknown) =>
+  as<{
+    status?: string;
+    acceptedStockCountSessionId?: string;
+    incomingStockCustodyId?: string;
+    incomingCashCustodyId?: string;
+    incomingShiftId?: string;
+    boundary?: { written: number; verified: number; carried: number };
+    requiredItems?: { satisfied: number; omitted: string[] };
+    varianceCaseIds?: string[];
+    spanIds?: string[];
+    outgoingShiftStatus?: string;
+    alreadyAccepted?: boolean;
+    error?: string;
+  }>(email, `/api/handovers/${handoverId}/accept`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
+describe("SH-20 accept route", () => {
+  test("a successful accept returns the whole result", async () => {
+    const h = await acceptableHandover({ [items.alpha.id]: 9 });
+    const r = await acceptPost(incoming.email, h.handoverId, {
+      idempotencyKey: `${MARKER}-http-${h.handoverId}`,
+    });
+
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.body.status, "COMPLETED");
+    assert.equal(r.body.acceptedStockCountSessionId, h.sessionId);
+    assert.equal(r.body.incomingShiftId, h.incomingShiftId);
+    assert.equal(r.body.outgoingShiftStatus, "CLOSED");
+    assert.equal(r.body.alreadyAccepted, false);
+    assert.ok(r.body.incomingStockCustodyId);
+    assert.ok(r.body.boundary);
+    assert.equal(r.body.varianceCaseIds?.length, 1);
+
+    const row = await db.handoverSession.findUniqueOrThrow({ where: { id: h.handoverId } });
+    assert.equal(
+      row.incomingUserId, incoming.id,
+      "the column recording who took the shelf comes from the session, never the body",
+    );
+  });
+
+  test("the incoming party is the authenticated user, whatever the body says", async () => {
+    const h = await acceptableHandover();
+    const r = await acceptPost(incoming.email, h.handoverId, {
+      idempotencyKey: `${MARKER}-actor-${h.handoverId}`,
+      incomingUserId: fx.cashier.id,
+    });
+    assert.equal(r.status, 400, "an unknown field is refused rather than quietly dropped");
+    assert.match(r.text, /incomingUserId/);
+  });
+
+  test("a body naming an answer the service computes is refused by name", async () => {
+    const h = await acceptableHandover();
+    for (const field of [
+      "status", "acceptedStockCountSessionId", "resolvedTarget", "varianceCaseIds",
+    ]) {
+      const r = await acceptPost(incoming.email, h.handoverId, {
+        idempotencyKey: `${MARKER}-strict-${field}`,
+        [field]: "anything",
+      });
+      assert.equal(r.status, 400, `${field} was not refused: ${r.text}`);
+      assert.match(r.text, new RegExp(field));
+    }
+  });
+
+  test("a missing idempotency key answers in the café's own language", async () => {
+    const h = await acceptableHandover();
+    const r = await acceptPost(incoming.email, h.handoverId, {});
+    assert.equal(r.status, 400, r.text);
+    assert.match(r.text, /مفتاح/, "not zod's 'expected string, received undefined'");
+  });
+
+  test("a user without the key is refused", async () => {
+    const h = await acceptableHandover();
+    const r = await acceptPost(fx.waiter.email, h.handoverId, {
+      idempotencyKey: `${MARKER}-perm-${h.handoverId}`,
+    });
+    assert.equal(r.status, 403, r.text);
+
+    const row = await db.handoverSession.findUniqueOrThrow({ where: { id: h.handoverId } });
+    assert.notEqual(row.status, "COMPLETED");
+  });
+
+  test("another café's handover is a 404, not a 403", async () => {
+    const r = await acceptPost(incoming.email, otherHandoverId, {
+      idempotencyKey: `${MARKER}-foreign`,
+    });
+    assert.equal(r.status, 404, r.text);
+  });
+
+  test("a branch-scoped session cannot accept another branch's handover", async () => {
+    const h = await acceptableHandover();
+    const r = await acceptPost(annexIncoming.email, h.handoverId, {
+      idempotencyKey: `${MARKER}-branch-${h.handoverId}`,
+    });
+    assert.equal(r.status, 403, r.text);
+  });
+
+  test("every gate refusal maps to a stable 409", async () => {
+    const h = await reviewedHandover();
+    await openIncomingShift();
+    // Unacknowledged lines: the gate's own refusal, seen through the door.
+    const r = await acceptPost(incoming.email, h.handoverId, {
+      idempotencyKey: `${MARKER}-gate-${h.handoverId}`,
+    });
+    assert.equal(r.status, 409, r.text);
+    assert.ok(r.body.error, "and it carries a message a café can read");
+  });
+
+  test("no raw database detail reaches the caller", async () => {
+    const h = await acceptableHandover();
+    // A handover whose bound session has been deleted underneath it: the
+    // service's own reads fail rather than its guards refusing.
+    await db.handoverSession.update({
+      where: { id: h.handoverId }, data: { stockCountSessionId: null },
+    });
+    const r = await acceptPost(incoming.email, h.handoverId, {
+      idempotencyKey: `${MARKER}-leak-${h.handoverId}`,
+    });
+    assert.ok(r.status >= 400);
+    assert.doesNotMatch(r.text, /prisma|P20\d\d|SELECT |FROM "|constraint/i);
+  });
+
+  test("a retry through the door hears the same answer", async () => {
+    const h = await acceptableHandover();
+    const key = `${MARKER}-http-retry-${h.handoverId}`;
+    const first = await acceptPost(incoming.email, h.handoverId, { idempotencyKey: key });
+    assert.equal(first.status, 200, first.text);
+
+    const retry = await acceptPost(incoming.email, h.handoverId, { idempotencyKey: key });
+    assert.equal(retry.status, 200, retry.text);
+    assert.equal(retry.body.alreadyAccepted, true);
+    assert.equal(
+      retry.body.acceptedStockCountSessionId, first.body.acceptedStockCountSessionId,
+    );
+    assert.equal(retry.body.incomingStockCustodyId, first.body.incomingStockCustodyId);
+    assert.equal(
+      await db.auditLog.count({
+        where: { cafeId: fx.cafeId, action: "HANDOVER_ACCEPTED", entityId: h.handoverId },
+      }),
+      1,
+    );
+  });
+
+  test("the route names no shift, and the branch's waiting one is found", async () => {
+    const h = await acceptableHandover();
+    const r = await acceptPost(incoming.email, h.handoverId, {
+      idempotencyKey: `${MARKER}-resolve-${h.handoverId}`,
+    });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.body.incomingShiftId, h.incomingShiftId);
+  });
+});
