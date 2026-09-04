@@ -909,6 +909,27 @@ async function refusalFrom(handoverId: string): Promise<Refused> {
 
 const codesOf = (r: Refused) => r.refusals.map((x) => x.code).sort();
 
+/**
+ * Delete a required item's line out from under the bound session.
+ *
+ * A CORRUPTION, deliberately, and the only way to reach `REQUIRED_ITEMS_MISSING`
+ * at submit any more. `startHandoverCount` builds one line per required item
+ * from the immutable snapshot, so a required item with no line cannot happen
+ * through any sequence of real actions — which is exactly why the refusal now
+ * fires on it. A shelf nobody reached is a gap the count can state (see "a
+ * count with shelves nobody reached still states a position"); a required item
+ * with no line at all means the bound session is not the count this handover
+ * planned, and nobody can count their way out of that.
+ */
+async function unlinkRequiredItem(sessionId: string, inventoryItemId: string) {
+  const line = await db.stockCountLine.findFirstOrThrow({
+    where: { sessionId, inventoryItemId },
+    select: { id: true },
+  });
+  await db.handoverStockAcknowledgement.deleteMany({ where: { stockCountLineId: line.id } });
+  await db.stockCountLine.delete({ where: { id: line.id } });
+}
+
 type FillSpec = Parameters<typeof fillLine>[2] & { itemId: string };
 
 /** A bound count in a stated status, with the given lines written. */
@@ -939,16 +960,17 @@ async function boundCount(
 describe("submit", () => {
   test("returns every applicable refusal in one result", async () => {
     const h = await freshHandover();
-    await boundCount(
+    const sessionId = await boundCount(
       h,
       [
         // A difference nobody explained…
         { itemId: items.alpha.id, counted: 8, expected: 10 },
         { itemId: items.bravo.id, counted: 4, expected: 4 },
-        // …and charlie never counted at all.
       ],
       "SUBMITTED", // …on a count nobody confirmed.
     );
+    // …and charlie has no line at all, which is the integrity gap.
+    await unlinkRequiredItem(sessionId, items.charlie.id);
 
     const refused = await refusalFrom(h.handoverId);
     assert.equal(refused.status, 409);
@@ -964,6 +986,71 @@ describe("submit", () => {
     );
     assert.equal(refused.position.handoverId, h.handoverId);
     assert.equal(refused.position.required.total, 3);
+  });
+
+  test("a count with shelves nobody reached still states a position, and names the gap", async () => {
+    // SH-21 reachability. Stating a closing position with a gap in it is a
+    // legitimate act: the outgoing hand says what they saw AND says what they
+    // did not. Refusing here made SH-20's step-5 refusal and SH-21's manager
+    // exception unreachable — the state they act on could not be produced by
+    // any sequence of real actions, only by deleting a row.
+    //
+    // The gap does not vanish; it moves to where somebody answers for it. The
+    // position still names all three unreached items, the incoming custodian
+    // reviews them, and the ACCEPTANCE is where the refusal now lives.
+    const h = await freshHandover();
+    await boundCount(h, [
+      { itemId: items.alpha.id, counted: 6, expected: 6 },
+      // bravo and charlie keep their lines and stay PENDING — in scope,
+      // nobody reached them.
+    ]);
+
+    const result = await submit(h.handoverId);
+    assert.equal(result.status, "OUTGOING_SUBMITTED");
+    assert.equal(result.alreadySubmitted, false);
+    assert.deepEqual(
+      [...result.position.required.missingItemIds].sort(),
+      [items.bravo.id, items.charlie.id].sort(),
+      "the evidence gap is stated, not erased",
+    );
+    assert.deepEqual(result.position.required.unlinkedItemIds, [], "and every item has a line");
+    assert.equal(result.position.required.satisfied, 1);
+    assert.equal(result.position.stock.uncountedActiveItems, 2);
+
+    const handover = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+      select: { status: true, submittedAt: true, acceptedAt: true, completedAt: true },
+    });
+    assert.equal(handover.status, "OUTGOING_SUBMITTED");
+    assert.ok(handover.submittedAt !== null);
+
+    // Nothing irreversible followed from it. A stated position is a claim,
+    // not a transfer.
+    assert.equal(handover.acceptedAt, null);
+    assert.equal(handover.completedAt, null);
+    assert.equal(
+      await db.handoverStockBoundary.count({ where: { handoverId: h.handoverId } }), 0,
+      "no boundary",
+    );
+    assert.equal(
+      await db.stockCountRebase.count({ where: { line: { session: { handoverId: h.handoverId } } } }),
+      0,
+      "no rebase",
+    );
+    assert.equal(
+      await db.inventoryFreeze.count({
+        where: { handoverId: h.handoverId, releasedAt: { not: null } },
+      }),
+      0,
+      "the freeze is still on",
+    );
+    assert.equal(
+      await db.handoverRequiredItem.count({ where: { handoverId: h.handoverId, omitted: true } }),
+      0,
+      "and no omission was committed — that is the acceptance's to decide",
+    );
+    const outgoing = await db.shift.findUniqueOrThrow({ where: { id: h.shiftId } });
+    assert.notEqual(outgoing.status, "CLOSED", "the outgoing shift is not stock-closed");
   });
 
   test("refuses COUNT_NOT_CONFIRMED", async () => {
@@ -987,10 +1074,13 @@ describe("submit", () => {
 
   test("refuses REQUIRED_ITEMS_MISSING and names the items", async () => {
     const h = await freshHandover();
-    await boundCount(h, [
+    const sessionId = await boundCount(h, [
       { itemId: items.alpha.id, counted: 6, expected: 6 },
-      // bravo and charlie left uncounted.
     ]);
+    // bravo and charlie have no lines: the count bound here is not the count
+    // this handover planned.
+    await unlinkRequiredItem(sessionId, items.bravo.id);
+    await unlinkRequiredItem(sessionId, items.charlie.id);
 
     const refused = await refusalFrom(h.handoverId);
     assert.deepEqual(codesOf(refused), ["REQUIRED_ITEMS_MISSING"]);
@@ -1723,7 +1813,7 @@ describe("routes", () => {
 
   test("the refusal aggregate survives serialisation", async () => {
     const h = await freshHandover();
-    await boundCount(
+    const sessionId = await boundCount(
       h,
       [
         { itemId: items.alpha.id, counted: 8, expected: 10 },
@@ -1731,6 +1821,7 @@ describe("routes", () => {
       ],
       "SUBMITTED",
     );
+    await unlinkRequiredItem(sessionId, items.charlie.id);
 
     const r = await post<{
       error: string;

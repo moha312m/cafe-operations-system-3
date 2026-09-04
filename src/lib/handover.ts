@@ -77,6 +77,7 @@ import {
 import {
   EFFECTIVE_EVIDENCE_SELECT,
   effectiveCountEvidence,
+  hasAuthoritativeObservation,
 } from "@/lib/count-evidence";
 import {
   acquireInventoryFreeze,
@@ -742,7 +743,26 @@ export type ClosingPosition = {
   handoverId: string;
   mode: HandoverStockMode;
   requiredItemTrigger: RequiredItemTrigger;
-  required: { total: number; satisfied: number; missingItemIds: string[] };
+  /**
+   * Two different absences, kept apart because they call for different acts.
+   *
+   * `missingItemIds` — a required item whose line exists and carries no
+   * authoritative observation. The evidence gap: in scope, nobody reached it.
+   * It stays in the position because it is the thing the incoming custodian,
+   * SH-20's refusal and SH-21's manager exception are all reading.
+   *
+   * `unlinkedItemIds` — a required item with no line at all. Not an evidence
+   * gap but an integrity one: `startHandoverCount` builds a line per required
+   * item from the immutable snapshot, so an item with none means the bound
+   * session is not the count this handover planned. Nobody can count their
+   * way out of that, which is why the submit refusal moved onto it.
+   */
+  required: {
+    total: number;
+    satisfied: number;
+    missingItemIds: string[];
+    unlinkedItemIds: string[];
+  };
   stock: {
     countSessionId: string | null;
     countStatus: StockCountStatus | null;
@@ -827,16 +847,29 @@ export async function deriveClosingPosition(
     line,
     evidence: effectiveCountEvidence(line),
   }));
-  const counted = resolved.filter((r) => r.evidence.countedAt !== null);
+  // Observed, not merely present. A handover count may carry a line for a
+  // shelf nobody reached, and reading "has a line" as "was counted" is how an
+  // unlooked-at shelf becomes a figure somebody answers for.
+  const counted = resolved.filter((r) => hasAuthoritativeObservation(r.line));
   // One line per item is a schema guarantee (`@@unique([sessionId,
   // inventoryItemId])`), so the two readings below cannot disagree.
   const countedItemIds = new Set(counted.map((r) => r.line.inventoryItemId));
+  const linkedItemIds = new Set(resolved.map((r) => r.line.inventoryItemId));
 
   const missingItemIds = handover.requiredItems
     .filter((item) => !countedItemIds.has(item.inventoryItemId))
     .map((item) => item.inventoryItemId);
+  const unlinkedItemIds = handover.requiredItems
+    .filter((item) => !linkedItemIds.has(item.inventoryItemId))
+    .map((item) => item.inventoryItemId);
 
-  const nonZero = resolved.filter((r) => r.evidence.varianceQuantity !== 0);
+  // A shelf nobody reached has no variance, and the resolver's collapsed zero
+  // must not be read as one. Excluded explicitly rather than left to that
+  // zero: an unobserved line owes nobody a reason, and a malformed one should
+  // not be able to demand one either.
+  const nonZero = resolved.filter(
+    (r) => hasAuthoritativeObservation(r.line) && r.evidence.varianceQuantity !== 0
+  );
 
   // Pre-existing cases at the branch, as information. A case whose evidence
   // is one of THIS count's lines is not pre-existing, it is this count's own
@@ -869,6 +902,7 @@ export async function deriveClosingPosition(
       total: handover.requiredItems.length,
       satisfied: handover.requiredItems.length - missingItemIds.length,
       missingItemIds,
+      unlinkedItemIds,
     },
     stock: {
       countSessionId: bound?.id ?? null,
@@ -1022,25 +1056,42 @@ export async function submitHandover(args: {
       });
     }
 
-    if (position.required.missingItemIds.length > 0) {
+    // ON `unlinkedItemIds`, NOT ON `missingItemIds`.
+    //
+    // This refusal used to fire whenever a required item had no
+    // AUTHORITATIVE OBSERVATION, which made an incomplete handover count
+    // unsubmittable — and so made the whole of SH-20's step-5 refusal and
+    // SH-21's manager exception unreachable from production. A branch whose
+    // count could not be finished had a shift that could not close, and the
+    // authorised way out could not be requested because the state it acts on
+    // could not be produced.
+    //
+    // Stating a position with a gap in it is a legitimate act, so the gap
+    // does not refuse here; it is NAMED here — `missingItemIds` survives
+    // untouched, the incoming custodian reviews it, and SH-20 refuses the
+    // ACCEPTANCE unless a manager waives it on the record. The refusal that
+    // remains is the one nobody can count their way out of: a required item
+    // with no line at all means the bound session is not the count this
+    // handover planned.
+    if (position.required.unlinkedItemIds.length > 0) {
       // Named from the immutable snapshot, so a custodian reads the names the
       // handover was planned with rather than whatever the shelf calls them
       // today.
       const missing = await tx.handoverRequiredItem.findMany({
         where: {
           handoverId: handover.id,
-          inventoryItemId: { in: position.required.missingItemIds },
+          inventoryItemId: { in: position.required.unlinkedItemIds },
         },
         select: { itemNameSnapshot: true },
         orderBy: { itemNameSnapshot: "asc" },
       });
       refusals.push({
         code: "REQUIRED_ITEMS_MISSING",
-        count: position.required.missingItemIds.length,
-        message: `في أصناف مطلوبة لسه ماتعدتش (${missing.length}): ${missing
+        count: position.required.unlinkedItemIds.length,
+        message: `في أصناف مطلوبة مش موجودة في الجرد أصلاً (${missing.length}): ${missing
           .map((item) => item.itemNameSnapshot)
           .join("، ")}`,
-        ids: position.required.missingItemIds,
+        ids: position.required.unlinkedItemIds,
       });
     }
 
