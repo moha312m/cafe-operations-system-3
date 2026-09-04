@@ -415,3 +415,205 @@ describe("COUNT-018 the relaxation reaches no other context", () => {
     assert.equal(r.body.skippedUnobserved, 0, "nothing to skip, and the field says so");
   });
 });
+
+// ─────────────────── confirming over the gaps (T2 / A5) ───────────────────
+//
+// WHAT CONFIRMING MEANS HERE. Not "every shelf was counted" — that claim is
+// exactly what the session no longer makes. It means: every observation that
+// was actually made is final, and the shelves nobody reached are frozen as
+// unreached and can no longer be filled in on this round. Capture closes for
+// the whole session, including for the lines that were never touched, so
+// there is no window in which somebody can quietly turn a gap into an
+// observation after the count was signed off.
+//
+// The way back is a recount round — a new session, openly requested, with its
+// own evidence. Not a late edit to a closed one.
+
+const confirm = (id: string, idempotencyKey: string) =>
+  as<{ status?: string; alreadyConfirmed?: boolean; varianceCaseIds?: string[]; error?: string }>(
+    fx.manager.email, `/api/stock-counts/${id}/confirm`,
+    { method: "POST", body: JSON.stringify({ idempotencyKey }) },
+  );
+
+const patch = (sessionId: string, lineId: string, countedQuantity: number) =>
+  as<{ error?: string }>(fx.manager.email, `/api/stock-counts/${sessionId}/lines/${lineId}`, {
+    method: "PATCH", body: JSON.stringify({ countedQuantity }),
+  });
+
+describe("COUNT-018 confirming a handover count over the shelves nobody reached", () => {
+  test("the session confirms and the three gaps stay gaps", async () => {
+    const s = await session("HANDOVER", [10, 9.8, 10], 3);
+    assert.ok((await submit(s.id)).status < 300);
+
+    const r = await confirm(s.id, `${s.id}-confirm`);
+    assert.ok(r.status < 300, `expected confirm to succeed, got ${r.status}: ${r.text}`);
+    assert.equal(r.body.status, "CONFIRMED");
+
+    const still = await db.stockCountSession.findUniqueOrThrow({ where: { id: s.id } });
+    assert.equal(still.status, "CONFIRMED");
+    assert.ok(still.confirmedAt !== null);
+
+    await assertUntouched(s.unobservedLineIds);
+    assert.equal(
+      await db.stockCountLine.count({ where: { sessionId: s.id, disposition: "PENDING" } }),
+      3,
+      "three lines are frozen as unobserved, not settled and not deleted"
+    );
+  });
+
+  test("confirming fabricates no case and no evidence for them", async () => {
+    const s = await session("HANDOVER", [10, 9.8, 10], 3);
+    assert.ok((await submit(s.id)).status < 300);
+    const r = await confirm(s.id, `${s.id}-confirm`);
+    assert.ok(r.status < 300, r.text);
+
+    // A handover count defers case-opening to the acceptance whatever it
+    // contains, so this is zero for the observed lines too — and it must be
+    // zero for the unobserved ones under every later path as well.
+    assert.deepEqual(r.body.varianceCaseIds, []);
+    assert.equal(
+      await db.varianceCase.count({ where: { stockCountLine: { sessionId: s.id } } }), 0
+    );
+    assert.equal(
+      await db.stockCountRecount.count({ where: { lineId: { in: s.unobservedLineIds } } }), 0
+    );
+    assert.equal(
+      await db.stockCountCorrection.count({ where: { lineId: { in: s.unobservedLineIds } } }), 0
+    );
+    assert.equal(
+      await db.stockCountRebase.count({ where: { line: { sessionId: s.id } } }), 0,
+      "confirming still does not move stock"
+    );
+  });
+
+  test("capture is closed afterwards, for the gaps as much as for the rest", async () => {
+    const s = await session("HANDOVER", [10, 9.8, 10], 3);
+    assert.ok((await submit(s.id)).status < 300);
+    assert.ok((await confirm(s.id, `${s.id}-confirm`)).status < 300);
+
+    // The whole point of freezing them: a gap cannot be back-filled into an
+    // observation after the count was signed off.
+    const late = await patch(s.id, s.unobservedLineIds[0], 7);
+    assert.equal(late.status, 409, `expected capture to be closed, got ${late.status}: ${late.text}`);
+    assert.match(late.body.error ?? "", /اتقفل/);
+    await assertUntouched(s.unobservedLineIds);
+
+    // And the observed lines are just as closed.
+    const alsoLate = await patch(s.id, s.observedLineIds[0], 7);
+    assert.equal(alsoLate.status, 409, alsoLate.text);
+  });
+
+  test("neither a recount nor a correction can turn a gap into an observation", async () => {
+    const s = await session("HANDOVER", [10, 9.8, 10], 3);
+    assert.ok((await submit(s.id)).status < 300);
+    const gap = s.unobservedLineIds[0];
+    const { recordRecount } = await import("@/lib/recount");
+
+    // Even before the count closes, a gap is not recountable: a recount is a
+    // SECOND look, and there was never a first one to dispute.
+    await assert.rejects(
+      () => recordRecount({ lineId: gap, countedQuantity: 7, recounterId: fx.manager.id }),
+      (e: Error) => /العد الأول/.test(e.message),
+      "a recount may not stand in for the count that never happened"
+    );
+
+    assert.ok((await confirm(s.id, `${s.id}-confirm`)).status < 300);
+
+    // And once the round is closed the whole session refuses, ahead of any
+    // question about this particular line.
+    await assert.rejects(
+      () => recordRecount({ lineId: gap, countedQuantity: 7, recounterId: fx.manager.id }),
+      (e: Error) => /اتقفل خلاص/.test(e.message),
+      "a closed round is closed to recounts"
+    );
+
+    const reason = await db.reasonCode.create({
+      data: { cafeId: fx.cafeId, domain: "STOCK", code: `${fx.marker}-C018`, label: "تصحيح" },
+    });
+    const { createCountCorrection } = await import("@/lib/stock-count");
+    await assert.rejects(
+      () => createCountCorrection({
+        lineId: gap, newCountedQuantity: 7, reasonCodeId: reason.id, actorId: fx.manager.id,
+      }),
+      // A correction supersedes a FIGURE. There is no figure here to supersede.
+      (e: Error) => /ما اتعدش/.test(e.message),
+      "a correction may not invent the figure it claims to correct"
+    );
+
+    await assertUntouched(s.unobservedLineIds);
+  });
+
+  test("a repeat confirm is still idempotent and still opens nothing", async () => {
+    const s = await session("HANDOVER", [10, 9.8, 10], 3);
+    assert.ok((await submit(s.id)).status < 300);
+    const first = await confirm(s.id, `${s.id}-confirm`);
+    assert.ok(first.status < 300, first.text);
+    const again = await confirm(s.id, `${s.id}-confirm`);
+    assert.ok(again.status < 300, again.text);
+    assert.equal(again.body.alreadyConfirmed, true);
+    assert.equal(
+      await db.stockCountLine.count({ where: { sessionId: s.id, disposition: "PENDING" } }), 3
+    );
+    await assertUntouched(s.unobservedLineIds);
+  });
+});
+
+describe("COUNT-018 confirm strictness outside HANDOVER", () => {
+  /**
+   * A session parked at SUBMITTED with one line still PENDING.
+   *
+   * Written directly, because the submit gate above already refuses to
+   * produce this for a non-HANDOVER context — which is the point. The
+   * question here is whether the CONFIRM gate is independently scoped to
+   * HANDOVER, or whether it was only ever protected by the submit gate in
+   * front of it. Two gates, proved separately.
+   */
+  async function parkedAtSubmitted(context: Ctx) {
+    const s = await session(context, [10], 1);
+    await db.stockCountLine.updateMany({
+      where: { id: { in: s.observedLineIds } },
+      data: { disposition: "WITHIN_TOLERANCE" },
+    });
+    await db.stockCountSession.update({
+      where: { id: s.id }, data: { status: "SUBMITTED", submittedAt: new Date() },
+    });
+    return s;
+  }
+
+  for (const context of ["NONE", "BRANCH_OPENING_VERIFICATION"] as const) {
+    test(`a ${context} count still refuses to confirm over an unsettled line`, async () => {
+      const s = await parkedAtSubmitted(context);
+      const r = await confirm(s.id, `${s.id}-confirm`);
+      assert.equal(r.status, 409, `expected the old refusal, got ${r.status}: ${r.text}`);
+      assert.match(r.body.error ?? "", /مش مقفولة/);
+
+      const still = await db.stockCountSession.findUniqueOrThrow({ where: { id: s.id } });
+      assert.equal(still.status, "SUBMITTED", "a refused confirm changes nothing");
+      assert.equal(still.confirmedAt, null);
+      await assertUntouched(s.unobservedLineIds);
+    });
+  }
+
+  test("a HANDOVER count still refuses to confirm over a line that WAS observed and left unsettled", async () => {
+    // The relaxation admits a line the count never touched. A line somebody
+    // counted and left contested is a different thing entirely: it has a
+    // figure, a count point and an unanswered question, and confirming over
+    // it would close a dispute nobody resolved.
+    const s = await session("HANDOVER", [10, 4], 1);
+    assert.ok((await submit(s.id)).status < 300);
+    const contested = await db.stockCountLine.findMany({
+      where: { sessionId: s.id, disposition: { in: ["OUTSIDE_TOLERANCE", "RECOUNT_REQUIRED"] } },
+      select: { id: true },
+    });
+    assert.equal(contested.length, 1, "the 4-against-10 line is outside tolerance");
+
+    const r = await confirm(s.id, `${s.id}-confirm`);
+    assert.equal(r.status, 409, `expected a refusal, got ${r.status}: ${r.text}`);
+    assert.match(r.body.error ?? "", /مش مقفولة/);
+    assert.ok(
+      (r.body.error ?? "").includes(contested[0].id),
+      "and the refusal names the line, not the gap"
+    );
+    assert.ok(!(r.body.error ?? "").includes(s.unobservedLineIds[0]));
+  });
+});

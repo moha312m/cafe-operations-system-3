@@ -1092,7 +1092,24 @@ export async function confirmCountSession(args: {
     throw new ApiError(409, "لازم تسلّم الجرد الأول قبل ما تأكده");
   }
 
-  const unsettled = session.lines.filter((l) => !isTerminal(l.disposition));
+  // A line the count never reached is settled in the only way it can be:
+  // frozen as unreached. `submitCountSession` skipped it rather than judging
+  // it, so it is still exactly as the count created it, and confirming says
+  // the round is over rather than that the shelf was counted. HANDOVER only,
+  // for the reasons set out above `SubmitCountResult`.
+  //
+  // The two conditions are both load-bearing. PENDING alone would admit a
+  // line whose figure was written and then wiped; unobserved alone would
+  // admit the malformed figure-with-no-cursor a fixture can construct. And an
+  // OBSERVED line left contested — outside tolerance, or awaiting a recount —
+  // is refused as it always was: that is a dispute somebody has to answer,
+  // not a shelf nobody reached.
+  const mayFreezeGaps = session.accountabilityContext === "HANDOVER";
+  const unsettled = session.lines.filter(
+    (l) =>
+      !isTerminal(l.disposition) &&
+      !(mayFreezeGaps && l.disposition === "PENDING" && !hasAuthoritativeObservation(l))
+  );
   if (unsettled.length > 0) {
     throw new ApiError(
       409,
