@@ -1358,12 +1358,22 @@ describe("SH-20 accepted variance and accountability", () => {
     const result = await accept(h.handoverId);
 
     assert.equal(result.varianceCaseIds.length, 1);
-    // Steps 10 through 16 all completed beside it.
+    // Steps 10 through 16 all completed beside it. A case commits in an
+    // investigation-ready state; it is not a blocker on the handover that
+    // found it, whatever the amount.
     assert.equal(result.status, "COMPLETED");
     assert.equal(result.outgoingShiftStatus, "CLOSED");
     assert.ok(result.incomingStockCustodyId);
     const shift = await db.shift.findUniqueOrThrow({ where: { id: h.incomingShiftId } });
     assert.equal(shift.custodyGateReason, null, "and the arriving shift may sell");
+    const freeze = await db.inventoryFreeze.findUniqueOrThrow({
+      where: { handoverId: h.handoverId },
+    });
+    assert.ok(freeze.releasedAt, "and the shelf was unfrozen");
+    const opened = await db.varianceCase.findUniqueOrThrow({
+      where: { id: result.varianceCaseIds[0] },
+    });
+    assert.equal(opened.status, "OPEN", "open, and waiting for somebody to investigate it");
   });
 
   test("the verdict is SH-17's, and a span accompanies an unresolved one", async () => {
@@ -1531,6 +1541,31 @@ describe("SH-20 target resolution, custody transfer and the incoming gate", () =
     assert.equal(after.target, "SHIFT_TO_SHIFT");
     assert.equal(after.resolvedTarget, "SHIFT_TO_SHIFT");
     assert.equal(result.handoverTarget, "SHIFT_TO_SHIFT");
+  });
+
+  test("a legacy shift's absent readiness evidence is left absent", async () => {
+    // A shift closed before custody existed truthfully has no answer for
+    // either column, and NULL there means "not recorded" rather than "not
+    // ready". Acceptance updates exactly the arriving shift it resolved, so a
+    // legacy pair elsewhere on the branch must come through untouched — a
+    // backfill here would invent a readiness nobody established.
+    const h = await acceptableHandover();
+    const legacy = await db.shift.create({
+      data: {
+        cafeId: fx.cafeId, branchId: fx.branchId, cashierId: fx.cashier.id,
+        shiftNumber: 990001, openingCashAmount: 0, expectedCashAmount: 0,
+        status: "CLOSED", closedAt: new Date(),
+        custodyGateReason: null, custodyReadyAt: null,
+      },
+    });
+
+    await accept(h.handoverId);
+
+    const after = await db.shift.findUniqueOrThrow({ where: { id: legacy.id } });
+    assert.equal(after.custodyGateReason, null);
+    assert.equal(after.custodyReadyAt, null, "still not recorded, not retroactively ready");
+    assert.equal(after.status, "CLOSED");
+    assert.equal(after.stockClosedAt, null);
   });
 
   test("a sale on the arriving shift is attributed to it", async () => {
