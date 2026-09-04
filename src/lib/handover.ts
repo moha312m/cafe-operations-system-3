@@ -1997,6 +1997,26 @@ async function resolveIncomingShift(
   return candidates[0].id;
 }
 
+/**
+ * A failure seam for the rollback matrix, and nothing else.
+ *
+ * Acceptance's whole claim is that it is one transaction, and the only honest
+ * way to prove a rollback is total is to fail inside it at each step and look
+ * at what committed. That cannot be provoked from outside: every step succeeds
+ * on good evidence, and mutilating the fixture to make one fail would test the
+ * mutilation rather than the transaction.
+ *
+ * So the seam is here, and it is deliberately narrow. It is optional; it is
+ * absent from `AcceptResult`; the route has no field that could carry it —
+ * `acceptSchema` is `.strict()` — so no request body can reach it; and it can
+ * only ever throw, because its return value is discarded. A production caller
+ * that never passes it gets a function with no seam at all.
+ */
+export type AcceptanceCheckpoint = (
+  step: number,
+  tx: Prisma.TransactionClient
+) => Promise<void>;
+
 export const HANDOVER_ACCEPTED_AUDIT_ACTION = "HANDOVER_ACCEPTED";
 
 export type AcceptResult = {
@@ -2091,6 +2111,13 @@ export async function acceptHandover(args: {
   idempotencyKey: string;
   cafeId: string;
   viewerBranchId: string | null;
+  /**
+   * Test-only failure seam. See {@link AcceptanceCheckpoint}.
+   *
+   * The route does not forward it and cannot: `acceptSchema` is `.strict()`
+   * and has no field of this name, so no request body can reach it.
+   */
+  __afterStep?: AcceptanceCheckpoint;
 }): Promise<AcceptResult> {
   return db.$transaction(async (tx) => {
     // 1. The row lock, first, so everything read below is the state written to.
@@ -2182,9 +2209,13 @@ async function runAcceptance(
     handoverId: string;
     incomingUserId: string;
     idempotencyKey: string;
+    __afterStep?: AcceptanceCheckpoint;
   }
 ): Promise<AcceptResult> {
   const { handover, acceptedSessionId } = evidence;
+  const checkpoint = async (step: number) => {
+    if (args.__afterStep) await args.__afterStep(step, tx);
+  };
 
   // ── 5. Required items ──
   //
@@ -2202,6 +2233,7 @@ async function runAcceptance(
   if (settled.omitted.length > 0) {
     throw new ApiError(409, REQUIRED_ITEMS_OMITTED);
   }
+  await checkpoint(5);
 
   // ── 6. Rebase, under the freeze that protected the count ──
   //
@@ -2215,6 +2247,7 @@ async function runAcceptance(
     idempotencyKey: `${handover.id}:rebase`,
     freezeToken: handover.id,
   });
+  await checkpoint(6);
 
   // ── 7. The closing position ──
   //
@@ -2240,6 +2273,7 @@ async function runAcceptance(
   const boundaryByItemId = new Map(
     boundaryRows.map((row) => [row.inventoryItemId, row.id])
   );
+  await checkpoint(7);
 
   // ── 8. The accepted evidence becomes immutable ──
   //
@@ -2251,6 +2285,7 @@ async function runAcceptance(
     handoverId: handover.id,
     actorId: args.incomingUserId,
   });
+  await checkpoint(8);
 
   // ── 9. Accepted variance and its attribution ──
   //
@@ -2268,6 +2303,7 @@ async function runAcceptance(
     boundaryByItemId,
     openedById: args.incomingUserId,
   });
+  await checkpoint(9);
 
   // One instant, reused at steps 10, 11, 12, 13 and 14. Custody moving, the
   // arriving shift becoming operational and the outgoing one closing are one
@@ -2303,6 +2339,7 @@ async function runAcceptance(
     acceptedById: args.incomingUserId,
     acceptedAt,
   });
+  await checkpoint(10);
 
   // ── 11. CASH custody moves, when one is still open to move ──
   //
@@ -2318,6 +2355,7 @@ async function runAcceptance(
     incomingUserId: args.incomingUserId,
     acceptedAt,
   });
+  await checkpoint(11);
 
   // ── 12. The arriving shift may sell ──
   //
@@ -2328,6 +2366,7 @@ async function runAcceptance(
     where: { id: evidence.incomingShiftId },
     data: { custodyGateReason: null, custodyReadyAt: acceptedAt },
   });
+  await checkpoint(12);
 
   // ── 13. The outgoing shift closes ──
   const outgoing = await finalizeOutgoingShift(tx, {
@@ -2335,6 +2374,7 @@ async function runAcceptance(
     closedById: args.incomingUserId,
     at: acceptedAt,
   });
+  await checkpoint(13);
 
   // ── 14. The record ──
   //
@@ -2365,6 +2405,7 @@ async function runAcceptance(
     },
   });
   if (completed.count === 0) throw new ApiError(409, NOT_ACCEPTABLE);
+  await checkpoint(14);
 
   // ── 15. The shelf is unfrozen ──
   //
