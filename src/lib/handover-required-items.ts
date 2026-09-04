@@ -7,6 +7,10 @@ import type {
   RequiredItemTrigger,
 } from "@prisma/client";
 import { ApiError } from "@/lib/api";
+import {
+  EFFECTIVE_EVIDENCE_SELECT,
+  hasAuthoritativeObservation,
+} from "@/lib/count-evidence";
 import { resolveBranchHandoverConfigReadOnly } from "@/lib/handover-config";
 import {
   fullCountDueInTransaction,
@@ -311,7 +315,9 @@ export async function settleRequiredItems(
 
   const session = await tx.stockCountSession.findUnique({
     where: { id: args.acceptedSessionId },
-    include: { lines: { select: { id: true, inventoryItemId: true } } },
+    include: {
+      lines: { select: { ...EFFECTIVE_EVIDENCE_SELECT, inventoryItemId: true } },
+    },
   });
   if (!session) throw new ApiError(404, "stock count session not found");
   if (session.cafeId !== handover.cafeId || session.branchId !== handover.branchId) {
@@ -335,7 +341,26 @@ export async function settleRequiredItems(
     conflict("final accepted stock-count evidence cannot be replaced");
   }
 
-  const lineByItem = new Map(session.lines.map((line) => [line.inventoryItemId, line.id]));
+  // SATISFACTION IS AN OBSERVATION, NOT A ROW.
+  //
+  // This used to ask whether the accepted session held a LINE for each
+  // required item. That was the same question as "was it counted" only while
+  // every confirmed session was fully counted. A handover count may now close
+  // over shelves nobody reached (SH-21), and each of those still has a line —
+  // so line-existence would report every one of them satisfied, the
+  // acceptance would find nothing omitted, SH-20 would not refuse and SH-21
+  // would never be consulted. A handover would complete with shelves recorded
+  // as verified that nobody had looked at, which is the exact outcome this
+  // whole milestone exists to make impossible.
+  //
+  // `hasAuthoritativeObservation` resolves recount and correction precedence
+  // first, so an item observed only by a recount still satisfies its row: the
+  // observation is real, it just lives on the recount.
+  const lineByItem = new Map(
+    session.lines
+      .filter((line) => hasAuthoritativeObservation(line))
+      .map((line) => [line.inventoryItemId, line.id])
+  );
   const normalizedNote = args.omissionNote?.trim() || null;
   const desired = handover.requiredItems.map((required) => {
     const lineId = lineByItem.get(required.inventoryItemId) ?? null;

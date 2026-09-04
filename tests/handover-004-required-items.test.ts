@@ -123,6 +123,12 @@ async function createCountSession(args: {
   type?: "CRITICAL" | "FULL";
   lockedByHandoverId?: string | null;
   itemIds?: string[];
+  /**
+   * Items given a line and never observed: in scope, PENDING, no figure and
+   * no count point. What a handover count leaves behind for a shelf nobody
+   * reached, and the thing settlement must not mistake for evidence.
+   */
+  unobservedItemIds?: string[];
 }) {
   const session = await db.stockCountSession.create({
     data: {
@@ -153,8 +159,20 @@ async function createCountSession(args: {
         varianceQuantity: 0,
         countedAt: new Date(),
         counterId: args.userId ?? userId,
+        // The count point capture takes under the item's row lock. Written
+        // here because a figure and its cursor are one observation: capture
+        // never produces one without the other, and a fixture that did would
+        // be modelling a state production cannot reach.
+        itemVersion: BigInt(1),
+        expectedBasis: "LOCKED_ITEM_VERSION",
         disposition: "WITHIN_TOLERANCE",
       },
+    });
+  }
+  for (const inventoryItemId of args.unobservedItemIds ?? []) {
+    const item = await db.inventoryItem.findUniqueOrThrow({ where: { id: inventoryItemId } });
+    await db.stockCountLine.create({
+      data: { sessionId: session.id, inventoryItemId, unit: item.unit },
     });
   }
   return session;
@@ -582,6 +600,100 @@ describe("HANDOVER-004 provisional settlement", () => {
     assert.equal(omitted.omitted, true);
     assert.equal(omitted.omissionNote, "manager review");
     assert.equal(rows.some((row) => row.inventoryItemId === archivedId), false);
+  });
+
+  test("a line nobody counted does not satisfy a required item", async () => {
+    // SH-21 reachability. `settleRequiredItems` asked whether the accepted
+    // session had a LINE for each required item. That was the same question as
+    // "was it counted" only while every confirmed session was fully counted;
+    // once a handover count could close over shelves nobody reached, the two
+    // came apart — and the line-existence reading answered "satisfied" for
+    // every one of them.
+    //
+    // Which would have been the worst possible failure of this milestone: the
+    // acceptance would have found nothing omitted, SH-20 would not have
+    // refused, SH-21 would never have been consulted, and the handover would
+    // have completed with three shelves recorded as verified that nobody had
+    // looked at.
+    const plan = manualPlan("SHIFT_TO_SHIFT", [manualPlan().items[0], {
+      inventoryItemId: regularId,
+      itemNameSnapshot: `${MARKER} regular`,
+      unitSnapshot: "LITER",
+      isCriticalSnapshot: false,
+    }]);
+    const handover = await persistedHandover(plan);
+    const session = await createCountSession({
+      handoverId: handover.id,
+      itemIds: [criticalId],
+      // In scope, with a line, never observed.
+      unobservedItemIds: [regularId],
+    });
+
+    const { settleRequiredItems } = await requiredItemsLib();
+    const result = await db.$transaction((tx) => settleRequiredItems(tx, {
+      handoverId: handover.id, acceptedSessionId: session.id, omissionNote: "manager review",
+    }));
+
+    assert.deepEqual(result.omitted, [{
+      inventoryItemId: regularId,
+      itemNameSnapshot: `${MARKER} regular`,
+      omissionNote: "manager review",
+    }], "having a line is not having been counted");
+
+    const rows = await db.handoverRequiredItem.findMany({
+      where: { handoverId: handover.id }, orderBy: { inventoryItemId: "asc" },
+    });
+    const observed = rows.find((row) => row.inventoryItemId === criticalId)!;
+    const unobserved = rows.find((row) => row.inventoryItemId === regularId)!;
+    assert.ok(observed.satisfiedByLineId, "the shelf somebody reached is satisfied by its line");
+    assert.equal(observed.omitted, false);
+    assert.equal(
+      unobserved.satisfiedByLineId, null,
+      "and the shelf nobody reached cites no evidence, because there is none",
+    );
+    assert.equal(unobserved.omitted, true);
+    assert.equal(unobserved.omissionNote, "manager review");
+
+    // The line itself is untouched: settlement records a verdict about the
+    // required item, and invents nothing about the count.
+    const line = await db.stockCountLine.findFirstOrThrow({
+      where: { sessionId: session.id, inventoryItemId: regularId },
+    });
+    assert.equal(line.disposition, "PENDING");
+    assert.equal(line.countedQuantity, null);
+    assert.equal(line.itemVersion, null);
+  });
+
+  test("an item observed only by a recount still satisfies its required row", async () => {
+    // Satisfaction follows the evidence in force, not the first count's
+    // columns: a line whose figure was superseded by a recount was observed,
+    // and the recount is where the observation lives.
+    const handover = await persistedHandover();
+    const session = await createCountSession({
+      handoverId: handover.id, itemIds: [], unobservedItemIds: [criticalId],
+    });
+    const line = await db.stockCountLine.findFirstOrThrow({
+      where: { sessionId: session.id, inventoryItemId: criticalId },
+      select: { id: true },
+    });
+    await db.stockCountRecount.create({
+      data: {
+        lineId: line.id, attempt: 1, kind: "INDEPENDENT",
+        countedQuantity: 3, expectedQuantity: 3, varianceQuantity: 0,
+        itemVersion: BigInt(4), countedAt: new Date(), counterId: userId, resolved: true,
+      },
+    });
+
+    const { settleRequiredItems } = await requiredItemsLib();
+    const result = await db.$transaction((tx) => settleRequiredItems(tx, {
+      handoverId: handover.id, acceptedSessionId: session.id,
+    }));
+    assert.deepEqual(result.omitted, [], "a recount is somebody standing at the shelf");
+    const row = await db.handoverRequiredItem.findFirstOrThrow({
+      where: { handoverId: handover.id, inventoryItemId: criticalId },
+    });
+    assert.equal(row.satisfiedByLineId, line.id);
+    assert.equal(row.omitted, false);
   });
 
   test("blank omission note becomes null and settlement never writes final handover fields", async () => {
