@@ -101,11 +101,6 @@ async function restoreItems() {
       },
     });
   }
-  // Items a case added to the branch are removed rather than left to widen
-  // the next case's count scope.
-  await db.inventoryItem.deleteMany({
-    where: { branchId: fx.branchId, name: { startsWith: `${fx.marker} extra` } },
-  });
 }
 
 /**
@@ -151,6 +146,11 @@ async function resetBranch(branchId: string) {
   await db.custodyPeriod.updateMany({ where: { branchId }, data: { previousPeriodId: null } });
   await db.custodyPeriod.deleteMany({ where: { branchId } });
   await db.shift.deleteMany({ where: { branchId } });
+  // Items a case added are removed only once every row that cites them is
+  // gone — a boundary or a ledger row would otherwise pin them.
+  await db.inventoryItem.deleteMany({
+    where: { branchId, name: { contains: " extra " } },
+  });
 }
 
 async function openOperationalShift(
@@ -296,6 +296,21 @@ async function walkTheCount(sessionId: string, counted: Record<string, number> =
   for (const line of unsettled) {
     const r = await acceptVariance(fx.manager.email, sessionId, line.id, stockReasonId);
     assert.ok(r.status < 300, `accept-variance failed: ${r.text}`);
+  }
+
+  // A difference the tolerance FORGAVE is settled already, but the handover
+  // still refuses to be submitted while any non-zero variance has no stated
+  // reason. Stating it is the capture step's job, and this is the fixture
+  // standing in for it.
+  const forgiven = await db.stockCountLine.findMany({
+    where: { sessionId, disposition: "WITHIN_TOLERANCE", reasonCodeId: null },
+    select: { id: true, varianceQuantity: true },
+  });
+  for (const line of forgiven) {
+    if (line.varianceQuantity === null || Number(line.varianceQuantity) === 0) continue;
+    await db.stockCountLine.update({
+      where: { id: line.id }, data: { reasonCodeId: stockReasonId },
+    });
   }
   return lines.map((l) => l.id);
 }
@@ -853,6 +868,867 @@ describe("SH-20 acceptance entry, lock and replay", () => {
       () => accept(h.handoverId, { idempotencyKey: h.key, cafeId: other.cafeId }),
       statusIs(404),
       "replaying is still reading somebody's record, and tenancy is checked first",
+    );
+  });
+});
+
+/** A non-critical item of this branch: in the shelf, out of a CRITICAL count. */
+async function extraItem(stock = 7) {
+  return countItem(fx, `extra ${Math.random().toString(36).slice(2, 8)}`, {
+    stock, isCritical: false,
+  });
+}
+
+// ═════════════ T5 · what was asked for must be counted ═══════════════════
+
+describe("SH-20 required-item settlement", () => {
+  test("every required item is paired with the line that satisfied it", async () => {
+    const h = await acceptableHandover();
+    const result = await accept(h.handoverId);
+
+    const required = await db.handoverRequiredItem.findMany({
+      where: { handoverId: h.handoverId },
+    });
+    assert.ok(required.length > 0, "the fixture has something to require");
+    for (const item of required) {
+      assert.ok(item.satisfiedByLineId, `${item.itemNameSnapshot} was not paired`);
+      assert.equal(item.omitted, false);
+      assert.equal(
+        item.omissionNote, null,
+        "SH-20 never writes an omission note — that is SH-21's authorisation evidence",
+      );
+    }
+    assert.equal(result.requiredItems.satisfied, required.length);
+    assert.deepEqual(result.requiredItems.omitted, []);
+
+    // The pairing is against the ACCEPTED session, not any sibling of it.
+    const lineIds = new Set(
+      (await db.stockCountLine.findMany({
+        where: { sessionId: h.sessionId }, select: { id: true },
+      })).map((l) => l.id),
+    );
+    for (const item of required) {
+      assert.ok(lineIds.has(item.satisfiedByLineId!), "paired outside the accepted session");
+    }
+  });
+
+  test("a required item with no line refuses the acceptance and writes nothing", async () => {
+    const h = await acceptableHandover();
+    // The line that satisfied one required item disappears between review and
+    // acceptance. Settlement is the only thing that can notice, and its
+    // refusal must leave the required rows exactly as it found them.
+    const orphaned = await db.stockCountLine.findFirstOrThrow({
+      where: { sessionId: h.sessionId, inventoryItemId: items.charlie.id },
+      select: { id: true, inventoryItemId: true },
+    });
+    await db.handoverStockAcknowledgement.deleteMany({
+      where: { stockCountLineId: orphaned.id },
+    });
+    await db.stockCountLine.delete({ where: { id: orphaned.id } });
+
+    await assert.rejects(() => accept(h.handoverId), statusIs(409));
+
+    const required = await db.handoverRequiredItem.findMany({
+      where: { handoverId: h.handoverId },
+    });
+    for (const item of required) {
+      assert.equal(
+        item.satisfiedByLineId, null,
+        "the settlement that ran moments ago rolled back with the refusal",
+      );
+      assert.equal(item.omitted, false, "`omitted` is untouched by a refused accept");
+      assert.equal(item.omissionNote, null);
+    }
+    const handover = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+    });
+    assert.equal(handover.acceptedStockCountSessionId, null);
+    assert.notEqual(handover.status, "COMPLETED");
+  });
+
+  test("the snapshot survives a rename and an archive between count and accept", async () => {
+    const h = await acceptableHandover();
+    const before = await db.handoverRequiredItem.findMany({
+      where: { handoverId: h.handoverId },
+      orderBy: { inventoryItemId: "asc" },
+    });
+
+    await db.inventoryItem.update({
+      where: { id: items.bravo.id },
+      data: { name: `${fx.marker} renamed bravo`, isActive: false, archivedAt: new Date() },
+    });
+
+    await accept(h.handoverId);
+
+    const after = await db.handoverRequiredItem.findMany({
+      where: { handoverId: h.handoverId },
+      orderBy: { inventoryItemId: "asc" },
+    });
+    for (const [index, row] of after.entries()) {
+      assert.equal(
+        row.itemNameSnapshot, before[index].itemNameSnapshot,
+        "the snapshot names the item the handover was planned with, not today's name",
+      );
+      assert.equal(row.unitSnapshot, before[index].unitSnapshot);
+      assert.equal(row.isCriticalSnapshot, before[index].isCriticalSnapshot);
+      assert.ok(row.satisfiedByLineId, "and the pairing still resolves");
+    }
+  });
+
+  test("the accepted-session pointer is not persisted before settlement runs", async () => {
+    // RULING R-A, asserted through the outcome it protects. Had step 4
+    // persisted `acceptedStockCountSessionId`, `settleRequiredItems` would
+    // have taken its immutability branch — every `satisfiedByLineId` is NULL
+    // on a first accept, so the desired state is not already exact — and
+    // thrown "final required-item settlement is immutable". A first accept
+    // that completes with every pairing written is only reachable in the
+    // resolve-then-persist order.
+    const h = await acceptableHandover();
+    const result = await accept(h.handoverId);
+    assert.equal(result.status, "COMPLETED");
+    assert.equal(
+      await db.handoverRequiredItem.count({
+        where: { handoverId: h.handoverId, satisfiedByLineId: null },
+      }),
+      0,
+    );
+    const handover = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+    });
+    assert.equal(handover.acceptedStockCountSessionId, h.sessionId);
+  });
+});
+
+// ═══════════ T6 · the shelf is rebased under the freeze ══════════════════
+
+describe("SH-20 stock rebase inside the acceptance", () => {
+  test("the accepted session is rebased while the freeze is still held", async () => {
+    const h = await acceptableHandover({ [items.alpha.id]: 9 });
+    const before = await db.inventoryItem.findUniqueOrThrow({
+      where: { id: items.alpha.id },
+    });
+
+    const result = await accept(h.handoverId);
+
+    assert.ok(result.rebase, "the acceptance carries the real rebase result");
+    assert.equal(result.rebase!.sessionId, h.sessionId);
+    assert.ok(result.rebase!.itemsRebased > 0);
+
+    const after = await db.inventoryItem.findUniqueOrThrow({ where: { id: items.alpha.id } });
+    assert.equal(
+      Number(after.currentStock), 9,
+      "the counted figure, with no movement above the cursor to replay",
+    );
+    assert.equal(
+      after.ledgerVersion, before.ledgerVersion + BigInt(1),
+      "exactly one version above the prior — it went through the ledger's door",
+    );
+
+    const ledger = await db.inventoryTransaction.findMany({
+      where: { inventoryItemId: items.alpha.id, type: "COUNT_REBASE" },
+    });
+    assert.equal(ledger.length, 1, "one rebase, one ledger row");
+    assert.equal(ledger[0].itemVersion, after.ledgerVersion);
+
+    // Scoped to this session: `STOCK_REBASED` rows are evidence and are not
+    // cleared between cases, so counting by item alone would count history.
+    const rebaseAudits = await db.auditLog.findMany({
+      where: { cafeId: fx.cafeId, action: "STOCK_REBASED", entityId: items.alpha.id },
+    });
+    assert.equal(
+      rebaseAudits.filter(
+        (row) => (row.details as Record<string, unknown>).sessionId === h.sessionId,
+      ).length,
+      1,
+      "and one audit row saying who moved it and why",
+    );
+  });
+
+  test("a movement made after the count point is replayed onto the rebase", async () => {
+    const h = await acceptableHandover({ [items.alpha.id]: 9 });
+    // A sale after the counter looked at the shelf. Setting the balance to
+    // the counted figure would put that coffee back.
+    const { applyStockMutation } = await import("@/lib/ledger");
+    await db.$transaction((tx) =>
+      applyStockMutation(tx, {
+        inventoryItemId: items.alpha.id, type: "USAGE", quantity: -0.25,
+        cafeId: fx.cafeId, branchId: fx.branchId, createdById: fx.cashier.id,
+        freezeToken: h.handoverId,
+      }),
+    );
+
+    await accept(h.handoverId);
+
+    const after = await db.inventoryItem.findUniqueOrThrow({ where: { id: items.alpha.id } });
+    assert.equal(
+      Number(after.currentStock), 8.75,
+      "counted 9 minus the 0.25 that left after the count",
+    );
+  });
+
+  test("the freeze is still active at the moment of the rebase", async () => {
+    // Proved by construction rather than by a hook: an untokened writer is
+    // refused while a freeze is active, and the rebase is the only reason the
+    // handover's own token exists. If acceptance had released the freeze
+    // first, the assertion below about ordering would still pass — so the
+    // stronger proof is that the rebase's ledger row was written BEFORE the
+    // freeze's `releasedAt`.
+    const h = await acceptableHandover({ [items.alpha.id]: 9 });
+    await accept(h.handoverId);
+
+    const freeze = await db.inventoryFreeze.findUniqueOrThrow({
+      where: { handoverId: h.handoverId },
+    });
+    const rebaseRow = await db.stockCountRebase.findFirstOrThrow({
+      where: { sessionId: h.sessionId, inventoryItemId: items.alpha.id },
+    });
+    assert.ok(freeze.releasedAt, "the acceptance released the freeze");
+    assert.ok(
+      rebaseRow.rebasedAt <= freeze.releasedAt!,
+      "the shelf was rebased under the freeze, not after it was lifted",
+    );
+  });
+
+  test("a superseded session's lines produce no rebase rows", async () => {
+    const h = await reviewedHandover({ [items.alpha.id]: 9 });
+    const incomingShift = await openIncomingShift();
+    const lines = await db.stockCountLine.findMany({
+      where: { sessionId: h.sessionId }, select: { id: true, inventoryItemId: true },
+    });
+    for (const line of lines) {
+      await ackPost(incoming.email, h.handoverId, {
+        stockCountLineId: line.id,
+        ...(line.inventoryItemId === items.alpha.id
+          ? {
+              incomingCountedQuantity: 3,
+              disputeReasonCodeId: handoverReasonId, disputeNote: "مش متفقين",
+            }
+          : {}),
+      });
+    }
+    await recountPost(incoming.email, h.handoverId, {
+      reasonCodeId: handoverReasonId, note: "نعيد",
+    });
+    const restarted = await startCountHttp(h.handoverId);
+    const replacementId = restarted.body.countSession.id;
+    await walkTheCount(replacementId, { [items.alpha.id]: 8 });
+    await confirmCount(fx.manager.email, replacementId, `${MARKER}-rebase-replacement`);
+    await submitHandoverHttp(h.handoverId);
+    await acknowledgeAll(h.handoverId, replacementId);
+
+    await accept(h.handoverId, { incomingShiftId: incomingShift.id });
+
+    assert.equal(
+      await db.stockCountRebase.count({ where: { sessionId: h.sessionId } }), 0,
+      "the round that was sent back never became the shelf",
+    );
+    assert.ok(await db.stockCountRebase.count({ where: { sessionId: replacementId } }) > 0);
+    const alpha = await db.inventoryItem.findUniqueOrThrow({ where: { id: items.alpha.id } });
+    assert.equal(Number(alpha.currentStock), 8, "the accepted round's figure stands");
+  });
+});
+
+// ═══════════════ T7 · the closing position, written whole ════════════════
+
+describe("SH-20 stock boundary", () => {
+  test("every active item gets a row — counted verified, uncounted carried", async () => {
+    const h = await acceptableHandover({ [items.alpha.id]: 9 });
+    // Added after the count was planned and taken, and non-critical, so it is
+    // in neither the required snapshot nor the CRITICAL scope. The boundary
+    // still has to describe it: the closing position is the whole shelf.
+    const extra = await extraItem(7);
+
+    const result = await accept(h.handoverId);
+
+    const rows = await db.handoverStockBoundary.findMany({
+      where: { handoverId: h.handoverId },
+    });
+    const byItem = new Map(rows.map((r) => [r.inventoryItemId, r]));
+    assert.equal(rows.length, 4, "three counted criticals and one carried extra");
+    assert.deepEqual(result.boundary, { written: 4, verified: 3, carried: 1 });
+
+    const alpha = byItem.get(items.alpha.id)!;
+    assert.equal(alpha.source, "PHYSICAL_COUNT");
+    assert.equal(alpha.verified, true);
+    assert.ok(alpha.stockCountLineId, "a verified row cites the line that verified it");
+    assert.equal(
+      Number(alpha.quantity), 9,
+      "the position is taken after the rebase, so it is what the shelf now holds",
+    );
+
+    const carried = byItem.get(extra.id)!;
+    assert.equal(carried.source, "SYSTEM_CARRIED");
+    assert.equal(carried.verified, false);
+    assert.equal(
+      carried.stockCountLineId, null,
+      "nobody counted it, so no line is cited as if somebody had",
+    );
+    assert.equal(Number(carried.quantity), 7);
+  });
+
+  test("an archived item produces no boundary row", async () => {
+    const h = await acceptableHandover();
+    await db.inventoryItem.update({
+      where: { id: items.bravo.id },
+      data: { isActive: false, archivedAt: new Date() },
+    });
+
+    await accept(h.handoverId);
+
+    assert.equal(
+      await db.handoverStockBoundary.count({
+        where: { handoverId: h.handoverId, inventoryItemId: items.bravo.id },
+      }),
+      0,
+      "the closing position describes the shelf as it is, not as it was",
+    );
+  });
+
+  test("the unit cost on a verified row is the count's, not today's", async () => {
+    const h = await acceptableHandover();
+    const line = await db.stockCountLine.findFirstOrThrow({
+      where: { sessionId: h.sessionId, inventoryItemId: items.alpha.id },
+    });
+    // The shelf is repriced between the count and the acceptance. The
+    // boundary must still cost what was counted at what it cost then.
+    await db.inventoryItem.update({
+      where: { id: items.alpha.id }, data: { costPerUnit: 9999 },
+    });
+
+    await accept(h.handoverId);
+
+    const row = await db.handoverStockBoundary.findFirstOrThrow({
+      where: { handoverId: h.handoverId, inventoryItemId: items.alpha.id },
+    });
+    assert.equal(
+      row.unitCostSnapshot === null ? null : Number(row.unitCostSnapshot),
+      line.unitCostSnapshot === null ? null : Number(line.unitCostSnapshot),
+    );
+    assert.equal(row.unitCostSource, line.unitCostSource);
+    assert.notEqual(Number(row.unitCostSnapshot ?? 0), 9999);
+  });
+});
+
+// ══════════ T8 · the accepted evidence can no longer be recounted ════════
+
+describe("SH-20 accepted count lock", () => {
+  test("the accepted session is LOCKED and names the handover that locked it", async () => {
+    const h = await acceptableHandover();
+    await accept(h.handoverId);
+
+    const session = await db.stockCountSession.findUniqueOrThrow({
+      where: { id: h.sessionId },
+    });
+    assert.equal(session.status, "LOCKED");
+    assert.equal(session.lockedByHandoverId, h.handoverId);
+    assert.ok(session.lockedAt);
+    assert.equal(
+      await db.auditLog.count({
+        where: { cafeId: fx.cafeId, action: "COUNT_LOCKED", entityId: h.sessionId },
+      }),
+      1,
+    );
+  });
+
+  test("a superseded session is left CONFIRMED and unlocked", async () => {
+    const h = await reviewedHandover({ [items.alpha.id]: 9 });
+    const incomingShift = await openIncomingShift();
+    const lines = await db.stockCountLine.findMany({
+      where: { sessionId: h.sessionId }, select: { id: true, inventoryItemId: true },
+    });
+    for (const line of lines) {
+      await ackPost(incoming.email, h.handoverId, {
+        stockCountLineId: line.id,
+        ...(line.inventoryItemId === items.alpha.id
+          ? {
+              incomingCountedQuantity: 3,
+              disputeReasonCodeId: handoverReasonId, disputeNote: "مش متفقين",
+            }
+          : {}),
+      });
+    }
+    await recountPost(incoming.email, h.handoverId, {
+      reasonCodeId: handoverReasonId, note: "نعيد",
+    });
+    const restarted = await startCountHttp(h.handoverId);
+    const replacementId = restarted.body.countSession.id;
+    await walkTheCount(replacementId);
+    await confirmCount(fx.manager.email, replacementId, `${MARKER}-lock-replacement`);
+    await submitHandoverHttp(h.handoverId);
+    await acknowledgeAll(h.handoverId, replacementId);
+
+    await accept(h.handoverId, { incomingShiftId: incomingShift.id });
+
+    const superseded = await db.stockCountSession.findUniqueOrThrow({
+      where: { id: h.sessionId },
+    });
+    assert.equal(superseded.status, "CONFIRMED", "history stays readable");
+    assert.equal(superseded.lockedByHandoverId, null);
+    const accepted = await db.stockCountSession.findUniqueOrThrow({
+      where: { id: replacementId },
+    });
+    assert.equal(accepted.status, "LOCKED");
+    assert.equal(accepted.lockedByHandoverId, h.handoverId);
+  });
+
+  test("a locked session refuses a further capture", async () => {
+    const h = await acceptableHandover();
+    await accept(h.handoverId);
+    const line = await db.stockCountLine.findFirstOrThrow({
+      where: { sessionId: h.sessionId }, select: { id: true },
+    });
+    const r = await patchLine(fx.manager.email, h.sessionId, line.id, 5);
+    assert.ok(r.status >= 400, `a locked count accepted a capture: ${r.text}`);
+  });
+});
+
+// ════════ T9 · every difference gets a case, and none names the wrong person ═
+
+describe("SH-20 accepted variance and accountability", () => {
+  test("one case per non-zero variance, and none for a line that agreed", async () => {
+    const h = await acceptableHandover({ [items.alpha.id]: 9 });
+    const result = await accept(h.handoverId);
+
+    assert.equal(result.varianceCaseIds.length, 1, "one difference, one case");
+    const cases = await db.varianceCase.findMany({
+      where: { acceptedHandoverId: h.handoverId },
+      include: { stockCountLine: { select: { inventoryItemId: true } } },
+    });
+    assert.equal(cases.length, 1);
+    assert.equal(cases[0].stockCountLine?.inventoryItemId, items.alpha.id);
+    assert.equal(cases[0].type, "STOCK");
+    assert.equal(cases[0].acceptedHandoverId, h.handoverId);
+    assert.equal(
+      cases[0].assignedResponsibilityUserId, null,
+      "acceptance acknowledges the state received; it names nobody",
+    );
+    assert.equal(Number(cases[0].quantityVariance), -1);
+  });
+
+  test("a variance the generic tolerance would forgive still opens a case", async () => {
+    // No tolerance predicate, and `disposition` unread. A difference the count
+    // itself settled as WITHIN_TOLERANCE is still a difference somebody
+    // physically observed, and handover accountability records it.
+    const rule = await db.toleranceRule.create({
+      data: {
+        cafeId: fx.cafeId, scope: "BRANCH", branchId: fx.branchId,
+        quantityTolerance: "0.500",
+      },
+    });
+    try {
+      const h = await acceptableHandover({ [items.alpha.id]: 9.75 });
+      const line = await db.stockCountLine.findFirstOrThrow({
+        where: { sessionId: h.sessionId, inventoryItemId: items.alpha.id },
+      });
+      assert.equal(
+        line.disposition, "WITHIN_TOLERANCE",
+        "the fixture really is inside the branch's configured tolerance",
+      );
+
+      const result = await accept(h.handoverId);
+      assert.equal(
+        result.varianceCaseIds.length, 1,
+        "the count forgave it; handover accountability still records it",
+      );
+    } finally {
+      await db.toleranceRule.delete({ where: { id: rule.id } });
+    }
+  });
+
+  test("a carried item creates no case and no blame", async () => {
+    const h = await acceptableHandover();
+    const extra = await extraItem(7);
+    await accept(h.handoverId);
+
+    assert.equal(
+      await db.varianceCase.count({
+        where: { acceptedHandoverId: h.handoverId, stockCountLine: { inventoryItemId: extra.id } },
+      }),
+      0,
+      "an unverified boundary opens no case and names nobody",
+    );
+    const boundary = await db.handoverStockBoundary.findFirstOrThrow({
+      where: { handoverId: h.handoverId, inventoryItemId: extra.id },
+    });
+    assert.equal(boundary.verified, false);
+  });
+
+  test("a very large variance opens exactly one case and interrupts nothing", async () => {
+    const h = await acceptableHandover({ [items.alpha.id]: 0 });
+    const result = await accept(h.handoverId);
+
+    assert.equal(result.varianceCaseIds.length, 1);
+    // Steps 10 through 16 all completed beside it.
+    assert.equal(result.status, "COMPLETED");
+    assert.equal(result.outgoingShiftStatus, "CLOSED");
+    assert.ok(result.incomingStockCustodyId);
+    const shift = await db.shift.findUniqueOrThrow({ where: { id: h.incomingShiftId } });
+    assert.equal(shift.custodyGateReason, null, "and the arriving shift may sell");
+  });
+
+  test("the verdict is SH-17's, and a span accompanies an unresolved one", async () => {
+    const h = await acceptableHandover({ [items.alpha.id]: 9 });
+    const result = await accept(h.handoverId);
+
+    const opened = await db.varianceCase.findUniqueOrThrow({
+      where: { id: result.varianceCaseIds[0] },
+      include: { varianceSpan: true },
+    });
+    const handover = await db.handoverSession.findUniqueOrThrow({
+      where: { id: h.handoverId },
+    });
+
+    if (opened.attribution === "VERIFIED_SHIFT") {
+      assert.equal(opened.shiftId, h.shiftId, "the shift that was answerable");
+      assert.equal(opened.varianceSpan, null);
+      assert.deepEqual(result.spanIds, []);
+    } else if (opened.attribution === "PERIOD_UNRESOLVED") {
+      assert.equal(
+        opened.shiftId, null,
+        "an unresolved span must not carry a shift — a reader would take it as the answer",
+      );
+      assert.ok(opened.varianceSpan, "an unresolved verdict is accompanied by its span");
+      assert.deepEqual(result.spanIds, [opened.varianceSpan!.id]);
+      assert.ok(
+        opened.varianceSpan!.toVerifiedAt <= handover.acceptedAt!,
+        "the span closes at or before the acceptance that created it",
+      );
+    } else {
+      assert.ok(
+        ["BRANCH_CUSTODY", "NOT_APPLICABLE"].includes(opened.attribution),
+        `unexpected attribution ${opened.attribution}`,
+      );
+    }
+  });
+
+  test("a superseded session's differences produce no cases", async () => {
+    const h = await reviewedHandover({ [items.alpha.id]: 2 });
+    const incomingShift = await openIncomingShift();
+    const lines = await db.stockCountLine.findMany({
+      where: { sessionId: h.sessionId }, select: { id: true, inventoryItemId: true },
+    });
+    for (const line of lines) {
+      await ackPost(incoming.email, h.handoverId, {
+        stockCountLineId: line.id,
+        ...(line.inventoryItemId === items.alpha.id
+          ? {
+              incomingCountedQuantity: 9,
+              disputeReasonCodeId: handoverReasonId, disputeNote: "مش متفقين",
+            }
+          : {}),
+      });
+    }
+    await recountPost(incoming.email, h.handoverId, {
+      reasonCodeId: handoverReasonId, note: "نعيد",
+    });
+    const restarted = await startCountHttp(h.handoverId);
+    const replacementId = restarted.body.countSession.id;
+    await walkTheCount(replacementId);
+    await confirmCount(fx.manager.email, replacementId, `${MARKER}-var-replacement`);
+    await submitHandoverHttp(h.handoverId);
+    await acknowledgeAll(h.handoverId, replacementId);
+
+    const result = await accept(h.handoverId, { incomingShiftId: incomingShift.id });
+
+    assert.deepEqual(
+      result.varianceCaseIds, [],
+      "the replacement counted exactly, so there is nothing to investigate",
+    );
+    assert.equal(
+      await db.varianceCase.count({ where: { stockCountLine: { sessionId: h.sessionId } } }),
+      0,
+      "and the round that was sent back opened none either",
+    );
+  });
+});
+
+// ═══ T10 · custody moves and the arriving shift may sell, as one fact ════
+
+describe("SH-20 target resolution, custody transfer and the incoming gate", () => {
+  test("STOCK custody moves, with acceptance on the predecessor and responsibility on the successor", async () => {
+    const h = await acceptableHandover();
+    const result = await accept(h.handoverId);
+
+    const predecessor = await db.custodyPeriod.findUniqueOrThrow({
+      where: { id: h.outgoingStockCustodyId! },
+    });
+    assert.equal(predecessor.status, "TRANSFERRED");
+    assert.ok(predecessor.endedAt);
+    assert.equal(predecessor.acceptedById, incoming.id);
+    assert.ok(predecessor.acceptedAt);
+
+    const successor = await db.custodyPeriod.findUniqueOrThrow({
+      where: { id: result.incomingStockCustodyId! },
+      include: { participants: true },
+    });
+    assert.equal(successor.status, "OPEN");
+    assert.equal(successor.holderType, "USER");
+    assert.equal(successor.responsibleShiftId, h.incomingShiftId);
+    assert.equal(successor.previousPeriodId, h.outgoingStockCustodyId);
+    assert.deepEqual(successor.participants.map((p) => p.userId), [incoming.id]);
+    assert.equal(successor.openedById, incoming.id);
+  });
+
+  test("CASH custody moves too, at the figure the close counted", async () => {
+    const h = await acceptableHandover();
+    const outgoingShift = await db.shift.findUniqueOrThrow({ where: { id: h.shiftId } });
+    const result = await accept(h.handoverId);
+
+    assert.ok(h.outgoingCashCustodyId, "SHIFT_TO_SHIFT leaves the drawer open for this");
+    assert.ok(result.incomingCashCustodyId);
+    const predecessor = await db.custodyPeriod.findUniqueOrThrow({
+      where: { id: h.outgoingCashCustodyId! },
+    });
+    assert.equal(predecessor.status, "TRANSFERRED");
+    assert.equal(predecessor.acceptedById, incoming.id);
+    assert.equal(
+      Number(predecessor.closingCashAmount), Number(outgoingShift.actualCashAmount),
+      "the drawer closes at what was counted, not at what was expected",
+    );
+    const successor = await db.custodyPeriod.findUniqueOrThrow({
+      where: { id: result.incomingCashCustodyId! },
+    });
+    assert.equal(Number(successor.openingCashAmount), Number(outgoingShift.actualCashAmount));
+    assert.equal(
+      successor.responsibleShiftId, null,
+      "responsibility for stock movement is a stock concept; a drawer has no shelf",
+    );
+  });
+
+  test("the handover records who took the room", async () => {
+    const h = await acceptableHandover();
+    const result = await accept(h.handoverId);
+
+    const row = await db.handoverSession.findUniqueOrThrow({ where: { id: h.handoverId } });
+    assert.equal(row.incomingStockCustodyId, result.incomingStockCustodyId);
+    assert.equal(row.incomingCashCustodyId, result.incomingCashCustodyId);
+    assert.equal(row.incomingShiftId, h.incomingShiftId);
+    assert.equal(row.incomingUserId, incoming.id);
+  });
+
+  test("the arriving shift becomes operational in the same commit as the transfer", async () => {
+    const h = await acceptableHandover();
+    await accept(h.handoverId);
+
+    const shift = await db.shift.findUniqueOrThrow({ where: { id: h.incomingShiftId } });
+    assert.equal(shift.custodyGateReason, null);
+    assert.ok(shift.custodyReadyAt);
+    // There is no observable instant between the two: both were written by
+    // one transaction, so committed state can only show neither or both.
+    const successor = await db.custodyPeriod.findFirstOrThrow({
+      where: { branchId: fx.branchId, scope: "STOCK", status: "OPEN" },
+    });
+    assert.equal(successor.responsibleShiftId, shift.id);
+  });
+
+  test("the immutable target is untouched, and the resolution equals it", async () => {
+    const h = await acceptableHandover();
+    const before = await db.handoverSession.findUniqueOrThrow({ where: { id: h.handoverId } });
+    const result = await accept(h.handoverId);
+    const after = await db.handoverSession.findUniqueOrThrow({ where: { id: h.handoverId } });
+
+    assert.equal(after.target, before.target, "the original intent is never rewritten");
+    assert.equal(after.target, "SHIFT_TO_SHIFT");
+    assert.equal(after.resolvedTarget, "SHIFT_TO_SHIFT");
+    assert.equal(result.handoverTarget, "SHIFT_TO_SHIFT");
+  });
+
+  test("a sale on the arriving shift is attributed to it", async () => {
+    const h = await acceptableHandover();
+    const result = await accept(h.handoverId);
+
+    const { applyStockMutation } = await import("@/lib/ledger");
+    const mutation = await db.$transaction((tx) =>
+      applyStockMutation(tx, {
+        inventoryItemId: items.alpha.id, type: "USAGE", quantity: -1,
+        cafeId: fx.cafeId, branchId: fx.branchId, createdById: incoming.id,
+      }),
+    );
+    const txn = await db.inventoryTransaction.findUniqueOrThrow({
+      where: { id: mutation.transactionId },
+    });
+    assert.equal(txn.custodyPeriodId, result.incomingStockCustodyId);
+    assert.equal(
+      txn.shiftId, h.incomingShiftId,
+      "the shelf that changed hands answers to the shift that took it",
+    );
+  });
+
+  test("no BRANCH-held custody is constructible from ordinary acceptance", async () => {
+    const h = await acceptableHandover();
+    await accept(h.handoverId);
+    assert.equal(
+      await db.custodyPeriod.count({ where: { branchId: fx.branchId, holderType: "BRANCH" } }),
+      0,
+      "SH-22 owns the branch holder, and this route cannot reach it",
+    );
+  });
+});
+
+// ══════ T11 · the outgoing shift closes when the shelf has changed hands ══
+
+describe("SH-20 outgoing shift finalization", () => {
+  test("AWAITING_HANDOVER becomes CLOSED, with the stock timestamp and the acceptor", async () => {
+    const h = await acceptableHandover();
+    const before = await db.shift.findUniqueOrThrow({ where: { id: h.shiftId } });
+    assert.equal(before.status, "AWAITING_HANDOVER");
+    assert.equal(before.stockClosedAt, null);
+
+    const result = await accept(h.handoverId);
+    assert.equal(result.outgoingShiftStatus, "CLOSED");
+
+    const after = await db.shift.findUniqueOrThrow({ where: { id: h.shiftId } });
+    assert.equal(after.status, "CLOSED");
+    assert.ok(after.stockClosedAt, "when the shelf became a fact");
+    assert.ok(after.closedAt);
+    assert.equal(
+      after.closedById, incoming.id,
+      "who accepted the count and discharged the custodian — not the cashier who held it",
+    );
+  });
+
+  test("no cash-close figure is recomputed by the acceptance", async () => {
+    const h = await acceptableHandover();
+    const before = await db.shift.findUniqueOrThrow({ where: { id: h.shiftId } });
+    await accept(h.handoverId);
+    const after = await db.shift.findUniqueOrThrow({ where: { id: h.shiftId } });
+
+    const financial = [
+      "openingCashAmount", "expectedCashAmount", "actualCashAmount", "cashDifference",
+      "cashWithinTolerance", "cashToleranceAmount", "cashReasonCodeId", "cashReasonNote",
+      "cashVarianceCaseId", "totalSales", "totalCashSales", "totalCardSales",
+      "totalWalletSales", "totalRefunds", "totalDiscounts", "orderCount",
+      "financiallyClosedAt", "handoverRequired",
+    ] as const;
+    for (const key of financial) {
+      assert.equal(
+        String(before[key]), String(after[key]),
+        `${key} was rewritten by an acceptance that has no business recomputing it`,
+      );
+    }
+  });
+
+  test("a shift that is not awaiting a handover is not this acceptance's to close", async () => {
+    const { finalizeOutgoingShift } = await handoverLib();
+    const h = await acceptableHandover();
+    await db.shift.update({ where: { id: h.shiftId }, data: { status: "OPEN" } });
+    await assert.rejects(
+      () =>
+        db.$transaction((tx) =>
+          finalizeOutgoingShift(tx, {
+            outgoingShiftId: h.shiftId, closedById: incoming.id, at: new Date(),
+          }),
+        ),
+      statusIs(409),
+    );
+  });
+});
+
+// ═══ T12 · the record is completed and the shelf unfrozen in one breath ══
+
+describe("SH-20 completion, freeze release and audit", () => {
+  test("the completion writes every final field at once", async () => {
+    const h = await acceptableHandover();
+    const key = `${MARKER}-complete-${h.handoverId}`;
+    const result = await accept(h.handoverId, { idempotencyKey: key });
+
+    const row = await db.handoverSession.findUniqueOrThrow({ where: { id: h.handoverId } });
+    assert.equal(row.status, "COMPLETED");
+    assert.equal(row.acceptedStockCountSessionId, h.sessionId);
+    assert.ok(row.acceptedAt);
+    assert.ok(row.completedAt);
+    assert.equal(row.resolvedTarget, "SHIFT_TO_SHIFT");
+    assert.equal(row.idempotencyKey, key);
+    assert.equal(result.acceptedStockCountSessionId, h.sessionId);
+  });
+
+  test("the accepted pointer is the resolved session, whatever the current pointer says later", async () => {
+    const h = await acceptableHandover();
+    await accept(h.handoverId);
+    const row = await db.handoverSession.findUniqueOrThrow({ where: { id: h.handoverId } });
+    assert.equal(row.acceptedStockCountSessionId, h.sessionId);
+    assert.equal(
+      row.stockCountSessionId, h.sessionId,
+      "the two agree here, and only the accepted one is the record",
+    );
+  });
+
+  test("the freeze is released, and says who released it", async () => {
+    const h = await acceptableHandover();
+    await accept(h.handoverId);
+
+    const freeze = await db.inventoryFreeze.findUniqueOrThrow({
+      where: { handoverId: h.handoverId },
+    });
+    assert.ok(freeze.releasedAt);
+    assert.equal(freeze.releasedById, incoming.id);
+    assert.equal(
+      await db.auditLog.count({
+        where: {
+          cafeId: fx.cafeId, action: "INVENTORY_FREEZE_RELEASED", entityId: freeze.id,
+        },
+      }),
+      1,
+    );
+  });
+
+  test("accept completes while holding both lock modes on one branch key", async () => {
+    // R1. SH-20 is the first path to take `pg_advisory_xact_lock_shared` on a
+    // branch key — the step-6 rebase — and then `pg_advisory_xact_lock` on the
+    // same key, inside one transaction, when step 15 releases the freeze.
+    // PostgreSQL grants a request that conflicts only with locks the same
+    // transaction already holds, so the upgrade must not self-deadlock. The
+    // forbidden workaround is releasing the freeze before the rebase, so this
+    // asserts the rebase really happened AND the freeze really was released.
+    const h = await acceptableHandover({ [items.alpha.id]: 9 });
+    const result = await accept(h.handoverId);
+
+    assert.ok(result.rebase && result.rebase.itemsRebased > 0, "the shared lock was taken");
+    const freeze = await db.inventoryFreeze.findUniqueOrThrow({
+      where: { handoverId: h.handoverId },
+    });
+    assert.ok(freeze.releasedAt, "and the exclusive one was granted on the same key");
+    assert.equal(result.status, "COMPLETED");
+  });
+
+  test("one audit row carries the whole shape", async () => {
+    const h = await acceptableHandover({ [items.alpha.id]: 9 });
+    const extra = await extraItem(7);
+    const result = await accept(h.handoverId);
+
+    const rows = await db.auditLog.findMany({
+      where: {
+        cafeId: fx.cafeId, action: "HANDOVER_ACCEPTED", entityId: h.handoverId,
+      },
+    });
+    assert.equal(rows.length, 1, "exactly one acceptance was recorded");
+    const details = rows[0].details as Record<string, unknown>;
+    assert.equal(rows[0].userId, incoming.id);
+    assert.equal(details.acceptedStockCountSessionId, h.sessionId);
+    assert.equal(details.resolvedTarget, "SHIFT_TO_SHIFT");
+    assert.deepEqual(details.boundary, { written: 4, verified: 3, carried: 1 });
+    assert.deepEqual(details.varianceCaseIds, result.varianceCaseIds);
+    assert.deepEqual(details.spanIds, result.spanIds);
+    assert.equal(details.outgoingStockCustodyId, h.outgoingStockCustodyId);
+    assert.equal(details.incomingStockCustodyId, result.incomingStockCustodyId);
+    assert.equal(details.incomingCashCustodyId, result.incomingCashCustodyId);
+    assert.equal(details.outgoingShiftId, h.shiftId);
+    assert.equal(details.incomingShiftId, h.incomingShiftId);
+    assert.equal(details.outgoingShiftStatus, "CLOSED");
+    assert.ok(extra.id);
+  });
+
+  test("a retry writes no second audit row", async () => {
+    const h = await acceptableHandover();
+    const key = `${MARKER}-audit-once-${h.handoverId}`;
+    await accept(h.handoverId, { idempotencyKey: key });
+    await accept(h.handoverId, { idempotencyKey: key });
+
+    assert.equal(
+      await db.auditLog.count({
+        where: { cafeId: fx.cafeId, action: "HANDOVER_ACCEPTED", entityId: h.handoverId },
+      }),
+      1,
     );
   });
 });

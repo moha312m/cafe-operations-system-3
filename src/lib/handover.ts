@@ -66,23 +66,32 @@ import { audit, auditInTransaction } from "@/lib/audit";
 import { round3 } from "@/lib/costing";
 import { db } from "@/lib/db";
 import { ledgerDeltaAbove } from "@/lib/ledger";
-import type { RebaseResult } from "@/lib/stock-rebase";
+import { rebaseFromCountInTransaction, type RebaseResult } from "@/lib/stock-rebase";
 import type { HandoverBlocker } from "@/lib/handover-blockers";
 import {
   persistRequiredItems,
   planRequiredItems,
+  settleRequiredItems,
 } from "@/lib/handover-required-items";
 import {
   EFFECTIVE_EVIDENCE_SELECT,
   effectiveCountEvidence,
 } from "@/lib/count-evidence";
-import { acquireInventoryFreeze, activeFreezeFor } from "@/lib/inventory-freeze";
+import {
+  acquireInventoryFreeze,
+  activeFreezeFor,
+  releaseInventoryFreeze,
+} from "@/lib/inventory-freeze";
 import {
   ACTIVE_COUNT_STATUSES,
   BLIND_LINE_FIELDS,
   COUNT_STARTED_AUDIT_ACTION,
+  lockCountSession,
   redactCountTargets,
 } from "@/lib/stock-count";
+import { buildStockBoundary, persistStockBoundary } from "@/lib/handover-boundary";
+import { openHandoverVarianceCases } from "@/lib/stock-variance-attribution";
+import { transferCustody } from "@/lib/custody";
 
 export const HANDOVER_STARTED_AUDIT_ACTION = "HANDOVER_STARTED";
 
@@ -1797,6 +1806,9 @@ const LINES_DISPUTED = "في اعتراض على الجرد الحالي — ل�
 const NO_OUTGOING_STOCK_CUSTODY = "مفيش عهدة مخزن مربوطة بالتسليم ده";
 const NO_INCOMING_SHIFT = "مفيش وردية مستلمة مستنية العهدة";
 const FREEZE_NOT_OURS = "تجميد المخزون مش تابع للتسليم ده";
+const REQUIRED_ITEMS_OMITTED =
+  "في أصناف مطلوبة ماتعدّتش — الاستلام العادي مش بيعدّي عليها";
+const OUTGOING_NOT_AWAITING = "الوردية الخارجة مش مستنية تسليم";
 
 /** The handover row this acceptance validated and is about to write. */
 type LockedHandover = {
@@ -2120,11 +2132,48 @@ export async function acceptHandover(args: {
 }
 
 /**
+ * Close the outgoing shift. Step 13, and nothing else.
+ *
+ * Exported because it is the acceptance's one internal injectable unit: T14's
+ * rollback matrix forces a failure immediately after it, and a seam that only
+ * exists inside a closure cannot be aimed at.
+ *
+ * The guard and the write are ONE statement, so two callers racing cannot both
+ * observe `AWAITING_HANDOVER` and both stamp the close. Matching zero rows is
+ * a refusal rather than a silent no-op: a shift that is not awaiting a
+ * handover is not this acceptance's to close.
+ *
+ * Nothing financial is recomputed. `actualCashAmount`, `expectedCashAmount`,
+ * `cashDifference`, the tolerance verdict, the reason and its note were
+ * settled when the money was, and re-deriving them here would let an
+ * acceptance silently restate a reconciliation somebody already signed.
+ */
+export async function finalizeOutgoingShift(
+  tx: Prisma.TransactionClient,
+  args: { outgoingShiftId: string; closedById: string; at: Date }
+): Promise<{ outgoingShiftStatus: "CLOSED" }> {
+  const moved = await tx.shift.updateMany({
+    where: { id: args.outgoingShiftId, status: "AWAITING_HANDOVER" },
+    data: {
+      status: "CLOSED",
+      // When the shelf became a fact, as distinct from when the money did.
+      stockClosedAt: args.at,
+      closedAt: args.at,
+      // Who accepted the count and discharged the custodian — not the cashier
+      // who held the drawer.
+      closedById: args.closedById,
+    },
+  });
+  if (moved.count === 0) throw new ApiError(409, OUTGOING_NOT_AWAITING);
+  return { outgoingShiftStatus: "CLOSED" };
+}
+
+/**
  * Steps 5 through 16, in the roadmap's order.
  *
  * Split out from `acceptHandover` so the entry — lock, tenancy, replay, gate —
- * stays readable, and so the failure-injection seam T14 needs has one obvious
- * home rather than being threaded through the whole function.
+ * stays readable beside it. Every write below is on the caller's transaction
+ * client; nothing here opens one, and nothing here awaits anything outside it.
  */
 async function runAcceptance(
   tx: Prisma.TransactionClient,
@@ -2135,8 +2184,320 @@ async function runAcceptance(
     idempotencyKey: string;
   }
 ): Promise<AcceptResult> {
-  void tx;
-  void evidence;
-  void args;
-  throw new ApiError(501, "SH-20 acceptance steps 5-16 are not implemented yet");
+  const { handover, acceptedSessionId } = evidence;
+
+  // ── 5. Required items ──
+  //
+  // SH-14's settlement authority is used rather than reimplemented, and
+  // `omissionNote` is NOT passed: a note is SH-21's authorisation evidence,
+  // and an ordinary accept that supplied one would be an unaudited override.
+  //
+  // The refusal below is a `throw` inside the transaction, so the `omitted:
+  // true` rows settlement wrote moments ago never commit. After a refused
+  // acceptance `omitted` and `omissionNote` are exactly as they were.
+  const settled = await settleRequiredItems(tx, {
+    handoverId: handover.id,
+    acceptedSessionId,
+  });
+  if (settled.omitted.length > 0) {
+    throw new ApiError(409, REQUIRED_ITEMS_OMITTED);
+  }
+
+  // ── 6. Rebase, under the freeze that protected the count ──
+  //
+  // The freeze is NOT released first. Releasing it to get the movement
+  // through would reopen the shelf to sales in the middle of the acceptance,
+  // which is the one thing it exists to prevent; the token identifies the
+  // handover the freeze was taken for, and step 15 releases it.
+  const rebase = await rebaseFromCountInTransaction(tx, {
+    sessionId: acceptedSessionId,
+    actorId: args.incomingUserId,
+    idempotencyKey: `${handover.id}:rebase`,
+    freezeToken: handover.id,
+  });
+
+  // ── 7. The closing position ──
+  //
+  // SH-15's own rules, applied to the ACCEPTED session — never to
+  // `handover.stockCountSessionId`, which after a recount has more than one
+  // answer in its history. Nothing here re-derives what counts as verified.
+  const boundary = await buildStockBoundary(tx, {
+    cafeId: handover.cafeId,
+    branchId: handover.branchId,
+    handoverId: handover.id,
+    acceptedSessionId,
+  });
+  const written = await persistStockBoundary(tx, {
+    handoverId: handover.id,
+    lines: boundary.lines,
+  });
+  // Read back rather than assumed: `createMany` returns a count, and step 9
+  // needs each row's id to hang an unresolved span from.
+  const boundaryRows = await tx.handoverStockBoundary.findMany({
+    where: { handoverId: handover.id },
+    select: { id: true, inventoryItemId: true },
+  });
+  const boundaryByItemId = new Map(
+    boundaryRows.map((row) => [row.inventoryItemId, row.id])
+  );
+
+  // ── 8. The accepted evidence becomes immutable ──
+  //
+  // After settle, rebase and boundary, which is the roadmap's order. A
+  // superseded session is never the subject: it stays CONFIRMED and unlocked,
+  // because it is history rather than the record.
+  await lockCountSession(tx, {
+    sessionId: acceptedSessionId,
+    handoverId: handover.id,
+    actorId: args.incomingUserId,
+  });
+
+  // ── 9. Accepted variance and its attribution ──
+  //
+  // One case per NON-ZERO variance, with no tolerance predicate and
+  // `disposition` unread — a difference the generic tolerance called
+  // acceptable is still a difference somebody physically observed. SH-17 owns
+  // every verdict; none of it is re-derived here, and acceptance never sets
+  // `assignedResponsibilityUserId`.
+  const variance = await openHandoverVarianceCases(tx, {
+    cafeId: handover.cafeId,
+    branchId: handover.branchId,
+    handoverId: handover.id,
+    acceptedSessionId,
+    outgoingCustodyPeriodId: evidence.outgoingStockCustodyId,
+    boundaryByItemId,
+    openedById: args.incomingUserId,
+  });
+
+  // One instant, reused at steps 10, 11, 12, 13 and 14. Custody moving, the
+  // arriving shift becoming operational and the outgoing one closing are one
+  // fact, and four timestamps milliseconds apart would invite a reader to look
+  // for an order among them that does not exist.
+  //
+  // Taken HERE rather than at the top, and that position is load-bearing.
+  // `openHandoverVarianceCases` derives its span's `toVerifiedAt` from
+  // `handover.acceptedAt ?? new Date()`, and at step 9 the column is still
+  // NULL — so the fallback applies. An `acceptedAt` captured before step 9
+  // would be EARLIER than the span it contains, and a reader would find a span
+  // that closed after the acceptance which created it. Captured after, the
+  // ordering is the true one: the evidence was assessed, and then the room
+  // changed hands.
+  const acceptedAt = new Date();
+
+  // ── 10. STOCK custody moves ──
+  //
+  // The predecessor records who accepted it; the successor records which shift
+  // answers for it. A BRANCH successor is not constructible from here — the
+  // gate refused a `BRANCH_CUSTODY` target long before this line.
+  const stock = await transferCustody(tx, {
+    outgoingPeriodId: evidence.outgoingStockCustodyId,
+    scope: "STOCK",
+    incoming: {
+      participants: [{ userId: args.incomingUserId, role: "PRIMARY" }],
+      shiftId: evidence.incomingShiftId,
+      responsibleShiftId: evidence.incomingShiftId,
+      holderType: "USER",
+      openedById: args.incomingUserId,
+    },
+    actorId: args.incomingUserId,
+    acceptedById: args.incomingUserId,
+    acceptedAt,
+  });
+
+  // ── 11. CASH custody moves, when one is still open to move ──
+  //
+  // SH-16 leaves the drawer OPEN for a `SHIFT_TO_SHIFT` close precisely so it
+  // can be handed over here, at the figure the close counted. A shift that
+  // never held one has nothing to transfer, and one is not conjured so the
+  // record looks complete.
+  const incomingCashCustodyId = await transferCashCustody(tx, {
+    outgoingCashCustodyId: evidence.outgoingCashCustodyId,
+    branchId: handover.branchId,
+    outgoingShiftId: handover.outgoingShiftId,
+    incomingShiftId: evidence.incomingShiftId,
+    incomingUserId: args.incomingUserId,
+    acceptedAt,
+  });
+
+  // ── 12. The arriving shift may sell ──
+  //
+  // In the SAME commit as step 10, which is the whole of correction #2: there
+  // is no instant in which the arriving cashier holds custody but cannot sell,
+  // or can sell but holds nothing.
+  await tx.shift.update({
+    where: { id: evidence.incomingShiftId },
+    data: { custodyGateReason: null, custodyReadyAt: acceptedAt },
+  });
+
+  // ── 13. The outgoing shift closes ──
+  const outgoing = await finalizeOutgoingShift(tx, {
+    outgoingShiftId: handover.outgoingShiftId,
+    closedById: args.incomingUserId,
+    at: acceptedAt,
+  });
+
+  // ── 14. The record ──
+  //
+  // `acceptedStockCountSessionId` is persisted HERE, and could not have been
+  // persisted at step 4: `settleRequiredItems` refuses to write once it is
+  // non-null, so an early write would make every first acceptance throw.
+  //
+  // `resolvedTarget` is written; `target` is not. The immutable intent is
+  // SH-14's, and for an ordinary acceptance the two are equal by construction
+  // — the gate refused everything else. SH-21's audited exception is the only
+  // path on which they may diverge, and it is not this one.
+  //
+  // The guard in the `where` is what makes two racing acceptances produce one
+  // completion: the loser matches zero rows and is refused.
+  const completed = await tx.handoverSession.updateMany({
+    where: { id: handover.id, status: { in: [...ACCEPTABLE_STATUSES] } },
+    data: {
+      status: "COMPLETED",
+      resolvedTarget: "SHIFT_TO_SHIFT",
+      acceptedStockCountSessionId: acceptedSessionId,
+      acceptedAt,
+      completedAt: acceptedAt,
+      idempotencyKey: args.idempotencyKey,
+      incomingUserId: args.incomingUserId,
+      incomingShiftId: evidence.incomingShiftId,
+      incomingStockCustodyId: stock.incomingPeriodId,
+      incomingCashCustodyId,
+    },
+  });
+  if (completed.count === 0) throw new ApiError(409, NOT_ACCEPTABLE);
+
+  // ── 15. The shelf is unfrozen ──
+  //
+  // Last, and inside this transaction. By now the same transaction already
+  // holds the branch's SHARED advisory lock, taken by the step-6 rebase, and
+  // this takes the EXCLUSIVE one on the same key. PostgreSQL grants a request
+  // that conflicts only with locks the same transaction already holds, so the
+  // upgrade does not self-deadlock — and `acquireInventoryExclusiveLock`
+  // already skips its lock-order assertion for a key it holds SHARED.
+  await releaseInventoryFreeze(tx, {
+    handoverId: handover.id,
+    actorId: args.incomingUserId,
+  });
+
+  const result: AcceptResult = {
+    status: "COMPLETED",
+    handoverTarget: "SHIFT_TO_SHIFT",
+    acceptedStockCountSessionId: acceptedSessionId,
+    incomingCashCustodyId,
+    incomingStockCustodyId: stock.incomingPeriodId,
+    incomingShiftId: evidence.incomingShiftId,
+    boundary: {
+      written: written.written,
+      verified: boundary.verifiedCount,
+      carried: boundary.carriedCount,
+    },
+    requiredItems: {
+      satisfied: await tx.handoverRequiredItem.count({
+        where: { handoverId: handover.id, satisfiedByLineId: { not: null } },
+      }),
+      // Empty by construction: a non-empty list refused the acceptance at
+      // step 5. Named rather than omitted, because it is the answer.
+      omitted: [],
+    },
+    rebase,
+    varianceCaseIds: variance.caseIds,
+    spanIds: variance.spanIds,
+    outgoingShiftStatus: outgoing.outgoingShiftStatus,
+    alreadyAccepted: false,
+  };
+
+  // ── 16. One audit row, carrying the whole shape ──
+  //
+  // `auditInTransaction`, never the fire-and-forget `audit`: an acceptance
+  // recorded when the acceptance rolled back would be a false statement about
+  // who took the room, which is exactly what this record exists to settle.
+  await auditInTransaction(tx, {
+    cafeId: handover.cafeId,
+    userId: args.incomingUserId,
+    action: HANDOVER_ACCEPTED_AUDIT_ACTION,
+    entity: "HandoverSession",
+    entityId: handover.id,
+    details: {
+      branchId: handover.branchId,
+      acceptedStockCountSessionId: acceptedSessionId,
+      resolvedTarget: "SHIFT_TO_SHIFT",
+      idempotencyKey: args.idempotencyKey,
+      boundary: result.boundary,
+      requiredItemsSatisfied: result.requiredItems.satisfied,
+      rebase: {
+        itemsRebased: rebase.itemsRebased,
+        itemsSkipped: rebase.itemsSkipped,
+        alreadyRebased: rebase.alreadyRebased,
+      },
+      varianceCaseIds: variance.caseIds,
+      spanIds: variance.spanIds,
+      outgoingStockCustodyId: evidence.outgoingStockCustodyId,
+      incomingStockCustodyId: stock.incomingPeriodId,
+      outgoingCashCustodyId: evidence.outgoingCashCustodyId,
+      incomingCashCustodyId,
+      outgoingShiftId: handover.outgoingShiftId,
+      incomingShiftId: evidence.incomingShiftId,
+      outgoingShiftStatus: outgoing.outgoingShiftStatus,
+      acceptedAt: acceptedAt.toISOString(),
+    },
+  });
+
+  return result;
+}
+
+/**
+ * Hand the drawer to the arriving custodian, or report that none moved.
+ *
+ * The closing figure is what the close COUNTED, read back from the shift
+ * rather than recomputed: the variance is a separate finding on the shift, and
+ * the drawer closes at the figure that was actually there.
+ */
+async function transferCashCustody(
+  tx: Prisma.TransactionClient,
+  args: {
+    outgoingCashCustodyId: string | null;
+    branchId: string;
+    outgoingShiftId: string;
+    incomingShiftId: string;
+    incomingUserId: string;
+    acceptedAt: Date;
+  }
+): Promise<string | null> {
+  if (!args.outgoingCashCustodyId) return null;
+
+  const period = await tx.custodyPeriod.findFirst({
+    where: {
+      id: args.outgoingCashCustodyId,
+      branchId: args.branchId,
+      scope: "CASH",
+    },
+    select: { id: true, status: true },
+  });
+  // A drawer a `BRANCH_CUSTODY` close already discharged, or one closed
+  // elsewhere, is not this acceptance's to move. Neither is a missing one.
+  if (!period || period.status !== "OPEN") return null;
+
+  const shift = await tx.shift.findUnique({
+    where: { id: args.outgoingShiftId },
+    select: { actualCashAmount: true },
+  });
+
+  const cash = await transferCustody(tx, {
+    outgoingPeriodId: period.id,
+    scope: "CASH",
+    incoming: {
+      participants: [{ userId: args.incomingUserId, role: "PRIMARY" }],
+      shiftId: args.incomingShiftId,
+      holderType: "USER",
+      openedById: args.incomingUserId,
+    },
+    closingCashAmount:
+      shift?.actualCashAmount === null || shift?.actualCashAmount === undefined
+        ? null
+        : Number(shift.actualCashAmount),
+    actorId: args.incomingUserId,
+    acceptedById: args.incomingUserId,
+    acceptedAt: args.acceptedAt,
+  });
+  return cash.incomingPeriodId;
 }
