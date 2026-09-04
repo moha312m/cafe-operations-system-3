@@ -2637,6 +2637,18 @@ async function runAcceptance(
   //
   // The guard in the `where` is what makes two racing acceptances produce one
   // completion: the loser matches zero rows and is refused.
+  //
+  // SH-21 adds three columns and NOT a fourth status. The terminal state of an
+  // overridden handover is `COMPLETED`, the same as any other: it did complete,
+  // and a separate `MANAGER_EXCEPTION` status would fork every downstream
+  // reader — every list, every blocker check, every report — on a distinction
+  // the exception columns already carry precisely. The manager-exception fact
+  // lives in `exceptionById` / `exceptionReason` / `exceptionAt`, in the
+  // `OpeningException` below and in its own audit action.
+  //
+  // `resolvedTarget` stays `SHIFT_TO_SHIFT`. An override changes who may
+  // finish the acceptance, never where the custody goes; SH-22 owns branch
+  // custody, and no divergence is reachable from here.
   const completed = await tx.handoverSession.updateMany({
     where: { id: handover.id, status: { in: [...ACCEPTABLE_STATUSES] } },
     data: {
@@ -2650,10 +2662,49 @@ async function runAcceptance(
       incomingShiftId: evidence.incomingShiftId,
       incomingStockCustodyId: stock.incomingPeriodId,
       incomingCashCustodyId,
+      ...(exception
+        ? {
+            exceptionById: exception.managerId,
+            exceptionReason: exception.note,
+            exceptionAt: acceptedAt,
+          }
+        : {}),
     },
   });
   if (completed.count === 0) throw new ApiError(409, NOT_ACCEPTABLE);
   await checkpoint(14);
+
+  // ── 14a. The exception becomes a record of its own ──
+  //
+  // AFTER the guarded write above, and that position is what makes it
+  // exactly-once without a unique index or any schema change. Two overrides
+  // racing both reach step 14; the `status IN (OUTGOING_SUBMITTED,
+  // INCOMING_REVIEW)` guard lets exactly one match a row, and the loser throws
+  // before it can get here. A retry under the same key never arrives at all —
+  // it met `COMPLETED` at the entry and was answered from persisted state.
+  //
+  // Still inside the transaction, so a failure at step 15 or 16 takes this row
+  // with it: an exception row surviving a rolled-back acceptance would claim a
+  // manager authorised a handover that never happened.
+  //
+  // Every amount column stays NULL. Nothing financial was overridden here, and
+  // a zero would read as a counted figure rather than as an absent one.
+  if (exception) {
+    const openingException = await tx.openingException.create({
+      data: {
+        cafeId: handover.cafeId,
+        branchId: handover.branchId,
+        handoverId: handover.id,
+        kind: exception.kind,
+        reasonCodeId: exception.reasonCodeId,
+        note: exception.note,
+        authorizedById: exception.managerId,
+      },
+      select: { id: true },
+    });
+    openingExceptionId = openingException.id;
+  }
+  await checkpoint(14.5);
 
   // ── 15. The shelf is unfrozen ──
   //
