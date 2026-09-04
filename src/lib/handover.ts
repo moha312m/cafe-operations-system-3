@@ -2782,8 +2782,44 @@ async function runAcceptance(
       incomingShiftId: evidence.incomingShiftId,
       outgoingShiftStatus: outgoing.outgoingShiftStatus,
       acceptedAt: acceptedAt.toISOString(),
+      // Absent on an ordinary accept, so SH-20's row is byte-identical.
+      ...(exception ? { missingItemIds } : {}),
     },
   });
+
+  // ── 16a. And who authorised finishing without the count ──
+  //
+  // A SECOND row, not a substituted one. Step 16 records the acceptance, whose
+  // actor is the custodian who took the shelf; this records the exception,
+  // whose actor is the manager who authorised it. Collapsing them into one row
+  // would force a single `userId` to answer two different questions, and
+  // whichever name it carried would be a false answer to the other.
+  if (exception) {
+    await auditInTransaction(tx, {
+      cafeId: handover.cafeId,
+      userId: exception.managerId,
+      action: HANDOVER_MANAGER_EXCEPTION_AUDIT_ACTION,
+      entity: "HandoverSession",
+      entityId: handover.id,
+      details: {
+        branchId: handover.branchId,
+        kind: exception.kind,
+        reasonCodeId: exception.reasonCodeId,
+        note: exception.note,
+        // The items nobody counted, named. This is the property the audit
+        // trail alone could not provide in R1, and the reason the omission is
+        // also written onto each `HandoverRequiredItem` row.
+        missingItemIds,
+        missingItemNames,
+        openingExceptionId,
+        acceptedStockCountSessionId: acceptedSessionId,
+        incomingUserId: args.incomingUserId,
+        incomingShiftId: evidence.incomingShiftId,
+        idempotencyKey: args.idempotencyKey,
+        exceptionAt: acceptedAt.toISOString(),
+      },
+    });
+  }
 
   return result;
 }
