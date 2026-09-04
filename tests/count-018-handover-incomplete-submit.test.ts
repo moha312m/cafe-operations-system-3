@@ -619,6 +619,41 @@ describe("COUNT-018 confirm strictness outside HANDOVER", () => {
   });
 });
 
+// ────────────────── two people confirming at once (T9) ───────────────────
+
+describe("COUNT-018 confirming the same gap-carrying count twice at once", () => {
+  test("one winner, three lines still PENDING, and nothing fabricated", async () => {
+    const s = await session("HANDOVER", [10, 9.8, 10], 3);
+    assert.ok((await submit(s.id)).status < 300);
+
+    // Real HTTP, both in flight. The status guard is a conditional UPDATE, so
+    // of two callers exactly one sees a row change; a serialisation bug here
+    // would confirm twice and — for a count carrying gaps — is the one place
+    // a second pass could invent a verdict for a shelf nobody reached.
+    const [a, b] = await Promise.all([
+      confirm(s.id, `${s.id}-race-a`),
+      confirm(s.id, `${s.id}-race-b`),
+    ]);
+    assert.ok(a.status < 300, a.text);
+    assert.ok(b.status < 300, b.text);
+    assert.equal(
+      [a, b].filter((r) => r.body.alreadyConfirmed === false).length, 1,
+      "exactly one caller confirmed it; the other was told it already was",
+    );
+
+    const still = await db.stockCountSession.findUniqueOrThrow({ where: { id: s.id } });
+    assert.equal(still.status, "CONFIRMED");
+    assert.equal(
+      await db.stockCountLine.count({ where: { sessionId: s.id, disposition: "PENDING" } }), 3,
+      "the gaps survived the race as gaps",
+    );
+    assert.equal(
+      await db.varianceCase.count({ where: { stockCountLine: { sessionId: s.id } } }), 0,
+    );
+    await assertUntouched(s.unobservedLineIds);
+  });
+});
+
 // ─────────────────── the gate, read off the source (A3) ───────────────────
 
 describe("COUNT-018 the relaxation is spelled the narrow way", () => {

@@ -2769,6 +2769,13 @@ async function runAcceptance(
     handoverId: handover.id,
     actorId: args.incomingUserId,
   });
+  // The last seam, and the one that closes the rollback matrix: everything
+  // this acceptance writes now exists, the freeze release included. A failure
+  // here — the connection dying between the last write and the commit — must
+  // still leave the shelf frozen, because a released freeze with no custody
+  // transfer would open the branch to sales against a handover nobody
+  // completed.
+  await checkpoint(15);
 
   const result: AcceptanceOutcome = {
     status: "COMPLETED",

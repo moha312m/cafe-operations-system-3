@@ -582,6 +582,7 @@ const STEPS: { step: number; what: string }[] = [
   { step: 13, what: "outgoing shift finalization" },
   { step: 14, what: "the completion write, before the exception row" },
   { step: 14.5, what: "OpeningException creation, before the freeze release" },
+  { step: 15, what: "the freeze release, with everything else already written" },
 ];
 
 describe("SH-21 rollback matrix", () => {
