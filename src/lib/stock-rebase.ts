@@ -52,6 +52,45 @@
 // one collision, and the loser reports the existing work rather than adding a
 // second delta to a balance. Rebasing is not the kind of operation that gets
 // a second chance to be wrong.
+//
+// ── Two entry points, one rebase ─────────────────────────────────────
+//
+// The owner's standalone action and a handover acceptance want the same
+// arithmetic under different transaction ownership, so the rebase is written
+// once and told how to obtain a transaction client.
+//
+//   rebaseFromCount               one transaction PER LINE, opened here.
+//   rebaseFromCountInTransaction  the CALLER's transaction, opened by nobody.
+//
+// The per-line boundary of the first is a contract, not an accident: a
+// mid-session failure leaves the lines already done committed, and a later
+// call finishes the rest. That resumption is what makes a long owner-initiated
+// rebase restartable, and REBASE-003 pins it.
+//
+// The second opens nothing. It calls the body with the client it was handed,
+// so every write lands in the caller's unit of work and the caller's rollback
+// is total — which is the whole reason SH-20 can rebase, transfer custody,
+// close a shift and complete a handover as one fact. It follows that per-line
+// resumption does NOT apply to it: inside one transaction there is nothing to
+// resume to, and a duplicate rebase row means a concurrent acceptance won and
+// this one must roll back entirely.
+//
+// That is also why the unique-violation recovery below belongs to the wrapper
+// alone. PostgreSQL aborts an interactive transaction the moment a constraint
+// fires, so a follow-up query on the caller's client would fail on the aborted
+// transaction rather than answer it. `inventory-freeze.ts` documents the same
+// rule and takes the same approach.
+//
+// The existence pre-check reads through whichever client the write will use,
+// so a second pass inside one transaction sees the rows the first pass wrote
+// and reports them as already done instead of provoking a violation. The
+// unique index remains the decider in both paths.
+//
+// `freezeToken` is forwarded to exactly one place — the `applyStockMutation`
+// call — because that is where the freeze is enforced. An absent token behaves
+// as it always has: permitted when no freeze is active, refused when one is.
+// A token belonging to a different handover is refused by the same comparison,
+// so authority to move a frozen shelf is never widened here.
 
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
@@ -97,10 +136,42 @@ function isUniqueViolation(e: unknown): boolean {
   return code === "P2002" || code === "23505";
 }
 
+type RebaseArgs = {
+  sessionId: string;
+  actorId: string;
+  idempotencyKey: string;
+  /**
+   * The handover whose freeze this rebase is entitled to move stock through.
+   * Absent for an ordinary rebase, which is refused while a freeze is active.
+   */
+  freezeToken?: string | null;
+};
+
+/**
+ * How one line's writes get a transaction, and what may be done afterwards.
+ *
+ * The two entry points differ in exactly these three answers and in nothing
+ * else, which is what makes "the transactional path computes the same thing"
+ * a property of the code rather than a claim about it.
+ */
+type RebaseExecutor = {
+  /** Client the session, actor and existence pre-checks read through. */
+  reader: Prisma.TransactionClient;
+  /** Supplies a transaction client for one line's writes. */
+  run: <T>(fn: (tx: Prisma.TransactionClient) => Promise<T>) => Promise<T>;
+  /**
+   * Whether a unique violation may be resolved by asking who won. Only true
+   * where the failed write had its own transaction: inside a caller's
+   * transaction PostgreSQL has already aborted, and the violation must
+   * propagate so the caller rolls the whole acceptance back.
+   */
+  recoverAfterUniqueViolation: boolean;
+};
+
 /**
  * Turn a confirmed count into the operational stock baseline.
  *
- * Called by handover accept and by an explicit owner action. Refuses unless
+ * Called by an explicit owner action, one transaction per line. Refuses unless
  * the session is CONFIRMED: only a count somebody confirmed is a trusted
  * starting point, and a DRAFT or SUBMITTED one is still being argued about.
  *
@@ -112,7 +183,49 @@ export async function rebaseFromCount(args: {
   actorId: string;
   idempotencyKey: string;
 }): Promise<RebaseResult> {
-  const session = await db.stockCountSession.findUnique({
+  return runRebase(
+    {
+      reader: db,
+      run: (fn) => db.$transaction(fn),
+      recoverAfterUniqueViolation: true,
+    },
+    args
+  );
+}
+
+/**
+ * The same rebase, inside a transaction somebody else opened.
+ *
+ * SH-20's acceptance is one transaction from the handover row lock to the
+ * freeze release, and the rebase sits in the middle of it. Every write here
+ * lands in `tx`, so a failure anywhere later in that acceptance reverses this
+ * too and there is no moment at which a rebased shelf outlives the acceptance
+ * that rebased it.
+ *
+ * `freezeToken` is the handover id. The freeze protecting the count is still
+ * held while this runs — releasing it first to get the movement through would
+ * reopen the shelf to sales in the middle of the acceptance, which is the one
+ * thing the freeze exists to prevent.
+ */
+export async function rebaseFromCountInTransaction(
+  tx: Prisma.TransactionClient,
+  args: RebaseArgs
+): Promise<RebaseResult> {
+  return runRebase(
+    {
+      reader: tx,
+      run: (fn) => fn(tx),
+      recoverAfterUniqueViolation: false,
+    },
+    args
+  );
+}
+
+async function runRebase(
+  executor: RebaseExecutor,
+  args: RebaseArgs
+): Promise<RebaseResult> {
+  const session = await executor.reader.stockCountSession.findUnique({
     where: { id: args.sessionId },
     select: {
       id: true, cafeId: true, branchId: true, status: true,
@@ -135,7 +248,7 @@ export async function rebaseFromCount(args: {
 
   // The actor must belong to the café whose shelf is about to move. A key
   // proves the session exists; it does not make it ours.
-  const actor = await db.user.findUnique({
+  const actor = await executor.reader.user.findUnique({
     where: { id: args.actorId },
     select: { cafeId: true, role: true },
   });
@@ -174,7 +287,7 @@ export async function rebaseFromCount(args: {
       continue;
     }
 
-    const applied = await applyOneLine({
+    const applied = await applyOneLine(executor, {
       cafeId: session.cafeId,
       branchId: session.branchId,
       sessionId: session.id,
@@ -185,6 +298,7 @@ export async function rebaseFromCount(args: {
       countCursor: evidence.itemVersion ?? BigInt(0),
       evidenceSource: evidence.source,
       actorId: args.actorId,
+      freezeToken: args.freezeToken,
     });
 
     if (applied === "ALREADY") {
@@ -216,9 +330,10 @@ export async function rebaseFromCount(args: {
  * The rebase record is written inside the same transaction as the stock
  * mutation, so a failure leaves neither: a rebase row with no movement, or a
  * movement with no rebase row, would each be a permanent lie about what
- * happened to the shelf.
+ * happened to the shelf. Which transaction that is — one opened here, or the
+ * caller's — is the executor's answer, and nothing below depends on it.
  */
-async function applyOneLine(args: {
+async function applyOneLine(executor: RebaseExecutor, args: {
   cafeId: string;
   branchId: string;
   sessionId: string;
@@ -230,6 +345,7 @@ async function applyOneLine(args: {
   /** Which observation supplied the figure AND the cursor above. */
   evidenceSource: EffectiveEvidenceSource;
   actorId: string;
+  freezeToken?: string | null;
 }): Promise<
   | "ALREADY"
   | {
@@ -242,7 +358,12 @@ async function applyOneLine(args: {
 > {
   // Cheap pre-check so an ordinary retry does not have to provoke a
   // constraint violation. The unique index below is what actually decides.
-  const existing = await db.stockCountRebase.findUnique({
+  //
+  // It reads through the same client the write will use, so a second pass
+  // inside one caller transaction sees the first pass's uncommitted row. On
+  // the global client that read would not see it, and the retry would collide
+  // instead of reporting the work as done.
+  const existing = await executor.reader.stockCountRebase.findUnique({
     where: {
       sessionId_inventoryItemId: {
         sessionId: args.sessionId,
@@ -254,7 +375,7 @@ async function applyOneLine(args: {
   if (existing) return "ALREADY";
 
   try {
-    return await db.$transaction(async (tx: Prisma.TransactionClient) => {
+    return await executor.run(async (tx: Prisma.TransactionClient) => {
       await acquireInventorySharedLocks(tx, [args.branchId]);
       const replay = await ledgerDeltaAbove(tx, args.inventoryItemId, args.countCursor);
       const stockAfter = round3(args.effectiveCounted + replay.delta);
@@ -280,6 +401,11 @@ async function applyOneLine(args: {
         // says zero, refusing to record zero would keep a figure everyone
         // knows is wrong.
         allowNegative: true,
+        // The one place a token matters. `applyStockMutation` compares it
+        // against the active freeze's own handover, so this neither weakens
+        // the freeze nor bypasses it — it identifies the handover the freeze
+        // was taken for.
+        freezeToken: args.freezeToken,
       });
 
       await tx.stockCountRebase.create({
@@ -341,8 +467,14 @@ async function applyOneLine(args: {
   } catch (e) {
     // Somebody else won the race. The unique index is what makes this a
     // reliable answer rather than a hopeful retry.
-    if (isUniqueViolation(e)) {
-      const winner = await db.stockCountRebase.findUnique({
+    //
+    // Only askable where the failed write had its own transaction. Inside a
+    // caller's transaction PostgreSQL has already aborted, so this query would
+    // fail rather than answer — and the right outcome there is to propagate:
+    // a duplicate means a concurrent acceptance won, and this one must roll
+    // back whole rather than continue on top of somebody else's rebase.
+    if (executor.recoverAfterUniqueViolation && isUniqueViolation(e)) {
+      const winner = await executor.reader.stockCountRebase.findUnique({
         where: {
           sessionId_inventoryItemId: {
             sessionId: args.sessionId,
