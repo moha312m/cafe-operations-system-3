@@ -113,6 +113,12 @@ async function restoreItems() {
         currentStock: OPENING_STOCK[key],
         costPerUnit: 450,
         name: items[key].name,
+        // Reset WITH the balance. `resetBranch` deletes the ledger rows that
+        // justified the counter, and an item whose `ledgerVersion` outlives
+        // its own history is the exact state LEDGER-001 exists to catch —
+        // leaving it behind would make this fixture the thing that fails a
+        // global invariant somewhere else.
+        ledgerVersion: BigInt(0),
       },
     });
   }

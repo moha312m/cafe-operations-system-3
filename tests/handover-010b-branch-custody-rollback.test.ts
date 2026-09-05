@@ -96,6 +96,10 @@ async function restoreItems() {
         archivedAt: null,
         currentStock: OPENING_STOCK[key],
         costPerUnit: 450,
+        // With the balance: `resetBranch` deleted the ledger rows the counter
+        // was counting, and an item whose `ledgerVersion` outlives its own
+        // history is what LEDGER-001 refuses.
+        ledgerVersion: BigInt(0),
       },
     });
   }
