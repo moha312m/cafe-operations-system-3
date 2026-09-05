@@ -15,8 +15,8 @@
 // The check below exists to produce a legible message, not to be the
 // guarantee.
 
+import { Prisma } from "@prisma/client";
 import type {
-  Prisma,
   CustodyHolderType,
   CustodyPeriod,
   CustodyRole,
@@ -114,19 +114,59 @@ export async function openCustodyPeriod(
 
 const LIVE_HANDOVER_STATUSES = ["DRAFT", "OUTGOING_SUBMITTED", "INCOMING_REVIEW"] as const;
 
-/** Whether a live handover already names outgoing stock custody for this branch. */
+/**
+ * Whether a live handover already names outgoing stock custody for this
+ * branch — asked under a ROW LOCK, which is the whole of it.
+ *
+ * ── THE RACE THIS CLOSES (SH-22 · R-A1) ──
+ *
+ * A branch-custody acceptance and a shift opening at the same branch are two
+ * transactions reading the same fact and reaching opposite conclusions about
+ * it. An ordinary read gets its own snapshot: shift-open could see the
+ * handover still `OUTGOING_SUBMITTED`, decide `AWAITING_CUSTODY_TRANSFER`,
+ * and commit that decision AFTER the acceptance had already completed the
+ * handover and moved the stock to BRANCH custody. The shift is then gated on
+ * a transfer that will never come — nobody is mid-handover any more, and
+ * nothing left in the system would ever release it. `acceptToBranchCustody`
+ * refuses when such a shift already exists, so the stranded shift also blocks
+ * every future acceptance: a deadlock made of two correct-looking reads.
+ *
+ * `FOR SHARE` is what makes the two transactions take turns. SHARE rather
+ * than UPDATE because this is a reader: any number of shifts may open
+ * concurrently while no acceptance is in flight, and they do not need to
+ * exclude each other. It conflicts with exactly one thing — the `FOR UPDATE`
+ * an acceptance takes on the handover row before its first write — so
+ * shift-open BLOCKS for the duration of an acceptance instead of deciding
+ * against a snapshot that is about to be false, and re-reads afterwards under
+ * READ COMMITTED, seeing the completed handover and the BRANCH custody it
+ * left behind. The verdict it then reaches is `AWAITING_OPENING_VERIFICATION`,
+ * which is a gate SH-22 can actually discharge.
+ *
+ * Raw SQL because Prisma has no way to ask for a row lock, PARAMETERISED
+ * because a branch id is caller input, and `LIVE_HANDOVER_STATUSES` rather
+ * than a second list so the locking probe and every other reader of "live"
+ * cannot drift apart. The `::text` cast is what lets the enum column be
+ * compared against bound parameters at all.
+ *
+ * CALLER PRECONDITION: `tx` must be the caller's own transaction, and this
+ * must be asked BEFORE anything else the decision depends on is read. A lock
+ * taken after the custody snapshot would let the snapshot be the stale thing
+ * instead, which is the same defect one read further down.
+ */
 export async function branchIsMidHandover(
   tx: Prisma.TransactionClient,
   branchId: string
 ): Promise<boolean> {
-  return Boolean(await tx.handoverSession.findFirst({
-    where: {
-      branchId,
-      status: { in: [...LIVE_HANDOVER_STATUSES] },
-      outgoingStockCustodyId: { not: null },
-    },
-    select: { id: true },
-  }));
+  const rows = await tx.$queryRaw<{ id: string }[]>`
+    SELECT "id"
+      FROM "HandoverSession"
+     WHERE "branchId" = ${branchId}
+       AND "status"::text IN (${Prisma.join([...LIVE_HANDOVER_STATUSES])})
+       AND "outgoingStockCustodyId" IS NOT NULL
+     LIMIT 1
+       FOR SHARE
+  `;
+  return rows.length > 0;
 }
 
 /**
@@ -143,7 +183,15 @@ export async function ensureCustodyForShift(
     openingCashAmount: number;
   }
 ): Promise<CustodyBootstrapVerdict> {
-  const [cash, stock, midHandover] = await Promise.all([
+  // FIRST, and awaited alone. The probe takes a row lock (see
+  // `branchIsMidHandover`), and a lock taken after the custody reads would
+  // protect nothing: the reads would already have their own snapshot, and an
+  // acceptance committing in between would leave this transaction deciding
+  // against a branch state that no longer exists. Locking first means both
+  // the live-handover verdict and the custody rows below are read on the far
+  // side of any acceptance that was in flight.
+  const midHandover = await branchIsMidHandover(tx, args.branchId);
+  const [cash, stock] = await Promise.all([
     tx.custodyPeriod.findFirst({
       where: { branchId: args.branchId, scope: "CASH", status: "OPEN" },
       include: { participants: { select: { userId: true } } },
@@ -152,7 +200,6 @@ export async function ensureCustodyForShift(
       where: { branchId: args.branchId, scope: "STOCK", status: "OPEN" },
       include: { participants: { select: { userId: true } } },
     }),
-    branchIsMidHandover(tx, args.branchId),
   ]);
 
   const result: CustodyBootstrapVerdict = {
