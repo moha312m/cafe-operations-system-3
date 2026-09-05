@@ -2938,3 +2938,765 @@ async function transferCashCustody(
   });
   return cash.incomingPeriodId;
 }
+
+// ═══════════════ SH-22 · Half A — the branch takes the shelf ═══════════════
+//
+// A `BRANCH_CUSTODY` handover ENDS employee custody of the stock rather than
+// moving it to another employee. Nobody arrives, nobody signs, and the shelf
+// is held by the branch itself until somebody opens a shift and verifies it
+// (Half B). That is a different act from SH-20's acceptance, and this is a
+// SIBLING transaction rather than a parameter on that one:
+//
+//   * SH-20's `resolveAcceptableEvidence` refuses a `BRANCH_CUSTODY` target
+//     several lines before its first write, and SH-21 inherits that refusal.
+//     Both keep it. A flag that relaxed it would make one gate answer two
+//     different questions, and the answer to either would be one edit away
+//     from becoming wrong for the other.
+//
+//   * `runAcceptance` resolves an arriving shift, moves the drawer, releases
+//     that shift's gate and names an incoming user on the completion. Every
+//     one of those is a step this path must NOT take, and a `runAcceptance`
+//     with four "unless branch custody" branches inside it would be a worse
+//     record of what each acceptance does than two functions that each do one
+//     thing.
+//
+// ── WHAT IS THE SAME, AND IS REUSED WHOLE ──
+//
+// The evidence rules. The count must be CONFIRMED, bound to this handover,
+// carry an acknowledgement for every counted line of the CURRENT round and no
+// dispute; the outgoing STOCK custody must be the one named at close and
+// still OPEN; the freeze must be this handover's. The settlement, the rebase,
+// the boundary, the count lock and the accepted-variance writer are SH-14's,
+// SH-23's, SH-15's, SH-13's and SH-17's, called unchanged.
+//
+// ── WHAT IS DIFFERENT, AND WHY ──
+//
+// CASH does not move, and must already have stopped moving. A
+// `BRANCH_CUSTODY` close discharges the outgoing drawer at financial close
+// (`finalizeCashCustodyAtFinancialClose`) and opens no successor, because
+// nobody was appointed to hold it. So this gate REQUIRES the outgoing CASH
+// period to be non-OPEN rather than transferring it: a drawer still open here
+// would mean the close did not do what this acceptance is assuming it did.
+//
+// The STOCK successor is held by the BRANCH: zero participants, no shift, no
+// `responsibleShiftId`. `openedById` is the manager, which is the truthful
+// answer to "who put the stock into branch custody" and is not a claim that
+// they are holding it.
+//
+// No `NO_INCOMING` exception is manufactured. That kind classifies an
+// override of a SHIFT_TO_SHIFT acceptance whose recipient was absent;
+// `resolvedTarget = BRANCH_CUSTODY` already states that no person receives
+// this stock, and a second record saying the same thing in weaker words would
+// invite a reader to look for a recipient who was never intended.
+
+/** The one refusal R-A1 exists to make, in the café's own words. */
+const SHIFT_AWAITING_CUSTODY =
+  "في وردية مستنية العهدة — سلّم ليها أو اقفلها قبل التحويل لعهدة الفرع";
+const NOT_BRANCH_TARGET =
+  "التسليم ده مش للعهدة المركزية — استخدم الاستلام العادي";
+const OUTGOING_CASH_STILL_OPEN =
+  "عهدة الخزنة لسه مفتوحة — لازم تتقفل مع الإقفال المالي قبل التحويل لعهدة الفرع";
+const BRANCH_OMISSION_REASON_REQUIRED =
+  "في أصناف مطلوبة ماتعدّتش — لازم سبب مدير ومبرر مكتوب";
+
+export const BRANCH_CUSTODY_ACCEPTED_AUDIT_ACTION = HANDOVER_ACCEPTED_AUDIT_ACTION;
+
+/** Everything Half A's gate resolved, and every refusal it already made. */
+type BranchAcceptedEvidence = {
+  handover: LockedHandover;
+  acceptedSessionId: string;
+  outgoingStockCustodyId: string;
+  /** The already-discharged drawer, recorded so the audit can name it. */
+  outgoingCashCustodyId: string | null;
+  countedLineIds: string[];
+};
+
+/**
+ * A manager's authority to finish a branch acceptance over an uncounted
+ * required item. Optional, and only ever consulted when something was
+ * actually omitted.
+ */
+type BranchOmissionAuthority = {
+  reasonCodeId: string;
+  /** Trimmed and non-empty by the time it reaches the transaction. */
+  note: string;
+};
+
+export type BranchCustodyAcceptResult = {
+  status: "COMPLETED";
+  handoverTarget: "BRANCH_CUSTODY";
+  resolvedTarget: "BRANCH_CUSTODY";
+  acceptedStockCountSessionId: string | null;
+  /** The BRANCH-held successor. */
+  incomingStockCustodyId: string | null;
+  /** Always null. Named rather than omitted, because it is the decision. */
+  incomingCashCustodyId: null;
+  incomingShiftId: null;
+  incomingUserId: null;
+  boundary: { written: number; verified: number; carried: number };
+  requiredItems: { satisfied: number; omitted: string[] };
+  rebase: RebaseResult | null;
+  varianceCaseIds: string[];
+  spanIds: string[];
+  outgoingShiftStatus: "CLOSED";
+  openingExceptionId: string | null;
+  /** `inventoryItemId` of every required item nobody counted, ascending. */
+  missingItemIds: string[];
+  alreadyAccepted: boolean;
+};
+
+/**
+ * Read-only. Every refusal is thrown before the first write, so a gate that
+ * says no has changed nothing about the branch.
+ *
+ * Deliberately NOT `resolveAcceptableEvidence` with a flag: that function's
+ * `target !== "SHIFT_TO_SHIFT"` refusal and its arriving-shift resolution are
+ * the two things this path must invert, and inverting them there would leave
+ * SH-20 and SH-21 depending on a gate that no longer says one thing.
+ */
+async function resolveBranchAcceptableEvidence(
+  tx: Prisma.TransactionClient,
+  handover: LockedHandover,
+  args: { cafeId: string; viewerBranchId: string | null }
+): Promise<BranchAcceptedEvidence> {
+  // Another tenant's handover is not confirmed to exist. A 403 here would
+  // tell one café that an id belonging to another one is real.
+  if (handover.cafeId !== args.cafeId) throw new ApiError(404, HANDOVER_NOT_FOUND);
+  if (args.viewerBranchId !== null && handover.branchId !== args.viewerBranchId) {
+    throw new ApiError(403, FOREIGN_BRANCH);
+  }
+  if (!ACCEPTABLE_STATUSES.includes(handover.status)) {
+    throw new ApiError(409, NOT_ACCEPTABLE);
+  }
+  // The IMMUTABLE target, read and never written. SH-14 is the only writer of
+  // this column, and a route that could retarget a handover at acceptance
+  // would make "where the stock is going" a decision taken after the count
+  // rather than before it.
+  if (handover.target !== "BRANCH_CUSTODY") {
+    throw new ApiError(409, NOT_BRANCH_TARGET);
+  }
+  if (handover.stockCountSessionId === null) throw new ApiError(409, NO_BOUND_COUNT);
+
+  // The pointer names the evidence — never "the newest confirmed session",
+  // which after a recount would silently accept a round nobody reviewed.
+  const acceptedSessionId = handover.stockCountSessionId;
+  const session = await tx.stockCountSession.findUnique({
+    where: { id: acceptedSessionId },
+    select: {
+      id: true, cafeId: true, branchId: true, status: true,
+      accountabilityContext: true, handoverId: true,
+    },
+  });
+  if (!session) throw new ApiError(409, NO_BOUND_COUNT);
+  if (session.cafeId !== handover.cafeId || session.branchId !== handover.branchId) {
+    throw new ApiError(409, COUNT_NOT_OURS);
+  }
+  if (session.status !== "CONFIRMED") throw new ApiError(409, COUNT_NOT_CONFIRMED);
+  // HANDOVER, and only HANDOVER. A branch OPENING verification's session is
+  // Half B's evidence about a shelf the branch is handing BACK, and accepting
+  // one here would close a handover on a count of the wrong direction.
+  if (session.accountabilityContext !== "HANDOVER" || session.handoverId !== handover.id) {
+    throw new ApiError(409, COUNT_NOT_OURS);
+  }
+
+  const lines = await tx.stockCountLine.findMany({
+    where: { sessionId: acceptedSessionId },
+    select: { ...EFFECTIVE_EVIDENCE_SELECT, id: true },
+    orderBy: { id: "asc" },
+  });
+  // A line nobody counted has no figure to sign for, and
+  // `acknowledgeStockLine` refuses to sign one.
+  const countedLines = lines.filter(
+    (line) => !(line.countedQuantity === null && effectiveCountEvidence(line).recountId === null)
+  );
+
+  // Against the CURRENT session only. An acknowledgement reaches a session
+  // through its line, so a row belonging to a superseded round can neither
+  // satisfy a missing line nor block on a stale dispute.
+  const acknowledgements = await tx.handoverStockAcknowledgement.findMany({
+    where: { handoverId: handover.id, line: { sessionId: acceptedSessionId } },
+    select: { stockCountLineId: true, decision: true },
+  });
+  const acknowledged = new Set(acknowledgements.map((a) => a.stockCountLineId));
+  if (countedLines.some((line) => !acknowledged.has(line.id))) {
+    throw new ApiError(409, LINES_UNACKNOWLEDGED);
+  }
+  if (acknowledgements.some((a) => a.decision === "DISPUTED")) {
+    throw new ApiError(409, LINES_DISPUTED);
+  }
+
+  // The custody being discharged is the one the CLOSING shift held, named on
+  // the handover at close — not "whatever is open at the branch now".
+  if (handover.outgoingStockCustodyId === null) {
+    throw new ApiError(409, NO_OUTGOING_STOCK_CUSTODY);
+  }
+  const outgoingStock = await tx.custodyPeriod.findUnique({
+    where: { id: handover.outgoingStockCustodyId },
+    select: { id: true, branchId: true, scope: true, status: true, holderType: true },
+  });
+  if (
+    !outgoingStock
+    || outgoingStock.branchId !== handover.branchId
+    || outgoingStock.scope !== "STOCK"
+    || outgoingStock.status !== "OPEN"
+  ) {
+    throw new ApiError(409, NO_OUTGOING_STOCK_CUSTODY);
+  }
+
+  // ── CASH: already settled, and not this transaction's to touch ──
+  //
+  // The `BRANCH_CUSTODY` close discharged the drawer at financial close and
+  // opened no successor. A period still OPEN here means that did not happen,
+  // and moving it now would make an acceptance answer a question the close
+  // owns. Refused rather than repaired.
+  if (handover.outgoingCashCustodyId !== null) {
+    const cash = await tx.custodyPeriod.findUnique({
+      where: { id: handover.outgoingCashCustodyId },
+      select: { id: true, branchId: true, scope: true, status: true },
+    });
+    if (cash && cash.branchId === handover.branchId && cash.scope === "CASH"
+      && cash.status === "OPEN") {
+      throw new ApiError(409, OUTGOING_CASH_STILL_OPEN);
+    }
+  }
+
+  // ── R-A1: nobody may be left waiting for a transfer that will not come ──
+  //
+  // A shift gated `AWAITING_CUSTODY_TRANSFER` opened while this handover was
+  // live and is waiting for an arriving custodian to be named. Branch custody
+  // names nobody, so completing here would strand that shift on a gate no
+  // later operation could release — and `ensureCustodyForShift` would never
+  // re-decide it, because the handover it was waiting for is finished.
+  //
+  // Refused deterministically, BEFORE the first write, and with no
+  // retargeting: the fix is somebody's to make (hand to that shift, or close
+  // it), and inventing an incoming user to absorb it would be this milestone
+  // recording a custodian nobody appointed. `branchIsMidHandover` holds a
+  // SHARE lock on this handover's row for the whole of a concurrent
+  // shift-open, so a shift cannot appear between this check and the
+  // completion below.
+  const waiting = await tx.shift.count({
+    where: {
+      branchId: handover.branchId,
+      status: "OPEN",
+      custodyGateReason: "AWAITING_CUSTODY_TRANSFER",
+    },
+  });
+  if (waiting > 0) throw new ApiError(409, SHIFT_AWAITING_CUSTODY);
+
+  // Acceptance releases the freeze at step 17, so it must be releasing its
+  // own. A branch frozen by a different handover is not this one's to reopen.
+  const freeze = await activeFreezeFor(tx, handover.branchId);
+  if (!freeze || freeze.handoverId !== handover.id) {
+    throw new ApiError(409, FREEZE_NOT_OURS);
+  }
+
+  return {
+    handover,
+    acceptedSessionId,
+    outgoingStockCustodyId: outgoingStock.id,
+    outgoingCashCustodyId: handover.outgoingCashCustodyId,
+    countedLineIds: countedLines.map((line) => line.id),
+  };
+}
+
+/**
+ * The answer to a caller whose branch acceptance committed and whose response
+ * was lost. Read back from persisted state, never remembered: a retry may
+ * arrive in a different process weeks later.
+ */
+async function buildBranchReplayResult(
+  tx: Prisma.TransactionClient,
+  handover: LockedHandover
+): Promise<BranchCustodyAcceptResult> {
+  const [boundaries, required, cases] = await Promise.all([
+    tx.handoverStockBoundary.findMany({
+      where: { handoverId: handover.id },
+      select: { verified: true },
+    }),
+    tx.handoverRequiredItem.findMany({
+      where: { handoverId: handover.id },
+      select: {
+        satisfiedByLineId: true, omitted: true,
+        itemNameSnapshot: true, inventoryItemId: true,
+      },
+      orderBy: { inventoryItemId: "asc" },
+    }),
+    tx.varianceCase.findMany({
+      where: { acceptedHandoverId: handover.id },
+      select: { id: true, varianceSpan: { select: { id: true } } },
+      orderBy: { id: "asc" },
+    }),
+  ]);
+
+  const exceptionRow = await tx.openingException.findFirst({
+    where: { handoverId: handover.id },
+    select: { id: true },
+    orderBy: { createdAt: "asc" },
+  });
+
+  const persisted = await tx.handoverSession.findUniqueOrThrow({
+    where: { id: handover.id },
+    select: {
+      resolvedTarget: true, acceptedStockCountSessionId: true,
+      incomingStockCustodyId: true,
+    },
+  });
+
+  return {
+    status: "COMPLETED",
+    handoverTarget: "BRANCH_CUSTODY",
+    // Read back rather than asserted: if the persisted row ever disagreed, a
+    // replay restating the expected answer would hide the disagreement.
+    resolvedTarget: persisted.resolvedTarget === "BRANCH_CUSTODY"
+      ? "BRANCH_CUSTODY"
+      : (() => { throw new ApiError(409, NOT_BRANCH_TARGET); })(),
+    acceptedStockCountSessionId: persisted.acceptedStockCountSessionId,
+    incomingStockCustodyId: persisted.incomingStockCustodyId,
+    incomingCashCustodyId: null,
+    incomingShiftId: null,
+    incomingUserId: null,
+    boundary: {
+      written: boundaries.length,
+      verified: boundaries.filter((b) => b.verified).length,
+      carried: boundaries.filter((b) => !b.verified).length,
+    },
+    requiredItems: {
+      satisfied: required.filter((r) => r.satisfiedByLineId !== null).length,
+      omitted: required.filter((r) => r.omitted).map((r) => r.itemNameSnapshot),
+    },
+    // NULL on purpose: this call rebased nothing, and restating an earlier
+    // call's `RebaseResult` would describe work that did not happen here.
+    rebase: null,
+    varianceCaseIds: cases.map((c) => c.id),
+    spanIds: cases.flatMap((c) => (c.varianceSpan ? [c.varianceSpan.id] : [])),
+    outgoingShiftStatus: "CLOSED",
+    openingExceptionId: exceptionRow?.id ?? null,
+    missingItemIds: required.filter((r) => r.omitted).map((r) => r.inventoryItemId),
+    alreadyAccepted: true,
+  };
+}
+
+/**
+ * Accept a closing handover into BRANCH stock custody: one transaction,
+ * eighteen steps, all or none of it.
+ *
+ * `managerId` is the authenticated manager and the only actor this path has.
+ * There is no arriving custodian to be the actor instead, and the manager is
+ * never recorded as holding the stock — `openedById` on the BRANCH successor
+ * says who put it there, and the period has no participants at all.
+ */
+export async function acceptToBranchCustody(args: {
+  handoverId: string;
+  /** The authenticated manager. From `session.id`; never from a request body. */
+  managerId: string;
+  idempotencyKey: string;
+  /** Required only when a required item was never counted. */
+  omissionReasonCodeId?: string | null;
+  omissionNote?: string | null;
+  cafeId: string;
+  viewerBranchId: string | null;
+  /** Test-only failure seam. See {@link AcceptanceCheckpoint}. */
+  __afterStep?: AcceptanceCheckpoint;
+}): Promise<BranchCustodyAcceptResult> {
+  // Before the transaction, so a caller who sent whitespace does not first
+  // take a row lock to be told so — the rule `overrideAcceptHandover` states.
+  const note = args.omissionNote?.trim() ?? "";
+  const omission: BranchOmissionAuthority | null =
+    args.omissionReasonCodeId && note.length > 0
+      ? { reasonCodeId: args.omissionReasonCodeId, note }
+      : null;
+  // A reason with no note, or a note with no reason, is half an
+  // authorisation. Refused here rather than silently ignored, because a
+  // caller who believed they had authorised an omission and had not would
+  // discover it as an unexplained 409 several steps later.
+  if ((args.omissionReasonCodeId || note.length > 0) && !omission) {
+    throw new ApiError(400, BRANCH_OMISSION_REASON_REQUIRED);
+  }
+
+  return db.$transaction(async (tx) => {
+    // 1. The row lock, first, so everything read below is the state written
+    //    to — and so a concurrent shift-open blocks on it (see R-A1).
+    if (!(await lockHandover(tx, args.handoverId))) {
+      throw new ApiError(404, HANDOVER_NOT_FOUND);
+    }
+
+    const handover = await tx.handoverSession.findUniqueOrThrow({
+      where: { id: args.handoverId },
+      select: LOCKED_HANDOVER_SELECT,
+    });
+
+    // 2. Tenancy before anything else, including before the replay: reading
+    //    back a completed acceptance is still reading somebody's record.
+    if (handover.cafeId !== args.cafeId) throw new ApiError(404, HANDOVER_NOT_FOUND);
+    if (args.viewerBranchId !== null && handover.branchId !== args.viewerBranchId) {
+      throw new ApiError(403, FOREIGN_BRANCH);
+    }
+
+    // 3. Already accepted. A retry under the SAME key hears the same answer;
+    //    a different key is a claim to a second acceptance of one handover.
+    if (handover.status === "COMPLETED") {
+      if (handover.idempotencyKey !== args.idempotencyKey) {
+        throw new ApiError(409, ALREADY_ACCEPTED);
+      }
+      return buildBranchReplayResult(tx, handover);
+    }
+
+    // 4. The gate. Every refusal is thrown before the first write.
+    const evidence = await resolveBranchAcceptableEvidence(tx, handover, {
+      cafeId: args.cafeId,
+      viewerBranchId: args.viewerBranchId,
+    });
+
+    return runBranchAcceptance(tx, evidence, {
+      managerId: args.managerId,
+      idempotencyKey: args.idempotencyKey,
+      omission,
+      __afterStep: args.__afterStep,
+    });
+  });
+}
+
+/**
+ * Steps 5 through 18, in order. Every write lands on the caller's transaction
+ * client; nothing here opens one.
+ */
+async function runBranchAcceptance(
+  tx: Prisma.TransactionClient,
+  evidence: BranchAcceptedEvidence,
+  args: {
+    managerId: string;
+    idempotencyKey: string;
+    omission: BranchOmissionAuthority | null;
+    __afterStep?: AcceptanceCheckpoint;
+  }
+): Promise<BranchCustodyAcceptResult> {
+  const { handover, acceptedSessionId } = evidence;
+  const omission = args.omission;
+  let openingExceptionId: string | null = null;
+  const checkpoint = async (step: number) => {
+    if (args.__afterStep) await args.__afterStep(step, tx);
+  };
+
+  // ── 5. The omission reason, validated against this handover's own café ──
+  //
+  // Read from the LOCKED row rather than from the caller, so a reason code
+  // belonging to somebody else cannot authorise this omission. Validated
+  // before settlement writes anything, which is what makes a bad reason code
+  // leave the required-item rows exactly as they were.
+  if (omission) {
+    await assertHandoverReason(tx, omission.reasonCodeId, handover.cafeId, "سبب الاستثناء");
+  }
+
+  // ── 6. Required items ──
+  //
+  // SH-14's authority, used rather than reimplemented. The note is passed
+  // ONLY when a manager authorised the omission — a note is the
+  // authorisation's evidence, and an acceptance that supplied one without a
+  // reason would be an unaudited override.
+  const settled = await settleRequiredItems(tx, {
+    handoverId: handover.id,
+    acceptedSessionId,
+    ...(omission ? { omissionNote: omission.note } : {}),
+  });
+  // Ascending by `inventoryItemId`, the order settlement already sorted them
+  // into, so the result, the audit row and a later replay agree.
+  const missingItemIds = settled.omitted.map((entry) => entry.inventoryItemId);
+  const missingItemNames = settled.omitted.map((entry) => entry.itemNameSnapshot);
+  // A `throw` inside the transaction, so the `omitted: true` rows settlement
+  // wrote moments ago never commit.
+  if (!omission && settled.omitted.length > 0) {
+    throw new ApiError(409, BRANCH_OMISSION_REASON_REQUIRED);
+  }
+  await checkpoint(6);
+
+  // ── 7. Rebase, under the freeze that protected the count ──
+  //
+  // The freeze is NOT released first. Releasing it to get the movement
+  // through would reopen the shelf in the middle of the acceptance, which is
+  // the one thing it exists to prevent; step 17 releases it.
+  //
+  // The manager is the actor. On this path there is no arriving custodian to
+  // be one, and the rebase is an act performed by whoever authorised the
+  // acceptance rather than by whoever is taking the room — nobody is.
+  const rebase = await rebaseFromCountInTransaction(tx, {
+    sessionId: acceptedSessionId,
+    actorId: args.managerId,
+    idempotencyKey: `${handover.id}:rebase`,
+    freezeToken: handover.id,
+  });
+  await checkpoint(7);
+
+  // ── 8. The closing position ──
+  const boundary = await buildStockBoundary(tx, {
+    cafeId: handover.cafeId,
+    branchId: handover.branchId,
+    handoverId: handover.id,
+    acceptedSessionId,
+  });
+  const written = await persistStockBoundary(tx, {
+    handoverId: handover.id,
+    lines: boundary.lines,
+  });
+  const boundaryRows = await tx.handoverStockBoundary.findMany({
+    where: { handoverId: handover.id },
+    select: { id: true, inventoryItemId: true },
+  });
+  const boundaryByItemId = new Map(
+    boundaryRows.map((row) => [row.inventoryItemId, row.id])
+  );
+  await checkpoint(8);
+
+  // ── 9. The accepted evidence becomes immutable ──
+  await lockCountSession(tx, {
+    sessionId: acceptedSessionId,
+    handoverId: handover.id,
+    actorId: args.managerId,
+  });
+  await checkpoint(9);
+
+  // ── 10. Accepted variance and its attribution ──
+  //
+  // The custody the difference is measured against is the OUTGOING one — the
+  // employee period that held the shelf while the gap appeared. The BRANCH
+  // successor does not exist yet and did not hold anything during the
+  // interval being judged, so naming it here would move a shortage onto a
+  // custody that began after it.
+  const variance = await openHandoverVarianceCases(tx, {
+    cafeId: handover.cafeId,
+    branchId: handover.branchId,
+    handoverId: handover.id,
+    acceptedSessionId,
+    outgoingCustodyPeriodId: evidence.outgoingStockCustodyId,
+    boundaryByItemId,
+    openedById: args.managerId,
+  });
+  await checkpoint(10);
+
+  // ── 11. One instant, reused by steps 12, 14 and 15 ──
+  //
+  // Taken HERE and not earlier, for the reason SH-20 states:
+  // `openHandoverVarianceCases` derives its spans' `toVerifiedAt` from
+  // `handover.acceptedAt ?? new Date()`, and at step 10 the column is still
+  // NULL. An `acceptedAt` captured before step 10 would be earlier than the
+  // spans it contains.
+  const acceptedAt = new Date();
+
+  // ── 12. STOCK custody moves from the employee to the BRANCH ──
+  //
+  // Zero participants, no shift, no `responsibleShiftId` — the successor is
+  // held by nobody, which is the entire point of branch custody and the one
+  // fact a later reader must not be able to mistake for a person. The
+  // predecessor records who accepted it: the manager, who is the only actor
+  // this path has.
+  const stock = await transferCustody(tx, {
+    outgoingPeriodId: evidence.outgoingStockCustodyId,
+    scope: "STOCK",
+    incoming: {
+      participants: [],
+      shiftId: null,
+      responsibleShiftId: null,
+      holderType: "BRANCH",
+      // Who put the stock into branch custody, not who is holding it.
+      openedById: args.managerId,
+    },
+    actorId: args.managerId,
+    acceptedById: args.managerId,
+    acceptedAt,
+  });
+  await checkpoint(12);
+
+  // ── 13. CASH does not move ──
+  //
+  // Deliberately nothing. The drawer was discharged at financial close with
+  // no successor, and the gate refused this acceptance if it was not. There
+  // is no step to skip conditionally and no null to write.
+
+  // ── 14. The outgoing shift closes ──
+  //
+  // `closedById` is the manager: the person who accepted the count and
+  // discharged the custodian, which on this path is the only person involved.
+  const outgoing = await finalizeOutgoingShift(tx, {
+    outgoingShiftId: handover.outgoingShiftId,
+    closedById: args.managerId,
+    at: acceptedAt,
+  });
+  await checkpoint(14);
+
+  // ── 15. The record ──
+  //
+  // `resolvedTarget` is WRITTEN; `target` is not. The immutable intent is
+  // SH-14's, and this path never rewrites it — the gate refused everything
+  // that was not already `BRANCH_CUSTODY`.
+  //
+  // The three incoming identities stay NULL and are written explicitly rather
+  // than omitted: `BRANCH_CUSTODY` means no person receives this stock, and a
+  // column left unwritten would be indistinguishable from one nobody had got
+  // around to filling.
+  //
+  // The guard in the `where` is what makes two racing acceptances produce one
+  // completion: the loser matches zero rows and is refused.
+  const completed = await tx.handoverSession.updateMany({
+    where: { id: handover.id, status: { in: [...ACCEPTABLE_STATUSES] } },
+    data: {
+      status: "COMPLETED",
+      resolvedTarget: "BRANCH_CUSTODY",
+      acceptedStockCountSessionId: acceptedSessionId,
+      acceptedAt,
+      completedAt: acceptedAt,
+      idempotencyKey: args.idempotencyKey,
+      incomingUserId: null,
+      incomingShiftId: null,
+      incomingStockCustodyId: stock.incomingPeriodId,
+      incomingCashCustodyId: null,
+      ...(omission
+        ? {
+            exceptionById: args.managerId,
+            exceptionReason: omission.note,
+            exceptionAt: acceptedAt,
+          }
+        : {}),
+    },
+  });
+  if (completed.count === 0) throw new ApiError(409, NOT_ACCEPTABLE);
+  await checkpoint(15);
+
+  // ── 16. The omission becomes a record of its own ──
+  //
+  // AFTER the guarded write above, which is what makes it exactly-once with
+  // no unique index: two acceptances racing both reach step 15, exactly one
+  // matches a row, and the loser throws before reaching here.
+  //
+  // `MANAGER_ADJUSTMENT` and never `NO_INCOMING`. Nobody was expected to
+  // arrive, so there is no absent recipient to classify; the kind records
+  // what the manager actually authorised, which is finishing over shelves
+  // nobody counted.
+  if (omission && missingItemIds.length > 0) {
+    const openingException = await tx.openingException.create({
+      data: {
+        cafeId: handover.cafeId,
+        branchId: handover.branchId,
+        handoverId: handover.id,
+        kind: "MANAGER_ADJUSTMENT",
+        reasonCodeId: omission.reasonCodeId,
+        note: omission.note,
+        authorizedById: args.managerId,
+      },
+      select: { id: true },
+    });
+    openingExceptionId = openingException.id;
+  }
+  await checkpoint(16);
+
+  // ── 17. The shelf is unfrozen ──
+  await releaseInventoryFreeze(tx, {
+    handoverId: handover.id,
+    actorId: args.managerId,
+  });
+  await checkpoint(17);
+
+  const result: BranchCustodyAcceptResult = {
+    status: "COMPLETED",
+    handoverTarget: "BRANCH_CUSTODY",
+    resolvedTarget: "BRANCH_CUSTODY",
+    acceptedStockCountSessionId: acceptedSessionId,
+    incomingStockCustodyId: stock.incomingPeriodId,
+    incomingCashCustodyId: null,
+    incomingShiftId: null,
+    incomingUserId: null,
+    boundary: {
+      written: written.written,
+      verified: boundary.verifiedCount,
+      carried: boundary.carriedCount,
+    },
+    requiredItems: {
+      satisfied: await tx.handoverRequiredItem.count({
+        where: { handoverId: handover.id, satisfiedByLineId: { not: null } },
+      }),
+      omitted: missingItemNames,
+    },
+    rebase,
+    varianceCaseIds: variance.caseIds,
+    spanIds: variance.spanIds,
+    outgoingShiftStatus: outgoing.outgoingShiftStatus,
+    openingExceptionId,
+    missingItemIds,
+    alreadyAccepted: false,
+  };
+
+  // ── 18. One audit row, carrying the whole shape ──
+  //
+  // The same action as an ordinary acceptance, because it IS one: a handover
+  // was accepted. `resolvedTarget` in the details is what tells the two
+  // apart, and it is the column a reader would consult anyway. A second
+  // action name would fork every existing reader of handover acceptances on a
+  // distinction the details already carry exactly.
+  await auditInTransaction(tx, {
+    cafeId: handover.cafeId,
+    userId: args.managerId,
+    action: HANDOVER_ACCEPTED_AUDIT_ACTION,
+    entity: "HandoverSession",
+    entityId: handover.id,
+    details: {
+      branchId: handover.branchId,
+      acceptedStockCountSessionId: acceptedSessionId,
+      resolvedTarget: "BRANCH_CUSTODY",
+      idempotencyKey: args.idempotencyKey,
+      boundary: result.boundary,
+      requiredItemsSatisfied: result.requiredItems.satisfied,
+      rebase: {
+        itemsRebased: rebase.itemsRebased,
+        itemsSkipped: rebase.itemsSkipped,
+        alreadyRebased: rebase.alreadyRebased,
+      },
+      varianceCaseIds: variance.caseIds,
+      spanIds: variance.spanIds,
+      outgoingStockCustodyId: evidence.outgoingStockCustodyId,
+      incomingStockCustodyId: stock.incomingPeriodId,
+      // The drawer this handover named, already discharged by the close. Both
+      // recorded, so the row states that CASH did not move here rather than
+      // leaving a reader to infer it from an absence.
+      outgoingCashCustodyId: evidence.outgoingCashCustodyId,
+      incomingCashCustodyId: null,
+      outgoingShiftId: handover.outgoingShiftId,
+      incomingShiftId: null,
+      incomingUserId: null,
+      outgoingShiftStatus: outgoing.outgoingShiftStatus,
+      acceptedAt: acceptedAt.toISOString(),
+      ...(omission ? { missingItemIds } : {}),
+    },
+  });
+
+  // ── 18a. And who authorised finishing without the count ──
+  //
+  // A second row, whose actor is the same manager but whose subject is the
+  // authority rather than the acceptance. Kept separate for the reason SH-21
+  // states: one `userId` answering two questions gives a false answer to one
+  // of them the moment the two people differ, and they differ on every
+  // SHIFT_TO_SHIFT override.
+  if (omission && missingItemIds.length > 0) {
+    await auditInTransaction(tx, {
+      cafeId: handover.cafeId,
+      userId: args.managerId,
+      action: HANDOVER_MANAGER_EXCEPTION_AUDIT_ACTION,
+      entity: "HandoverSession",
+      entityId: handover.id,
+      details: {
+        branchId: handover.branchId,
+        kind: "MANAGER_ADJUSTMENT",
+        reasonCodeId: omission.reasonCodeId,
+        note: omission.note,
+        missingItemIds,
+        missingItemNames,
+        openingExceptionId,
+        acceptedStockCountSessionId: acceptedSessionId,
+        resolvedTarget: "BRANCH_CUSTODY",
+        idempotencyKey: args.idempotencyKey,
+        exceptionAt: acceptedAt.toISOString(),
+      },
+    });
+  }
+  await checkpoint(18);
+
+  return result;
+}
