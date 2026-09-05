@@ -45,8 +45,6 @@ const MARKER = tag("HANDOVER010");
 
 type HandoverLib = typeof import("@/lib/handover");
 const handoverLib = (): Promise<HandoverLib> => import("@/lib/handover");
-type BoundaryLib = typeof import("@/lib/handover-boundary");
-const boundaryLib = (): Promise<BoundaryLib> => import("@/lib/handover-boundary");
 type CashCloseLib = typeof import("@/lib/cash-close");
 const cashCloseLib = (): Promise<CashCloseLib> => import("@/lib/cash-close");
 type CustodyLib = typeof import("@/lib/custody");

@@ -336,7 +336,7 @@ describe("VAR-011 the closing line is a real reference", () => {
           toStockCountLineId: lineId,
         }),
       // PostgreSQL reports the offending KEY rather than the index name.
-      /"toStockCountLineId".*already exists/s,
+      /"toStockCountLineId"[\s\S]*already exists/,
     );
   });
 
