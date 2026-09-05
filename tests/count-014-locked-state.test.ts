@@ -184,6 +184,70 @@ describe("COUNT-014 the LOCKED state", () => {
     );
   });
 
+  test("an opening verification locks with no handover, and says so", async () => {
+    // SH-22. A branch opening verification accepts a count and has no
+    // handover at all: the branch was already holding the stock, and what the
+    // verification settles is who takes it NEXT. NULL here is a real answer —
+    // "no handover locked this" — and the alternative was to point the column
+    // at a handover that locked something else.
+    const { sessionId } = await confirmedCount();
+
+    const locked = await db.$transaction((tx) =>
+      lockCountSession(tx, { sessionId, handoverId: null, actorId: fx.manager.id })
+    );
+    assert.equal(locked.status, "LOCKED");
+
+    const session = await db.stockCountSession.findUniqueOrThrow({ where: { id: sessionId } });
+    assert.equal(session.status, "LOCKED");
+    assert.equal(
+      session.lockedByHandoverId, null,
+      "no handover is borrowed to fill the column"
+    );
+    assert.ok(session.lockedAt);
+
+    const rows = await db.auditLog.findMany({
+      where: { cafeId: fx.cafeId, action: "COUNT_LOCKED", entityId: sessionId },
+    });
+    assert.equal(rows.length, 1, "the lock is still audited inside its transaction");
+    assert.equal(
+      (rows[0].details as Record<string, unknown>).handoverId, null,
+      "and the audit row records the null truthfully rather than omitting it"
+    );
+  });
+
+  test("the HANDOVER path is unchanged by the nullable one", async () => {
+    // The two paths differ in exactly one read — the handover lookup — and
+    // this is the proof that widening the parameter did not weaken it. A
+    // handover from another branch is still refused, and the refusal still
+    // happens before the session is touched.
+    const { sessionId } = await confirmedCount();
+    const foreignShift = await db.shift.create({
+      data: {
+        cafeId: fx.cafeId, branchId: fx.otherBranchId, cashierId: fx.cashier.id,
+        shiftNumber: 9500 + (seq += 1), openingCashAmount: 0, expectedCashAmount: 0,
+      },
+    });
+    const foreign = await db.handoverSession.create({
+      data: {
+        cafeId: fx.cafeId, branchId: fx.otherBranchId,
+        outgoingShiftId: foreignShift.id, outgoingUserId: fx.cashier.id,
+      },
+      select: { id: true },
+    });
+
+    await assert.rejects(
+      () => db.$transaction((tx) =>
+        lockCountSession(tx, { sessionId, handoverId: foreign.id, actorId: fx.manager.id })
+      ),
+      /الفرع/
+    );
+    assert.equal(
+      (await db.stockCountSession.findUniqueOrThrow({ where: { id: sessionId } })).status,
+      "CONFIRMED",
+      "a refused lock leaves the session exactly as it was"
+    );
+  });
+
   test("a new count cannot be recorded against a locked session", async () => {
     const { sessionId, lineId } = await confirmedCount();
     const h = await handover();

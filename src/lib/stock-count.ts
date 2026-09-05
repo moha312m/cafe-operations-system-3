@@ -1506,7 +1506,7 @@ export function isCountLocked(s: { status: StockCountStatus }): boolean {
 export const COUNT_LOCKED_AUDIT_ACTION = "COUNT_LOCKED";
 
 /**
- * Freeze a confirmed count as the baseline a handover accepted.
+ * Freeze a confirmed count as the baseline an acceptance acted on.
  *
  * Takes the caller's transaction client and never opens its own, for the same
  * reason custody's mutators do not: accepting a handover closes one custody,
@@ -1517,10 +1517,26 @@ export const COUNT_LOCKED_AUDIT_ACTION = "COUNT_LOCKED";
  * The audit row goes through `auditInTransaction` for that same reason — it
  * commits or rolls back with the lock, rather than recording a freeze that
  * was undone a moment later.
+ *
+ * ── WHY `handoverId` IS NULLABLE (SH-22) ──
+ *
+ * A branch opening verification accepts a count and has no handover at all:
+ * the branch was already holding the stock, and what the verification settles
+ * is who takes it NEXT. The two dishonest ways to keep the parameter
+ * non-null would have been to point it at the handover that created the
+ * branch custody — which locked nothing and would then appear to have locked
+ * two counts — or to invent a session. Both would put a false answer in the
+ * one column a reader consults to ask "which acceptance froze this?".
+ *
+ * So NULL is a real answer here and means "no handover did": the count was
+ * accepted, and the acceptance was not a handover. The HANDOVER path is
+ * untouched — same reads, same branch/café validation, same
+ * `lockedByHandoverId`, same audit — and the null path skips only the
+ * handover lookup, which has nothing to look up.
  */
 export async function lockCountSession(
   tx: Prisma.TransactionClient,
-  args: { sessionId: string; handoverId: string; actorId?: string | null }
+  args: { sessionId: string; handoverId: string | null; actorId?: string | null }
 ): Promise<{ status: "LOCKED"; lockedAt: Date }> {
   const session = await tx.stockCountSession.findUnique({
     where: { id: args.sessionId },
@@ -1534,13 +1550,15 @@ export async function lockCountSession(
     );
   }
 
-  const handover = await tx.handoverSession.findUnique({
-    where: { id: args.handoverId },
-    select: { cafeId: true, branchId: true },
-  });
-  if (!handover) throw new ApiError(404, "جلسة التسليم غير موجودة");
-  if (handover.cafeId !== session.cafeId || handover.branchId !== session.branchId) {
-    throw new ApiError(400, "التسليم مش تابع لنفس الفرع");
+  if (args.handoverId !== null) {
+    const handover = await tx.handoverSession.findUnique({
+      where: { id: args.handoverId },
+      select: { cafeId: true, branchId: true },
+    });
+    if (!handover) throw new ApiError(404, "جلسة التسليم غير موجودة");
+    if (handover.cafeId !== session.cafeId || handover.branchId !== session.branchId) {
+      throw new ApiError(400, "التسليم مش تابع لنفس الفرع");
+    }
   }
 
   const lockedAt = new Date();
@@ -1557,6 +1575,8 @@ export async function lockCountSession(
     entityId: session.id,
     details: {
       branchId: session.branchId,
+      // Truthfully null when no handover locked it, rather than borrowing an
+      // id from something that did not.
       handoverId: args.handoverId,
       lockedAt: lockedAt.toISOString(),
     },
