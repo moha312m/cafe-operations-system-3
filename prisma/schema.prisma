@@ -1513,6 +1513,8 @@ model StockCountLine {
   rebase                   StockCountRebase?
   satisfiesRequiredItem    HandoverRequiredItem?          @relation("HandoverRequiredItemSatisfiedByLine")
   stockBoundaries          HandoverStockBoundary[]        @relation("HandoverStockBoundaryEvidence")
+  /// The unresolved opening-verification span this line closed, if any.
+  closingVarianceSpan      StockVarianceSpan?             @relation("StockVarianceSpanClosingLine")
 
   @@unique([sessionId, inventoryItemId])
   @@index([sessionId])
@@ -1860,11 +1862,21 @@ model StockVarianceSpan {
 
   /// The last VERIFIED boundary before the gap. NULL means there has never
   /// been one — which is not the same statement as a boundary of zero.
-  fromBoundaryId String?
-  fromVerifiedAt DateTime?
-  /// The verified closing boundary that found the difference.
-  toBoundaryId   String
-  toVerifiedAt   DateTime
+  fromBoundaryId     String?
+  fromVerifiedAt     DateTime?
+  /// The closing evidence that found the difference, in exactly one arm.
+  ///
+  /// A handover's closing evidence is a `HandoverStockBoundary`. A branch
+  /// opening verification has no boundary at all — the gap is found by the
+  /// accepted opening count itself — and inventing a boundary row so the
+  /// column could stay NOT NULL would put a handover's artifact on a record
+  /// no handover produced. So the arm is typed rather than polymorphic: the
+  /// database CHECK requires exactly one of the two to be present, and a
+  /// reader can tell which kind of evidence closed the span by which column
+  /// is filled.
+  toBoundaryId       String?
+  toStockCountLineId String?   @unique
+  toVerifiedAt       DateTime
 
   /// How many unobserved boundaries the span crossed. Zero here with a span
   /// present means the custody changed rather than the evidence lapsing.
@@ -1872,8 +1884,11 @@ model StockVarianceSpan {
 
   createdAt DateTime @default(now())
 
-  varianceCase  VarianceCase  @relation(fields: [varianceCaseId], references: [id], onDelete: Cascade)
-  inventoryItem InventoryItem @relation(fields: [inventoryItemId], references: [id], onDelete: Restrict)
+  varianceCase     VarianceCase    @relation(fields: [varianceCaseId], references: [id], onDelete: Cascade)
+  inventoryItem    InventoryItem   @relation(fields: [inventoryItemId], references: [id], onDelete: Restrict)
+  /// Restrict: the accepted opening line IS the evidence this span closed on,
+  /// so deleting it would leave a record of a gap with nothing that found it.
+  toStockCountLine StockCountLine? @relation("StockVarianceSpanClosingLine", fields: [toStockCountLineId], references: [id], onDelete: Restrict)
 
   custodyLinks StockVarianceSpanCustody[]
 

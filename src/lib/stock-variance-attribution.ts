@@ -222,23 +222,52 @@ export async function resolveVarianceAttribution(args: {
 }
 
 /**
+ * What closed a span, named by kind rather than by a bare id.
+ *
+ * A handover's closing evidence is the `HandoverStockBoundary` it wrote. A
+ * branch opening verification (SH-22) has no boundary at all — the difference
+ * is found by the accepted opening count itself — and manufacturing a
+ * boundary row so one column could stay filled would put a handover's
+ * artifact on a record no handover produced.
+ *
+ * So the two arms are separate columns with a database CHECK requiring
+ * exactly one, and this type is what stops a caller reaching the writer
+ * without saying which kind it holds. A single `toEvidenceId` would have been
+ * shorter, unknowable without a second column, and impossible to key.
+ *
+ * `boundaryId` is nullable INSIDE the boundary arm on purpose. The handover
+ * writer looks its boundary up in a map, and "this item has no boundary row"
+ * is a state that has always been refused HERE, with the message below,
+ * rather than at each call site. Typing the field as non-null would move that
+ * refusal out of the writer and into whatever each caller did with an absent
+ * lookup — which is the one place it must not live.
+ */
+export type SpanClosingEvidence =
+  | { kind: "BOUNDARY"; boundaryId: string | null }
+  | { kind: "STOCK_COUNT_LINE"; stockCountLineId: string };
+
+/**
  * The companion row for a difference no single custody answers for.
  *
  * One per case — `varianceCaseId` is unique — and every custody the span
  * crossed is a joinable row rather than a JSON array, because the dashboard's
  * responsible-shift summary has to be a bounded aggregate query.
+ *
+ * Exactly one closing arm is written, whichever kind arrived. The other stays
+ * NULL, and the database's CHECK says the same thing independently.
  */
 export async function persistVarianceSpan(
   tx: Prisma.TransactionClient,
   args: {
     varianceCaseId: string;
     inventoryItemId: string;
-    toBoundaryId: string | null;
+    closingEvidence: SpanClosingEvidence;
     toVerifiedAt: Date;
     verdict: Extract<AttributionVerdict, { attribution: "PERIOD_UNRESOLVED" }>;
   }
 ): Promise<{ spanId: string }> {
-  if (!args.toBoundaryId) {
+  const closing = args.closingEvidence;
+  if (closing.kind === "BOUNDARY" && !closing.boundaryId) {
     // The closing boundary IS the evidence that found the gap. A span without
     // one would be a record of nothing.
     throw new ApiError(400, "الفرق لازم يكون له حد إقفال — a span needs a closing boundary");
@@ -256,7 +285,10 @@ export async function persistVarianceSpan(
       inventoryItemId: args.inventoryItemId,
       fromBoundaryId: args.verdict.span.fromBoundaryId,
       fromVerifiedAt: args.verdict.span.fromVerifiedAt,
-      toBoundaryId: args.toBoundaryId,
+      // One arm, never both, and never a value moved between them.
+      toBoundaryId: closing.kind === "BOUNDARY" ? closing.boundaryId : null,
+      toStockCountLineId:
+        closing.kind === "STOCK_COUNT_LINE" ? closing.stockCountLineId : null,
       toVerifiedAt: args.toVerifiedAt,
       unverifiedBoundaryCount: args.verdict.span.unverifiedBoundaryCount,
       custodyLinks: {
@@ -406,7 +438,12 @@ export async function openHandoverVarianceCases(
       const { spanId } = await persistVarianceSpan(tx, {
         varianceCaseId: caseId,
         inventoryItemId: line.inventoryItemId,
-        toBoundaryId: args.boundaryByItemId.get(line.inventoryItemId) ?? null,
+        // A handover closes on the boundary it just wrote. An absent lookup
+        // is still refused by the writer, with the message it always used.
+        closingEvidence: {
+          kind: "BOUNDARY",
+          boundaryId: args.boundaryByItemId.get(line.inventoryItemId) ?? null,
+        },
         toVerifiedAt,
         verdict,
       });

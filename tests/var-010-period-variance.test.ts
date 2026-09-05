@@ -383,7 +383,9 @@ describe("VAR-010 the unresolved span", () => {
       persistVarianceSpan(tx, {
         varianceCaseId: caseId,
         inventoryItemId: itemId,
-        toBoundaryId: to,
+        // The boundary arm, unchanged by M23: a handover's span still closes
+        // on the boundary it wrote, and still leaves the new arm NULL.
+        closingEvidence: { kind: "BOUNDARY", boundaryId: to },
         toVerifiedAt: ACCEPTED_AT,
         verdict: {
           attribution: "PERIOD_UNRESOLVED",
@@ -407,6 +409,10 @@ describe("VAR-010 the unresolved span", () => {
     assert.equal(spans[0].fromBoundaryId, from);
     assert.deepEqual(spans[0].fromVerifiedAt, PRIOR_ACCEPTED_AT);
     assert.equal(spans[0].toBoundaryId, to);
+    assert.equal(
+      spans[0].toStockCountLineId, null,
+      "a boundary-closed span leaves the opening-evidence arm empty"
+    );
     assert.equal(spans[0].unverifiedBoundaryCount, 2);
     assert.deepEqual(
       spans[0].custodyLinks.map((l) => l.custodyPeriodId).sort(),
@@ -673,6 +679,10 @@ describe("VAR-010 the accepted handover writer", () => {
     assert.ok(opened.varianceSpan, "the boundaries it does know are recorded instead");
     assert.equal(opened.varianceSpan?.fromBoundaryId, null);
     assert.equal(opened.varianceSpan?.toBoundaryId, to);
+    assert.equal(
+      opened.varianceSpan?.toStockCountLineId, null,
+      "the accepted handover writer still closes on a boundary and only a boundary"
+    );
     assert.deepEqual(
       opened.varianceSpan?.custodyLinks.map((l) => l.custodyPeriodId),
       [custodyId],
