@@ -69,7 +69,9 @@ const CASHIER_COLUMN = [
   // `handover.view` is pre-existing, not one of the eighteen. It is granted
   // explicitly alongside submit/accept by the `handover:participate` bridge,
   // never inherited from shift operation — see the dedicated test below.
-  "handover.view", "handover.submit", "handover.accept",
+  // `handover.request_recount` joined in SH-23: the recount act named as its
+  // own key, granted wherever accept was so nobody lost the ability.
+  "handover.view", "handover.submit", "handover.accept", "handover.request_recount",
   "tender_reconciliation.view", "tender_reconciliation.submit",
   "shifts.reconcile_cash",
 ];
@@ -77,7 +79,7 @@ const CASHIER_COLUMN = [
 const INVENTORY_COLUMN = [
   "stock_count.view", "stock_count.start", "stock_count.submit", "stock_count.recount",
   "variance.view",
-  "handover.submit", "handover.accept",
+  "handover.submit", "handover.accept", "handover.request_recount",
 ];
 
 // Withheld from the custodian on purpose. Named separately so a future
@@ -193,15 +195,16 @@ describe("PERM-001 catalog, templates, and nav", () => {
     assert.equal(keysForModule("VARIANCE").length, 3);
   });
 
-  test("the owner holds all eighteen with no reseed, and reads 107 keys", async () => {
+  test("the owner holds all eighteen with no reseed, and reads 108 keys", async () => {
     const keys = await keysFor("owner@demo.com");
     for (const [key] of NEW_KEYS) {
       assert.ok(keys.has(key), `owner must hold ${key}`);
     }
-    // 89 before this task, 89 + 18 = 107. `resolvePermissions` re-adds
+    // 89 before the stock-count milestone, +18 there, +1 in SH-23
+    // (`handover.request_recount`) = 108. `resolvePermissions` re-adds
     // CAFE_KEYS on every call, so catalog growth reaches existing owners
     // without touching a single row of their data.
-    assert.equal(keys.size, 107, "owner should read 89 + 18 keys");
+    assert.equal(keys.size, 108, "owner should read 89 + 18 + 1 keys");
   });
 
   test("the branch manager holds its column exactly — no more, no less", async () => {
@@ -271,8 +274,9 @@ describe("PERM-001 catalog, templates, and nav", () => {
     // over without tracing it through an unrelated bridge.
     const participate = LEGACY_TO_KEYS["handover:participate"];
     assert.deepEqual(
-      participate, ["handover.view", "handover.submit", "handover.accept"],
-      "the participant set is stated in one place, view included"
+      participate,
+      ["handover.view", "handover.submit", "handover.accept", "handover.request_recount"],
+      "the participant set is stated in one place, view and recount included"
     );
 
     for (const key of participate) {

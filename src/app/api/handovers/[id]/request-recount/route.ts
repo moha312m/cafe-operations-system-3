@@ -35,16 +35,17 @@ const recountSchema = z
 // POST /api/handovers/:id/request-recount — the arriving custodian says the
 // count does not match, and sends it back.
 //
-// Guarded by `handover.accept`, deliberately.
+// Guarded by `handover.request_recount`, the act's own key since SH-23.
 //
-// A key named for this act — `handover.request_recount` — does not exist in
-// the permission catalog at this stage; SH-23 is the stage that introduces
-// it, and may then refine or replace this guard. Until it does, asking for a
-// recount is an act of the party TAKING the custody, which is what
-// `handover.accept` names, and guarding it with the SUBMIT key would have
-// handed the decision to the person being measured. The catalog is not
-// touched here: adding a key to serve one route is how a permission model
-// stops meaning anything.
+// Until SH-23 this route borrowed `handover.accept` — the closest existing
+// name for an act of the party TAKING the custody — because a key serving a
+// single route was not worth a catalog entry on its own. SH-23 named the act:
+// asking for a recount is a decision about the evidence, distinct from
+// accepting it, and now grantable (or revocable) on its own. The key rides
+// the `handover:participate` bridge and the participating role templates, so
+// every role that could send a count back before the split still can.
+// Guarding with the SUBMIT key would have handed the decision to the person
+// being measured, and still would.
 //
 // `incomingUserId` is the AUDIT ACTOR only. The `HandoverSession` column of
 // the same name is not written by this stage — somebody who asked for a
@@ -58,7 +59,7 @@ const recountSchema = z
 // status that cannot be sent back or a handover with no bound count.
 export async function POST(request: NextRequest, { params }: Params) {
   try {
-    const session = await requireKey("handover.accept");
+    const session = await requireKey("handover.request_recount");
     await requireFeature(session, "inventoryEnabled");
     const { id } = await params;
 

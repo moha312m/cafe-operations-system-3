@@ -1850,10 +1850,13 @@ async function assertStillSubmitted(handoverId: string) {
 
 // ───────────────────── T5 · the request-recount route ────────────────────
 //
-// The roadmap's own **Files to create** entry for this stage. `handover.accept`
-// guards it, and case 5.6 proves that literally: the account that succeeds
-// here holds the accept key and is refused by the submit-guarded route in the
-// same test.
+// The roadmap's own **Files to create** entry for this stage. Since SH-23 the
+// route is guarded by `handover.request_recount` — the act's own key, carried
+// by the `handover:participate` bridge and the participating templates, so
+// the accounts below hold it exactly as they held `accept`. Case 5.6 proves
+// the submit key still does not open it, and 5.7 proves the guard really is
+// the recount key: revoking it alone closes this route while acknowledging —
+// still `accept`-guarded — keeps working.
 
 const recountPost = (email: string, handoverId: string, body: unknown) =>
   as<{
@@ -1920,7 +1923,7 @@ describe("request-recount route", () => {
     );
   });
 
-  test("5.3 an account without handover.accept is refused", async () => {
+  test("5.3 an account without handover.request_recount is refused", async () => {
     const h = await submittedHandover();
     const before = asText(
       await db.handoverSession.findUniqueOrThrow({ where: { id: h.handoverId } }),
@@ -1964,10 +1967,12 @@ describe("request-recount route", () => {
     await assertStillSubmitted(h.handoverId);
   });
 
-  test("5.6 the guard is the accept key, not the submit key", async () => {
+  test("5.6 the guard is the request_recount key, not the submit key", async () => {
     const h = await submittedHandover();
 
-    // The same account, in the same request pair. It may ask for a recount…
+    // The same account, in the same request pair. It holds
+    // `handover.request_recount` through the participation bridge, so it may
+    // ask for a recount…
     const recount = await recountPost(incoming.email, h.handoverId, {
       reasonCodeId: handoverReasonId,
     });
@@ -1984,6 +1989,44 @@ describe("request-recount route", () => {
       403,
       "the fixture account must genuinely lack handover.submit",
     );
+  });
+
+  test("5.7 revoking request_recount alone closes this route, and only this route", async () => {
+    // SH-23's whole point, proven from both sides: an account that keeps
+    // `handover.accept` but has `handover.request_recount` revoked may still
+    // acknowledge a line — accept guards that — yet may not send the count
+    // back. Before SH-23 these two acts were inseparable.
+    const hash = await bcrypt.hash(COUNT_PASSWORD, 10);
+    const noRecount = await db.user.create({
+      data: {
+        email: `${fx.marker.toLowerCase()}-norecount@example.invalid`,
+        name: `${fx.marker}-norecount`,
+        passwordHash: hash,
+        role: "CASHIER",
+        cafeId: fx.cafeId,
+        branchId: fx.branchId,
+        permissionOverrides: {
+          create: [{ permissionKey: "handover.request_recount", allowed: false }],
+        },
+      },
+      select: { id: true, email: true },
+    });
+    await login(noRecount.email, COUNT_PASSWORD);
+
+    const h = await submittedHandover();
+
+    // The recount door is shut for this account, and nothing changed.
+    const refused = await recountPost(noRecount.email, h.handoverId, {
+      reasonCodeId: handoverReasonId,
+    });
+    assert.equal(refused.status, 403, refused.text);
+    await assertStillSubmitted(h.handoverId);
+
+    // The acknowledge door is not: `handover.accept` still guards it.
+    const line = await lineOf(h.sessionId, items.alpha.id);
+    const ack = await ackPost(noRecount.email, h.handoverId, { stockCountLineId: line.id });
+    assert.equal(ack.status, 200, ack.text);
+    assert.equal(await ackCount(h.handoverId), 1);
   });
 });
 

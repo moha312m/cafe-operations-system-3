@@ -49,6 +49,7 @@ const MANAGER_KEYS = [
   "audit.view",
   "excel.import", "excel.export",
   "handover.view", "handover.manage", "handover.submit", "handover.accept",
+  "handover.request_recount",
   "handover.exception",
   // Customers & loyalty (settings edits stay owner-only by default).
   "customers.lookup", "customers.view", "customers.edit",
@@ -70,7 +71,7 @@ const CASHIER_KEYS = [
   // approve or resolve none of it.
   "shifts.reconcile_cash",
   "stock_count.view", "stock_count.start", "stock_count.submit",
-  "handover.view", "handover.submit", "handover.accept",
+  "handover.view", "handover.submit", "handover.accept", "handover.request_recount",
   "tender_reconciliation.view", "tender_reconciliation.submit",
   // Cashiers identify the customer in front of them and redeem points.
   // No customers.view — they can't browse the full customer list.
@@ -121,6 +122,7 @@ const INVENTORY_KEYS = [
   "purchases.cancel", "purchases.record_payment", "purchases.view_cost", "purchases.manage",
   "suppliers.view", "suppliers.create", "suppliers.edit", "suppliers.deactivate",
   "handover.view", "handover.manage", "handover.submit", "handover.accept",
+  "handover.request_recount",
   // The store keeper counts and recounts the room they hold, and sees the
   // variance it produced. Confirmation is somebody else's signature.
   "stock_count.view", "stock_count.start", "stock_count.submit", "stock_count.recount",

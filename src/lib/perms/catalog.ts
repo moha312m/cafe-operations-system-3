@@ -208,6 +208,9 @@ export const PERMISSION_KEYS: PermKey[] = [
   { key: "handover.manage", module: "HANDOVER", label: "تسليم واستلام" },
   { key: "handover.submit", module: "HANDOVER", label: "تسليم العهدة (الطرف المُسلِّم)" },
   { key: "handover.accept", module: "HANDOVER", label: "استلام العهدة (الطرف المُستلِم)" },
+  // SH-23: asking for a recount is the taking party's own act, named as its
+  // own key rather than borrowed from `handover.accept`.
+  { key: "handover.request_recount", module: "HANDOVER", label: "طلب إعادة الجرد (الطرف المُستلِم)" },
   { key: "handover.exception", module: "HANDOVER", label: "تسليم استثنائي بموافقة المدير", sensitive: true },
 
   // Tables
@@ -334,7 +337,10 @@ export const LEGACY_TO_KEYS: Record<string, string[]> = {
   // should be visible in the catalog rather than inferred. The sensitive
   // manager action (handover.exception) is deliberately absent — it rides
   // shifts:read, the oversight bridge.
-  "handover:participate": ["handover.view", "handover.submit", "handover.accept"],
+  // `handover.request_recount` rides here by owner ruling: whoever could ask
+  // for a recount through participation before SH-23 keeps that ability now
+  // that the act has its own key.
+  "handover:participate": ["handover.view", "handover.submit", "handover.accept", "handover.request_recount"],
   // Oversight of other people's shifts. This is the supervisory bridge, so
   // it carries every "sign off on somebody else's work" key.
   "shifts:read": [
