@@ -41,6 +41,7 @@ export const t = {
     edit: "تعديل",
     delete: "حذف",
     cancel: "إلغاء",
+    close: "إغلاق",
     remove: "حذف",
     active: "مفعّل",
     hidden: "مخفي",
@@ -286,6 +287,15 @@ export const t = {
     closedTodayTotal: "إجمالي الشيفتات المغلقة اليوم",
     noOpenShift: "لا يوجد شيفت مفتوح",
     lockedSuccess: "تم قفل الشيفت بنجاح",
+    // SH-24 — the vocabulary of a two-stage close. A shift that settled its
+    // cash but still owes its stock is not "مقفول", and saying so plainly is
+    // the point of these strings.
+    settledNotDischarged: "الكاش اتسوّى — العهدة لسه في ذمتك",
+    handoverStillOwed: "الشيفت اتقفل ماليًا، لكن لازم تسلّم العهدة قبل ما تمشي.",
+    handoverTarget: "التسليم إلى",
+    requiredItemCount: "أصناف مطلوب جردها",
+    goToHandovers: "روح لشاشة التسليم",
+    blockersTitle: "مش هينفع تقفل قبل ما تظبط ده:",
   },
 
   roles: {

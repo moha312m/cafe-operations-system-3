@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { toast } from "sonner";
-import { api, money } from "@/lib/client";
+import { api, blockersOf, money } from "@/lib/client";
 import { t } from "@/lib/i18n";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -33,6 +34,23 @@ export type Shift = {
   totalRefunds: string;
   orderCount: number;
   cashier: { name: string };
+};
+
+/**
+ * The second half of a two-stage close, as the server reports it.
+ *
+ * `POST /api/shifts/:id/close` answers with this beside the shift, and a
+ * close that ignored it would tell a custodian holding frozen stock that
+ * they were finished. `required` is the whole question; everything else is
+ * what they need in order to go and finish.
+ */
+export type HandoverOutcome = {
+  required: boolean;
+  target?: string | null;
+  handoverId?: string | null;
+  freezeId?: string | null;
+  requiredItemCount?: number | null;
+  configIssue?: string | null;
 };
 
 // Owns the POS shift lifecycle: fetches the cashier's open shift, renders the
@@ -67,6 +85,16 @@ export function ShiftControls({
   const [actualWallet, setActualWallet] = useState("");
   const [walletReason, setWalletReason] = useState("");
   const [busy, setBusy] = useState(false);
+  // SH-24 — the two halves of an honest close.
+  //
+  // `blockers` is what the server named as still standing in the way; it is
+  // shown inside the close dialog, beside the button that was refused,
+  // because a list of reasons delivered anywhere else is a list the closer
+  // has to go looking for. `handoverNotice` is the opposite case: the close
+  // SUCCEEDED and the shift is settled, yet the custodian still holds stock.
+  // Both are the server's words. Neither is computed here.
+  const [blockers, setBlockers] = useState<string[]>([]);
+  const [handoverNotice, setHandoverNotice] = useState<HandoverOutcome | null>(null);
 
   const setActive = useCallback(
     (s: Shift | null) => {
@@ -133,6 +161,8 @@ export function ShiftControls({
     setActualWallet("");
     setWalletReason("");
     setVarianceReason("");
+    // Last attempt's obstacles belong to last attempt.
+    setBlockers([]);
     setCloseDialog(true);
   }
 
@@ -143,7 +173,12 @@ export function ShiftControls({
       // The reconciliation is revealed by the server's response, and only
       // once it has persisted the count — never computed here from a target
       // the client was never given (SHIFT-003).
-      const res = await api<{ shift: Shift & { cashDifference: string | null } }>(
+      const res = await api<{
+        shift: Shift & { cashDifference: string | null };
+        // SH-24 — read rather than dropped. The route answers with both
+        // stages of the close; the client used to type only the first.
+        handover?: HandoverOutcome;
+      }>(
         `/api/shifts/${shift.id}/close`,
         {
           method: "POST",
@@ -171,10 +206,27 @@ export function ShiftControls({
           : diff > 0
             ? `${t.shifts.surplus} ${money(diff, currency)}`
             : `${t.shifts.shortage} ${money(-diff, currency)}`;
-      toast.success(`${t.shifts.lockedSuccess} · ${msg}`);
       setCloseDialog(false);
-      setActive(null);
+
+      // Settled is not discharged. When the server says a handover is still
+      // required, the cash reconciliation is reported as what it is — one
+      // stage of two — and the notice below carries the rest. Announcing
+      // "locked" here would be the lie this stage exists to remove.
+      if (res.handover?.required) {
+        setHandoverNotice(res.handover);
+        toast.warning(`${t.shifts.settledNotDischarged} · ${msg}`);
+      } else {
+        toast.success(`${t.shifts.lockedSuccess} · ${msg}`);
+      }
+
+      // The shift's own status is the server's to report: a close that became
+      // AWAITING_HANDOVER is not the same as one that finished, and assuming
+      // either here would put a made-up state on screen.
+      await load();
     } catch (e) {
+      // A refusal that named its obstacles keeps them. The dialog stays open
+      // so the list appears beside the button that was refused.
+      setBlockers(blockersOf(e));
       toast.error(e instanceof Error ? e.message : "فشل قفل الشيفت");
     } finally {
       setBusy(false);
@@ -404,6 +456,24 @@ export function ShiftControls({
               </div>
             </div>
           )}
+          {blockers.length > 0 && (
+            // The server's list, rendered as the server sent it. A close that
+            // is refused for four reasons and names one teaches the closer to
+            // fix things one at a time and distrust the answer.
+            <div
+              data-testid="close-blockers"
+              className="space-y-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm"
+            >
+              <p className="font-medium text-amber-700 dark:text-amber-400">
+                {t.shifts.blockersTitle}
+              </p>
+              <ul className="list-inside list-disc space-y-1 text-amber-800 dark:text-amber-300">
+                {blockers.map((b) => (
+                  <li key={b}>{b}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           <DialogFooter>
             <Button
               className="w-full"
@@ -422,6 +492,56 @@ export function ShiftControls({
             >
               {t.shifts.closeConfirm}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Settled, not discharged ──
+          Raised only when the server said a handover is still required. It
+          names what is owed and opens the door to where it is owed, so the
+          custodian is not left to discover on their own that the shift they
+          just closed did not release them from the stock they hold. */}
+      <Dialog
+        open={handoverNotice !== null}
+        onOpenChange={(o) => !o && setHandoverNotice(null)}
+      >
+        <DialogContent className="max-w-md" data-testid="handover-required-notice">
+          <DialogHeader>
+            <DialogTitle>{t.shifts.settledNotDischarged}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <p className="text-muted-foreground">{t.shifts.handoverStillOwed}</p>
+            <dl className="space-y-1.5 rounded-lg border bg-muted/30 p-3">
+              {handoverNotice?.target && (
+                <div className="flex justify-between gap-3">
+                  <dt className="text-muted-foreground">{t.shifts.handoverTarget}</dt>
+                  <dd className="font-medium">{handoverNotice.target}</dd>
+                </div>
+              )}
+              {typeof handoverNotice?.requiredItemCount === "number" && (
+                <div className="flex justify-between gap-3">
+                  <dt className="text-muted-foreground">{t.shifts.requiredItemCount}</dt>
+                  <dd className="tabular-nums">{handoverNotice.requiredItemCount}</dd>
+                </div>
+              )}
+            </dl>
+            {handoverNotice?.configIssue && (
+              // A configuration problem is the server's finding, not a
+              // failure of the close. Naming it here is the only way the
+              // person standing at the till learns why the handover they
+              // are being sent to may not behave as they expect.
+              <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-amber-800 dark:text-amber-300">
+                {handoverNotice.configIssue}
+              </p>
+            )}
+          </div>
+          <DialogFooter className="gap-2 sm:justify-between">
+            <Button variant="outline" onClick={() => setHandoverNotice(null)}>
+              {t.common.close}
+            </Button>
+            <Link href="/handovers" className={buttonVariants()}>
+              {t.shifts.goToHandovers}
+            </Link>
           </DialogFooter>
         </DialogContent>
       </Dialog>
