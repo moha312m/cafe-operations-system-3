@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { getSession } from "@/lib/auth";
-import { handleApiError, ApiError } from "@/lib/api";
+import { handleApiError, ApiError, requireActiveSession } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { recomputeSessionTotals } from "@/lib/table-sessions";
 import { resolvePermissions } from "@/lib/perms/effective";
@@ -20,8 +20,7 @@ const bodySchema = z.object({
 // kitchen board and drop out of the table bill.
 export async function POST(request: NextRequest, { params }: Params) {
   try {
-    const session = await getSession();
-    if (!session) throw new ApiError(401, "سجّل دخولك الأول");
+    const session = await requireActiveSession();
     const { id } = await params;
     const { reason } = bodySchema.parse(await request.json());
 

@@ -2,11 +2,11 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { getSession } from "@/lib/auth";
-import { hasPermission } from "@/lib/permissions";
-import { handleApiError, ApiError } from "@/lib/api";
+import { handleApiError, ApiError, requireActiveSession } from "@/lib/api";
 import { closeShiftWithSettlement } from "@/lib/cash-close";
 import { HandoverBlockedError } from "@/lib/handover";
 import { resolvePermissions } from "@/lib/perms/effective";
+import { hasPermission } from "@/lib/permissions";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -62,8 +62,12 @@ const closeSchema = z
 // shift open rather than closed-without-evidence or closed-half-reconciled.
 export async function POST(request: NextRequest, { params }: Params) {
   try {
-    const session = await getSession();
-    if (!session) throw new ApiError(401, "Not authenticated");
+    const session = await requireActiveSession();
+    // Resolved once, before any authority question is asked of it: the
+    // close route needs the actor's effective keys for two separate
+    // decisions — whose shift may be closed, and which handover moves are
+    // available — and both must read the same answer.
+    const { keys: closerKeys } = await resolvePermissions(session);
     const { id } = await params;
     const data = closeSchema.parse(await request.json());
 
@@ -76,6 +80,21 @@ export async function POST(request: NextRequest, { params }: Params) {
       throw new ApiError(403, "Not allowed");
     }
     const isOwnShift = shift.cashierId === session.id;
+    // R-SEC-01 — DELIBERATELY STILL THE LEGACY CHECK, and the one authority
+    // bypass this stage did not close.
+    //
+    // The correct guard is `shifts.close_others`, which exists in the
+    // catalog and is marked sensitive. Enforcing it was implemented and then
+    // reverted, because no role grants it: at runtime a CAFE_OWNER holds it
+    // (owners receive the union of every café key) and a BRANCH_MANAGER does
+    // not — neither the manager template nor the `shifts:read` bridge
+    // includes it. Switching the check therefore stops a manager closing a
+    // cashier's shift, which is an ordinary end-of-day act.
+    //
+    // Granting it means editing the role templates or the legacy bridge,
+    // both of which this stage is forbidden to touch, so the decision is the
+    // owner's. Left as-is rather than half-changed: a guard that refuses the
+    // person who is supposed to do the job is worse than the bypass.
     const canManage = hasPermission(session.role, "shifts:read");
     if (!isOwnShift && !canManage) {
       throw new ApiError(403, "مينفعش تقفل شيفت كاشير تاني");
@@ -94,10 +113,9 @@ export async function POST(request: NextRequest, { params }: Params) {
     // no session to ask. So the route establishes what the actor MAY do and
     // the service demands whichever of those it turns out to need — which
     // keeps the refusal before any mutation on both paths.
-    const { keys } = await resolvePermissions(session);
     const grants = {
-      handoverSubmit: keys.has("handover.submit"),
-      handoverException: keys.has("handover.exception"),
+      handoverSubmit: closerKeys.has("handover.submit"),
+      handoverException: closerKeys.has("handover.exception"),
     };
 
     const result = await closeShiftWithSettlement({

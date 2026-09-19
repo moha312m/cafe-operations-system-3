@@ -1,12 +1,75 @@
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { DEMO_ADD_ONS, DEMO_MENU } from "./menu-data";
 
 const db = new PrismaClient();
 const hash = (pw: string) => bcrypt.hash(pw, 10);
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
+/**
+ * Demo databases this seed is allowed to touch.
+ *
+ * Anchored at both ends and matched against the DATABASE NAME, the same
+ * shape the test harness uses to decide whether a database is disposable.
+ * `cafe_ops` — the real one — is deliberately not matched.
+ */
+const DEMO_DB_NAME = /^(cafe_ops_(test|dev|demo|local)[A-Za-z0-9_]*|cafeops_demo)$/;
+
+/** The explicit "yes, I mean it" for a non-production demo environment. */
+const OVERRIDE = "ALLOW_DEMO_SEED";
+
+/**
+ * Refuse to plant demo accounts where they could be used against a café.
+ *
+ * This seed creates a SUPER_ADMIN and six staff logins whose passwords are
+ * published in this repository. Its only previous guard was a check for an
+ * existing admin row — an IDEMPOTENCY check, which prevents a second run and
+ * does nothing about a first run against production, while the deployment
+ * guide told the operator to run it on the host.
+ *
+ * The asymmetry was the tell: the test harness will not write to a throwaway
+ * database without a marker proving it is disposable, and this wrote real
+ * credentials into anything it was pointed at. So the same fail-closed shape
+ * applies here — refuse on production, and refuse on any database that does
+ * not name itself a demo database, unless an operator says otherwise by
+ * name for a non-production environment.
+ *
+ * Pure in its arguments so every refusal is testable without a database.
+ * Never includes a credential in what it throws.
+ */
+export function assertSeedAllowed(
+  env: { NODE_ENV?: string; DATABASE_URL?: string; ALLOW_DEMO_SEED?: string } = process.env
+): void {
+  if (env.NODE_ENV === "production") {
+    throw new Error(
+      "SEED_REFUSED_PRODUCTION: demo accounts must never exist in production. " +
+        "If this is a demo environment, run it with NODE_ENV set to something else."
+    );
+  }
+  const url = env.DATABASE_URL ?? "";
+  if (!url) throw new Error("SEED_REFUSED_NO_DATABASE_URL");
+
+  let name = "";
+  try {
+    name = new URL(url).pathname.replace(/^\//, "");
+  } catch {
+    throw new Error("SEED_REFUSED_UNREADABLE_DATABASE_URL");
+  }
+  if (DEMO_DB_NAME.test(name)) return;
+  if (env[OVERRIDE] === "yes") return;
+
+  throw new Error(
+    `SEED_REFUSED_NOT_A_DEMO_DATABASE: "${name}" is not a recognised demo database. ` +
+      `Set ${OVERRIDE}=yes only if you are certain this database holds no real cafe data.`
+  );
+}
+
 async function main() {
+  // Fail closed BEFORE anything is read or written.
+  assertSeedAllowed();
+
   // Idempotent-ish: bail if already seeded.
   if (await db.user.findUnique({ where: { email: "admin@cafeops.dev" } })) {
     console.log("Already seeded, skipping.");
@@ -588,9 +651,24 @@ async function main() {
   console.log("  Waiter  وليد الويتر:    waiter@demo.com  / waiter123");
 }
 
-main()
-  .catch((e) => {
-    console.error(e);
-    process.exit(1);
-  })
-  .finally(() => db.$disconnect());
+/**
+ * Only when somebody actually asked for a seed.
+ *
+ * `main()` used to run on import, which made this module impossible to test
+ * without seeding whatever database happened to be configured. The same
+ * `pathToFileURL` comparison the repository's other CLIs use
+ * (`scripts/test-db.mjs`, `scripts/migration-preflight.mjs`) keeps
+ * `npm run db:seed` working while letting a test import the guard alone.
+ */
+const invokedDirectly =
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+
+if (invokedDirectly) {
+  main()
+    .catch((e) => {
+      console.error(e);
+      process.exit(1);
+    })
+    .finally(() => db.$disconnect());
+}

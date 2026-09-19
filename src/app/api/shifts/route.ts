@@ -1,16 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
+import { resolvePermissions } from "@/lib/perms/effective";
 import { getSession } from "@/lib/auth";
-import { hasPermission } from "@/lib/permissions";
-import {
-  requirePermission,
-  resolveCafeId,
-  resolveBranchId,
-  handleApiError,
-  ApiError,
-  requireFeature,
-} from "@/lib/api";
+import { requirePermission, resolveCafeId, resolveBranchId, handleApiError, ApiError, requireFeature, requireActiveSession } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { redactBlindCount } from "@/lib/shifts";
 import { ensureCustodyForShift } from "@/lib/custody";
@@ -24,10 +17,13 @@ const shiftInclude = {
 // branch/cafe; cashiers see only their own.
 export async function GET(request: NextRequest) {
   try {
-    const session = await getSession();
-    if (!session) throw new ApiError(401, "Not authenticated");
-    const canReadAll = hasPermission(session.role, "shifts:read");
-    const canOperate = hasPermission(session.role, "shifts:operate");
+    const session = await requireActiveSession();
+    // R-SEC-01 — whose shifts you may read is an effective-permission
+    // question, not a legacy-role one. `shifts.view_reports` is oversight of
+    // other people's shifts; `shifts.view_current` is operating your own.
+    const { keys } = await resolvePermissions(session);
+    const canReadAll = keys.has("shifts.view_reports");
+    const canOperate = keys.has("shifts.view_current");
     if (!canReadAll && !canOperate) throw new ApiError(403, "Not allowed");
 
     const params = request.nextUrl.searchParams;

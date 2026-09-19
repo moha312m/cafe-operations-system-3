@@ -2,8 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { getSession } from "@/lib/auth";
-import { hasPermission } from "@/lib/permissions";
-import { handleApiError, ApiError } from "@/lib/api";
+import { handleApiError, ApiError, requireKey } from "@/lib/api";
 import { refundOrder } from "@/lib/refunds";
 
 type Params = { params: Promise<{ id: string }> };
@@ -21,11 +20,17 @@ const bodySchema = z.object({
 // deeper, in the refund service, because it depends on each payment's method.
 export async function POST(request: NextRequest, { params }: Params) {
   try {
-    const session = await getSession();
-    if (!session) throw new ApiError(401, "Not authenticated");
-    if (!hasPermission(session.role, "shifts:read")) {
-      throw new ApiError(403, "المرتجعات للمدير أو صاحب الكافيه فقط");
-    }
+    // R-SEC-01 — refund authority is `orders.refund`, resolved through the
+    // effective permission system. It used to read `shifts:read` out of the
+    // static role table, which meant a café that revoked refund rights
+    // through a custom role or a per-user override changed nothing: the
+    // legacy `role` column still said BRANCH_MANAGER and the refund went
+    // through. The key existed in the catalog the whole time; no route
+    // enforced it.
+    const session = await requireKey(
+      "orders.refund",
+      "المرتجعات للمدير أو صاحب الكافيه فقط"
+    );
     const { id } = await params;
 
     const order = await db.order.findUnique({

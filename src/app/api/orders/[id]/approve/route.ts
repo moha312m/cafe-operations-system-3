@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { getSession } from "@/lib/auth";
-import { handleApiError, ApiError } from "@/lib/api";
+import { handleApiError, ApiError, requireActiveSession } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { recomputeSessionTotals } from "@/lib/table-sessions";
 import { resolvePermissions } from "@/lib/perms/effective";
@@ -14,8 +14,7 @@ type Params = { params: Promise<{ id: string }> };
 // with owner/manager override) — see canApproveOrder.
 export async function POST(_request: NextRequest, { params }: Params) {
   try {
-    const session = await getSession();
-    if (!session) throw new ApiError(401, "سجّل دخولك الأول");
+    const session = await requireActiveSession();
     const { id } = await params;
 
     const order = await db.order.findUnique({ where: { id } });

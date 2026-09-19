@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { Prisma } from "@prisma/client";
 import { getSession, type SessionUser } from "@/lib/auth";
+import { db } from "@/lib/db";
 import { type Permission } from "@/lib/permissions";
 import { resolvePermissions } from "@/lib/perms/effective";
 import { primaryKey } from "@/lib/perms/catalog";
@@ -27,11 +28,55 @@ const DENIED = "ليس لديك صلاحية لتنفيذ هذا الإجراء"
 // overrides, gated by feature flags). Legacy `Permission` strings are mapped
 // to their canonical key so existing call sites keep working while honouring
 // custom roles.
+/**
+ * A signed session AND an account that is still allowed to use it.
+ *
+ * The cookie is a bearer token with a twelve-hour life, so on its own it
+ * says only "this was true when it was issued". Deactivating a user or
+ * suspending a café wrote nothing the token could notice: login checked
+ * `isActive`, `archivedAt` and the café's status, which stopped the next
+ * sign-in and did nothing about the session already in the fired cashier's
+ * browser — who kept collecting payments, closing shifts and accepting
+ * custody until the token expired.
+ *
+ * So every protected request now re-reads the account. That is one indexed
+ * primary-key lookup, taken deliberately in preference to a cache: a
+ * revocation that takes effect "within a few seconds" is a revocation the
+ * person revoking cannot rely on.
+ *
+ * This lives here rather than in `getSession`, because `src/proxy.ts` — the
+ * edge middleware — imports from `@/lib/auth`, and Prisma cannot be pulled
+ * into that bundle. `@/lib/api` is server-only, and is the door every
+ * guarded route already comes through.
+ */
+export async function requireActiveSession(): Promise<SessionUser> {
+  const session = await getSession();
+  if (!session) throw new ApiError(401, "سجّل دخولك الأول");
+
+  const account = await db.user.findUnique({
+    where: { id: session.id },
+    select: {
+      isActive: true,
+      archivedAt: true,
+      cafe: { select: { isActive: true } },
+    },
+  });
+
+  // A token for a user who no longer exists is not a session.
+  if (!account) throw new ApiError(401, "سجّل دخولك الأول");
+  if (!account.isActive || account.archivedAt) {
+    throw new ApiError(403, "الحساب موقوف — كلم المدير");
+  }
+  if (account.cafe && !account.cafe.isActive) {
+    throw new ApiError(403, "تم إيقاف حساب الكافيه، برجاء التواصل مع إدارة المنصة");
+  }
+  return session;
+}
+
 export async function requirePermission(
   permission: Permission
 ): Promise<SessionUser> {
-  const session = await getSession();
-  if (!session) throw new ApiError(401, "سجّل دخولك الأول");
+  const session = await requireActiveSession();
   const key = primaryKey(permission);
   const { keys } = await resolvePermissions(session);
   if (!key || !keys.has(key)) {
@@ -44,8 +89,7 @@ export async function requirePermission(
 // need finer control than the legacy Permission strings (staff, roles,
 // inventory transactions, settings edit, report export, profit view…).
 export async function requireKey(key: string, deniedMessage?: string): Promise<SessionUser> {
-  const session = await getSession();
-  if (!session) throw new ApiError(401, "سجّل دخولك الأول");
+  const session = await requireActiveSession();
   const { keys } = await resolvePermissions(session);
   if (!keys.has(key)) {
     throw new ApiError(403, deniedMessage ?? DENIED);
@@ -55,8 +99,7 @@ export async function requireKey(key: string, deniedMessage?: string): Promise<S
 
 // Like requireKey but requires the acting user to hold ALL listed keys.
 export async function requireAllKeys(...required: string[]): Promise<SessionUser> {
-  const session = await getSession();
-  if (!session) throw new ApiError(401, "سجّل دخولك الأول");
+  const session = await requireActiveSession();
   const { keys } = await resolvePermissions(session);
   if (!required.every((k) => keys.has(k))) {
     throw new ApiError(403, DENIED);
