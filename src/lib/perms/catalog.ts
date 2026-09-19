@@ -345,6 +345,13 @@ export const LEGACY_TO_KEYS: Record<string, string[]> = {
   // it carries every "sign off on somebody else's work" key.
   "shifts:read": [
     "shifts.view_reports",
+    // Closing a drawer that is not yours is oversight of somebody else's
+    // work, which is exactly what this bridge carries. The shift-close route
+    // asked `shifts:read` directly until R-SEC-01 and so relied on this
+    // membership implicitly; stating it here is what lets the route ask for
+    // the key by name without taking the power away from the managers who
+    // already had it.
+    "shifts.close_others",
     "stock_count.confirm", "stock_count.correct", "stock_count.approve_correction",
     "variance.investigate", "variance.resolve",
     "handover.exception",

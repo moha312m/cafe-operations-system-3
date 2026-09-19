@@ -1,12 +1,10 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { getSession } from "@/lib/auth";
 import { handleApiError, ApiError, requireActiveSession } from "@/lib/api";
 import { closeShiftWithSettlement } from "@/lib/cash-close";
 import { HandoverBlockedError } from "@/lib/handover";
 import { resolvePermissions } from "@/lib/perms/effective";
-import { hasPermission } from "@/lib/permissions";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -80,23 +78,16 @@ export async function POST(request: NextRequest, { params }: Params) {
       throw new ApiError(403, "Not allowed");
     }
     const isOwnShift = shift.cashierId === session.id;
-    // R-SEC-01 — DELIBERATELY STILL THE LEGACY CHECK, and the one authority
-    // bypass this stage did not close.
+    // Closing somebody else's drawer costs the key that names that act.
     //
-    // The correct guard is `shifts.close_others`, which exists in the
-    // catalog and is marked sensitive. Enforcing it was implemented and then
-    // reverted, because no role grants it: at runtime a CAFE_OWNER holds it
-    // (owners receive the union of every café key) and a BRANCH_MANAGER does
-    // not — neither the manager template nor the `shifts:read` bridge
-    // includes it. Switching the check therefore stops a manager closing a
-    // cashier's shift, which is an ordinary end-of-day act.
-    //
-    // Granting it means editing the role templates or the legacy bridge,
-    // both of which this stage is forbidden to touch, so the decision is the
-    // owner's. Left as-is rather than half-changed: a guard that refuses the
-    // person who is supposed to do the job is worse than the bypass.
-    const canManage = hasPermission(session.role, "shifts:read");
-    if (!isOwnShift && !canManage) {
+    // Until R-SEC-01 this read `shifts:read` out of the STATIC role table,
+    // so the sensitive `shifts.close_others` key was catalogued and enforced
+    // nowhere, and a café revoking the power through a custom role or a
+    // per-user override changed nothing. Enforcing the key needed its grant
+    // stated too — on the `shifts:read` bridge and in the manager template —
+    // because a guard that refuses the person whose job this is would have
+    // been worse than the bypass it replaced.
+    if (!isOwnShift && !closerKeys.has("shifts.close_others")) {
       throw new ApiError(403, "مينفعش تقفل شيفت كاشير تاني");
     }
     // Re-checked under a row lock inside the transaction; refused here too so

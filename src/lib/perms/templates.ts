@@ -35,6 +35,11 @@ const MANAGER_KEYS = [
   "suppliers.view", "suppliers.create", "suppliers.edit", "suppliers.deactivate",
   "expenses.view", "expenses.manage",
   "shifts.view_current", "shifts.open", "shifts.close", "shifts.view_reports",
+  // Closing a cashier's drawer at the end of the night is the manager's job.
+  // Granted here as well as on the `shifts:read` bridge so both resolution
+  // paths agree: a café using the stored MANAGER role and one falling back
+  // to the legacy role defaults must answer this question the same way.
+  "shifts.close_others",
   "shifts.reconcile_cash",
   "finance.view_revenue", "finance.view_profit",
   "tender_reconciliation.view", "tender_reconciliation.submit", "tender_reconciliation.approve",

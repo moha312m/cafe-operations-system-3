@@ -22,7 +22,7 @@ import { countCafe, COUNT_PASSWORD, type CountCafe } from "./helpers/count";
 import { requireServer, login, as } from "./helpers/http";
 import { PERMISSION_KEYS, LEGACY_TO_KEYS } from "@/lib/perms/catalog";
 import { ROLE_PERMISSIONS } from "@/lib/permissions";
-import { defaultKeysForRole } from "@/lib/perms/templates";
+import { defaultKeysForRole, SYSTEM_ROLES } from "@/lib/perms/templates";
 
 let fx: CountCafe;
 
@@ -55,26 +55,44 @@ describe("SEC-005 the keys exist and are the ones enforced", () => {
     assert.equal(defaultKeysForRole("WAITER" as never).includes("orders.refund"), false);
   });
 
-  test("shifts.close_others is granted to NOBODY but the owner — why that guard is unchanged", () => {
-    // This is the finding that stopped the close-others half of A4. The key
-    // is catalogued and sensitive, and no manager template or legacy bridge
-    // grants it; only CAFE_OWNER holds it, through the owner's union of
-    // every café key. Enforcing it would have stopped a branch manager
-    // closing a cashier's shift — an ordinary end-of-day act — so the legacy
-    // check stays until the owner rules on the grant.
-    assert.equal(
+  test("both resolution paths grant shifts.close_others to a manager, and only to oversight roles", () => {
+    // The amendment's whole point. Enforcing the key without granting it
+    // refused the manager their end-of-day close; granting it on only one
+    // path would answer the same question differently depending on whether
+    // a café had been assigned the stored MANAGER role.
+    //
+    // Path 1 — the legacy-role default, which is what a user with
+    // `cafeRoleId: NULL` actually resolves through.
+    assert.ok(
       defaultKeysForRole("BRANCH_MANAGER" as never).includes("shifts.close_others"),
-      false,
-      "if a manager ever gains this key, the close route should switch to it"
+      "a branch manager must be able to close a cashier's drawer"
     );
-    const bridged = new Set<string>();
-    for (const p of ROLE_PERMISSIONS.BRANCH_MANAGER ?? []) {
-      for (const k of LEGACY_TO_KEYS[p] ?? []) bridged.add(k);
-    }
+    // Path 2 — the stored MANAGER role, seeded from the template.
+    const managerRole = SYSTEM_ROLES.find((r) => r.code === "MANAGER");
+    assert.ok(managerRole, "the MANAGER system role must exist");
+    assert.ok(
+      managerRole!.keys.includes("shifts.close_others"),
+      "the stored role must agree with the legacy default"
+    );
+
+    // It is oversight, so it stops at oversight.
     assert.equal(
-      bridged.has("shifts.close_others"),
+      defaultKeysForRole("CASHIER" as never).includes("shifts.close_others"),
       false,
-      "nor does the legacy bridge grant it"
+      "a cashier closes their own shift, not somebody else's"
+    );
+    assert.equal(
+      defaultKeysForRole("WAITER" as never).includes("shifts.close_others"),
+      false
+    );
+
+    // Granted by the supervisory bridge, by name — the membership the route
+    // used to rely on implicitly through `shifts:read`.
+    assert.ok(LEGACY_TO_KEYS["shifts:read"].includes("shifts.close_others"));
+    // And no new key was invented to do it.
+    assert.equal(
+      PERMISSION_KEYS.filter((k) => k.key === "shifts.close_others").length,
+      1
     );
   });
 });
@@ -163,6 +181,7 @@ describe("SEC-005 no legacy-role authority survives on these routes", () => {
     const files = [
       "src/app/api/orders/[id]/refund/route.ts",
       "src/app/api/payments/[id]/refund/route.ts",
+      "src/app/api/shifts/[id]/close/route.ts",
       "src/app/api/shifts/route.ts",
       "src/app/api/shifts/[id]/route.ts",
     ];
@@ -176,15 +195,122 @@ describe("SEC-005 no legacy-role authority survives on these routes", () => {
     }
   });
 
-  test("the one remaining bypass is named in place, not left silent", () => {
-    // A bypass that stays must say why it stays, or the next reader repeats
-    // the mistake this stage made: switching the guard and breaking the
-    // manager's end-of-day close.
+  test("closing another cashier's shift costs shifts.close_others, with no bypass left", () => {
     const source = require("node:fs").readFileSync(
       "src/app/api/shifts/[id]/close/route.ts",
       "utf8"
     ) as string;
-    assert.match(source, /DELIBERATELY STILL THE LEGACY CHECK/);
-    assert.match(source, /shifts\.close_others/);
+    assert.match(source, /closerKeys\.has\("shifts\.close_others"\)/);
+    assert.doesNotMatch(source, /hasPermission/, "no legacy authority survives here");
+  });
+});
+
+describe("SEC-005 closing somebody else's shift obeys the granular key", () => {
+  // The guard sits after the shift is found and scoped, so these need a real
+  // OPEN shift belonging to somebody else. The distinctive refusal is the
+  // one the route raises for this specific act.
+  const NOT_YOURS = /مينفعش تقفل شيفت كاشير تاني/;
+  let shiftSeq = 0;
+
+  async function cashiersOpenShift() {
+    shiftSeq += 1;
+    const shift = await db.shift.create({
+      data: {
+        cafeId: fx.cafeId,
+        branchId: fx.branchId,
+        cashierId: fx.cashier.id,
+        shiftNumber: 9000 + shiftSeq,
+        openingCashAmount: 0,
+        expectedCashAmount: 0,
+        status: "OPEN",
+      },
+      select: { id: true },
+    });
+    return shift.id;
+  }
+
+  const close = (email: string, shiftId: string) =>
+    as(email, `/api/shifts/${shiftId}/close`, {
+      method: "POST",
+      body: JSON.stringify({ actualCashAmount: 0 }),
+    });
+
+  test("a manager holding the key is past the guard", async () => {
+    // Preserved access, proven through the resolution path a real manager
+    // actually takes — they carry no stored CafeRole.
+    const stored = await db.user.findUniqueOrThrow({
+      where: { id: fx.manager.id },
+      select: { cafeRoleId: true, role: true },
+    });
+    assert.equal(stored.cafeRoleId, null, "the fixture manager resolves via the bridge");
+
+    const shiftId = await cashiersOpenShift();
+    const res = await close(fx.manager.email, shiftId);
+    assert.doesNotMatch(
+      res.text,
+      NOT_YOURS,
+      `the manager's end-of-day close must not be refused: ${res.status} ${res.text}`
+    );
+  });
+
+  test("revoking the key refuses the close — the legacy role alone is not enough", async () => {
+    // The defect, stated as a test. The `role` column still reads
+    // BRANCH_MANAGER throughout, so the refusal can only have come from the
+    // effective permission.
+    const shiftId = await cashiersOpenShift();
+    await db.userPermissionOverride.create({
+      data: { userId: fx.manager.id, permissionKey: "shifts.close_others", allowed: false },
+    });
+    await login(fx.manager.email, COUNT_PASSWORD);
+
+    const res = await close(fx.manager.email, shiftId);
+    assert.equal(res.status, 403, res.text);
+    assert.match(res.text, NOT_YOURS);
+
+    const row = await db.user.findUniqueOrThrow({
+      where: { id: fx.manager.id },
+      select: { role: true },
+    });
+    assert.equal(row.role, "BRANCH_MANAGER", "the legacy role is untouched");
+
+    await db.userPermissionOverride.deleteMany({
+      where: { userId: fx.manager.id, permissionKey: "shifts.close_others" },
+    });
+    await login(fx.manager.email, COUNT_PASSWORD);
+  });
+
+  test("a waiter without the key is refused", async () => {
+    const shiftId = await cashiersOpenShift();
+    const res = await close(fx.waiter.email, shiftId);
+    assert.equal(res.status, 403, res.text);
+    assert.match(res.text, NOT_YOURS);
+  });
+
+  test("granting the key to a cashier lets them close another cashier's shift", async () => {
+    const shiftId = await cashiersOpenShift();
+    await db.userPermissionOverride.create({
+      data: { userId: fx.storekeeper.id, permissionKey: "shifts.close_others", allowed: true },
+    });
+    await login(fx.storekeeper.email, COUNT_PASSWORD);
+
+    const res = await close(fx.storekeeper.email, shiftId);
+    assert.doesNotMatch(res.text, NOT_YOURS, `the grant must bind: ${res.status} ${res.text}`);
+
+    await db.userPermissionOverride.deleteMany({
+      where: { userId: fx.storekeeper.id, permissionKey: "shifts.close_others" },
+    });
+    await login(fx.storekeeper.email, COUNT_PASSWORD);
+  });
+
+  test("a cashier may still close their OWN shift without the key", async () => {
+    // The key governs other people's drawers only; it must not have made a
+    // cashier unable to finish their own night.
+    const shiftId = await cashiersOpenShift();
+    assert.equal(
+      defaultKeysForRole("CASHIER" as never).includes("shifts.close_others"),
+      false
+    );
+    const res = await close(fx.cashier.email, shiftId);
+    assert.doesNotMatch(res.text, NOT_YOURS, `${res.status} ${res.text}`);
   });
 });
