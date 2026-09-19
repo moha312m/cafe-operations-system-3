@@ -173,7 +173,10 @@ export async function resolveVarianceAttribution(args: {
     select: {
       id: true,
       verified: true,
-      handover: { select: { acceptedAt: true, outgoingStockCustodyId: true } },
+      // The SUCCESSOR, not the custody discharged at this boundary. The span
+      // measured here STARTS at the boundary and runs forward, and what held
+      // the shelf afterwards is the party the handover gave it to (SH-25).
+      handover: { select: { acceptedAt: true, incomingStockCustodyId: true } },
     },
     orderBy: { handover: { acceptedAt: "desc" } },
   });
@@ -193,7 +196,9 @@ export async function resolveVarianceAttribution(args: {
     select: {
       verified: true,
       // STOCK custody only. A cash custody has no business in a stock span.
-      handover: { select: { outgoingStockCustodyId: true } },
+      // The successor again: each crossed boundary names the custody that
+      // held the shelf AFTER it, which is what the interval is made of.
+      handover: { select: { incomingStockCustodyId: true } },
     },
   });
 
@@ -209,13 +214,21 @@ export async function resolveVarianceAttribution(args: {
             boundaryId: opening.id,
             verified: opening.verified,
             acceptedAt: openingAcceptedAt,
-            custodyPeriodId: opening.handover.outgoingStockCustodyId,
+            // The classifier asks whether ONE custody held the shelf from the
+            // opening observation to the close. The custody that answers that
+            // question is the one this boundary handed the shelf TO. Reading
+            // the discharged party here made the comparison fail on every
+            // real chain — a verified span that could name nobody, which is
+            // the defect SH-25 repairs. A NULL successor needs no special
+            // case: it cannot equal the closing custody, so the verdict falls
+            // through to PERIOD_UNRESOLVED, which is the safe answer.
+            custodyPeriodId: opening.handover.incomingStockCustodyId,
           }
         : null,
     interveningUnverifiedBoundaryCount: crossed.filter((b) => !b.verified).length,
     crossedCustodyPeriodIds: dedupe([
-      opening?.handover.outgoingStockCustodyId,
-      ...crossed.map((b) => b.handover.outgoingStockCustodyId),
+      opening?.handover.incomingStockCustodyId,
+      ...crossed.map((b) => b.handover.incomingStockCustodyId),
       closingCustody?.id,
     ]),
   });

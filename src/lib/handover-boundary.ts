@@ -724,12 +724,20 @@ const ACCEPTED_OPENING_LINE_SELECT = {
  * that boundary is the handover's SUCCESSOR, and the successor is the branch
  * period this verification is discharging now.
  *
- * Half B therefore reads the successor directly. The resolver's own mapping
- * is a separate, pre-existing defect
- * (`SH17_ATTRIBUTION_SUCCESSOR_MAPPING_DEFECT`), tracked and deliberately not
- * repaired here: it fails conservatively, toward `PERIOD_UNRESOLVED`, so it
- * names nobody falsely, and repairing it is a change to accepted handover
- * accountability that belongs in its own stage with its own proofs.
+ * Half B therefore reads the successor directly, and always has.
+ *
+ * The resolver read the discharged party instead — a separate defect tracked
+ * as `SH17_ATTRIBUTION_SUCCESSOR_MAPPING_DEFECT`, which SH-25 has since
+ * repaired: it now maps opening and crossed boundaries to
+ * `incomingStockCustodyId` as well, and `tests/var-012` holds it to a real
+ * C1 → C2 → C3 chain. Until then it failed conservatively, toward
+ * `PERIOD_UNRESOLVED`, so it named nobody falsely — and named nobody at all.
+ *
+ * This function still does its own lookup rather than calling the resolver.
+ * The two answer different questions: the resolver asks which custody held an
+ * item across a span, while this asks which boundary opened THIS branch
+ * custody — a question about one period's beginning, answered by the handover
+ * whose successor that period is.
  */
 async function openingBoundaryFor(
   tx: Prisma.TransactionClient,

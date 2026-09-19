@@ -36,6 +36,7 @@ let branchId: string;
 let managerId: string;
 let shiftId: string;
 let custodyId: string;      // the closing (outgoing) STOCK custody
+let priorCustodyId: string; // the custody that handed the shelf TO it
 let cashCustodyId: string;  // deliberately never linked to a stock span
 let branchCustodyId: string;
 
@@ -219,10 +220,20 @@ before(async () => {
       },
     });
   custodyId = (await custody("STOCK", "USER")).id;
+  // The predecessor, and DISTINCT from the closing custody on purpose. These
+  // fixtures used to give both handovers the same outgoing custody and no
+  // successor at all, which made the old outgoing-based mapping produce the
+  // right answer by accident and hid SH-17 for eight stages. A fixture where
+  // incoming equals outgoing would hide it again (SH-25).
+  priorCustodyId = (await custody("STOCK", "USER", "CLOSED")).id;
   cashCustodyId = (await custody("CASH", "USER")).id;
   branchCustodyId = (await custody("STOCK", "BRANCH", "CLOSED")).id;
 
-  const handover = (acceptedAt: Date, outgoingStockCustodyId: string | null) =>
+  const handover = (
+    acceptedAt: Date,
+    outgoingStockCustodyId: string | null,
+    incomingStockCustodyId: string | null
+  ) =>
     db.handoverSession.create({
       data: {
         cafeId,
@@ -233,10 +244,17 @@ before(async () => {
         acceptedAt,
         completedAt: acceptedAt,
         outgoingStockCustodyId,
+        // Who received the shelf. The attribution resolver reads THIS to
+        // decide who held it afterwards, so a fixture that omits it cannot
+        // describe a custody chain at all.
+        incomingStockCustodyId,
       },
     });
-  priorHandoverId = (await handover(PRIOR_ACCEPTED_AT, custodyId)).id;
-  acceptingHandoverId = (await handover(ACCEPTED_AT, custodyId)).id;
+  // priorCustody → custody: the chain the closing count is measured against.
+  priorHandoverId = (await handover(PRIOR_ACCEPTED_AT, priorCustodyId, custodyId)).id;
+  // The acceptance under test. Its own successor is created by the real
+  // acceptance transaction, which these tests deliberately do not run.
+  acceptingHandoverId = (await handover(ACCEPTED_AT, custodyId, null)).id;
 });
 
 after(() => teardownTaggedCafe(cafeId, [], { disconnect: true }));
@@ -483,6 +501,9 @@ describe("VAR-010 the accepted handover writer", () => {
     });
     assert.equal(insideCase.attribution, "VERIFIED_SHIFT");
     assert.equal(insideCase.custodyPeriodId, custodyId);
+    // The custody that handed the shelf over is not the one that answers for
+    // it. This is the assertion the old mapping would fail (SH-25).
+    assert.notEqual(insideCase.custodyPeriodId, priorCustodyId);
     assert.equal(insideCase.acceptedHandoverId, acceptingHandoverId);
 
     assert.equal(
@@ -604,6 +625,7 @@ describe("VAR-010 the accepted handover writer", () => {
     });
     assert.equal(opened.attribution, "VERIFIED_SHIFT");
     assert.equal(opened.custodyPeriodId, custodyId);
+    assert.notEqual(opened.custodyPeriodId, priorCustodyId);
     assert.equal(opened.acceptedHandoverId, acceptingHandoverId);
     assert.equal(Number(opened.quantityVariance), -3);
   });
