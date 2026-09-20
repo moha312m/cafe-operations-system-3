@@ -6,7 +6,7 @@ import { audit } from "@/lib/audit";
 import { deductStockForOrder, auditDeduction, StockError } from "@/lib/stock-deduction";
 import { recomputeSessionTotals } from "@/lib/table-sessions";
 import { reverseOrderLoyalty } from "@/lib/loyalty";
-import { isOrderFullyPaid } from "@/lib/order-payments";
+import { isOrderFullyPaid, collectedAmount } from "@/lib/order-payments";
 import { requiresPaymentBeforeServing } from "@/lib/serving-policy";
 import { unrecordCustomerOrder } from "@/lib/customers";
 import type { OrderStatus } from "@prisma/client";
@@ -57,6 +57,30 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     }
     if (status === "CANCELLED") {
       await requirePermission("orders:cancel");
+
+      // Money that was collected cannot be cancelled away (R-POS-02A/A8).
+      //
+      // Cancelling used to need nothing but the permission, so a paid order
+      // could be cancelled while its payment rows stayed exactly where they
+      // were. The money then belonged to nobody: `recomputeSessionTotals`
+      // drops CANCELLED orders from both its aggregates, so the table's bill
+      // forgets the payment, while `recomputeShiftTotals` keys only on
+      // `shiftId` and still expects it in the drawer — and the day's report
+      // shows a collection against no sale and no refund, permanently.
+      //
+      // Net collections, not `paymentStatus`: an order refunded back to zero
+      // has nothing left to orphan and stays cancellable, which is why the
+      // read above deliberately loads every payment row.
+      //
+      // Nothing is auto-refunded here. Returning money is its own act, with
+      // its own permission and its own accounting, and doing it silently
+      // inside a cancel would hide it from the person doing the cancelling.
+      if (collectedAmount(order.payments) > 0.001) {
+        throw new ApiError(
+          400,
+          "الطلب ده اتحصّل عليه فلوس — مينفعش يتلغي. اعمل مرتجع الأول لو محتاج ترجّع الفلوس"
+        );
+      }
     }
     // Whether an unpaid order may reach the customer is the owner's decision,
     // set per order type and resolved from the branch's effective policy —

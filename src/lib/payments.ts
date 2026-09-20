@@ -190,8 +190,24 @@ export async function applyOrderPaymentInTx(
     note?: string | null;
   }
 ) {
-  // Fresh read inside the transaction — concurrent collections serialize
-  // here and the second one sees the updated remaining.
+  // The row lock is the serialisation point, and it has to be a lock.
+  //
+  // This was a plain `findUnique` with a comment claiming that "concurrent
+  // collections serialize here". They did not: under PostgreSQL's default
+  // READ COMMITTED a plain SELECT blocks nobody, and no isolation level is
+  // configured anywhere in this application. Two cashiers — or one cashier
+  // double-tapping "تحصيل", or a client retrying a slow request — both read
+  // `paidAmount = 0`, both passed the duplicate guard below, and both wrote
+  // an ABSOLUTE `paidAmount`. The order ended up paid once with two payment
+  // rows against it, and because `recomputeShiftTotals` sums payment ROWS,
+  // the drawer was then expected to hold twice the sale: a shortage raised
+  // at close against a cashier who took the money exactly once.
+  //
+  // `FOR UPDATE` makes the second caller wait for the first to commit and
+  // then read what it wrote, so the guard below refuses it. Same shape as
+  // `lockShift` in cash-close and `lockItemForUpdate` in the ledger.
+  await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${orderId} FOR UPDATE`;
+
   const order = await tx.order.findUnique({
     where: { id: orderId },
     select: {

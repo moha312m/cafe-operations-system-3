@@ -281,6 +281,35 @@ export async function refundPayment(
   }
 
   const refund = await db.$transaction(async (tx) => {
+    // Lock the collection, then ask again whether it is still unreversed.
+    //
+    // Every check above ran on a read taken OUTSIDE this transaction, and
+    // this block used to open with an unconditional create — so a
+    // double-tapped button or a retried request produced TWO reversals of
+    // one collection. Nothing in the schema refuses that: there is no unique
+    // constraint on `reversalOfPaymentId`. The order still looked settled,
+    // because `applyRefundToOrderSettlement` clamps at zero, but
+    // `recomputeShiftTotals` subtracts every REFUND row — so the cashier was
+    // short by the refund amount at close, with nothing on screen to explain
+    // it.
+    //
+    // `refundOrder` has guarded this since REFUND-004 by claiming the order
+    // row; a payment-level reversal has no equivalent column to claim, so it
+    // takes the lock directly and re-reads under it. The original collection
+    // is deliberately NOT rewritten: `collectedAmount` treats a COLLECTION
+    // marked REFUNDED as zero money in hand, so flipping its status would
+    // double-count the reversal that the new REFUND row already records.
+    await tx.$queryRaw`SELECT "id" FROM "Payment" WHERE "id" = ${paymentId} FOR UPDATE`;
+
+    const stillOpen = await tx.payment.findUnique({
+      where: { id: paymentId },
+      select: { status: true, reversedBy: { select: { id: true } } },
+    });
+    if (!stillOpen) throw new ApiError(404, "عملية الدفع مش موجودة");
+    if (stillOpen.status === "REFUNDED" || stillOpen.reversedBy.length > 0) {
+      throw new ApiError(400, "الدفعة مرتجعة بالفعل");
+    }
+
     const row = await tx.payment.create({
       data: {
         cafeId: payment.cafeId,
