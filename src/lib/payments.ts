@@ -85,12 +85,24 @@ export async function applyLoyaltyRedemptionInTx(
     cashierId: string;
   }
 ) {
-  // Re-read the customer inside the tx — concurrent redemptions serialize.
+  // Read the customer for the things that do not change under contention —
+  // which café they belong to, whether they are active, and the balance this
+  // redemption will be reported against.
+  //
+  // NOT for deciding whether the points are there. This read used to claim
+  // that "concurrent redemptions serialize", and it does not: a SELECT takes
+  // no lock under READ COMMITTED, so two collections both saw the same
+  // balance, both passed the check below, and both subtracted — leaving the
+  // customer owing the café points it had already given away. The decision is
+  // made by the conditional update at the end of this function, which is the
+  // only statement that can make it atomically (R-POS-02B1).
   const customer = await tx.customer.findUnique({
     where: { id: redemption.customerId },
     select: { id: true, cafeId: true, isActive: true, loyaltyPointsBalance: true },
   });
   if (!customer || !customer.isActive) throw new ApiError(400, "يجب اختيار عميل أولًا");
+  // A courtesy check, not the guard: it refuses the common case early, before
+  // any order is rewritten, and says so in the cashier's own words.
   if (customer.loyaltyPointsBalance < redemption.points) {
     throw new ApiError(400, "لا يوجد رصيد نقاط كافي");
   }
@@ -156,15 +168,35 @@ export async function applyLoyaltyRedemptionInTx(
     throw new ApiError(400, "قيمة خصم النقاط أكبر من المتبقي على الحساب");
   }
 
-  await tx.customer.update({
-    where: { id: customer.id },
+  // The guard and the write are one statement. PostgreSQL re-evaluates a
+  // WHERE clause against the committed row when an UPDATE has waited on
+  // another transaction's lock, so a redemption that lost the race matches
+  // nothing, changes nothing, and is told so — the balance cannot be driven
+  // below zero by concurrency, without a CHECK constraint and without a
+  // migration. Same shape as the conditional refund guard in refunds.ts.
+  const claimed = await tx.customer.updateMany({
+    where: { id: customer.id, loyaltyPointsBalance: { gte: redemption.points } },
     data: {
       loyaltyPointsBalance: { decrement: redemption.points },
       lifetimePointsRedeemed: { increment: redemption.points },
     },
   });
+  if (claimed.count === 0) {
+    // Throwing rolls the whole collection back, so the orders discounted
+    // above are restored with it — points are never given away free.
+    throw new ApiError(400, "لا يوجد رصيد نقاط كافي");
+  }
 
-  return { applied, oldBalance: customer.loyaltyPointsBalance };
+  // The balance the audit reports is read back, not carried down from the
+  // read at the top: another redemption may have committed in between and
+  // still left enough points for this one, in which case the figure that was
+  // read is not the balance this deduction actually started from.
+  const after = await tx.customer.findUniqueOrThrow({
+    where: { id: customer.id },
+    select: { loyaltyPointsBalance: true },
+  });
+
+  return { applied, oldBalance: after.loyaltyPointsBalance + redemption.points };
 }
 
 // Applies one payment (possibly split across methods) to an order INSIDE

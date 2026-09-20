@@ -8,6 +8,7 @@ import {
   resolveBranchId,
   handleApiError,
   ApiError,
+  retryOnUniqueConflict,
 } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { unitPrice as computeUnitPrice } from "@/lib/pricing";
@@ -15,7 +16,7 @@ import { getActiveShift, requireCashCustody, recomputeShiftTotals } from "@/lib/
 import { getBranchFinancialSettings, computeCharges } from "@/lib/financials";
 import { attachOrderToTableSession } from "@/lib/table-sessions";
 import { findOrCreateCustomerByPhone, recordCustomerOrder } from "@/lib/customers";
-import { getLoyaltySettingsSafe, loyaltyCalcSettings, maybeAwardLoyaltyPoints, recordRedemption } from "@/lib/loyalty";
+import { getLoyaltySettingsSafe, loyaltyCalcSettings, maybeAwardLoyaltyPoints, recordRedemptionInTx, auditRedemption } from "@/lib/loyalty";
 import { validateRedemption } from "@/lib/loyalty-calc";
 import { checkCartAvailability } from "@/lib/stock-availability";
 import { getInventoryEnforcementMode } from "@/lib/inventory-policy";
@@ -371,71 +372,111 @@ export async function POST(request: NextRequest) {
     const source = session.role === "WAITER" ? "WAITER" : "CASHIER_POS";
     const remainingAmount = round2(total - paidAmount);
 
-    const order = await db.$transaction(async (tx) => {
-      const last = await tx.order.aggregate({
-        where: { branchId },
-        _max: { orderNumber: true },
-      });
-      const created = await tx.order.create({
-        data: {
-          cafeId,
-          branchId,
-          orderNumber: (last._max.orderNumber ?? 0) + 1,
-          type: data.type,
-          status: "CONFIRMED", // staff orders skip the approval queue
-          source,
-          customerName: data.customerName,
-          customerPhone: data.customerPhone,
-          deliveryAddress: data.deliveryAddress,
-          tableNumber: data.tableNumber,
-          notes: data.notes,
-          subtotal: charges.subtotal,
-          discountAmount: charges.discountAmount,
-          serviceChargeAmount: charges.serviceChargeAmount,
-          taxAmount: charges.taxAmount,
-          total,
-          paymentStatus,
-          paidAmount,
-          remainingAmount,
-          taxRateSnapshot: charges.taxRateSnapshot,
-          serviceRateSnapshot: charges.serviceRateSnapshot,
-          // The policy this order was ACCEPTED under, stored alongside the
-          // rates and for the same reason: the availability answer above was
-          // given under `enforcementMode`, and the deduction at SERVED must be
-          // given under the same one however the café is configured by then.
-          // Server-derived — `createOrderSchema` has no such field, so a till
-          // cannot ask for a mode, only be told one.
-          inventoryEnforcementMode: enforcementMode,
-          customerId: customer?.id ?? null,
-          loyaltyPointsRedeemed: redeemPoints,
-          loyaltyDiscountAmount: loyaltyDiscount,
-          createdById: session.id,
-          items: {
-            create: itemRows.map((row) => ({
-              productId: row.productId,
-              variantId: row.variantId,
-              productName: row.productName,
-              variantName: row.variantName,
-              unitPrice: row.unitPrice,
-              quantity: row.quantity,
-              lineTotal: row.lineTotal,
-              notes: row.notes,
-              addOns: { create: row.addOns },
-            })),
-          },
-        },
-        include: orderInclude,
-      });
-      for (const s of paySplits) {
-        await tx.payment.create({
-          data: {
-            cafeId, branchId, orderId: created.id, shiftId: shift?.id ?? null,
-            cashierId: session.id, amount: s.amount, method: s.method,
-            status: "PAID", receivedById: session.id,
-          },
+    // The order number is allocated from the branch's current maximum, and
+    // that read takes no lock: two tills ringing up in the same moment are
+    // handed the same number, and `@@unique([branchId, orderNumber])` refuses
+    // the second one. The constraint is right; losing the sale to it was not.
+    // The retry re-runs a transaction that has already rolled back, so the
+    // second attempt reads a maximum that now includes the winner and takes
+    // the next free number (R-POS-02B1).
+    const placeOrder = () =>
+      db.$transaction(async (tx) => {
+        // Serialise the allocation itself, the way cash-close and the stock
+        // ledger serialise theirs: hold the branch row for the length of the
+        // transaction so concurrent tills queue here instead of all reading
+        // the same maximum. The retry below is the backstop, and on its own
+        // it is not enough — with eight tills racing, each round produces one
+        // winner and seven losers, so three attempts still lose sales.
+        await tx.$queryRaw`SELECT "id" FROM "Branch" WHERE "id" = ${branchId} FOR UPDATE`;
+        const last = await tx.order.aggregate({
+          where: { branchId },
+          _max: { orderNumber: true },
         });
-      }
-      return created;
+        const created = await tx.order.create({
+          data: {
+            cafeId,
+            branchId,
+            orderNumber: (last._max.orderNumber ?? 0) + 1,
+            type: data.type,
+            status: "CONFIRMED", // staff orders skip the approval queue
+            source,
+            customerName: data.customerName,
+            customerPhone: data.customerPhone,
+            deliveryAddress: data.deliveryAddress,
+            tableNumber: data.tableNumber,
+            notes: data.notes,
+            subtotal: charges.subtotal,
+            discountAmount: charges.discountAmount,
+            serviceChargeAmount: charges.serviceChargeAmount,
+            taxAmount: charges.taxAmount,
+            total,
+            paymentStatus,
+            paidAmount,
+            remainingAmount,
+            taxRateSnapshot: charges.taxRateSnapshot,
+            serviceRateSnapshot: charges.serviceRateSnapshot,
+            // The policy this order was ACCEPTED under, stored alongside the
+            // rates and for the same reason: the availability answer above was
+            // given under `enforcementMode`, and the deduction at SERVED must be
+            // given under the same one however the café is configured by then.
+            // Server-derived — `createOrderSchema` has no such field, so a till
+            // cannot ask for a mode, only be told one.
+            inventoryEnforcementMode: enforcementMode,
+            customerId: customer?.id ?? null,
+            loyaltyPointsRedeemed: redeemPoints,
+            loyaltyDiscountAmount: loyaltyDiscount,
+            createdById: session.id,
+            items: {
+              create: itemRows.map((row) => ({
+                productId: row.productId,
+                variantId: row.variantId,
+                productName: row.productName,
+                variantName: row.variantName,
+                unitPrice: row.unitPrice,
+                quantity: row.quantity,
+                lineTotal: row.lineTotal,
+                notes: row.notes,
+                addOns: { create: row.addOns },
+              })),
+            },
+          },
+          include: orderInclude,
+        });
+        for (const s of paySplits) {
+          await tx.payment.create({
+            data: {
+              cafeId, branchId, orderId: created.id, shiftId: shift?.id ?? null,
+              cashierId: session.id, amount: s.amount, method: s.method,
+              status: "PAID", receivedById: session.id,
+            },
+          });
+        }
+        // Take the loyalty points HERE rather than after the commit. The
+        // discount is already priced into the row above, so a redemption
+        // that cannot be honoured has to take the order down with it —
+        // otherwise the café has sold at a discount and been paid in points
+        // the customer did not have (R-POS-02B1).
+        let redemption: { oldBalance: number; newBalance: number } | null = null;
+        if (customer && redeemPoints > 0) {
+          redemption = await recordRedemptionInTx(tx, {
+            cafeId,
+            customerId: customer.id,
+            orderId: created.id,
+            orderNumber: created.orderNumber,
+            points: redeemPoints,
+            amountValue: loyaltyDiscount,
+            userId: session.id,
+          });
+        }
+        // The redemption travels out with the order: it is read below for the
+        // audit row, and only the attempt that actually committed can supply
+        // it.
+        return { created, redemption };
+      });
+
+    const { created: order, redemption } = await retryOnUniqueConflict(placeOrder, {
+      field: "orderNumber",
+      message: "في طلب تاني اتسجل في نفس اللحظة — جرّب تاني",
     });
 
     if (shift) await recomputeShiftTotals(shift.id);
@@ -453,12 +494,12 @@ export async function POST(request: NextRequest) {
     // Loyalty side effects: ledger the redemption, bump customer stats,
     // then award earn-points (no-ops unless the order is already eligible).
     if (customer) {
-      if (redeemPoints > 0) {
-        await recordRedemption({
+      if (redeemPoints > 0 && redemption) {
+        await auditRedemption({
           cafeId, customerId: customer.id, orderId: order.id,
           orderNumber: order.orderNumber, points: redeemPoints,
           amountValue: loyaltyDiscount, userId: session.id,
-          oldBalance: customer.loyaltyPointsBalance,
+          oldBalance: redemption.oldBalance, newBalance: redemption.newBalance,
         });
       }
       await recordCustomerOrder(customer.id, total);

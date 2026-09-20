@@ -155,6 +155,51 @@ export async function requireFeature(
   }
 }
 
+// ── uniqueness conflicts ──────────────────────────────────────────────────
+//
+// Sequence numbers in this product are allocated by reading the branch's
+// current maximum and adding one. That read takes no lock under READ
+// COMMITTED — the default here, and the only isolation level the repository
+// configures — so two concurrent tills are handed the same number and the
+// second insert is refused by `@@unique([branchId, orderNumber])`.
+//
+// The constraint is right; losing the sale over it was not. `retryOnUniqueConflict`
+// re-runs the whole transaction, which has already rolled back, so the second
+// attempt re-reads a maximum that now includes the winner and takes the next
+// free number. Bounded on purpose: a conflict that survives three attempts is
+// not contention any more, and a retry loop that never gives up would turn a
+// genuine constraint bug into a hang.
+
+/** True for a P2002, optionally narrowed to one column of the constraint. */
+export function isUniqueConflict(error: unknown, field?: string): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError)) return false;
+  if (error.code !== "P2002") return false;
+  if (!field) return true;
+  const target = error.meta?.target;
+  if (Array.isArray(target)) return target.includes(field);
+  return typeof target === "string" && target.includes(field);
+}
+
+export async function retryOnUniqueConflict<T>(
+  run: () => Promise<T>,
+  {
+    field,
+    message,
+    attempts = 3,
+  }: { field?: string; message: string; attempts?: number }
+): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await run();
+    } catch (e) {
+      if (!isUniqueConflict(e, field)) throw e;
+      // Out of attempts: report the conflict in the café's own words rather
+      // than letting a raw Prisma error decide what the cashier reads.
+      if (attempt >= attempts) throw new ApiError(409, message);
+    }
+  }
+}
+
 export function handleApiError(error: unknown): NextResponse {
   if (error instanceof ApiError) {
     return NextResponse.json({ error: error.message }, { status: error.status });
@@ -164,6 +209,21 @@ export function handleApiError(error: unknown): NextResponse {
     return NextResponse.json(
       { error: `${first.path.join(".")}: ${first.message}` },
       { status: 400 }
+    );
+  }
+  // A uniqueness collision is contention, not a fault: two tills asking for
+  // the same order number in the same millisecond, or two devices opening the
+  // same shift. The database is doing its job by refusing the second one, and
+  // the caller needs to be told it lost a race — not shown the unexpected-error
+  // page, which is what an unmapped P2002 produced (R-POS-02B1).
+  //
+  // Deliberately above `console.error`: this is an expected outcome under
+  // load, and logging it as a fault would teach whoever reads the log to
+  // ignore real ones. Routes that can retry do so before reaching here.
+  if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+    return NextResponse.json(
+      { error: "في عملية تانية حصلت في نفس اللحظة — جرّب تاني" },
+      { status: 409 }
     );
   }
   console.error(error);
