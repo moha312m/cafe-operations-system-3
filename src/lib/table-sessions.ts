@@ -6,6 +6,7 @@
 import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { auditInTransaction } from "@/lib/audit";
+import { retryOnUniqueConflict } from "@/lib/api";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -101,7 +102,15 @@ export async function attachOrderToTableSession(order: {
   // The audit rows are written through the same transaction, so a failure
   // takes them with it rather than leaving a record of something that did
   // not happen — the reason `auditInTransaction` exists.
-  return db.$transaction(async (tx) => {
+  //
+  // The lookup below still takes no lock, so two waiters ringing up the same
+  // table can both find nothing and both create. `TableSession_one_open_per_branch_table`
+  // (M24) makes the database refuse the second one — but a refusal is the
+  // wrong answer to give a waiter. The customer is at ONE table and expects
+  // ONE bill, so the loser retries, finds the bill the winner just opened,
+  // and joins it. The transaction has already rolled back, so the retry is
+  // starting clean (R-POS-02B2).
+  return retryOnUniqueConflict(() => db.$transaction(async (tx) => {
     let session = await tx.tableSession.findFirst({
       where: { cafeId: order.cafeId, branchId: order.branchId, tableNumber, status: "OPEN" },
     });
@@ -143,6 +152,9 @@ export async function attachOrderToTableSession(order: {
     });
 
     return session;
+  }), {
+    field: "tableNumber",
+    message: "الطاولة دي اتفتح عليها حساب في نفس اللحظة — جرّب تاني",
   });
 }
 
