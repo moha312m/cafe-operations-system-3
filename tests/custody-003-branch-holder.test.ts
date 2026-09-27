@@ -1,6 +1,6 @@
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { db, tag, teardownTaggedCafe } from "./helpers/db";
+import { db, closeOpenShifts, tag, teardownTaggedCafe } from "./helpers/db";
 
 const MARKER = tag("CUSTODY003");
 let cafeId: string;
@@ -31,6 +31,9 @@ before(async () => {
 after(() => teardownTaggedCafe(cafeId, [], { disconnect: true }));
 
 async function shift() {
+  // One drawer per cashier: close the one a previous test left open rather
+  // than deleting it, so its evidence survives.
+  await closeOpenShifts(branchId, userA);
   const last = await db.shift.aggregate({ where: { branchId }, _max: { shiftNumber: true } });
   return db.shift.create({
     data: {

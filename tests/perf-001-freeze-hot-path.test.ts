@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { PrismaClient } from "@prisma/client";
-import { db, tag, teardownTaggedCafe } from "./helpers/db";
+import { db, closeOpenShifts, tag, teardownTaggedCafe } from "./helpers/db";
 import { applyStockMutation } from "@/lib/ledger";
 import { deductStockForOrder } from "@/lib/stock-deduction";
 import {
@@ -62,6 +62,9 @@ async function item(label: string, stock = 100) {
 
 async function handover(label: string) {
   handoverSequence += 1;
+  // One drawer per cashier: close the one a previous test left open rather
+  // than deleting it, so its evidence survives.
+  await closeOpenShifts(branchId, actorId);
   const shift = await db.shift.create({
     data: {
       cafeId, branchId, cashierId: actorId, shiftNumber: 980000 + handoverSequence,

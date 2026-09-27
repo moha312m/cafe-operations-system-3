@@ -23,7 +23,7 @@
 
 import { test, after, before, describe } from "node:test";
 import assert from "node:assert/strict";
-import { db, teardownTaggedCafe } from "./helpers/db";
+import { db, closeOpenShifts, teardownTaggedCafe } from "./helpers/db";
 import { requireServer, as } from "./helpers/http";
 import { countCafe, countItem, stockReasonCode, type CountCafe } from "./helpers/count";
 import {
@@ -58,6 +58,9 @@ let seq = 0;
 async function handover() {
   await db.handoverSession.deleteMany({ where: { cafeId: fx.cafeId } });
   seq += 1;
+  // One drawer per cashier: close the one a previous test left open
+  // rather than deleting it, so its evidence survives.
+  await closeOpenShifts(fx.branchId, fx.cashier.id);
   const shift = await db.shift.create({
     data: {
       cafeId: fx.cafeId, branchId: fx.branchId, cashierId: fx.cashier.id,

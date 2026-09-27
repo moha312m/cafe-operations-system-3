@@ -75,15 +75,18 @@ before(async () => {
   userId = await mk("manager", "BRANCH_MANAGER");
   staffId = await mk("staff", "CASHIER");
 
-  const shift = async (n: number) =>
+  const shift = async (n: number, closed = false) =>
     (await db.shift.create({
       data: {
         cafeId, branchId, cashierId: staffId, shiftNumber: n,
         openingCashAmount: 0, expectedCashAmount: 0,
+        ...(closed ? { status: "CLOSED" as const, closedAt: new Date() } : {}),
       },
     })).id;
   outgoingShiftId = await shift(950001);
-  const otherShiftId = await shift(950002);
+  // Its handover is already COMPLETED, so this drawer is closed history — and
+  // one cashier cannot hold two open drawers at one branch.
+  const otherShiftId = await shift(950002, true);
 
   // Only one live handover may exist per branch, so the second one — which
   // exists purely to supply a token that is somebody else's — is a finished

@@ -17,7 +17,7 @@
 
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { db, teardownTaggedCafe } from "./helpers/db";
+import { db, closeOpenShifts, teardownTaggedCafe } from "./helpers/db";
 import { countCafe, COUNT_PASSWORD, type CountCafe } from "./helpers/count";
 import { requireServer, login, as } from "./helpers/http";
 import { PERMISSION_KEYS, LEGACY_TO_KEYS } from "@/lib/perms/catalog";
@@ -214,6 +214,9 @@ describe("SEC-005 closing somebody else's shift obeys the granular key", () => {
 
   async function cashiersOpenShift() {
     shiftSeq += 1;
+    // One drawer per cashier: close the one a previous test left open rather
+    // than deleting it, so its evidence survives.
+    await closeOpenShifts(fx.branchId, fx.cashier.id);
     const shift = await db.shift.create({
       data: {
         cafeId: fx.cafeId,

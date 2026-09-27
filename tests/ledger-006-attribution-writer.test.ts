@@ -7,7 +7,7 @@ import {
   resolveStockAttribution,
   type StockMutation,
 } from "@/lib/ledger";
-import { db, tag, teardownTaggedCafe } from "./helpers/db";
+import { db, closeOpenShifts, tag, teardownTaggedCafe } from "./helpers/db";
 
 const MARKER = tag("LEDGER006");
 let cafeId: string;
@@ -62,6 +62,9 @@ async function item(branchId = sourceBranchId, stock = 10) {
 }
 
 async function shift(branchId: string, cashierId = userA) {
+  // One drawer per cashier: close the one a previous test left open rather
+  // than deleting it, so its evidence survives.
+  await closeOpenShifts(branchId, cashierId);
   const last = await db.shift.aggregate({ where: { branchId }, _max: { shiftNumber: true } });
   return db.shift.create({
     data: {

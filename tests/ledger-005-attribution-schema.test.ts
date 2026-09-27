@@ -1,7 +1,7 @@
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
-import { db, fixture, tag, type Fixture } from "./helpers/db";
+import { db, closeOpenShifts, fixture, tag, type Fixture } from "./helpers/db";
 
 const MARKER = tag("LEDGER005");
 const M12 = "20260830230911_custody_holder_and_ledger_attribution";
@@ -34,6 +34,9 @@ async function item() {
 }
 
 async function shift() {
+  // One drawer per cashier: close the one a previous test left open rather
+  // than deleting it, so its evidence survives.
+  await closeOpenShifts(fx.branchId, userId);
   const last = await db.shift.aggregate({ where: { branchId: fx.branchId }, _max: { shiftNumber: true } });
   return db.shift.create({
     data: {

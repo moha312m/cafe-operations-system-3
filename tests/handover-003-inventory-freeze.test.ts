@@ -95,16 +95,22 @@ before(async () => {
   });
   otherCafeActorId = foreignActor.id;
 
+  // Both of these exist only to be the outgoing shift of a COMPLETED
+  // handover below, so they are history, not live drawers. Saying so
+  // explicitly is truer to what they represent — and one cashier cannot hold
+  // two open drawers at one branch.
   const shift = await db.shift.create({
     data: {
       cafeId, branchId, cashierId: actorId, shiftNumber: 910001,
       openingCashAmount: 0, expectedCashAmount: 0,
+      status: "CLOSED", closedAt: new Date(),
     },
   });
   const otherShift = await db.shift.create({
     data: {
       cafeId, branchId, cashierId: actorId, shiftNumber: 910002,
       openingCashAmount: 0, expectedCashAmount: 0,
+      status: "CLOSED", closedAt: new Date(),
     },
   });
   handoverId = (await db.handoverSession.create({
