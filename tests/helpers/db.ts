@@ -123,12 +123,41 @@ export async function clearOpenShifts(branchId: string, cashierId: string) {
   }
 }
 
+/**
+ * Close — never delete — any OPEN shift left behind for this cashier at this
+ * branch.
+ *
+ * The POS has always refused a cashier a second open drawer at one branch:
+ * `POST /api/shifts` finds the existing OPEN shift and answers `alreadyOpen`.
+ * The database is about to enforce the same thing with a partial unique index
+ * (R-POS-02B2b), and a good deal of this suite predates that: fixture
+ * factories open a fresh drawer per test and leave the previous one open, a
+ * state no café can actually be in.
+ *
+ * Closing rather than deleting is the whole point. `clearOpenShifts` removes
+ * the rows and nulls `payment.shiftId` on the way past, which is fine for a
+ * custody precondition and destructive for the cash-close, tender and
+ * variance suites — they build payments, reconciliations and variance cases
+ * against exactly those shifts, and deleting one erases the evidence a later
+ * assertion reads. A CLOSED shift satisfies the index and keeps every row and
+ * every link where it was.
+ */
+export async function closeOpenShifts(branchId: string, cashierId: string) {
+  await db.shift.updateMany({
+    where: { branchId, cashierId, status: "OPEN" },
+    data: { status: "CLOSED", closedAt: new Date() },
+  });
+}
+
 /** Open a shift directly, bypassing the HTTP route. */
 export async function openShift(
   fx: Fixture,
   cashierId: string,
   openingCash: number
 ) {
+  // A cashier holds one drawer at a time. Callers used to have to remember
+  // this; now they cannot get it wrong.
+  await closeOpenShifts(fx.branchId, cashierId);
   const last = await db.shift.aggregate({
     where: { branchId: fx.branchId },
     _max: { shiftNumber: true },

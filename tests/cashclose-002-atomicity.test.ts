@@ -35,7 +35,7 @@
 
 import { test, after, before, describe } from "node:test";
 import assert from "node:assert/strict";
-import { db, teardownTaggedCafe } from "./helpers/db";
+import { db, closeOpenShifts, teardownTaggedCafe } from "./helpers/db";
 import { requireServer, as } from "./helpers/http";
 import { countCafe, type CountCafe } from "./helpers/count";
 
@@ -71,6 +71,9 @@ let seq = 0;
 /** A shift expecting exactly 5,000 EGP: 4,000 float plus 1,000 collected. */
 async function drawer(): Promise<{ shiftId: string; orderId: string }> {
   seq += 1;
+  // One drawer per cashier: close the one the previous test left open
+  // rather than deleting it, so its payments and evidence survive.
+  await closeOpenShifts(fx.branchId, fx.cashier.id);
   const shift = await db.shift.create({
     data: {
       cafeId: fx.cafeId,

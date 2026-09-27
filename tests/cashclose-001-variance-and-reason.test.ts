@@ -35,7 +35,7 @@
 
 import { test, after, before, describe } from "node:test";
 import assert from "node:assert/strict";
-import { db, teardownTaggedCafe } from "./helpers/db";
+import { db, closeOpenShifts, teardownTaggedCafe } from "./helpers/db";
 import { requireServer, as } from "./helpers/http";
 import { countCafe, type CountCafe } from "./helpers/count";
 
@@ -105,6 +105,9 @@ async function drawer(
   const cashierId = opts.cashierId ?? owner.cashier.id;
   seq += 1;
 
+  // One drawer per cashier: close the one the previous test left open
+  // rather than deleting it, so its payments and evidence survive.
+  await closeOpenShifts(branchId, cashierId);
   const shift = await db.shift.create({
     data: {
       cafeId: owner.cafeId,

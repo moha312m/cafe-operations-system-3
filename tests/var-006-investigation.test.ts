@@ -30,7 +30,7 @@
 import { test, after, before, describe } from "node:test";
 import assert from "node:assert/strict";
 import bcrypt from "bcryptjs";
-import { db, teardownTaggedCafe } from "./helpers/db";
+import { db, closeOpenShifts, teardownTaggedCafe } from "./helpers/db";
 import { requireServer, login, as } from "./helpers/http";
 import { countCafe, COUNT_PASSWORD, type CountCafe } from "./helpers/count";
 import { openVarianceCase } from "@/lib/variance-case";
@@ -86,6 +86,9 @@ async function openCase(opts: {
 } = {}) {
   const owner = opts.cafe ?? fx;
   seq += 1;
+  // One drawer per cashier: close the one the previous test left open
+  // rather than deleting it, so its payments and evidence survive.
+  await closeOpenShifts(opts.branchId ?? owner.branchId, owner.cashier.id);
   const shift = await db.shift.create({
     data: {
       cafeId: owner.cafeId,
