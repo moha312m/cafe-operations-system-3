@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { handleApiError, ApiError } from "@/lib/api";
+import { handleApiError, ApiError, retryOnUniqueConflict } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { unitPrice as computeUnitPrice } from "@/lib/pricing";
 import { getCafeSettings } from "@/lib/cafe-settings";
@@ -202,55 +202,74 @@ export async function POST(request: NextRequest, { params }: Params) {
     const taxAmount = charges.taxAmount;
     const total = charges.total;
 
-    const order = await db.$transaction(async (tx) => {
-      const last = await tx.order.aggregate({
-        where: { branchId },
-        _max: { orderNumber: true },
-      });
-      return tx.order.create({
-        data: {
-          cafeId,
-          branchId,
-          orderNumber: (last._max.orderNumber ?? 0) + 1,
-          type: orderType,
-          status: orderStatus,
-          approvalStatus: routing.approvalStatus,
-          approvalModeSnapshot: routing.approvalModeSnapshot,
-          assignedApproverRole: routing.assignedApproverRole,
-          assignedApproverUserId: routing.assignedApproverUserId,
-          source: "QR_MENU",
-          customerName: data.customerName,
-          customerPhone: data.customerPhone || null,
-          tableNumber: data.tableNumber,
-          notes: data.notes,
-          subtotal,
-          taxAmount,
-          serviceChargeAmount: charges.serviceChargeAmount,
-          total,
-          // Customer hasn't paid yet — collected by staff on pickup/delivery.
-          paymentStatus: "PENDING_COLLECTION",
-          paidAmount: 0,
-          remainingAmount: total,
-          taxRateSnapshot: charges.taxRateSnapshot,
-          serviceRateSnapshot: charges.serviceRateSnapshot,
-          inventoryEnforcementMode: enforcementMode,
-          customerId: customer?.id ?? null,
-          createdById: null, // placed by the customer, no user account
-          items: {
-            create: itemRows.map((row) => ({
-              productId: row.productId,
-              variantId: row.variantId,
-              productName: row.productName,
-              variantName: row.variantName,
-              unitPrice: row.unitPrice,
-              quantity: row.quantity,
-              lineTotal: row.lineTotal,
-              notes: row.notes,
-              addOns: { create: row.addOns },
-            })),
+    // Same allocation as the staff path, and it needs the same protection.
+    // Reading the branch's current maximum takes no lock, so two customers
+    // scanning together — or a customer submitting while a cashier rings up —
+    // are handed the same number, and `@@unique([branchId, orderNumber])`
+    // refuses the second.
+    //
+    // Deliberately the SAME branch row the POS path locks, not a lock of this
+    // route's own: two paths that queue on different rows do not serialise
+    // against each other, and the cross-path race is the one a real café hits.
+    // `Branch` is locked nowhere else in the codebase and is taken first in
+    // both transactions, so there is no ordering to invert and no deadlock to
+    // have. The hold is two statements long — this endpoint is public.
+    const placeQrOrder = () =>
+      db.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT "id" FROM "Branch" WHERE "id" = ${branchId} FOR UPDATE`;
+        const last = await tx.order.aggregate({
+          where: { branchId },
+          _max: { orderNumber: true },
+        });
+        return tx.order.create({
+          data: {
+            cafeId,
+            branchId,
+            orderNumber: (last._max.orderNumber ?? 0) + 1,
+            type: orderType,
+            status: orderStatus,
+            approvalStatus: routing.approvalStatus,
+            approvalModeSnapshot: routing.approvalModeSnapshot,
+            assignedApproverRole: routing.assignedApproverRole,
+            assignedApproverUserId: routing.assignedApproverUserId,
+            source: "QR_MENU",
+            customerName: data.customerName,
+            customerPhone: data.customerPhone || null,
+            tableNumber: data.tableNumber,
+            notes: data.notes,
+            subtotal,
+            taxAmount,
+            serviceChargeAmount: charges.serviceChargeAmount,
+            total,
+            // Customer hasn't paid yet — collected by staff on pickup/delivery.
+            paymentStatus: "PENDING_COLLECTION",
+            paidAmount: 0,
+            remainingAmount: total,
+            taxRateSnapshot: charges.taxRateSnapshot,
+            serviceRateSnapshot: charges.serviceRateSnapshot,
+            inventoryEnforcementMode: enforcementMode,
+            customerId: customer?.id ?? null,
+            createdById: null, // placed by the customer, no user account
+            items: {
+              create: itemRows.map((row) => ({
+                productId: row.productId,
+                variantId: row.variantId,
+                productName: row.productName,
+                variantName: row.variantName,
+                unitPrice: row.unitPrice,
+                quantity: row.quantity,
+                lineTotal: row.lineTotal,
+                notes: row.notes,
+                addOns: { create: row.addOns },
+              })),
+            },
           },
-        },
+        });
       });
+
+    const order = await retryOnUniqueConflict(placeQrOrder, {
+      field: "orderNumber",
+      message: "في طلب تاني اتسجل في نفس اللحظة — جرّب تاني",
     });
 
     // First QR order for a table opens its session (timer starts at first

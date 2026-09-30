@@ -1,10 +1,11 @@
 import { db } from "@/lib/db";
 import { audit } from "@/lib/audit";
+import { ApiError } from "@/lib/api";
 import {
   computeEarnedPoints,
   type LoyaltyCalcSettings,
 } from "@/lib/loyalty-calc";
-import type { LoyaltySettings } from "@prisma/client";
+import type { LoyaltySettings, Prisma } from "@prisma/client";
 
 // Lazily returns the cafe's loyalty settings, creating the defaults row
 // (disabled program, 10 EGP = 1 point, 1 point = 1 EGP) the first time.
@@ -138,33 +139,68 @@ async function awardLoyaltyPointsInner(orderId: string): Promise<number | null> 
   return points;
 }
 
-// Deducts redeemed points at order creation (already validated by the
-// caller) and writes the REDEEM ledger row.
-export async function recordRedemption({
-  cafeId, customerId, orderId, orderNumber, points, amountValue, userId, oldBalance,
+// Takes the points an order was placed with, and writes the REDEEM ledger
+// row that accounts for them.
+//
+// Two things changed in R-POS-02B1. The deduction used to be unconditional —
+// the caller had validated the balance on an ordinary read moments earlier,
+// and nothing stopped a second order spending the same points in between, so
+// `loyaltyPointsBalance` went negative and the column has no CHECK to catch
+// it. And it used to run in a transaction of its own, AFTER the order had
+// already been committed with its discount applied, so there was no way to
+// refuse a redemption without leaving a discounted order that had paid for
+// itself with points nobody had.
+//
+// Both are fixed by the same move: the claim is a single conditional update,
+// and it runs inside the ORDER's transaction. If the points are gone, the
+// claim matches no row, this throws, and the order rolls back with it.
+export async function recordRedemptionInTx(
+  tx: Prisma.TransactionClient,
+  {
+    cafeId, customerId, orderId, orderNumber, points, amountValue, userId,
+  }: {
+    cafeId: string; customerId: string; orderId: string; orderNumber: number;
+    points: number; amountValue: number; userId: string | null;
+  }
+): Promise<{ oldBalance: number; newBalance: number }> {
+  const claimed = await tx.customer.updateMany({
+    where: { id: customerId, loyaltyPointsBalance: { gte: points } },
+    data: {
+      loyaltyPointsBalance: { decrement: points },
+      lifetimePointsRedeemed: { increment: points },
+    },
+  });
+  if (claimed.count === 0) throw new ApiError(400, "لا يوجد رصيد نقاط كافي");
+
+  await tx.loyaltyTransaction.create({
+    data: {
+      cafeId, customerId, orderId,
+      type: "REDEEM",
+      points: -points,
+      amountValue,
+      note: `استخدام نقاط — طلب #${orderNumber}`,
+      createdByUserId: userId,
+    },
+  });
+
+  // Read back rather than trusting the balance the caller saw before the
+  // claim: under contention the row that was actually decremented may not be
+  // the one that was read, and the audit should record what happened.
+  const after = await tx.customer.findUniqueOrThrow({
+    where: { id: customerId },
+    select: { loyaltyPointsBalance: true },
+  });
+  return { oldBalance: after.loyaltyPointsBalance + points, newBalance: after.loyaltyPointsBalance };
+}
+
+/** The audit row for a redemption, written once its transaction has committed. */
+export async function auditRedemption({
+  cafeId, customerId, orderId, orderNumber, points, amountValue, userId, oldBalance, newBalance,
 }: {
   cafeId: string; customerId: string; orderId: string; orderNumber: number;
-  points: number; amountValue: number; userId: string | null; oldBalance: number;
+  points: number; amountValue: number; userId: string | null;
+  oldBalance: number; newBalance: number;
 }) {
-  await db.$transaction([
-    db.loyaltyTransaction.create({
-      data: {
-        cafeId, customerId, orderId,
-        type: "REDEEM",
-        points: -points,
-        amountValue,
-        note: `استخدام نقاط — طلب #${orderNumber}`,
-        createdByUserId: userId,
-      },
-    }),
-    db.customer.update({
-      where: { id: customerId },
-      data: {
-        loyaltyPointsBalance: { decrement: points },
-        lifetimePointsRedeemed: { increment: points },
-      },
-    }),
-  ]);
   await audit({
     cafeId, userId,
     action: "LOYALTY_POINTS_REDEEMED",
@@ -174,7 +210,7 @@ export async function recordRedemption({
       customerId, orderId, orderNumber,
       points, amountValue,
       oldValue: { balance: oldBalance },
-      newValue: { balance: oldBalance - points },
+      newValue: { balance: newBalance },
     },
   });
 }

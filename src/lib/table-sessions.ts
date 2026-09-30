@@ -3,8 +3,10 @@
 // and gathers every subsequent order until staff closes it. Totals are
 // denormalised onto the session and recomputed after every change.
 
+import { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
-import { audit } from "@/lib/audit";
+import { auditInTransaction } from "@/lib/audit";
+import { retryOnUniqueConflict } from "@/lib/api";
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
 
@@ -29,16 +31,21 @@ const INACTIVE_ORDER_STATUSES = ["CANCELLED", "REJECTED", "PENDING_WAITER_APPROV
 // historical total against a net cash figure reopened refunded bills as a
 // phantom balance and forced a manager override to close the table
 // (REFUND-006).
-export async function recomputeSessionTotals(sessionId: string) {
+export async function recomputeSessionTotals(
+  sessionId: string,
+  // Optional so every existing caller is unchanged; supplied when the
+  // recompute has to commit or roll back with the writes around it.
+  client: Prisma.TransactionClient | typeof db = db
+) {
   const [orderAgg, payAgg] = await Promise.all([
-    db.order.aggregate({
+    client.order.aggregate({
       where: { tableSessionId: sessionId, status: { notIn: [...INACTIVE_ORDER_STATUSES] } },
       _sum: { total: true, remainingAmount: true },
     }),
     // Collections and refunds are summed separately: a refund carries
     // status PAID too, so one aggregate would report money returned as
     // money collected (REFUND-005).
-    db.payment.groupBy({
+    client.payment.groupBy({
       by: ["type"],
       where: {
         status: "PAID",
@@ -56,7 +63,7 @@ export async function recomputeSessionTotals(sessionId: string) {
     .reduce((s, r) => s + Number(r._sum.amount ?? 0), 0);
   const paid = Math.max(round2(collected - returned), 0);
   const receivable = Math.max(round2(Number(orderAgg._sum.remainingAmount ?? 0)), 0);
-  return db.tableSession.update({
+  return client.tableSession.update({
     where: { id: sessionId },
     data: {
       totalAmount: total,
@@ -82,47 +89,73 @@ export async function attachOrderToTableSession(order: {
   if (order.type !== "DINE_IN" || !order.tableNumber?.trim()) return null;
   const tableNumber = order.tableNumber.trim();
 
-  let session = await db.tableSession.findFirst({
-    where: { cafeId: order.cafeId, branchId: order.branchId, tableNumber, status: "OPEN" },
-  });
-
-  let opened = false;
-  if (!session) {
-    session = await db.tableSession.create({
-      data: {
-        cafeId: order.cafeId,
-        branchId: order.branchId,
-        tableNumber,
-        status: "OPEN",
-        openedByUserId: actingUserId,
-        customerName: order.customerName ?? null,
-      },
+  // Opening the bill, joining the order to it, adopting the order's inline
+  // payments and recomputing the totals are ONE act (R-POS-02A/A12).
+  //
+  // These were five sequential writes with no transaction, run after the
+  // order had already been committed. A failure in the middle left states
+  // nobody designed: an OPEN table session for a table nobody is sitting at,
+  // holding the table and showing an empty bill; or an order joined to a
+  // bill whose payments were never adopted, so the money sat in the drawer
+  // total while the table showed it as unpaid.
+  //
+  // The audit rows are written through the same transaction, so a failure
+  // takes them with it rather than leaving a record of something that did
+  // not happen — the reason `auditInTransaction` exists.
+  //
+  // The lookup below still takes no lock, so two waiters ringing up the same
+  // table can both find nothing and both create. `TableSession_one_open_per_branch_table`
+  // (M24) makes the database refuse the second one — but a refusal is the
+  // wrong answer to give a waiter. The customer is at ONE table and expects
+  // ONE bill, so the loser retries, finds the bill the winner just opened,
+  // and joins it. The transaction has already rolled back, so the retry is
+  // starting clean (R-POS-02B2).
+  return retryOnUniqueConflict(() => db.$transaction(async (tx) => {
+    let session = await tx.tableSession.findFirst({
+      where: { cafeId: order.cafeId, branchId: order.branchId, tableNumber, status: "OPEN" },
     });
-    opened = true;
-  }
 
-  await db.order.update({ where: { id: order.id }, data: { tableSessionId: session.id } });
-  // Table-scoped payments (created inline with the POS order) inherit the id.
-  await db.payment.updateMany({
-    where: { orderId: order.id, tableSessionId: null },
-    data: { tableSessionId: session.id },
-  });
-  await recomputeSessionTotals(session.id);
+    let opened = false;
+    if (!session) {
+      session = await tx.tableSession.create({
+        data: {
+          cafeId: order.cafeId,
+          branchId: order.branchId,
+          tableNumber,
+          status: "OPEN",
+          openedByUserId: actingUserId,
+          customerName: order.customerName ?? null,
+        },
+      });
+      opened = true;
+    }
 
-  if (opened) {
-    await audit({
-      cafeId: order.cafeId, userId: actingUserId, action: "TABLE_SESSION_OPENED",
+    await tx.order.update({ where: { id: order.id }, data: { tableSessionId: session.id } });
+    // Table-scoped payments (created inline with the POS order) inherit the id.
+    await tx.payment.updateMany({
+      where: { orderId: order.id, tableSessionId: null },
+      data: { tableSessionId: session.id },
+    });
+    await recomputeSessionTotals(session.id, tx);
+
+    if (opened) {
+      await auditInTransaction(tx, {
+        cafeId: order.cafeId, userId: actingUserId, action: "TABLE_SESSION_OPENED",
+        entity: "TableSession", entityId: session.id,
+        details: { branchId: order.branchId, tableSessionId: session.id, tableNumber, orderId: order.id, orderNumber: order.orderNumber },
+      });
+    }
+    await auditInTransaction(tx, {
+      cafeId: order.cafeId, userId: actingUserId, action: "TABLE_SESSION_ORDER_ADDED",
       entity: "TableSession", entityId: session.id,
       details: { branchId: order.branchId, tableSessionId: session.id, tableNumber, orderId: order.id, orderNumber: order.orderNumber },
     });
-  }
-  await audit({
-    cafeId: order.cafeId, userId: actingUserId, action: "TABLE_SESSION_ORDER_ADDED",
-    entity: "TableSession", entityId: session.id,
-    details: { branchId: order.branchId, tableSessionId: session.id, tableNumber, orderId: order.id, orderNumber: order.orderNumber },
-  });
 
-  return session;
+    return session;
+  }), {
+    field: "tableNumber",
+    message: "الطاولة دي اتفتح عليها حساب في نفس اللحظة — جرّب تاني",
+  });
 }
 
 // Orders that still owe the customer something: confirmed, being made, or

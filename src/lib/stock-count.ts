@@ -26,6 +26,7 @@
 import type {
   CountLineDisposition,
   Prisma,
+  StockCountAccountabilityContext,
   StockCountMode,
   StockCountStatus,
   StockCountType,
@@ -40,10 +41,12 @@ import { isTerminal } from "@/lib/count-disposition";
 import {
   EFFECTIVE_EVIDENCE_SELECT,
   effectiveCountEvidence,
+  hasAuthoritativeObservation,
   hasSupersedingRecount,
 } from "@/lib/count-evidence";
 import { openVarianceCase, resolveRecountPolicy } from "@/lib/variance-case";
 import {
+  captureUnitCost,
   confidenceForCountedItem,
   lastTrustedBaselineAt,
   stockCostImpact,
@@ -685,6 +688,26 @@ export async function recordCountLine(args: {
 // collapse. Submitting with one outstanding is refused rather than treated
 // as a total loss on that item, which is what reading NULL as 0 would report.
 //
+// WITH ONE EXCEPTION, AND IT IS NOT A WEAKENING OF THAT RULE. A count whose
+// `accountabilityContext` is `HANDOVER` may be submitted with lines nobody
+// reached. The gap is not treated as a zero; it is carried forward as a gap.
+// Those lines are skipped BEFORE any tolerance is resolved, so nothing is
+// judged, no variance is computed, no cost is priced and no column on them is
+// written at all — they stay exactly as the count created them, which is the
+// truthful statement "this was in scope and nobody looked".
+//
+// Why the exception exists: a handover count is answered for downstream by a
+// named acceptance. SH-20 refuses an incomplete required set outright; SH-21
+// lets a manager waive it on the record, with a reason and an
+// `OpeningException` in their name. Before this, neither could be reached —
+// the refusal here made an incomplete handover count unsubmittable, so the
+// state SH-20 refuses and SH-21 overrides could not be produced by any
+// sequence of real actions. An ordinary count has no such acceptance behind
+// it: nobody would be named, so it stays strict. So does
+// `BRANCH_OPENING_VERIFICATION` — SH-22 has not said who answers for it. The
+// gate is spelled `=== "HANDOVER"` rather than `!== "NONE"` so that a context
+// added later inherits strictness rather than permission.
+//
 // The dispositions set here follow `DISPOSITION_TRANSITIONS` (T13) exactly.
 // An outside-tolerance line becomes `OUTSIDE_TOLERANCE` first and only then
 // `RECOUNT_REQUIRED`, when the owner requires a recount — there is no
@@ -695,6 +718,8 @@ export type SubmitCountResult = {
   status: "SUBMITTED" | "RECOUNT_REQUIRED";
   within: number;
   outside: number;
+  /** Lines left as gaps rather than judged. Always 0 outside HANDOVER. */
+  skippedUnobserved: number;
 };
 
 /** Sessions that may still be submitted. CONFIRMED and LOCKED may not. */
@@ -727,6 +752,7 @@ export async function submitCountSession(args: {
       cafeId: true,
       branchId: true,
       status: true,
+      accountabilityContext: true,
       lines: {
         select: {
           ...EFFECTIVE_EVIDENCE_SELECT,
@@ -747,23 +773,51 @@ export async function submitCountSession(args: {
     throw new ApiError(409, "الجرد ده اتقفل خلاص");
   }
 
-  const uncounted = session.lines.filter((l) => l.countedQuantity === null);
-  if (uncounted.length > 0) {
-    const names = uncounted.map((l) => l.inventoryItem.name).slice(0, 5).join("، ");
-    throw new ApiError(
-      400,
-      `في أصناف لسه ما اتعدتش (${uncounted.length}): ${names}`
-    );
+  // See the note above the type: HANDOVER, and only HANDOVER, may state a gap
+  // rather than be refused for having one.
+  const mayStateGaps = session.accountabilityContext === "HANDOVER";
+
+  if (!mayStateGaps) {
+    const uncounted = session.lines.filter((l) => l.countedQuantity === null);
+    if (uncounted.length > 0) {
+      const names = uncounted.map((l) => l.inventoryItem.name).slice(0, 5).join("، ");
+      throw new ApiError(
+        400,
+        `في أصناف لسه ما اتعدتش (${uncounted.length}): ${names}`
+      );
+    }
   }
 
   const policy = await resolveRecountPolicy(session.cafeId);
 
   let within = 0;
   let outside = 0;
+  let skippedUnobserved = 0;
   const verdicts: { id: string; disposition: CountLineDisposition }[] = [];
   const updates: { id: string; data: Prisma.StockCountLineUpdateInput }[] = [];
+  const judgedAt = new Date();
 
   for (const line of session.lines) {
+    // ── A shelf nobody reached ──
+    //
+    // Skipped HERE, at the top, before a tolerance is resolved, before a
+    // confidence window is opened and before an update is queued — so there
+    // is no path by which the collapsed `quantity: 0` the resolver returns
+    // for an absent figure could become a variance, a cost, a confidence
+    // rating or a disposition. The line leaves this loop with every column
+    // exactly as the count created it, which is the whole representation:
+    // a gap stated as a gap.
+    //
+    // Still PENDING as well as unobserved: the relaxation admits a line the
+    // count never touched, not a line that was touched and left half-written.
+    // Anything else — an outside-tolerance line, or the malformed
+    // figure-without-cursor a fixture can construct — falls through and is
+    // judged exactly as it always was.
+    if (mayStateGaps && line.disposition === "PENDING" && !hasAuthoritativeObservation(line)) {
+      skippedUnobserved += 1;
+      continue;
+    }
+
     // The variance under judgement belongs to the observation in force: after
     // a resolving recount that is the recount's gap, not the discredited
     // first count's.
@@ -788,9 +842,11 @@ export async function submitCountSession(args: {
       windowFrom: window.at,
       countedAt: observedAt,
     });
+    const observedUnitCost = Number(line.inventoryItem.costPerUnit);
+    const unitCostSnapshot = captureUnitCost(observedUnitCost, judgedAt);
     const cost = stockCostImpact({
       varianceQuantity: variance,
-      costPerUnit: Number(line.inventoryItem.costPerUnit),
+      costPerUnit: observedUnitCost,
       confidence: rated.confidence,
     });
 
@@ -807,6 +863,9 @@ export async function submitCountSession(args: {
       costImpact: cost.available ? cost.value : null,
       costImpactAvailable: cost.available,
       costUnavailableReason: cost.available ? null : cost.reason,
+      unitCostSnapshot: unitCostSnapshot.available ? unitCostSnapshot.unitCost : null,
+      unitCostSource: unitCostSnapshot.available ? unitCostSnapshot.source : null,
+      unitCostCapturedAt: unitCostSnapshot.available ? unitCostSnapshot.capturedAt : null,
     };
 
     if (isTerminal(line.disposition)) {
@@ -846,7 +905,7 @@ export async function submitCountSession(args: {
 
   const needsRecount = verdicts.some((v) => v.disposition === "RECOUNT_REQUIRED");
   const status: SubmitCountResult["status"] = needsRecount ? "RECOUNT_REQUIRED" : "SUBMITTED";
-  const submittedAt = new Date();
+  const submittedAt = judgedAt;
 
   // One transaction: a submission that gave half the lines a verdict and then
   // failed would leave the count in a state nobody chose.
@@ -873,10 +932,13 @@ export async function submitCountSession(args: {
       outside,
       recountRequired: needsRecount,
       lineCount: session.lines.length,
+      // Named in the record, so a reader can tell a count of six from a count
+      // of nine with three shelves nobody reached.
+      skippedUnobserved,
     },
   });
 
-  return { status, within, outside };
+  return { status, within, outside, skippedUnobserved };
 }
 
 // ───────────────────────── Confirming a count ────────────────────────
@@ -906,11 +968,29 @@ export async function submitCountSession(args: {
 // The refusal names the offending lines. A 409 saying only "some lines are
 // unsettled" leaves the person holding it with no move to make.
 
+/**
+ * What a count carrying an accountability context hands to the acceptance
+ * that will answer for it.
+ *
+ * A count taken FOR a handover, or for a branch opening verification, is a
+ * proposal nobody has accepted yet. Opening cases at confirmation would mean
+ * a shortage is investigated — and a custody named on it — before anyone
+ * agreed the figure was right. So confirmation opens nothing and returns this
+ * instead; SH-20/21/22 open the cases from the accepted evidence.
+ */
+export type DeferredAccountability = {
+  context: Exclude<StockCountAccountabilityContext, "NONE">;
+  handoverId: string | null;
+  openingBranchCustodyPeriodId: string | null;
+};
+
 export type ConfirmCountResult = {
   status: "CONFIRMED";
   confirmedAt: Date;
   varianceCaseIds: string[];
   alreadyConfirmed: boolean;
+  /** NULL on the ordinary path — a count answering to nobody but itself. */
+  deferred: DeferredAccountability | null;
 };
 
 export const COUNT_CONFIRMED_AUDIT_ACTION = "COUNT_CONFIRMED";
@@ -959,6 +1039,9 @@ export async function confirmCountSession(args: {
       status: true,
       confirmedAt: true,
       idempotencyKey: true,
+      accountabilityContext: true,
+      handoverId: true,
+      openingBranchCustodyPeriodId: true,
       lines: {
         select: {
           ...EFFECTIVE_EVIDENCE_SELECT,
@@ -980,6 +1063,19 @@ export async function confirmCountSession(args: {
 
   const lineIds = session.lines.map((l) => l.id);
 
+  // Resolved once, from the session, and returned identically from every
+  // successful exit below. A retry that dropped the binding would leave the
+  // acceptance nothing to key on, which is the failure this whole deferral
+  // exists to prevent.
+  const deferred: DeferredAccountability | null =
+    session.accountabilityContext === "NONE"
+      ? null
+      : {
+          context: session.accountabilityContext,
+          handoverId: session.handoverId,
+          openingBranchCustodyPeriodId: session.openingBranchCustodyPeriodId,
+        };
+
   // Already done. Same key or not, the count is confirmed and saying so is
   // the truthful answer; what must never happen is a second set of cases.
   if (session.status === "CONFIRMED" || session.status === "LOCKED") {
@@ -988,6 +1084,7 @@ export async function confirmCountSession(args: {
       confirmedAt: session.confirmedAt ?? new Date(),
       varianceCaseIds: await casesFor(lineIds),
       alreadyConfirmed: true,
+      deferred,
     };
   }
 
@@ -995,7 +1092,24 @@ export async function confirmCountSession(args: {
     throw new ApiError(409, "لازم تسلّم الجرد الأول قبل ما تأكده");
   }
 
-  const unsettled = session.lines.filter((l) => !isTerminal(l.disposition));
+  // A line the count never reached is settled in the only way it can be:
+  // frozen as unreached. `submitCountSession` skipped it rather than judging
+  // it, so it is still exactly as the count created it, and confirming says
+  // the round is over rather than that the shelf was counted. HANDOVER only,
+  // for the reasons set out above `SubmitCountResult`.
+  //
+  // The two conditions are both load-bearing. PENDING alone would admit a
+  // line whose figure was written and then wiped; unobserved alone would
+  // admit the malformed figure-with-no-cursor a fixture can construct. And an
+  // OBSERVED line left contested — outside tolerance, or awaiting a recount —
+  // is refused as it always was: that is a dispute somebody has to answer,
+  // not a shelf nobody reached.
+  const mayFreezeGaps = session.accountabilityContext === "HANDOVER";
+  const unsettled = session.lines.filter(
+    (l) =>
+      !isTerminal(l.disposition) &&
+      !(mayFreezeGaps && l.disposition === "PENDING" && !hasAuthoritativeObservation(l))
+  );
   if (unsettled.length > 0) {
     throw new ApiError(
       409,
@@ -1019,6 +1133,13 @@ export async function confirmCountSession(args: {
       },
     });
     if (claimed.count === 0) return { won: false, caseIds: [] as string[] };
+
+    // The deferral, and the whole of it. Everything above this point runs
+    // exactly as it did before M22 — the count is confirmed, its lines keep
+    // their dispositions, the audit row is written. Only NONE takes the
+    // generic case-opening path below; handover and branch-opening contexts
+    // are answered later, by different atomic custody transactions.
+    if (deferred) return { won: true, caseIds: [] as string[] };
 
     const caseIds: string[] = [];
     for (const line of accepted) {
@@ -1067,6 +1188,7 @@ export async function confirmCountSession(args: {
       confirmedAt: current.confirmedAt ?? confirmedAt,
       varianceCaseIds: await casesFor(lineIds),
       alreadyConfirmed: true,
+      deferred,
     };
   }
 
@@ -1081,6 +1203,7 @@ export async function confirmCountSession(args: {
       lineCount: session.lines.length,
       acceptedVarianceLines: accepted.length,
       varianceCaseIds: outcome.caseIds,
+      deferredContext: deferred?.context ?? null,
       idempotencyKey: args.idempotencyKey,
     },
   });
@@ -1090,6 +1213,7 @@ export async function confirmCountSession(args: {
     confirmedAt,
     varianceCaseIds: outcome.caseIds,
     alreadyConfirmed: false,
+    deferred,
   };
 }
 
@@ -1382,7 +1506,7 @@ export function isCountLocked(s: { status: StockCountStatus }): boolean {
 export const COUNT_LOCKED_AUDIT_ACTION = "COUNT_LOCKED";
 
 /**
- * Freeze a confirmed count as the baseline a handover accepted.
+ * Freeze a confirmed count as the baseline an acceptance acted on.
  *
  * Takes the caller's transaction client and never opens its own, for the same
  * reason custody's mutators do not: accepting a handover closes one custody,
@@ -1393,10 +1517,26 @@ export const COUNT_LOCKED_AUDIT_ACTION = "COUNT_LOCKED";
  * The audit row goes through `auditInTransaction` for that same reason — it
  * commits or rolls back with the lock, rather than recording a freeze that
  * was undone a moment later.
+ *
+ * ── WHY `handoverId` IS NULLABLE (SH-22) ──
+ *
+ * A branch opening verification accepts a count and has no handover at all:
+ * the branch was already holding the stock, and what the verification settles
+ * is who takes it NEXT. The two dishonest ways to keep the parameter
+ * non-null would have been to point it at the handover that created the
+ * branch custody — which locked nothing and would then appear to have locked
+ * two counts — or to invent a session. Both would put a false answer in the
+ * one column a reader consults to ask "which acceptance froze this?".
+ *
+ * So NULL is a real answer here and means "no handover did": the count was
+ * accepted, and the acceptance was not a handover. The HANDOVER path is
+ * untouched — same reads, same branch/café validation, same
+ * `lockedByHandoverId`, same audit — and the null path skips only the
+ * handover lookup, which has nothing to look up.
  */
 export async function lockCountSession(
   tx: Prisma.TransactionClient,
-  args: { sessionId: string; handoverId: string; actorId?: string | null }
+  args: { sessionId: string; handoverId: string | null; actorId?: string | null }
 ): Promise<{ status: "LOCKED"; lockedAt: Date }> {
   const session = await tx.stockCountSession.findUnique({
     where: { id: args.sessionId },
@@ -1410,13 +1550,15 @@ export async function lockCountSession(
     );
   }
 
-  const handover = await tx.handoverSession.findUnique({
-    where: { id: args.handoverId },
-    select: { cafeId: true, branchId: true },
-  });
-  if (!handover) throw new ApiError(404, "جلسة التسليم غير موجودة");
-  if (handover.cafeId !== session.cafeId || handover.branchId !== session.branchId) {
-    throw new ApiError(400, "التسليم مش تابع لنفس الفرع");
+  if (args.handoverId !== null) {
+    const handover = await tx.handoverSession.findUnique({
+      where: { id: args.handoverId },
+      select: { cafeId: true, branchId: true },
+    });
+    if (!handover) throw new ApiError(404, "جلسة التسليم غير موجودة");
+    if (handover.cafeId !== session.cafeId || handover.branchId !== session.branchId) {
+      throw new ApiError(400, "التسليم مش تابع لنفس الفرع");
+    }
   }
 
   const lockedAt = new Date();
@@ -1433,6 +1575,8 @@ export async function lockCountSession(
     entityId: session.id,
     details: {
       branchId: session.branchId,
+      // Truthfully null when no handover locked it, rather than borrowing an
+      // id from something that did not.
       handoverId: args.handoverId,
       lockedAt: lockedAt.toISOString(),
     },

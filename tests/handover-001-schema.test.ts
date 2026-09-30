@@ -389,11 +389,12 @@ describe("HANDOVER-001 handover, stock acknowledgement and opening exception", (
 
   test("the exception key is withheld from the participation bridge and from cashiers", async () => {
     // The permission half of the same rule. `handover:participate` is a
-    // compatibility bridge for view/submit/accept only — the manager action
-    // must never arrive through it, or every cashier would inherit it.
+    // compatibility bridge for the participant acts only — view, submit,
+    // accept, and (since SH-23) request_recount — the manager action must
+    // never arrive through it, or every cashier would inherit it.
     assert.deepEqual(
       LEGACY_TO_KEYS["handover:participate"],
-      ["handover.view", "handover.submit", "handover.accept"],
+      ["handover.view", "handover.submit", "handover.accept", "handover.request_recount"],
       "the bridge carries participation, never authority"
     );
     assert.equal(

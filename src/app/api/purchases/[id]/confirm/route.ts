@@ -4,6 +4,7 @@ import { requireKey, handleApiError, ApiError, requireFeature } from "@/lib/api"
 import { audit } from "@/lib/audit";
 import { weightedAverageCost } from "@/lib/purchases";
 import { applyStockMutation, lockItemForUpdate } from "@/lib/ledger";
+import { acquireInventorySharedLocks } from "@/lib/inventory-freeze";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -39,6 +40,7 @@ export async function POST(_request: NextRequest, { params }: Params) {
     // Everything in one transaction: stock rows + item updates + confirm flag.
     const stockAdds = await db.$transaction(async (tx) => {
       const adds: { itemId: string; qty: number; newStock: number; newCost: number }[] = [];
+      await acquireInventorySharedLocks(tx, [inv.branchId]);
       for (const line of inv.items) {
         // The locked read replaces a plain findUnique: the balance this
         // arithmetic is based on must be the one nothing else can move

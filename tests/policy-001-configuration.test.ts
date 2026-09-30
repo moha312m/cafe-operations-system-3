@@ -42,13 +42,45 @@ async function clearOverrides(branchId: string) {
 describe("POLICY-001 configuration and resolution", () => {
   // ── A: the upgrade must not change how an existing café behaves ──
   test("A: a café that existed before the feature stays payment-first", async () => {
-    const fx = await fixture();
-    const s = await db.cafeSettings.findUniqueOrThrow({ where: { cafeId: fx.cafeId } });
-    assert.equal(
-      s.dineInServingPolicy, "REQUIRE_PAYMENT_FIRST",
+    // This asks about the BACKFILL, not the column default, and the two are
+    // only distinguishable for a café that pre-dates the migration.
+    //
+    // It used to ask the seeded café directly. That worked only on a database
+    // old enough to have been migrated in place: on a freshly migrated one
+    // every café is created AFTER the migration, so it carries the column
+    // default (dine-in ALLOW_BEFORE_PAYMENT) and is not evidence about the
+    // backfill either way. The test was reading whichever answer the local
+    // database's age happened to give.
+    //
+    // So the population is taken from the migration's own recorded timestamp,
+    // which is the fact the assertion is actually about — the same correction
+    // COUNT-001 already makes for its own backfill. Where no café pre-dates
+    // the migration there is nothing that could have been flipped, and that is
+    // a truthful pass rather than a lucky one.
+    const applied = await db.$queryRaw<{ finished_at: Date | null }[]>`
+      SELECT "finished_at" FROM "_prisma_migrations"
+       WHERE "migration_name" = '20260824170000_serving_payment_policy'
+       LIMIT 1
+    `;
+    const migratedAt = applied[0]?.finished_at ?? null;
+    assert.ok(migratedAt, "the serving-policy migration must be recorded as applied");
+
+    const flipped = await db.cafeSettings.findMany({
+      where: {
+        cafe: { createdAt: { lt: migratedAt } },
+        OR: [
+          { dineInServingPolicy: { not: "REQUIRE_PAYMENT_FIRST" } },
+          { takeawayServingPolicy: { not: "REQUIRE_PAYMENT_FIRST" } },
+        ],
+      },
+      select: {
+        cafeId: true, dineInServingPolicy: true, takeawayServingPolicy: true,
+      },
+    });
+    assert.deepEqual(
+      flipped, [],
       "the migration must pin existing cafés back — a column default would have flipped them to pay-later"
     );
-    assert.equal(s.takeawayServingPolicy, "REQUIRE_PAYMENT_FIRST");
   });
 
   // ── B: a café created from now on gets the new product default ──

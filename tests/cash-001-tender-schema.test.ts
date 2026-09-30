@@ -79,15 +79,18 @@ before(async () => {
   cashierId = await mk("cashier", "CASHIER");
   managerId = await mk("manager", "BRANCH_MANAGER");
 
-  const shift = async (n: number) =>
+  const shift = async (n: number, closed = false) =>
     (await db.shift.create({
       data: {
         cafeId, branchId, cashierId, shiftNumber: n,
+        ...(closed ? { status: "CLOSED" as const, closedAt: new Date() } : {}),
         openingCashAmount: 0, expectedCashAmount: 0,
       },
     })).id;
   shiftId = await shift(1);
-  otherShiftId = await shift(2);
+  // A second shift purely as a distinct foreign key, never a live drawer —
+  // one cashier cannot hold two open drawers at one branch.
+  otherShiftId = await shift(2, true);
 
   tenderReasonId = (await db.reasonCode.create({
     data: { cafeId, domain: "TENDER", code: `${MARKER}-FEE`, label: "عمولة الشبكة" },
@@ -244,6 +247,10 @@ describe("CASH-001 tender reconciliation and shift cash columns", () => {
             shiftNumber: (last._max.shiftNumber ?? 0) + 1,
             openingCashAmount: 100,
             expectedCashAmount: 100,
+            // This stands in for a shift that predates the migration, so it
+            // is closed history rather than a second open drawer.
+            status: "CLOSED",
+            closedAt: new Date(),
           },
           select: { id: true, actualCashAmount: true, cashDifference: true },
         }),

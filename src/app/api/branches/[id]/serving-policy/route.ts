@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { requireKey, handleApiError, ApiError } from "@/lib/api";
+import { requireKey, handleApiError, ApiError, requireActiveSession } from "@/lib/api";
 import { getSession } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { getEffectiveServingPolicy } from "@/lib/serving-policy";
@@ -20,8 +20,7 @@ async function authorizeBranch(branchId: string, forEdit: boolean) {
   if (forEdit) {
     session = await requireKey("settings.edit");
   } else {
-    session = await getSession();
-    if (!session) throw new ApiError(401, "سجّل دخولك الأول");
+    session = await requireActiveSession();
   }
   const branch = await db.branch.findUnique({ where: { id: branchId } });
   if (!branch) throw new ApiError(404, "الفرع غير موجود");

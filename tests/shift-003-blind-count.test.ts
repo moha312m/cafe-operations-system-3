@@ -11,12 +11,20 @@
 //
 // These run against the real API because the defect is in what the server
 // hands the cashier's browser.
+//
+// The closes below carry a `reason` because T33 requires one whenever the
+// counted drawer differs from the expectation, and every count here is
+// deliberately off (that is how the reveal is observed). Supplying it changes
+// nothing this suite asserts — the subject is still what the server discloses
+// and when — it only stops these closes from being refused for missing
+// evidence before they get far enough to disclose anything.
 
 import { test, after, before, describe } from "node:test";
 import assert from "node:assert/strict";
 import {
   db, fixture, clearOpenShifts, sessionFor, cleanup, policyProduct, cleanupProduct,
 } from "./helpers/db";
+import type { StockCountPolicy } from "@prisma/client";
 import { requireServer, login, as } from "./helpers/http";
 
 type ShiftPayload = Record<string, unknown> & { id: string; status: string };
@@ -41,18 +49,67 @@ const OWNER = "owner@demo.com";
  */
 let productId: string;
 
+/**
+ * The seeded café's policy while this suite runs, and what it was before.
+ *
+ * This suite drives the SEEDED café rather than one it owns, and it is
+ * about blind counting, not handovers. The seeded café carries the schema
+ * default, HYBRID, which SH-16 makes a handover-ENABLED configuration —
+ * every close here would be refused for a missing handover target, which
+ * is a correct refusal about something this suite does not test.
+ *
+ * So the legacy policy is declared for the duration and the original value
+ * is put back afterwards. Restoring matters: the café is shared, and a
+ * suite that silently repolicies it would decide the configuration of every
+ * suite that runs after it.
+ */
+let seededCafeId: string;
+let previousStockCountPolicy: StockCountPolicy;
 before(async () => {
   await requireServer();
   await login(CASHIER, "cashier123");
   await login(OWNER, "owner1234");
   const fx = await fixture();
   productId = (await policyProduct(fx, "PH1-SHIFT003")).id;
+
+  seededCafeId = fx.cafeId;
+  const settings = await db.cafeSettings.findUniqueOrThrow({
+    where: { cafeId: seededCafeId },
+    select: { stockCountPolicy: true },
+  });
+  previousStockCountPolicy = settings.stockCountPolicy;
+  await db.cafeSettings.update({
+    where: { cafeId: seededCafeId },
+    data: { stockCountPolicy: "NO_SHIFT_COUNT" },
+  });
 });
 
 after(async () => {
   await cleanupProduct(productId);
+  if (seededCafeId) {
+    await db.cafeSettings.update({
+      where: { cafeId: seededCafeId },
+      data: { stockCountPolicy: previousStockCountPolicy },
+    });
+  }
   await db.$disconnect();
 });
+
+/**
+ * Remove a shift this suite created, evidence first.
+ *
+ * A close with a difference now opens a CASH variance case, and
+ * `VarianceCase.shiftId` is ON DELETE SET NULL — so deleting the shift first
+ * tries to null the one column a CASH case is allowed to be sourced by, and
+ * `VarianceCase_type_matches_source_check` refuses it. The database is right
+ * to: a cash case whose shift has gone is a finding with no evidence behind
+ * it. Nothing in `src/` ever deletes a shift, so this ordering is a fixture
+ * concern rather than a product one, but it has to be explicit here.
+ */
+async function dropShift(shiftId: string) {
+  await db.varianceCase.deleteMany({ where: { shiftId } });
+  await db.shift.deleteMany({ where: { id: shiftId } });
+}
 
 /** Open a shift through the real API and take one cash sale on it. */
 async function openWithSale(openingCash: number, marker: string) {
@@ -99,7 +156,7 @@ describe("SHIFT-003 blind count", () => {
       assert.ok("totalCashSales" in r.body.shift, "sales summary should remain visible");
     } finally {
       await cleanup(marker);
-      await db.shift.deleteMany({ where: { id: shiftId } });
+      await dropShift(shiftId);
     }
   });
 
@@ -116,7 +173,7 @@ describe("SHIFT-003 blind count", () => {
       );
     } finally {
       await cleanup(marker);
-      await db.shift.deleteMany({ where: { id: shiftId } });
+      await dropShift(shiftId);
     }
   });
 
@@ -134,7 +191,7 @@ describe("SHIFT-003 blind count", () => {
       );
     } finally {
       await cleanup(marker);
-      await db.shift.deleteMany({ where: { id: shiftId } });
+      await dropShift(shiftId);
     }
   });
 
@@ -151,7 +208,7 @@ describe("SHIFT-003 blind count", () => {
       );
     } finally {
       await cleanup(marker);
-      await db.shift.deleteMany({ where: { id: shiftId } });
+      await dropShift(shiftId);
     }
   });
 
@@ -160,7 +217,7 @@ describe("SHIFT-003 blind count", () => {
     const { shiftId, marker } = await openWithSale(100, "PH1-SHIFT003-C");
     try {
       const r = await as<{ shift: ShiftPayload }>(CASHIER, `/api/shifts/${shiftId}/close`, {
-        method: "POST", body: JSON.stringify({ actualCashAmount: 120 }),
+        method: "POST", body: JSON.stringify({ actualCashAmount: 120, reason: "سبب الفرق — عد فعلي" }),
       });
       assert.ok(r.status < 300, `close failed: ${r.text}`);
       assert.ok("expectedCashAmount" in r.body.shift, "reveal expected after commit");
@@ -172,7 +229,7 @@ describe("SHIFT-003 blind count", () => {
       );
     } finally {
       await cleanup(marker);
-      await db.shift.deleteMany({ where: { id: shiftId } });
+      await dropShift(shiftId);
     }
   });
 
@@ -181,13 +238,13 @@ describe("SHIFT-003 blind count", () => {
     const { shiftId, marker } = await openWithSale(100, "PH1-SHIFT003-D");
     try {
       const ok = await as(CASHIER, `/api/shifts/${shiftId}/close`, {
-        method: "POST", body: JSON.stringify({ actualCashAmount: 111 }),
+        method: "POST", body: JSON.stringify({ actualCashAmount: 111, reason: "سبب الفرق — عد فعلي" }),
       });
       assert.ok(ok.status < 300);
 
       // Second attempt must fail — and say nothing about the target.
       const bad = await as(CASHIER, `/api/shifts/${shiftId}/close`, {
-        method: "POST", body: JSON.stringify({ actualCashAmount: 999 }),
+        method: "POST", body: JSON.stringify({ actualCashAmount: 999, reason: "سبب الفرق — عد فعلي" }),
       });
       assert.ok(bad.status >= 400, "re-closing a closed shift must fail");
       assert.ok(
@@ -196,7 +253,7 @@ describe("SHIFT-003 blind count", () => {
       );
     } finally {
       await cleanup(marker);
-      await db.shift.deleteMany({ where: { id: shiftId } });
+      await dropShift(shiftId);
     }
   });
 
@@ -205,14 +262,14 @@ describe("SHIFT-003 blind count", () => {
     const { shiftId, marker } = await openWithSale(100, "PH1-SHIFT003-first");
     try {
       await as(CASHIER, `/api/shifts/${shiftId}/close`, {
-        method: "POST", body: JSON.stringify({ actualCashAmount: 111 }),
+        method: "POST", body: JSON.stringify({ actualCashAmount: 111, reason: "سبب الفرق — عد فعلي" }),
       });
       const first = await db.shift.findUniqueOrThrow({ where: { id: shiftId } });
       assert.equal(Number(first.actualCashAmount), 111);
 
       // Try to walk the count towards the expected figure after seeing it.
       const retry = await as(CASHIER, `/api/shifts/${shiftId}/close`, {
-        method: "POST", body: JSON.stringify({ actualCashAmount: Number(first.expectedCashAmount) }),
+        method: "POST", body: JSON.stringify({ actualCashAmount: Number(first.expectedCashAmount), reason: "سبب الفرق — عد فعلي" }),
       });
       assert.ok(retry.status >= 400, "a second count must be refused");
 
@@ -224,7 +281,7 @@ describe("SHIFT-003 blind count", () => {
       assert.equal(Number(still.cashDifference), Number(first.cashDifference));
     } finally {
       await cleanup(marker);
-      await db.shift.deleteMany({ where: { id: shiftId } });
+      await dropShift(shiftId);
     }
   });
 
@@ -233,7 +290,7 @@ describe("SHIFT-003 blind count", () => {
     const { fx, shiftId, marker } = await openWithSale(100, "PH1-SHIFT003-E");
     try {
       await as(CASHIER, `/api/shifts/${shiftId}/close`, {
-        method: "POST", body: JSON.stringify({ actualCashAmount: 128.5 }),
+        method: "POST", body: JSON.stringify({ actualCashAmount: 128.5, reason: "سبب الفرق — عد فعلي" }),
       });
 
       const active = await as<{ shift: ShiftPayload | null }>(
@@ -251,7 +308,7 @@ describe("SHIFT-003 blind count", () => {
       assert.equal(Number(row.actualCashAmount), 128.5);
     } finally {
       await cleanup(marker);
-      await db.shift.deleteMany({ where: { id: shiftId } });
+      await dropShift(shiftId);
     }
   });
 });

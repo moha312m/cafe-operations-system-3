@@ -33,6 +33,16 @@
 
 import type { Prisma, PrismaClient, InventoryTransactionType, InventoryUnit } from "@prisma/client";
 import { round3 } from "@/lib/costing";
+import {
+  acquireInventorySharedLocks,
+  activeFreezeFor,
+  InventoryFrozenError,
+} from "@/lib/inventory-freeze";
+
+export type StockAttributionSnapshot = {
+  custodyPeriodId: string | null;
+  shiftId: string | null;
+};
 
 export type StockMutation = {
   inventoryItemId: string;
@@ -52,6 +62,14 @@ export type StockMutation = {
   newCostPerUnit?: number | null;
   /** Message used when the guard refuses, so call sites keep their wording. */
   insufficientMessage?: string;
+  /**
+   * Historical stock-accountability snapshot. When omitted, the branch's
+   * active STOCK custody supplies both values; when supplied, the pair is
+   * written verbatim so mixed historical evidence cannot be constructed.
+   */
+  attribution?: StockAttributionSnapshot;
+  /** Trusted handover orchestration token; never accepted from public inventory input. */
+  freezeToken?: string | null;
 };
 
 export type StockMutationResult = {
@@ -60,6 +78,8 @@ export type StockMutationResult = {
   stockAfter: number;
   itemVersion: bigint;
   transactionId: string;
+  custodyPeriodId: string | null;
+  shiftId: string | null;
 };
 
 type LockedItem = {
@@ -68,6 +88,25 @@ type LockedItem = {
   unit: InventoryUnit;
   costPerUnit: number;
 };
+
+/**
+ * Resolve stock accountability from the branch's active STOCK custody.
+ * Responsibility belongs to that custody period, not to an operational
+ * shift or any custody participant.
+ */
+export async function resolveStockAttribution(
+  tx: Prisma.TransactionClient,
+  branchId: string
+): Promise<StockAttributionSnapshot> {
+  const custody = await tx.custodyPeriod.findFirst({
+    where: { branchId, scope: "STOCK", status: "OPEN" },
+    select: { id: true, responsibleShiftId: true },
+  });
+
+  return custody
+    ? { custodyPeriodId: custody.id, shiftId: custody.responsibleShiftId }
+    : { custodyPeriodId: null, shiftId: null };
+}
 
 /**
  * Read `currentStock` and `ledgerVersion` together, under this item's row
@@ -113,7 +152,14 @@ export async function applyStockMutation(
   tx: Prisma.TransactionClient,
   m: StockMutation
 ): Promise<StockMutationResult> {
+  await acquireInventorySharedLocks(tx, [m.branchId]);
+  const freeze = await activeFreezeFor(tx, m.branchId);
+  if (freeze && m.freezeToken !== freeze.handoverId) {
+    throw new InventoryFrozenError();
+  }
+
   const locked = await lockItemForUpdate(tx, m.inventoryItemId);
+  const attribution = m.attribution ?? await resolveStockAttribution(tx, m.branchId);
 
   const delta = round3(m.quantity);
   const stockBefore = round3(locked.currentStock);
@@ -150,6 +196,8 @@ export async function applyStockMutation(
       note: m.note ?? null,
       orderId: m.orderId ?? null,
       createdById: m.createdById ?? null,
+      custodyPeriodId: attribution.custodyPeriodId,
+      shiftId: attribution.shiftId,
       itemVersion,
     },
     select: { id: true },
@@ -161,6 +209,8 @@ export async function applyStockMutation(
     stockAfter,
     itemVersion,
     transactionId: row.id,
+    custodyPeriodId: attribution.custodyPeriodId,
+    shiftId: attribution.shiftId,
   };
 }
 

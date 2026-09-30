@@ -1,8 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
+import { resolvePermissions } from "@/lib/perms/effective";
 import { getSession } from "@/lib/auth";
-import { hasPermission } from "@/lib/permissions";
-import { handleApiError, ApiError } from "@/lib/api";
+import { handleApiError, ApiError, requireActiveSession } from "@/lib/api";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -10,8 +10,7 @@ type Params = { params: Promise<{ id: string }> };
 // refunds and the shift's audit trail. Cashiers may only open their own.
 export async function GET(_request: NextRequest, { params }: Params) {
   try {
-    const session = await getSession();
-    if (!session) throw new ApiError(401, "Not authenticated");
+    const session = await requireActiveSession();
     const { id } = await params;
 
     const shift = await db.shift.findUnique({
@@ -30,8 +29,11 @@ export async function GET(_request: NextRequest, { params }: Params) {
     if (session.branchId && shift.branchId !== session.branchId) {
       throw new ApiError(403, "Not allowed");
     }
-    // No read permission → only your own shift.
-    if (!hasPermission(session.role, "shifts:read") && shift.cashierId !== session.id) {
+    // No oversight permission → only your own shift. Read from the
+    // effective keys (R-SEC-01), so a café that grants or revokes shift
+    // oversight through a custom role is actually obeyed.
+    const { keys } = await resolvePermissions(session);
+    if (!keys.has("shifts.view_reports") && shift.cashierId !== session.id) {
       throw new ApiError(403, "Not allowed");
     }
 

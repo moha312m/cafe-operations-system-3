@@ -33,7 +33,11 @@ const CASHIER = "cashier@demo.com", OWNER = "owner@demo.com";
  * inventory. The suite now brings a recipe-free product of its own.
  */
 let productId: string;
-after(async () => { await cleanupProduct(productId); await db.$disconnect(); });
+after(async () => {
+  await releaseStockCustody();
+  await cleanupProduct(productId);
+  await db.$disconnect();
+});
 before(async () => {
   await requireServer();
   await login(CASHIER, "cashier123");
@@ -59,11 +63,48 @@ async function resetPolicy(cafeId: string, branchId: string) {
   });
 }
 
+/**
+ * The STOCK custody this suite opened, if it had to open one.
+ *
+ * The drawer fixture below needs the branch to hold stock custody and opens
+ * one when it finds none, but nothing ever closed it again. The suite
+ * therefore left an OPEN stock custody with no cash counterpart behind —
+ * precisely the state `ensureCustodyForShift` refuses with "Open custody
+ * state is incomplete for this branch". A suite that opens a shift through
+ * the real API rather than the `openShift` fixture then fails for reasons of
+ * custody instead of its own subject; SHIFT-003 lost all eight of its tests
+ * to it.
+ *
+ * Only a period this suite opened is released. One it found already open
+ * belongs to whoever opened it and is left exactly as it was.
+ */
+let openedStockCustodyId: string | null = null;
+
+async function releaseStockCustody() {
+  if (!openedStockCustodyId) return;
+  const id = openedStockCustodyId;
+  openedStockCustodyId = null;
+  // Every test purges its own orders, but `Order.servedStockCustodyPeriodId`
+  // is ON DELETE RESTRICT: clearing the attribution first stops a test that
+  // failed part-way from turning teardown into a second failure.
+  await db.order.updateMany({
+    where: { servedStockCustodyPeriodId: id },
+    data: { servedStockCustodyPeriodId: null },
+  });
+  await db.custodyPeriod.deleteMany({ where: { id } });
+}
+
 /** POS-001: a cashier cannot record an order without holding a drawer. */
 async function ensureDrawer(fx: Awaited<ReturnType<typeof fixture>>) {
   const cashier = await sessionFor(CASHIER);
   await clearOpenShifts(fx.branchId, cashier.id);
-  return openShift(fx, cashier.id, 100);
+  const shift = await openShift(fx, cashier.id, 100);
+  const custody = await db.custodyPeriod.findFirst({
+    where: { branchId: fx.branchId, scope: "STOCK", status: "OPEN" }, select: { id: true },
+  });
+  if (custody) await db.custodyPeriod.update({ where: { id: custody.id }, data: { holderType: "USER", responsibleShiftId: shift.id } });
+  else openedStockCustodyId = (await db.custodyPeriod.create({ data: { cafeId: fx.cafeId, branchId: fx.branchId, scope: "STOCK", holderType: "USER", openedById: cashier.id, responsibleShiftId: shift.id } })).id;
+  return shift;
 }
 
 /** An unpaid order walked as far as READY, i.e. sitting on the pass. */
@@ -150,7 +191,7 @@ describe("POLICY-002 serving enforcement", () => {
     const cashier = await sessionFor(CASHIER);
     await purge(marker);
     await clearOpenShifts(fx.branchId, cashier.id);
-    const shift = await openShift(fx, cashier.id, 100);
+    const shift = await ensureDrawer(fx);
     await setCafePolicy(fx.cafeId, "ALLOW_BEFORE_PAYMENT", "REQUIRE_PAYMENT_FIRST");
     try {
       const id = await unpaidReadyOrder(fx.branchId, marker, { table: "POL2KL" });

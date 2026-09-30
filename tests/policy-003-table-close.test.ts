@@ -35,7 +35,11 @@ const CASHIER = "cashier@demo.com", MANAGER = "manager@demo.com";
  * inventory. The suite now brings a recipe-free product of its own.
  */
 let productId: string;
-after(async () => { await cleanupProduct(productId); await db.$disconnect(); });
+after(async () => {
+  await releaseStockCustody();
+  await cleanupProduct(productId);
+  await db.$disconnect();
+});
 before(async () => {
   await requireServer();
   await login(CASHIER, "cashier123");
@@ -43,10 +47,45 @@ before(async () => {
   productId = (await policyProduct(await fixture(), "POL3")).id;
 });
 
+/**
+ * The STOCK custody this suite opened, if it had to open one.
+ *
+ * The drawer fixture below needs the branch to hold stock custody and opens
+ * one when it finds none, but nothing ever closed it again. The suite
+ * therefore left an OPEN stock custody with no cash counterpart behind —
+ * precisely the state `ensureCustodyForShift` refuses with "Open custody
+ * state is incomplete for this branch". A suite that opens a shift through
+ * the real API rather than the `openShift` fixture then fails for reasons of
+ * custody instead of its own subject; SHIFT-003 lost all eight of its tests
+ * to it.
+ *
+ * Only a period this suite opened is released. One it found already open
+ * belongs to whoever opened it and is left exactly as it was.
+ */
+let openedStockCustodyId: string | null = null;
+
+async function releaseStockCustody() {
+  if (!openedStockCustodyId) return;
+  const id = openedStockCustodyId;
+  openedStockCustodyId = null;
+  // Every test purges its own orders, but `Order.servedStockCustodyPeriodId`
+  // is ON DELETE RESTRICT: clearing the attribution first stops a test that
+  // failed part-way from turning teardown into a second failure.
+  await db.order.updateMany({
+    where: { servedStockCustodyPeriodId: id },
+    data: { servedStockCustodyPeriodId: null },
+  });
+  await db.custodyPeriod.deleteMany({ where: { id } });
+}
+
 async function drawer(fx: Awaited<ReturnType<typeof fixture>>, who = CASHIER, opening = 200) {
   const u = await sessionFor(who);
   await clearOpenShifts(fx.branchId, u.id);
-  return openShift(fx, u.id, opening);
+  const shift = await openShift(fx, u.id, opening);
+  const custody = await db.custodyPeriod.findFirst({ where: { branchId: fx.branchId, scope: "STOCK", status: "OPEN" }, select: { id: true } });
+  if (custody) await db.custodyPeriod.update({ where: { id: custody.id }, data: { holderType: "USER", responsibleShiftId: shift.id } });
+  else openedStockCustodyId = (await db.custodyPeriod.create({ data: { cafeId: fx.cafeId, branchId: fx.branchId, scope: "STOCK", holderType: "USER", openedById: u.id, responsibleShiftId: shift.id } })).id;
+  return shift;
 }
 
 /** A dine-in order on `table`, paid or not, left at `stopAt`. */

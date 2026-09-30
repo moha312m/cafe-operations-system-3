@@ -19,16 +19,19 @@
 import { test, after, before, describe } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { PrismaClient } from "@prisma/client";
 import { db, tag, teardownTaggedCafe } from "./helpers/db";
 import {
   resolveStockCountPolicy,
   countRequiredForHandover,
   resolveCountScope,
+  resolveCountScopeInTransaction,
   UnsupportedCountPolicyError,
 } from "@/lib/stock-count-policy";
 
 const MARKER = tag("COUNT002");
 let cafeId: string;
+let otherCafeId: string;
 let branchA: string;
 let branchB: string;
 const itemIds: Record<string, string> = {};
@@ -72,12 +75,31 @@ before(async () => {
   await make("a-archived", branchA, { isCritical: true, archivedAt: new Date() });
   await make("a-inactive", branchA, { isCritical: true, isActive: false });
   await make("b-critical", branchB, { isCritical: true });
+
+  const otherCafe = await db.cafe.create({
+    data: {
+      name: `${MARKER} other cafe`,
+      slug: `${MARKER}-other-cafe`.toLowerCase(),
+      settings: { create: { stockCountPolicy: "FULL" } },
+      branches: { create: { name: `${MARKER} other branch` } },
+    },
+    include: { branches: true },
+  });
+  otherCafeId = otherCafe.id;
+  await db.inventoryItem.create({
+    data: {
+      cafeId: otherCafe.id,
+      branchId: otherCafe.branches[0].id,
+      name: `${MARKER} other critical`, unit: "KG",
+      costPerUnit: 10, currentStock: 1, isCritical: true,
+    },
+  });
 });
 
 // Everything this suite creates hangs off its own tagged café, so the purge
 // is the whole teardown — see TOOLING-003 for why the hand-written sequence
 // this replaces could be vetoed by its own first line.
-after(() => teardownTaggedCafe(cafeId, [], { disconnect: true }));
+after(() => teardownTaggedCafe([cafeId, otherCafeId], [], { disconnect: true }));
 
 /** Set the café's policy columns for one assertion. */
 async function setCafe(data: Record<string, unknown>) {
@@ -249,5 +271,90 @@ describe("COUNT-002 policy resolution and server-derived scope", () => {
         "the forged list is not consulted"
       );
     });
+  });
+
+  test("transactional scope matches FULL, selected, and empty global scope", async () => {
+    for (const [scopedBranchId, type] of [
+      [branchA, "FULL"],
+      [branchA, "CRITICAL"],
+    ] as const) {
+      const global = await resolveCountScope({ cafeId, branchId: scopedBranchId, type });
+      const transactional = await db.$transaction((tx) =>
+        resolveCountScopeInTransaction(tx, { cafeId, branchId: scopedBranchId, type }),
+      );
+      assert.deepEqual(transactional, global);
+    }
+
+    await db.inventoryItem.update({
+      where: { id: itemIds["b-critical"] },
+      data: { isCritical: false },
+    });
+    try {
+      const global = await resolveCountScope({ cafeId, branchId: branchB, type: "CRITICAL" });
+      const transactional = await db.$transaction((tx) =>
+        resolveCountScopeInTransaction(tx, { cafeId, branchId: branchB, type: "CRITICAL" }),
+      );
+      assert.deepEqual(global.inventoryItemIds, []);
+      assert.deepEqual(transactional, global);
+    } finally {
+      await db.inventoryItem.update({
+        where: { id: itemIds["b-critical"] },
+        data: { isCritical: true },
+      });
+    }
+  });
+
+  test("transactional scope sees uncommitted inventory and performs no writes", async () => {
+    const queries: string[] = [];
+    const client = new PrismaClient({
+      datasourceUrl: process.env.DATABASE_URL,
+      log: [{ emit: "event", level: "query" }],
+    });
+    client.$on("query", (event) => queries.push(event.query));
+
+    try {
+      await client.$transaction(async (tx) => {
+        await tx.inventoryItem.update({
+          where: { id: itemIds["a-ordinary"] },
+          data: { isCritical: true },
+        });
+        queries.length = 0;
+
+        const result = await resolveCountScopeInTransaction(tx, {
+          cafeId,
+          branchId: branchA,
+          type: "CRITICAL",
+        });
+
+        assert.deepEqual(
+          [...result.inventoryItemIds].sort(),
+          [itemIds["a-critical"], itemIds["a-ordinary"]].sort(),
+          "the supplied transaction must expose its own uncommitted critical selection",
+        );
+        assert.equal(
+          queries.some((sql) => /\b(?:INSERT|UPDATE|DELETE|TRUNCATE)\b/i.test(sql)),
+          false,
+          "the measured resolver window must contain reads only",
+        );
+
+        await tx.inventoryItem.update({
+          where: { id: itemIds["a-ordinary"] },
+          data: { isCritical: false },
+        });
+      });
+    } finally {
+      await client.$disconnect();
+    }
+  });
+
+  test("transactional scope remains isolated from other branches and cafes", async () => {
+    const result = await db.$transaction((tx) =>
+      resolveCountScopeInTransaction(tx, { cafeId, branchId: branchA, type: "CRITICAL" }),
+    );
+    assert.deepEqual(result.inventoryItemIds, [itemIds["a-critical"]]);
+
+    const otherCafeItems = await db.inventoryItem.count({ where: { cafeId: otherCafeId } });
+    assert.equal(otherCafeItems, 1, "the foreign-cafe fixture must exist for this tenancy proof");
+    assert.equal(result.inventoryItemIds.includes(itemIds["b-critical"]), false);
   });
 });

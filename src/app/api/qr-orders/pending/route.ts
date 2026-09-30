@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { getSession } from "@/lib/auth";
-import { handleApiError, ApiError } from "@/lib/api";
+import { handleApiError, ApiError, requireActiveSession } from "@/lib/api";
 import { resolvePermissions } from "@/lib/perms/effective";
 import { approvalQueueWhere } from "@/lib/qr-approval";
 
@@ -9,8 +9,7 @@ import { approvalQueueWhere } from "@/lib/qr-approval";
 // approve (assignment-aware). ?countOnly=1 returns just the badge count.
 export async function GET(request: NextRequest) {
   try {
-    const session = await getSession();
-    if (!session) throw new ApiError(401, "سجّل دخولك الأول");
+    const session = await requireActiveSession();
     const { keys } = await resolvePermissions(session);
     // Must be able to view QR orders at all.
     if (!keys.has("qr_orders.view") && !keys.has("qr_orders.approve")) {

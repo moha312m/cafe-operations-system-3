@@ -35,6 +35,11 @@ const MANAGER_KEYS = [
   "suppliers.view", "suppliers.create", "suppliers.edit", "suppliers.deactivate",
   "expenses.view", "expenses.manage",
   "shifts.view_current", "shifts.open", "shifts.close", "shifts.view_reports",
+  // Closing a cashier's drawer at the end of the night is the manager's job.
+  // Granted here as well as on the `shifts:read` bridge so both resolution
+  // paths agree: a café using the stored MANAGER role and one falling back
+  // to the legacy role defaults must answer this question the same way.
+  "shifts.close_others",
   "shifts.reconcile_cash",
   "finance.view_revenue", "finance.view_profit",
   "tender_reconciliation.view", "tender_reconciliation.submit", "tender_reconciliation.approve",
@@ -49,6 +54,7 @@ const MANAGER_KEYS = [
   "audit.view",
   "excel.import", "excel.export",
   "handover.view", "handover.manage", "handover.submit", "handover.accept",
+  "handover.request_recount",
   "handover.exception",
   // Customers & loyalty (settings edits stay owner-only by default).
   "customers.lookup", "customers.view", "customers.edit",
@@ -70,7 +76,7 @@ const CASHIER_KEYS = [
   // approve or resolve none of it.
   "shifts.reconcile_cash",
   "stock_count.view", "stock_count.start", "stock_count.submit",
-  "handover.view", "handover.submit", "handover.accept",
+  "handover.view", "handover.submit", "handover.accept", "handover.request_recount",
   "tender_reconciliation.view", "tender_reconciliation.submit",
   // Cashiers identify the customer in front of them and redeem points.
   // No customers.view — they can't browse the full customer list.
@@ -121,6 +127,7 @@ const INVENTORY_KEYS = [
   "purchases.cancel", "purchases.record_payment", "purchases.view_cost", "purchases.manage",
   "suppliers.view", "suppliers.create", "suppliers.edit", "suppliers.deactivate",
   "handover.view", "handover.manage", "handover.submit", "handover.accept",
+  "handover.request_recount",
   // The store keeper counts and recounts the room they hold, and sees the
   // variance it produced. Confirmation is somebody else's signature.
   "stock_count.view", "stock_count.start", "stock_count.submit", "stock_count.recount",

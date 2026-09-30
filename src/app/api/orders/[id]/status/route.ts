@@ -6,10 +6,11 @@ import { audit } from "@/lib/audit";
 import { deductStockForOrder, auditDeduction, StockError } from "@/lib/stock-deduction";
 import { recomputeSessionTotals } from "@/lib/table-sessions";
 import { reverseOrderLoyalty } from "@/lib/loyalty";
-import { isOrderFullyPaid } from "@/lib/order-payments";
+import { isOrderFullyPaid, collectedAmount } from "@/lib/order-payments";
 import { requiresPaymentBeforeServing } from "@/lib/serving-policy";
 import { unrecordCustomerOrder } from "@/lib/customers";
 import type { OrderStatus } from "@prisma/client";
+import type { StockAttributionSnapshot } from "@/lib/ledger";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -51,17 +52,41 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       throw new ApiError(403, "الطلب تبع فرع تاني");
     }
 
-    if (!TRANSITIONS[order.status].includes(status)) {
+    if (!(status === "SERVED" && order.status === "SERVED") && !TRANSITIONS[order.status].includes(status)) {
       throw new ApiError(400, "الحالة دي مش مسموحة للطلب في وضعه الحالي");
     }
     if (status === "CANCELLED") {
       await requirePermission("orders:cancel");
+
+      // Money that was collected cannot be cancelled away (R-POS-02A/A8).
+      //
+      // Cancelling used to need nothing but the permission, so a paid order
+      // could be cancelled while its payment rows stayed exactly where they
+      // were. The money then belonged to nobody: `recomputeSessionTotals`
+      // drops CANCELLED orders from both its aggregates, so the table's bill
+      // forgets the payment, while `recomputeShiftTotals` keys only on
+      // `shiftId` and still expects it in the drawer — and the day's report
+      // shows a collection against no sale and no refund, permanently.
+      //
+      // Net collections, not `paymentStatus`: an order refunded back to zero
+      // has nothing left to orphan and stays cancellable, which is why the
+      // read above deliberately loads every payment row.
+      //
+      // Nothing is auto-refunded here. Returning money is its own act, with
+      // its own permission and its own accounting, and doing it silently
+      // inside a cancel would hide it from the person doing the cancelling.
+      if (collectedAmount(order.payments) > 0.001) {
+        throw new ApiError(
+          400,
+          "الطلب ده اتحصّل عليه فلوس — مينفعش يتلغي. اعمل مرتجع الأول لو محتاج ترجّع الفلوس"
+        );
+      }
     }
     // Whether an unpaid order may reach the customer is the owner's decision,
     // set per order type and resolved from the branch's effective policy —
     // never from anything the caller sends. A café with table service serves
     // first and bills after; a takeaway counter does not.
-    if (status === "SERVED") {
+    if (status === "SERVED" && order.status !== "SERVED") {
       const mustBePaid = await requiresPaymentBeforeServing(order.branchId, order.type);
       if (mustBePaid && !isOrderFullyPaid({ total: order.total, payments: order.payments })) {
         throw new ApiError(400, "لازم الطلب يتدفع بالكامل قبل التسليم");
@@ -96,8 +121,71 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     let deduction: Awaited<ReturnType<typeof deductStockForOrder>> | null = null;
 
     let updated;
+    let servedReplay = false;
     try {
       updated = await db.$transaction(async (tx) => {
+        if (status === "SERVED") {
+          await tx.$queryRawUnsafe('SELECT "id" FROM "Order" WHERE "id" = $1 FOR UPDATE', id);
+          const lockedOrder = await tx.order.findUniqueOrThrow({
+            where: { id },
+            include: { payments: true },
+          });
+
+          if (lockedOrder.status === "SERVED") {
+            servedReplay = true;
+            return tx.order.findUniqueOrThrow({
+              where: { id },
+              include: {
+                items: { include: { addOns: true } },
+                payments: true,
+                branch: { select: { id: true, name: true } },
+                createdBy: { select: { id: true, name: true } },
+              },
+            });
+          }
+          if (!TRANSITIONS[lockedOrder.status].includes(status)) {
+            throw new ApiError(400, "Order status transition is not allowed in its current state");
+          }
+
+          const custodyRows = await tx.$queryRawUnsafe<{
+            id: string;
+            holderType: "USER" | "BRANCH";
+            responsibleShiftId: string | null;
+          }[]>(
+            'SELECT "id", "holderType", "responsibleShiftId" FROM "CustodyPeriod" WHERE "branchId" = $1 AND "scope" = \'STOCK\' AND "status" = \'OPEN\' FOR UPDATE',
+            lockedOrder.branchId
+          );
+          const custody = custodyRows[0];
+          if (!custody || custody.holderType !== "USER" || !custody.responsibleShiftId) {
+            throw new ApiError(409, "Serving requires an open USER-held stock custody with a responsible shift");
+          }
+          const attribution: StockAttributionSnapshot = {
+            custodyPeriodId: custody.id,
+            shiftId: custody.responsibleShiftId,
+          };
+          const servedTimeline = { servedAt: now, completedAt: now, stockDeductedAt: now };
+          deduction = await deductStockForOrder(tx, id, session.id, attribution);
+          await tx.orderItem.updateMany({
+            where: { orderId: id, kitchenStatus: { not: "CANCELLED" } },
+            data: { kitchenStatus: "SERVED" },
+          });
+          return tx.order.update({
+            where: { id },
+            data: {
+              status: "SERVED",
+              ...servedTimeline,
+              servedById: session.id,
+              servedStockCustodyPeriodId: custody.id,
+              servedShiftId: custody.responsibleShiftId,
+            },
+            include: {
+              items: { include: { addOns: true } },
+              payments: true,
+              branch: { select: { id: true, name: true } },
+              createdBy: { select: { id: true, name: true } },
+            },
+          });
+        }
         if (itemKitchenStatus) {
           await tx.orderItem.updateMany({
             where: { orderId: id, kitchenStatus: { not: "CANCELLED" } },
@@ -108,10 +196,6 @@ export async function PATCH(request: NextRequest, { params }: Params) {
         // stock (unless the cafe allows negative) → rolls back the whole
         // transition so the order is NOT marked served.
         const timelineExtra: { stockDeductedAt?: Date } = {};
-        if (status === "SERVED" && !order.stockDeductedAt) {
-          deduction = await deductStockForOrder(tx, id, session.id);
-          timelineExtra.stockDeductedAt = now;
-        }
         return tx.order.update({
           where: { id },
           data: { status, ...timeline, ...timelineExtra },
@@ -137,6 +221,8 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       }
       throw e;
     }
+
+    if (servedReplay) return NextResponse.json({ order: updated });
 
     // Cancellations change the table bill — keep the session totals fresh.
     if (order.tableSessionId) {

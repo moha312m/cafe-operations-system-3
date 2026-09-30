@@ -73,16 +73,19 @@ before(async () => {
   resolverId = await mk("resolver", "BRANCH_MANAGER");
   staffId = await mk("staff", "CASHIER");
 
-  const shift = async (n: number) =>
+  const shift = async (n: number, closed = false) =>
     (await db.shift.create({
       data: {
         cafeId, branchId, cashierId: staffId, shiftNumber: n,
+        ...(closed ? { status: "CLOSED" as const, closedAt: new Date() } : {}),
         openingCashAmount: 0, expectedCashAmount: 0,
         actualCashAmount: "487.00", cashDifference: "-13.00",
       },
     })).id;
   shiftId = await shift(1);
-  otherShiftId = await shift(2);
+  // A second shift purely as a distinct foreign key, never a live drawer —
+  // one cashier cannot hold two open drawers at one branch.
+  otherShiftId = await shift(2, true);
 
   custodyPeriodId = (await db.custodyPeriod.create({
     data: {

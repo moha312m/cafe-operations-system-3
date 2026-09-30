@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { requirePermission, handleApiError, ApiError } from "@/lib/api";
+import { requirePermission, handleApiError, ApiError, requireActiveSession } from "@/lib/api";
 import { getSession } from "@/lib/auth";
 import { audit } from "@/lib/audit";
 import { resolvePermissions } from "@/lib/perms/effective";
@@ -63,8 +63,7 @@ const editSchema = z.object({
 // branch's current tax/service settings.
 export async function PATCH(request: NextRequest, { params }: Params) {
   try {
-    const session = await getSession();
-    if (!session) throw new ApiError(401, "سجّل دخولك الأول");
+    const session = await requireActiveSession();
     const { id } = await params;
     const data = editSchema.parse(await request.json());
 

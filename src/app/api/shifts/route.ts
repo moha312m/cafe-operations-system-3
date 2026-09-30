@@ -1,18 +1,12 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
+import { resolvePermissions } from "@/lib/perms/effective";
 import { getSession } from "@/lib/auth";
-import { hasPermission } from "@/lib/permissions";
-import {
-  requirePermission,
-  resolveCafeId,
-  resolveBranchId,
-  handleApiError,
-  ApiError,
-  requireFeature,
-} from "@/lib/api";
+import { requirePermission, resolveCafeId, resolveBranchId, handleApiError, ApiError, requireFeature, requireActiveSession, isUniqueConflict, retryOnUniqueConflict } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { redactBlindCount } from "@/lib/shifts";
+import { ensureCustodyForShift } from "@/lib/custody";
 
 const shiftInclude = {
   cashier: { select: { id: true, name: true } },
@@ -23,10 +17,13 @@ const shiftInclude = {
 // branch/cafe; cashiers see only their own.
 export async function GET(request: NextRequest) {
   try {
-    const session = await getSession();
-    if (!session) throw new ApiError(401, "Not authenticated");
-    const canReadAll = hasPermission(session.role, "shifts:read");
-    const canOperate = hasPermission(session.role, "shifts:operate");
+    const session = await requireActiveSession();
+    // R-SEC-01 — whose shifts you may read is an effective-permission
+    // question, not a legacy-role one. `shifts.view_reports` is oversight of
+    // other people's shifts; `shifts.view_current` is operating your own.
+    const { keys } = await resolvePermissions(session);
+    const canReadAll = keys.has("shifts.view_reports");
+    const canOperate = keys.has("shifts.view_current");
     if (!canReadAll && !canOperate) throw new ApiError(403, "Not allowed");
 
     const params = request.nextUrl.searchParams;
@@ -113,23 +110,71 @@ export async function POST(request: NextRequest) {
     });
     if (!branch) throw new ApiError(400, "Branch not found in this cafe");
 
-    const shift = await db.$transaction(async (tx) => {
-      const last = await tx.shift.aggregate({
-        where: { branchId },
-        _max: { shiftNumber: true },
-      });
-      return tx.shift.create({
-        data: {
+    // The existing-shift check above takes no lock, so one cashier signing in
+    // on two devices can pass it twice. `Shift_one_open_per_branch_cashier`
+    // (M25) makes the database refuse the second drawer — but two constraints
+    // are in play here and the order they fire in decides what the cashier
+    // must be told.
+    //
+    // Both callers read the same `_max.shiftNumber`, so the shift-number
+    // unique complains FIRST and the cashier index never gets a look in. That
+    // half is contention: hold the branch row so allocation serialises — the
+    // same row the order-number path holds, taken first in both, so there is
+    // no ordering to invert — and retry as the backstop.
+    //
+    // Only once the loser has a number of its own does it reach the cashier
+    // index, and THAT conflict is not contention, it is a fact. Retrying it
+    // would re-run a transaction destined to fail every time. So it escapes
+    // the retry and is answered below with the same `alreadyOpen` response
+    // this route already gives a sequential re-open — because from the
+    // cashier's side "my shift is already open" is the same fact however they
+    // arrived at it (R-POS-02B2b).
+    let shift;
+    try {
+      shift = await retryOnUniqueConflict(() => db.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT "id" FROM "Branch" WHERE "id" = ${branchId} FOR UPDATE`;
+        const last = await tx.shift.aggregate({
+          where: { branchId },
+          _max: { shiftNumber: true },
+        });
+        const created = await tx.shift.create({
+          data: {
+            cafeId,
+            branchId,
+            cashierId: session.id,
+            shiftNumber: (last._max.shiftNumber ?? 0) + 1,
+            openingCashAmount: data.openingCashAmount,
+            expectedCashAmount: data.openingCashAmount,
+          },
+          include: shiftInclude,
+        });
+        await ensureCustodyForShift(tx, {
           cafeId,
           branchId,
-          cashierId: session.id,
-          shiftNumber: (last._max.shiftNumber ?? 0) + 1,
+          shiftId: created.id,
+          userId: session.id,
           openingCashAmount: data.openingCashAmount,
-          expectedCashAmount: data.openingCashAmount,
-        },
+        });
+        return tx.shift.findUniqueOrThrow({ where: { id: created.id }, include: shiftInclude });
+      }), {
+        field: "shiftNumber",
+        message: "في شيفت تاني اتفتح في نفس اللحظة — جرّب تاني",
+      });
+    } catch (e) {
+      if (!isUniqueConflict(e, "cashierId")) throw e;
+      const winner = await db.shift.findFirst({
+        where: { branchId, cashierId: session.id, status: "OPEN" },
         include: shiftInclude,
       });
-    });
+      // Only the cashier index could have refused this, so the winning drawer
+      // must exist. If it somehow does not, the conflict was something else
+      // and is not ours to translate.
+      if (!winner) throw e;
+      return NextResponse.json({
+        shift: redactBlindCount(winner, session.id),
+        alreadyOpen: true,
+      });
+    }
 
     await audit({
       cafeId,

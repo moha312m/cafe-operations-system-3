@@ -1,8 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { getSession } from "@/lib/auth";
-import { hasPermission } from "@/lib/permissions";
-import { handleApiError, ApiError } from "@/lib/api";
+import { handleApiError, ApiError, requireKey } from "@/lib/api";
 import { refundPayment } from "@/lib/refunds";
 
 type Params = { params: Promise<{ id: string }> };
@@ -14,11 +13,13 @@ type Params = { params: Promise<{ id: string }> };
 // (shifts:read) may refund.
 export async function POST(_request: NextRequest, { params }: Params) {
   try {
-    const session = await getSession();
-    if (!session) throw new ApiError(401, "Not authenticated");
-    if (!hasPermission(session.role, "shifts:read")) {
-      throw new ApiError(403, "المرتجعات للمدير أو صاحب الكافيه فقط");
-    }
+    // R-SEC-01 — same key as the order-level refund, for the same reason:
+    // reversing money is `orders.refund`, and it must honour whatever the
+    // café configured rather than the legacy role column.
+    const session = await requireKey(
+      "orders.refund",
+      "المرتجعات للمدير أو صاحب الكافيه فقط"
+    );
     const { id } = await params;
 
     const payment = await db.payment.findUnique({

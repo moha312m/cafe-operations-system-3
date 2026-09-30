@@ -34,10 +34,16 @@
 // through `applyStockMutation`. Responsibility is an investigation outcome
 // somebody records, never a side effect of a difference being found.
 
-import type { Prisma, TheoreticalConfidence, VarianceCaseStatus, VarianceCaseType } from "@prisma/client";
+import type {
+  Prisma,
+  TheoreticalConfidence,
+  VarianceAttribution,
+  VarianceCaseStatus,
+  VarianceCaseType,
+} from "@prisma/client";
 import { db } from "@/lib/db";
 import { ApiError } from "@/lib/api";
-import { audit } from "@/lib/audit";
+import { auditInTransaction } from "@/lib/audit";
 import { mayAssignResponsibility } from "@/lib/variance-confidence";
 
 /**
@@ -68,6 +74,14 @@ type OpenArgs = {
   amountVariance?: number | null;
   financialImpact: FinancialImpact;
   confidence?: TheoreticalConfidence;
+  /**
+   * Who the difference may be pinned on. Defaults to `NOT_APPLICABLE`, so the
+   * CASH, TENDER and OPENING call sites are untouched: attribution is a
+   * question about a stock span, and those cases are not one.
+   */
+  attribution?: VarianceAttribution;
+  /** The handover acceptance that turned counted evidence into this case. */
+  acceptedHandoverId?: string | null;
   openedById: string;
 };
 
@@ -321,6 +335,8 @@ export async function openVarianceCase(
         amountVariance: args.amountVariance ?? null,
         ...impactColumns(args.financialImpact),
         confidence: args.confidence ?? "UNVERIFIABLE",
+        attribution: args.attribution ?? "NOT_APPLICABLE",
+        acceptedHandoverId: args.acceptedHandoverId ?? null,
         blocking,
         openedById: args.openedById,
       },
@@ -382,7 +398,37 @@ const STATUS_LABEL: Record<VarianceCaseStatus, string> = {
  * Opens its own transaction on purpose, unlike `openVarianceCase`: advancing
  * a case is a deliberate human act on one record, not part of a larger write
  * that must succeed or fail together.
+ *
+ * ONE TRANSACTION, both writes. The status change and its
+ * `VARIANCE_CASE_STATUS_CHANGED` row are the same act, not an act and a note
+ * about it. This used to update through `db` — committing the moment it
+ * returned — and only then call `audit`, which swallows: two independent
+ * writes in an order where the second was allowed to disappear. What that
+ * left behind is a case that had quietly moved from UNDER_INVESTIGATION to
+ * RESOLVED with nothing recording who closed it or what it was before.
+ *
+ * That is not a missing log line. A variance case can end with a named
+ * person answerable for a shortage, and its status history IS the record of
+ * how that conclusion was reached — so a transition nobody can reconstruct
+ * is an accusation with its evidence deleted. `auditInTransaction` throws
+ * where `audit` swallows, and shares this transaction's client, so either
+ * both rows land or neither does.
+ *
+ * The read moves inside the transaction with them. The status validated is
+ * then the status updated, rather than one read a moment earlier that a
+ * concurrent move may already have changed.
  */
+/**
+ * Whether an attribution allows a name to be written on the case.
+ *
+ * VERIFIED_SHIFT allows it; PERIOD_UNRESOLVED and BRANCH_CUSTODY are the two
+ * verdicts that say the difference is not one person's, and they refuse.
+ * NOT_APPLICABLE is not a verdict at all — see the call site.
+ */
+export function mayAssignByAttribution(a: VarianceAttribution): boolean {
+  return a !== "PERIOD_UNRESOLVED" && a !== "BRANCH_CUSTODY";
+}
+
 export async function advanceVarianceCase(args: {
   caseId: string;
   to: VarianceCaseStatus;
@@ -390,61 +436,80 @@ export async function advanceVarianceCase(args: {
   note?: string;
   assignedResponsibilityUserId?: string;
 }): Promise<{ caseId: string; status: VarianceCaseStatus }> {
-  const current = await db.varianceCase.findUnique({
-    where: { id: args.caseId },
-    select: { id: true, cafeId: true, status: true, confidence: true },
+  return db.$transaction(async (tx) => {
+    const current = await tx.varianceCase.findUnique({
+      where: { id: args.caseId },
+      select: { id: true, cafeId: true, status: true, confidence: true, attribution: true },
+    });
+    if (!current) throw new ApiError(404, "حالة الفرق غير موجودة");
+
+    if (!LEGAL[current.status].includes(args.to)) {
+      throw new ApiError(
+        400,
+        `مينفعش تنقل الحالة من «${STATUS_LABEL[current.status]}» إلى «${STATUS_LABEL[args.to]}»`
+      );
+    }
+
+    // Evidence nobody could verify must never quietly become somebody's fault.
+    // Checked BEFORE the update, so a refusal leaves no name written: a guard
+    // that assigned first and complained afterwards would be no guard at all.
+    if (args.to === "RESPONSIBILITY_ASSIGNED" && !mayAssignResponsibility(current.confidence)) {
+      throw new ApiError(
+        400,
+        "مينفعش تحدد مسؤولية على فرق تقديره غير مؤكد — لازم الأدلة تكون VERIFIED"
+      );
+    }
+
+    // The second gate, independent of the first. `confidence` says how far
+    // the FIGURE can be trusted; `attribution` says whether the difference can
+    // be pinned on one custody at all, and a shortage that spans boundaries
+    // nobody observed cannot be — whatever its figure is worth.
+    //
+    // Only the two verdicts that positively refuse refuse here.
+    // `NOT_APPLICABLE` is the absence of the question — it is what every CASH,
+    // TENDER and OPENING case carries, and what a stock case outside handover
+    // accountability carries — so it must not take behaviour away that those
+    // cases have always had.
+    if (args.to === "RESPONSIBILITY_ASSIGNED" && !mayAssignByAttribution(current.attribution)) {
+      throw new ApiError(
+        400,
+        `مينفعش تحدد مسؤولية على فرق مش منسوب لعهدة واحدة متحقق منها (${current.attribution})`
+      );
+    }
+
+    const terminal = args.to === "RESOLVED" || args.to === "WAIVED";
+    const updated = await tx.varianceCase.update({
+      where: { id: args.caseId },
+      data: {
+        status: args.to,
+        ...(args.assignedResponsibilityUserId
+          ? { assignedResponsibilityUserId: args.assignedResponsibilityUserId }
+          : {}),
+        ...(terminal
+          ? { resolvedAt: new Date(), resolvedById: args.actorId }
+          : {}),
+        ...(args.note ? { resolutionNote: args.note } : {}),
+      },
+      select: { id: true, status: true },
+    });
+
+    await auditInTransaction(tx, {
+      cafeId: current.cafeId,
+      userId: args.actorId,
+      action: VARIANCE_STATUS_AUDIT_ACTION,
+      entity: "VarianceCase",
+      entityId: args.caseId,
+      details: {
+        from: current.status,
+        to: args.to,
+        ...(args.assignedResponsibilityUserId
+          ? { assignedResponsibilityUserId: args.assignedResponsibilityUserId }
+          : {}),
+      },
+    });
+
+    return { caseId: updated.id, status: updated.status };
   });
-  if (!current) throw new ApiError(404, "حالة الفرق غير موجودة");
-
-  if (!LEGAL[current.status].includes(args.to)) {
-    throw new ApiError(
-      400,
-      `مينفعش تنقل الحالة من «${STATUS_LABEL[current.status]}» إلى «${STATUS_LABEL[args.to]}»`
-    );
-  }
-
-  // Evidence nobody could verify must never quietly become somebody's fault.
-  // Checked BEFORE the update, so a refusal leaves no name written: a guard
-  // that assigned first and complained afterwards would be no guard at all.
-  if (args.to === "RESPONSIBILITY_ASSIGNED" && !mayAssignResponsibility(current.confidence)) {
-    throw new ApiError(
-      400,
-      "مينفعش تحدد مسؤولية على فرق تقديره غير مؤكد — لازم الأدلة تكون VERIFIED"
-    );
-  }
-
-  const terminal = args.to === "RESOLVED" || args.to === "WAIVED";
-  const updated = await db.varianceCase.update({
-    where: { id: args.caseId },
-    data: {
-      status: args.to,
-      ...(args.assignedResponsibilityUserId
-        ? { assignedResponsibilityUserId: args.assignedResponsibilityUserId }
-        : {}),
-      ...(terminal
-        ? { resolvedAt: new Date(), resolvedById: args.actorId }
-        : {}),
-      ...(args.note ? { resolutionNote: args.note } : {}),
-    },
-    select: { id: true, status: true },
-  });
-
-  await audit({
-    cafeId: current.cafeId,
-    userId: args.actorId,
-    action: VARIANCE_STATUS_AUDIT_ACTION,
-    entity: "VarianceCase",
-    entityId: args.caseId,
-    details: {
-      from: current.status,
-      to: args.to,
-      ...(args.assignedResponsibilityUserId
-        ? { assignedResponsibilityUserId: args.assignedResponsibilityUserId }
-        : {}),
-    },
-  });
-
-  return { caseId: updated.id, status: updated.status };
 }
 
 // ─────────────────────── Reading cases back out ──────────────────────

@@ -41,6 +41,7 @@ export const t = {
     edit: "تعديل",
     delete: "حذف",
     cancel: "إلغاء",
+    close: "إغلاق",
     remove: "حذف",
     active: "مفعّل",
     hidden: "مخفي",
@@ -218,6 +219,7 @@ export const t = {
 
   shiftStatus: {
     OPEN: "مفتوح",
+    AWAITING_HANDOVER: "في انتظار تسليم العهدة",
     CLOSED: "مقفول",
   } satisfies Record<ShiftStatus, string>,
 
@@ -240,6 +242,22 @@ export const t = {
     blindCountHint: "اعدّ الكاش الفعلي في الدرج وسجّله. الفرق هيظهر بعد التسجيل.",
     actualCash: "الكاش الفعلي",
     actualCashInDrawer: "الكاش الفعلي في الدرج",
+    varianceReason: "سبب الفرق (لو فيه فرق)",
+    // Phrased as a conditional because the count is blind: the cashier does
+    // not know yet whether there IS a difference, so the field cannot be
+    // demanded up front without revealing the target it exists to withhold.
+    varianceReasonHint: "لو الكاش المعدود مختلف عن المتوقع، لازم تكتب السبب.",
+    // T34 — the two channels that never reach the drawer. Each is asked for
+    // separately, and explained separately: a rejected card authorisation and
+    // a pending wallet transfer are different events with different
+    // counterparties, and one shared box would let a sentence about one stand
+    // as the explanation for the other.
+    settlementHeading: "تسوية الفيزا والمحافظ",
+    settlementHint: "اكتب المبلغ اللي المزود سوّاه فعليًا من تقرير التسوية.",
+    actualCardSettled: "المبلغ المسوّى من الفيزا",
+    actualWalletSettled: "المبلغ المسوّى من المحفظة",
+    cardVarianceReason: "سبب فرق الفيزا (لو فيه فرق)",
+    walletVarianceReason: "سبب فرق المحفظة (لو فيه فرق)",
     difference: "الفرق",
     totalSales: "إجمالي المبيعات",
     cashSales: "مبيعات الكاش",
@@ -269,6 +287,15 @@ export const t = {
     closedTodayTotal: "إجمالي الشيفتات المغلقة اليوم",
     noOpenShift: "لا يوجد شيفت مفتوح",
     lockedSuccess: "تم قفل الشيفت بنجاح",
+    // SH-24 — the vocabulary of a two-stage close. A shift that settled its
+    // cash but still owes its stock is not "مقفول", and saying so plainly is
+    // the point of these strings.
+    settledNotDischarged: "الكاش اتسوّى — العهدة لسه في ذمتك",
+    handoverStillOwed: "الشيفت اتقفل ماليًا، لكن لازم تسلّم العهدة قبل ما تمشي.",
+    handoverTarget: "التسليم إلى",
+    requiredItemCount: "أصناف مطلوب جردها",
+    goToHandovers: "روح لشاشة التسليم",
+    blockersTitle: "مش هينفع تقفل قبل ما تظبط ده:",
   },
 
   roles: {
@@ -282,6 +309,34 @@ export const t = {
   } satisfies Record<Role, string>,
 
   // ── Super Admin (platform owner) panel ──
+  handoverConfig: {
+    title: "إعدادات تسليم المخزون",
+    enabled: "تفعيل عدّ التسليم",
+    mode: "نوع العد",
+    modeValues: { FULL: "كل الأصناف", SELECTED: "أصناف محددة" },
+    ingredients: "الأصناف المختارة",
+    ingredientSearch: "ابحث عن صنف…",
+    noIngredients: "لا توجد أصناف مطابقة",
+    schedule: "جدول العد الدوري",
+    scheduleValues: { MANUAL_ONLY: "يدوي فقط", DAILY_LAST_HANDOVER: "يومي عند آخر تسليم", WEEKLY: "أسبوعي" },
+    weekday: "يوم الأسبوع",
+    weekdays: { sunday: "الأحد", monday: "الاثنين", tuesday: "الثلاثاء", wednesday: "الأربعاء", thursday: "الخميس", friday: "الجمعة", saturday: "السبت" },
+    usingCafeDefault: "يستخدم إعداد الكافيه الافتراضي",
+    save: "حفظ إعدادات التسليم",
+    saving: "جارٍ الحفظ…",
+    loading: "جارٍ تحميل إعدادات التسليم…",
+    loadFailure: "تعذر تحميل إعدادات التسليم",
+    saveSuccess: "تم حفظ إعدادات التسليم",
+    saveFailure: "تعذر حفظ إعدادات التسليم",
+    selectedEmpty: "اختر صنفًا واحدًا على الأقل عند تفعيل الأصناف المحددة",
+    chooseModeFirst: "اختر نوع عدّ مدعومًا أولًا قبل التفعيل",
+    errors: {
+      CYCLE_POLICY_UNSUPPORTED: "سياسة العد الدوري غير مدعومة لإعدادات التسليم",
+      SELECTED_WITH_NO_ITEMS: "لا توجد أصناف نشطة محددة لعدّ التسليم",
+      WEEKLY_WITHOUT_WEEKDAY: "الجدول الأسبوعي يحتاج يومًا محددًا",
+    },
+  },
+
   admin: {
     brand: "إدارة المنصة",
     brandSub: "لوحة تحكم المالك",

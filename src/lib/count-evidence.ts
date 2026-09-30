@@ -195,3 +195,32 @@ export async function resolveEffectiveCountEvidence(
 export function hasSupersedingRecount(line: { recounts: unknown[] }): boolean {
   return line.recounts.length > 0;
 }
+
+/**
+ * Whether anybody physically observed this line, after precedence.
+ *
+ * The one question every consumer of a count line asks, asked once. A line
+ * can exist without an observation: `startHandoverCount` creates one per item
+ * in scope, and under a handover count somebody may never reach that shelf.
+ * "In scope" and "observed" are different facts, and reading the first as the
+ * second is how an unlooked-at shelf becomes a shortage somebody answers for.
+ *
+ * ANSWERED ON THE CURSOR, not on the quantity. `effectiveCountEvidence`
+ * collapses an absent figure to 0 — it has to, because every arithmetic
+ * consumer needs a number — so `quantity === 0` cannot tell "the shelf was
+ * empty" from "nobody looked". The cursor is not collapsed: it is NULL until
+ * an observation locks one, and `recordCountLine` and `recordRecount` each
+ * write the figure and the cursor together inside one locked transaction. So
+ * a resolved cursor means an observation happened, AND it means the pairing
+ * rule at the top of this file can still be satisfied — which is the only
+ * sense in which evidence is usable at all.
+ *
+ * A figure written with no cursor is therefore not an observation by this
+ * rule. That state is unreachable through production capture and appears only
+ * in malformed fixtures; the one caller that must tell it apart from a
+ * genuinely untouched line — the boundary, which refuses it rather than
+ * carrying it — reads the raw columns itself.
+ */
+export function hasAuthoritativeObservation(line: LineWithEvidence): boolean {
+  return effectiveCountEvidence(line).itemVersion !== null;
+}

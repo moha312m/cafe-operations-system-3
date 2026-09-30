@@ -15,11 +15,28 @@
 // The check below exists to produce a legible message, not to be the
 // guarantee.
 
-import type { Prisma, CustodyPeriod, CustodyRole, CustodyScope } from "@prisma/client";
+import { Prisma } from "@prisma/client";
+import type {
+  CustodyHolderType,
+  CustodyPeriod,
+  CustodyRole,
+  CustodyScope,
+  ShiftCustodyGate,
+} from "@prisma/client";
 import { db } from "@/lib/db";
 import { ApiError } from "@/lib/api";
 
 type Participant = { userId: string; role: CustodyRole };
+
+export type CustodyBootstrapVerdict = {
+  cashCustodyPeriodId: string | null;
+  stockCustodyPeriodId: string | null;
+  opened: CustodyScope[];
+  joined: CustodyScope[];
+  withheld: CustodyScope[];
+  operational: boolean;
+  gate: ShiftCustodyGate | null;
+};
 
 const SCOPE_LABEL: Record<CustodyScope, string> = {
   CASH: "الخزنة",
@@ -40,9 +57,16 @@ export async function openCustodyPeriod(
     shiftId?: string | null;
     previousPeriodId?: string | null;
     openingCashAmount?: number | null;
+    holderType?: CustodyHolderType;
+    openedById?: string | null;
+    responsibleShiftId?: string | null;
   }
 ): Promise<{ custodyPeriodId: string }> {
-  if (args.participants.length === 0) {
+  const holderType = args.holderType ?? "USER";
+  if (holderType === "BRANCH" && args.scope !== "STOCK") {
+    throw new ApiError(400, "Branch custody is stock-only");
+  }
+  if (holderType === "USER" && args.participants.length === 0) {
     throw new ApiError(400, "لازم تحدد مين مسؤول عن العهدة");
   }
 
@@ -63,7 +87,10 @@ export async function openCustodyPeriod(
       cafeId: args.cafeId,
       branchId: args.branchId,
       scope: args.scope,
+      holderType,
       previousPeriodId: args.previousPeriodId ?? null,
+      openedById: args.openedById ?? null,
+      responsibleShiftId: args.responsibleShiftId ?? null,
       // A stock custody has no drawer, so the column stays NULL for it.
       openingCashAmount:
         args.scope === "CASH" ? args.openingCashAmount ?? null : null,
@@ -83,6 +110,187 @@ export async function openCustodyPeriod(
   }
 
   return { custodyPeriodId: period.id };
+}
+
+const LIVE_HANDOVER_STATUSES = ["DRAFT", "OUTGOING_SUBMITTED", "INCOMING_REVIEW"] as const;
+
+/**
+ * Whether a live handover already names outgoing stock custody for this
+ * branch — asked under a ROW LOCK, which is the whole of it.
+ *
+ * ── THE RACE THIS CLOSES (SH-22 · R-A1) ──
+ *
+ * A branch-custody acceptance and a shift opening at the same branch are two
+ * transactions reading the same fact and reaching opposite conclusions about
+ * it. An ordinary read gets its own snapshot: shift-open could see the
+ * handover still `OUTGOING_SUBMITTED`, decide `AWAITING_CUSTODY_TRANSFER`,
+ * and commit that decision AFTER the acceptance had already completed the
+ * handover and moved the stock to BRANCH custody. The shift is then gated on
+ * a transfer that will never come — nobody is mid-handover any more, and
+ * nothing left in the system would ever release it. `acceptToBranchCustody`
+ * refuses when such a shift already exists, so the stranded shift also blocks
+ * every future acceptance: a deadlock made of two correct-looking reads.
+ *
+ * `FOR SHARE` is what makes the two transactions take turns. SHARE rather
+ * than UPDATE because this is a reader: any number of shifts may open
+ * concurrently while no acceptance is in flight, and they do not need to
+ * exclude each other. It conflicts with exactly one thing — the `FOR UPDATE`
+ * an acceptance takes on the handover row before its first write — so
+ * shift-open BLOCKS for the duration of an acceptance instead of deciding
+ * against a snapshot that is about to be false, and re-reads afterwards under
+ * READ COMMITTED, seeing the completed handover and the BRANCH custody it
+ * left behind. The verdict it then reaches is `AWAITING_OPENING_VERIFICATION`,
+ * which is a gate SH-22 can actually discharge.
+ *
+ * Raw SQL because Prisma has no way to ask for a row lock, PARAMETERISED
+ * because a branch id is caller input, and `LIVE_HANDOVER_STATUSES` rather
+ * than a second list so the locking probe and every other reader of "live"
+ * cannot drift apart. The `::text` cast is what lets the enum column be
+ * compared against bound parameters at all.
+ *
+ * CALLER PRECONDITION: `tx` must be the caller's own transaction, and this
+ * must be asked BEFORE anything else the decision depends on is read. A lock
+ * taken after the custody snapshot would let the snapshot be the stale thing
+ * instead, which is the same defect one read further down.
+ */
+export async function branchIsMidHandover(
+  tx: Prisma.TransactionClient,
+  branchId: string
+): Promise<boolean> {
+  const rows = await tx.$queryRaw<{ id: string }[]>`
+    SELECT "id"
+      FROM "HandoverSession"
+     WHERE "branchId" = ${branchId}
+       AND "status"::text IN (${Prisma.join([...LIVE_HANDOVER_STATUSES])})
+       AND "outgoingStockCustodyId" IS NOT NULL
+     LIMIT 1
+       FOR SHARE
+  `;
+  return rows.length > 0;
+}
+
+/**
+ * Establish the custody a newly-opened shift may use. This deliberately
+ * records a gate rather than trying to invent a handover acceptance.
+ */
+export async function ensureCustodyForShift(
+  tx: Prisma.TransactionClient,
+  args: {
+    cafeId: string;
+    branchId: string;
+    shiftId: string;
+    userId: string;
+    openingCashAmount: number;
+  }
+): Promise<CustodyBootstrapVerdict> {
+  // FIRST, and awaited alone. The probe takes a row lock (see
+  // `branchIsMidHandover`), and a lock taken after the custody reads would
+  // protect nothing: the reads would already have their own snapshot, and an
+  // acceptance committing in between would leave this transaction deciding
+  // against a branch state that no longer exists. Locking first means both
+  // the live-handover verdict and the custody rows below are read on the far
+  // side of any acceptance that was in flight.
+  const midHandover = await branchIsMidHandover(tx, args.branchId);
+  const [cash, stock] = await Promise.all([
+    tx.custodyPeriod.findFirst({
+      where: { branchId: args.branchId, scope: "CASH", status: "OPEN" },
+      include: { participants: { select: { userId: true } } },
+    }),
+    tx.custodyPeriod.findFirst({
+      where: { branchId: args.branchId, scope: "STOCK", status: "OPEN" },
+      include: { participants: { select: { userId: true } } },
+    }),
+  ]);
+
+  const result: CustodyBootstrapVerdict = {
+    cashCustodyPeriodId: null,
+    stockCustodyPeriodId: null,
+    opened: [],
+    joined: [],
+    withheld: [],
+    operational: false,
+    gate: null,
+  };
+
+  if (midHandover) {
+    if (cash) result.withheld.push("CASH");
+    if (stock) result.withheld.push("STOCK");
+    result.gate = "AWAITING_CUSTODY_TRANSFER";
+  } else if (stock?.holderType === "BRANCH") {
+    if (cash?.holderType === "USER") {
+      if (!cash.participants.some((p) => p.userId === args.userId)) {
+        await tx.custodyParticipant.create({
+          data: { custodyPeriodId: cash.id, userId: args.userId, role: "SHARED" },
+        });
+        result.joined.push("CASH");
+      }
+      await linkShiftCustody(tx, { shiftId: args.shiftId, custodyPeriodId: cash.id, scope: "CASH" });
+      result.cashCustodyPeriodId = cash.id;
+    } else if (!cash) {
+      const opened = await openCustodyPeriod(tx, {
+        cafeId: args.cafeId,
+        branchId: args.branchId,
+        scope: "CASH",
+        participants: [{ userId: args.userId, role: "PRIMARY" }],
+        shiftId: args.shiftId,
+        holderType: "USER",
+        openedById: args.userId,
+        openingCashAmount: args.openingCashAmount,
+      });
+      result.cashCustodyPeriodId = opened.custodyPeriodId;
+      result.opened.push("CASH");
+    }
+    result.withheld.push("STOCK");
+    result.gate = "AWAITING_OPENING_VERIFICATION";
+  } else if (!cash && !stock) {
+    const openedCash = await openCustodyPeriod(tx, {
+      cafeId: args.cafeId,
+      branchId: args.branchId,
+      scope: "CASH",
+      participants: [{ userId: args.userId, role: "PRIMARY" }],
+      shiftId: args.shiftId,
+      holderType: "USER",
+      openedById: args.userId,
+      openingCashAmount: args.openingCashAmount,
+    });
+    const openedStock = await openCustodyPeriod(tx, {
+      cafeId: args.cafeId,
+      branchId: args.branchId,
+      scope: "STOCK",
+      participants: [{ userId: args.userId, role: "PRIMARY" }],
+      shiftId: args.shiftId,
+      holderType: "USER",
+      openedById: args.userId,
+      responsibleShiftId: args.shiftId,
+    });
+    result.cashCustodyPeriodId = openedCash.custodyPeriodId;
+    result.stockCustodyPeriodId = openedStock.custodyPeriodId;
+    result.opened.push("CASH", "STOCK");
+    result.operational = true;
+  } else if (cash?.holderType === "USER" && stock?.holderType === "USER") {
+    for (const [scope, period] of [["CASH", cash], ["STOCK", stock]] as const) {
+      if (!period.participants.some((p) => p.userId === args.userId)) {
+        await tx.custodyParticipant.create({
+          data: { custodyPeriodId: period.id, userId: args.userId, role: "SHARED" },
+        });
+        result.joined.push(scope);
+      }
+      await linkShiftCustody(tx, { shiftId: args.shiftId, custodyPeriodId: period.id, scope });
+      if (scope === "CASH") result.cashCustodyPeriodId = period.id;
+      else result.stockCustodyPeriodId = period.id;
+    }
+    result.operational = true;
+  } else {
+    throw new ApiError(409, "Open custody state is incomplete for this branch");
+  }
+
+  await tx.shift.update({
+    where: { id: args.shiftId },
+    data: result.gate
+      ? { custodyGateReason: result.gate, custodyReadyAt: null }
+      : { custodyGateReason: null, custodyReadyAt: new Date() },
+  });
+  return result;
 }
 
 /**
@@ -110,15 +318,49 @@ export async function linkShiftCustody(
  * Deliberately does NOT touch variance cases. A variance belongs to the
  * custody under which it arose; carrying it forward would make the incoming
  * custodian answerable for a shortage created before they held anything.
+ *
+ * Two things the transfer records, both of which are the substance of an
+ * acceptance rather than bookkeeping around it:
+ *
+ * `acceptedById`/`acceptedAt` land on the PREDECESSOR. Acceptance is an act
+ * performed upon the custody being handed over — somebody looked at what was
+ * there and took it on. The successor has not itself been accepted by anyone,
+ * and stamping it would claim an event that has not happened.
+ *
+ * `responsibleShiftId` lands on a STOCK successor, because
+ * `resolveStockAttribution` reads it and stamps it on every subsequent stock
+ * movement. A successor without one makes each later sale unattributable and
+ * SERVE refuses outright, so where a shift is named at all it is used: the
+ * caller's explicit answer first, then the shift the successor is attached to
+ * — the same rule `openShiftCustody` applies at its own STOCK open. A
+ * successor attached to no shift stays shift-less, which is the state that
+ * already existed and that SERVE already refuses; refusing to create it here
+ * would be a new restriction rather than a repair.
+ *
+ * Cash carries none of that: responsibility for stock movement is a stock
+ * concept, and a drawer has no shelf. Neither does a BRANCH holder — the point
+ * of branch custody is that no shift was answerable, and inventing one to fill
+ * the column would be the exact false attribution it exists to avoid.
  */
 export async function transferCustody(
   tx: Prisma.TransactionClient,
   args: {
     outgoingPeriodId: string;
     scope: CustodyScope;
-    incoming: { participants: Participant[]; shiftId: string | null };
+    incoming: {
+      participants: Participant[];
+      shiftId: string | null;
+      /** STOCK only — the shift answerable for the successor period. */
+      responsibleShiftId?: string | null;
+      /** Defaults to USER. BRANCH is stock-only, and SH-22 is its consumer. */
+      holderType?: CustodyHolderType;
+      openedById?: string | null;
+    };
     closingCashAmount?: number | null;
     actorId: string;
+    /** Written onto the PREDECESSOR: who accepted this custody, and when. */
+    acceptedById?: string | null;
+    acceptedAt?: Date | null;
   }
 ): Promise<{ outgoingPeriodId: string; incomingPeriodId: string }> {
   const outgoing = await tx.custodyPeriod.findUnique({
@@ -133,7 +375,16 @@ export async function transferCustody(
     throw new ApiError(409, "العهدة دي اتسلّمت خلاص");
   }
 
+  const holderType = args.incoming.holderType ?? "USER";
+  // See the note above: a shift-owned stock custody names the shift that
+  // answers for it, and nothing else ever does.
+  const responsibleShiftId =
+    args.scope === "STOCK" && holderType === "USER"
+      ? args.incoming.responsibleShiftId ?? args.incoming.shiftId ?? null
+      : null;
+
   const endedAt = new Date();
+  const acceptedAt = args.acceptedById ? args.acceptedAt ?? endedAt : args.acceptedAt ?? null;
 
   // Close first, so the partial unique index sees the slot free when the
   // successor is created a moment later in this same transaction.
@@ -142,6 +393,8 @@ export async function transferCustody(
     data: {
       status: "TRANSFERRED",
       endedAt,
+      acceptedById: args.acceptedById ?? null,
+      acceptedAt,
       closingCashAmount:
         args.scope === "CASH" ? args.closingCashAmount ?? null : null,
     },
@@ -154,6 +407,9 @@ export async function transferCustody(
     participants: args.incoming.participants,
     shiftId: args.incoming.shiftId,
     previousPeriodId: outgoing.id,
+    holderType,
+    openedById: args.incoming.openedById ?? null,
+    responsibleShiftId,
     // The incoming custodian starts holding what the outgoing one closed at.
     openingCashAmount: args.scope === "CASH" ? args.closingCashAmount ?? null : null,
   });
@@ -176,6 +432,13 @@ export async function transferCustody(
         incomingPeriodId,
         incomingParticipants: args.incoming.participants.map((p) => p.userId),
         closingCashAmount: args.closingCashAmount ?? null,
+        // Who accepted the custody that closed, and what answers for the one
+        // that opened — the two facts an accountability reader needs and
+        // could not previously reconstruct from this row.
+        acceptedById: args.acceptedById ?? null,
+        acceptedAt: acceptedAt?.toISOString() ?? null,
+        responsibleShiftId,
+        holderType,
       },
     },
   });

@@ -11,6 +11,7 @@ import { audit } from "@/lib/audit";
 import { round2 } from "@/lib/inventory";
 import { round3 } from "@/lib/costing";
 import { applyStockMutation } from "@/lib/ledger";
+import { acquireInventorySharedLocks } from "@/lib/inventory-freeze";
 
 const transferSchema = z.object({
   inventoryItemId: z.string(), // the source-branch item being transferred
@@ -54,6 +55,8 @@ export async function POST(request: NextRequest) {
     }
 
     await db.$transaction(async (tx) => {
+      await acquireInventorySharedLocks(tx, [source.branchId, toBranch.id]);
+
       // Source: decrement + TRANSFER_OUT, under the source item's lock.
       await applyStockMutation(tx, {
         inventoryItemId: source.id,
@@ -72,7 +75,7 @@ export async function POST(request: NextRequest) {
       let dest = await tx.inventoryItem.findFirst({
         where: {
           cafeId,
-          branchId: data.toBranchId,
+          branchId: toBranch.id,
           name: source.name,
           unit: source.unit,
           archivedAt: null,
@@ -82,7 +85,7 @@ export async function POST(request: NextRequest) {
         dest = await tx.inventoryItem.create({
           data: {
             cafeId,
-            branchId: data.toBranchId,
+            branchId: toBranch.id,
             name: source.name,
             category: source.category,
             unit: source.unit,
@@ -98,7 +101,7 @@ export async function POST(request: NextRequest) {
       await applyStockMutation(tx, {
         inventoryItemId: dest.id,
         cafeId,
-        branchId: data.toBranchId,
+        branchId: toBranch.id,
         type: "TRANSFER_IN",
         quantity: qty,
         unitCost: Number(source.costPerUnit),
