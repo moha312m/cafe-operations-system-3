@@ -38,6 +38,7 @@ export function InventoryPolicyCard() {
   // owner has already navigated away from from writing into a dead tree.
   useEffect(() => {
     let cancelled = false;
+
     api<{ mode: InventoryEnforcementMode }>("/api/cafe/inventory-policy")
       .then((r) => {
         if (cancelled) return;
@@ -46,24 +47,37 @@ export function InventoryPolicyCard() {
       })
       .catch((e: unknown) => {
         if (cancelled) return;
-        toast.error(e instanceof Error ? e.message : "فشل تحميل سياسة المخزون");
+        toast.error(
+          e instanceof Error ? e.message : "فشل تحميل سياسة المخزون"
+        );
       });
-    return () => { cancelled = true; };
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   async function save() {
     if (!choice || choice === saved) return;
+
     setBusy(true);
+
     try {
-      const r = await api<{ mode: InventoryEnforcementMode }>("/api/cafe/inventory-policy", {
-        method: "PATCH",
-        body: JSON.stringify({ mode: choice }),
-      });
+      const r = await api<{ mode: InventoryEnforcementMode }>(
+        "/api/cafe/inventory-policy",
+        {
+          method: "PATCH",
+          body: { mode: choice },
+        }
+      );
+
       setSaved(r.mode);
       setChoice(r.mode);
       toast.success("تم تحديث سياسة المخزون");
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "فشل حفظ سياسة المخزون");
+      toast.error(
+        e instanceof Error ? e.message : "فشل حفظ سياسة المخزون"
+      );
       setChoice(saved);
     } finally {
       setBusy(false);
@@ -73,8 +87,11 @@ export function InventoryPolicyCard() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">📦 سياسة المخزون والوصفات</CardTitle>
+        <CardTitle className="text-base">
+          📦 سياسة المخزون والوصفات
+        </CardTitle>
       </CardHeader>
+
       <CardContent className="space-y-3">
         <p className="text-sm text-muted-foreground">
           بتحدد الكاشير يعمل إيه لما الخامة تكون ناقصة أو الوصفة مش مضبوطة.
@@ -83,6 +100,7 @@ export function InventoryPolicyCard() {
         <div className="space-y-2">
           {INVENTORY_ENFORCEMENT_MODES.map((mode) => {
             const active = choice === mode;
+
             return (
               <button
                 key={mode}
@@ -100,18 +118,23 @@ export function InventoryPolicyCard() {
                   <span
                     className={
                       "size-4 shrink-0 rounded-full border-2 " +
-                      (active ? "border-primary bg-primary" : "border-muted-foreground/40")
+                      (active
+                        ? "border-primary bg-primary"
+                        : "border-muted-foreground/40")
                     }
                   />
+
                   <span className="text-sm font-semibold">
                     {ENFORCEMENT_MODE_LABEL[mode]}
                   </span>
+
                   {saved === mode && (
                     <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
                       الحالي
                     </span>
                   )}
                 </div>
+
                 <p className="mt-1 text-xs text-muted-foreground">
                   {ENFORCEMENT_MODE_DESCRIPTION[mode]}
                 </p>
@@ -127,11 +150,17 @@ export function InventoryPolicyCard() {
         )}
 
         <div className="flex items-center gap-2">
-          <Button onClick={save} disabled={busy || !choice || choice === saved}>
+          <Button
+            onClick={save}
+            disabled={busy || !choice || choice === saved}
+          >
             حفظ
           </Button>
+
           {choice !== saved && !busy && (
-            <span className="text-xs text-muted-foreground">فيه تغيير لسه متحفظش</span>
+            <span className="text-xs text-muted-foreground">
+              فيه تغيير لسه متحفظش
+            </span>
           )}
         </div>
       </CardContent>
