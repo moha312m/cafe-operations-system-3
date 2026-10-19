@@ -54,7 +54,9 @@ export const TEST_DB_NAME_PATTERN = /^cafe_ops_test(_[A-Za-z0-9]+)*$/;
 export const TEST_DB_PORT = 5434;
 export const TEST_DB_NAME = "cafe_ops_test";
 export const TEST_DATABASE_URL = `postgresql://postgres@127.0.0.1:${TEST_DB_PORT}/${TEST_DB_NAME}?schema=public`;
-export const TEST_SERVER_PORT = 3100;
+// TEST_SERVER_PORT may be overridden (e.g. 3101) to target a dedicated
+// isolated test server on an unused port; the default stays :3100.
+export const TEST_SERVER_PORT = Number(process.env.TEST_SERVER_PORT ?? 3100);
 export const TEST_BASE_URL = `http://localhost:${TEST_SERVER_PORT}`;
 
 /** The table whose existence is the database's own statement about itself. */

@@ -44,3 +44,10 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 .migration-allocation.json
+
+# Local-only operations/evidence; publication uses an explicit source allowlist.
+/artifacts/
+/.private/
+/.codex-dev.log
+/.codex-remote-attachments/
+/.worktrees/
