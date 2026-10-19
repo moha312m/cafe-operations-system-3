@@ -465,6 +465,8 @@ describe("POLICY-006 the SERVED guard is unchanged", () => {
   });
 
   test("a blocked order still creates nothing at all", async () => {
+    // Cash collection now acquires and validates the shift before stock reads.
+    await db.shift.create({ data: { cafeId: fx.cafeId, branchId: fx.branchId, cashierId: fx.owner.id, shiftNumber: 1 } });
     await setMode("STRICT");
     const ice = await ingredient("ice nothing", 0);
     const p = await product("shake nothing");

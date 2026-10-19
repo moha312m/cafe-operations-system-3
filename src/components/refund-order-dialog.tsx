@@ -30,7 +30,7 @@ const METHOD_LABEL: Record<string, string> = {
 };
 
 /**
- * Confirm and issue a full refund for one order.
+ * Request approval for a full refund on one order.
  *
  * The cashier never meets the words COLLECTION or REFUND — they see an order,
  * an amount, how it was paid and a box for why. Everything the server checks
@@ -70,7 +70,7 @@ export function RefundOrderDialog({
         method: "POST",
         body: { reason: reason.trim() },
       });
-      toast.success(`تم استرجاع ${money(target.total, currency)} لطلب #${target.orderNumber}`);
+      toast.success(`تم إرسال طلب استرداد ${money(target.total, currency)} للمالك؛ لم يُنفّذ المبلغ بعد`);
       setReason("");
       onClose();
       // Re-read from the server rather than patching local state, so what the
@@ -93,8 +93,8 @@ export function RefundOrderDialog({
     <Dialog open={target !== null} onOpenChange={(o) => !o && close()}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>
-            {target ? `استرجاع ${money(target.total, currency)}؟` : "استرجاع"}
+              <DialogTitle>
+            {target ? `طلب استرداد ${money(target.total, currency)}؟` : "طلب استرداد"}
           </DialogTitle>
         </DialogHeader>
 
@@ -137,7 +137,7 @@ export function RefundOrderDialog({
             )}
 
             <p className="text-xs text-muted-foreground">
-              الطلب هيتقفل بعد الاسترجاع. لو العميل هيشتري تاني، اعمل طلب جديد.
+              الإجراء لن يتم قبل موافقة المالك ثم تنفيذ الطلب من شاشة الموافقات. استرداد الفيزا أو المحفظة يتم بشكل منفصل من البنك أو مزود الدفع.
             </p>
           </div>
         )}
@@ -153,7 +153,7 @@ export function RefundOrderDialog({
             disabled={busy || !reason.trim()}
             className="w-full sm:w-auto"
           >
-            {busy ? "جاري الاسترجاع…" : "تأكيد الاسترجاع"}
+            {busy ? "جاري إرسال الطلب…" : "إرسال طلب الاسترداد"}
           </Button>
         </DialogFooter>
       </DialogContent>

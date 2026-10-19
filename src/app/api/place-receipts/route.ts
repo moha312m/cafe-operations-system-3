@@ -1,0 +1,8 @@
+﻿import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
+import { requireKey, handleApiError, ApiError } from "@/lib/api";
+import { db } from "@/lib/db";
+import { createPlaceReceipt } from "@/lib/place-receipts";
+const createSchema=z.object({shiftId:z.string().min(1),assignedUserId:z.string().min(1)}).strict();
+export async function GET(request:NextRequest){try{const actor=await requireKey("handover.view");if(!actor.cafeId)throw new ApiError(403,"Cafe required");const branchId=request.nextUrl.searchParams.get("branchId");const receipts=await db.shiftPlaceReceipt.findMany({where:{cafeId:actor.cafeId,...(branchId?{branchId}:{}),...(actor.branchId?{branchId:actor.branchId}:{})},select:{id:true,branchId:true,status:true,createdAt:true,assignedUser:{select:{id:true,name:true}},incomingShift:{select:{id:true,shiftNumber:true,openedAt:true}},snapshot:true},orderBy:{createdAt:"desc"},take:100});return NextResponse.json({receipts});}catch(error){return handleApiError(error);}}
+export async function POST(request:NextRequest){try{const actor=await requireKey("handover.view");if(!actor.cafeId)throw new ApiError(403,"Cafe required");const data=createSchema.parse(await request.json());const shift=await db.shift.findFirst({where:{id:data.shiftId,cafeId:actor.cafeId},select:{branchId:true}});if(!shift)throw new ApiError(404,"Shift was not found");if(actor.branchId&&actor.branchId!==shift.branchId)throw new ApiError(403,"Shift is outside this branch");const receipt=await createPlaceReceipt({cafeId:actor.cafeId,branchId:shift.branchId,shiftId:data.shiftId,assignedUserId:data.assignedUserId,actorId:actor.id});return NextResponse.json({receipt},{status:201});}catch(error){return handleApiError(error);}}

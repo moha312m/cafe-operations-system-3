@@ -30,6 +30,8 @@ import { requireServer, login, as } from "./helpers/http";
 
 const MARKER = "PH15-POS002";
 const REASON = "PH15 cancel-rule refund";
+let settingsSnapshot: Awaited<ReturnType<typeof db.ownerActionSettings.findUnique>> = null;
+let settingsCafeId = "";
 
 async function scene(marker: string, total: number) {
   const fx = await fixture();
@@ -45,6 +47,7 @@ async function scene(marker: string, total: number) {
 }
 
 async function purge(orderId: string) {
+  await db.ownerActionRequest.deleteMany({ where: { targetOrderId: orderId } });
   await db.payment.deleteMany({ where: { orderId } });
   await db.orderItem.deleteMany({ where: { orderId } });
   await db.order.deleteMany({ where: { id: orderId } });
@@ -53,12 +56,33 @@ async function purge(orderId: string) {
 const cancel = (email: string, orderId: string) =>
   as(email, `/api/orders/${orderId}/status`, {
     method: "PATCH",
-    body: JSON.stringify({ status: "CANCELLED" }),
+    body: JSON.stringify({ status: "CANCELLED", reason: "Customer requested cancellation" }),
   });
 
 before(async () => {
   await requireServer();
   await login("manager@demo.com", "manager123");
+  const fx = await fixture();
+  settingsCafeId = fx.cafeId;
+  settingsSnapshot = await db.ownerActionSettings.findUnique({ where: { cafeId: fx.cafeId } });
+  const owner = await db.user.findFirst({ where: { cafeId: fx.cafeId, role: "CAFE_OWNER", isActive: true, archivedAt: null }, select: { id: true } });
+  if (!owner) throw new Error("Seeded cafe owner is required for cancellation approval tests");
+  await db.ownerActionSettings.upsert({
+    where: { cafeId: fx.cafeId },
+    create: { cafeId: fx.cafeId, ownerId: owner.id },
+    update: { ownerId: owner.id, cancelMode: "OWNER_REQUEST" },
+  });
+});
+after(async () => {
+  if (settingsCafeId) {
+    if (settingsSnapshot) await db.ownerActionSettings.update({ where: { cafeId: settingsCafeId }, data: {
+      ownerId: settingsSnapshot.ownerId, refundMode: settingsSnapshot.refundMode,
+      cancelMode: settingsSnapshot.cancelMode, itemVoidMode: settingsSnapshot.itemVoidMode,
+      version: settingsSnapshot.version,
+    } });
+    else await db.ownerActionSettings.deleteMany({ where: { cafeId: settingsCafeId } });
+  }
+  await db.$disconnect();
 });
 
 describe("POS-002 cancelling an order with money on it", () => {
@@ -67,9 +91,10 @@ describe("POS-002 cancelling an order with money on it", () => {
     const s = await scene(marker, 100);
     try {
       const res = await cancel("manager@demo.com", s.order.id);
-      assert.equal(res.status, 200, res.text);
+      assert.equal(res.status, 202, res.text);
       const o = await db.order.findUniqueOrThrow({ where: { id: s.order.id } });
-      assert.equal(o.status, "CANCELLED");
+      assert.equal(o.status, "CONFIRMED", "a request cannot cancel the order before owner approval and execution");
+      assert.equal(await db.ownerActionRequest.count({ where: { targetOrderId: s.order.id, status: "PENDING" } }), 1);
     } finally {
       await purge(s.order.id);
       await cleanup(marker);
@@ -88,7 +113,7 @@ describe("POS-002 cancelling an order with money on it", () => {
       });
 
       const res = await cancel("manager@demo.com", s.order.id);
-      assert.equal(res.status, 400, res.text);
+      assert.equal(res.status, 409, res.text);
       assert.match(res.text, /مرتجع|استرجاع|refund/i, "the refusal must point at the refund flow");
 
       // Nothing moved: the sale is still a sale and the money is still on it.
@@ -115,7 +140,7 @@ describe("POS-002 cancelling an order with money on it", () => {
       });
 
       const res = await cancel("manager@demo.com", s.order.id);
-      assert.equal(res.status, 400, res.text);
+      assert.equal(res.status, 409, res.text);
 
       const o = await db.order.findUniqueOrThrow({ where: { id: s.order.id } });
       assert.notEqual(o.status, "CANCELLED");
@@ -145,7 +170,8 @@ describe("POS-002 cancelling an order with money on it", () => {
       assert.equal(collectedAmount(payments), 0, "the refund returned everything");
 
       const res = await cancel("manager@demo.com", s.order.id);
-      assert.equal(res.status, 200, `a fully refunded order may cancel: ${res.text}`);
+      assert.equal(res.status, 202, `a fully refunded order may request cancellation: ${res.text}`);
+      assert.equal((await db.order.findUniqueOrThrow({ where: { id: s.order.id } })).status, "CONFIRMED");
     } finally {
       await purge(s.order.id);
       await cleanup(marker);

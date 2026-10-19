@@ -33,6 +33,9 @@
 
 import type { Prisma, PrismaClient, InventoryTransactionType, InventoryUnit } from "@prisma/client";
 import { round3 } from "@/lib/costing";
+import { Prisma as Sql } from "@prisma/client";
+import { optionalProtectedContext } from "@/lib/protected-transaction";
+import { inventoryRowNeedsLock, rememberInventoryRow, scopedLockPredicate } from "@/lib/transaction-locks";
 import {
   acquireInventorySharedLocks,
   activeFreezeFor,
@@ -87,6 +90,7 @@ type LockedItem = {
   ledgerVersion: bigint;
   unit: InventoryUnit;
   costPerUnit: number;
+  costPerUnitExact: Prisma.Decimal;
 };
 
 /**
@@ -117,26 +121,33 @@ export async function resolveStockAttribution(
  * movement could land between the two reads, making the balance and the
  * cursor describe different instants.
  */
+export class MissingInventoryItemError extends Error {}
+
 export async function lockItemForUpdate(
   tx: Prisma.TransactionClient,
-  inventoryItemId: string
+  inventoryItemId: string,
+  options: { nowait?: boolean } = {}
 ): Promise<LockedItem> {
+  const needsLock = inventoryRowNeedsLock(tx, inventoryItemId);
+  const scoped = optionalProtectedContext(tx) ? scopedLockPredicate(tx, "i") : Sql.sql`TRUE`;
   const rows = await tx.$queryRaw<
     { currentStock: Prisma.Decimal; ledgerVersion: bigint; unit: InventoryUnit; costPerUnit: Prisma.Decimal }[]
   >`
-    SELECT "currentStock", "ledgerVersion", "unit", "costPerUnit"
-      FROM "InventoryItem"
-     WHERE "id" = ${inventoryItemId}
-     FOR UPDATE
+    SELECT i."currentStock", i."ledgerVersion", i."unit", i."costPerUnit"
+      FROM "InventoryItem" i
+     WHERE i."id" = ${inventoryItemId} AND ${scoped}
+     ${needsLock ? options.nowait ? Sql.sql`FOR UPDATE OF i NOWAIT` : Sql.sql`FOR UPDATE OF i` : Sql.empty}
   `;
   const row = rows[0];
-  if (!row) throw new Error(`Inventory item ${inventoryItemId} not found`);
+  if (!row) throw new MissingInventoryItemError(`Inventory item ${inventoryItemId} not found`);
+  if (needsLock) rememberInventoryRow(tx, inventoryItemId, options.nowait);
 
   return {
     currentStock: Number(row.currentStock),
     ledgerVersion: BigInt(row.ledgerVersion),
     unit: row.unit,
     costPerUnit: Number(row.costPerUnit),
+    costPerUnitExact: row.costPerUnit,
   };
 }
 

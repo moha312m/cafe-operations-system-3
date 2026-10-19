@@ -1,5 +1,6 @@
 "use client";
 
+import { api } from "@/lib/client";
 import { useMemo, useState } from "react";
 import { money } from "@/lib/client";
 import { computeCharges } from "@/lib/charges";
@@ -199,10 +200,9 @@ export function CustomerMenuPage({
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch(`/api/qr/${menu.branch.id}/orders`, {
+      const data = await api<{ order: PlacedOrder }>(`/api/qr/${menu.branch.id}/orders`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        body: {
           customerName: details.customerName.trim(),
           customerPhone: details.customerPhone.trim() || undefined,
           tableNumber: details.tableNumber.trim() || undefined,
@@ -214,12 +214,8 @@ export function CustomerMenuPage({
             addOnIds: l.addOns.map((a) => a.id),
             notes: l.note || undefined,
           })),
-        }),
+        },
       });
-      const data = await res.json().catch(() => null);
-      if (!res.ok || !data?.order) {
-        throw new Error(data?.error || "");
-      }
       setPlaced(data.order);
       setCartOpen(false);
     } catch (e) {
@@ -367,7 +363,7 @@ export function CustomerMenuPage({
 
       {/* ── Cart & checkout bottom sheet ───────────────────────── */}
       <Dialog open={cartOpen} onOpenChange={setCartOpen}>
-        <DialogContent className={SHEET}>
+        <DialogContent scrollable={false} className={SHEET}>
           <DialogHeader className="shrink-0 border-b px-4 py-3">
             <DialogTitle>السلة</DialogTitle>
           </DialogHeader>
@@ -455,7 +451,7 @@ export function CustomerMenuPage({
         open={configuring !== null}
         onOpenChange={(o) => !o && setConfiguring(null)}
       >
-        <DialogContent className={SHEET}>
+        <DialogContent scrollable={false} className={SHEET}>
           <DialogHeader className="shrink-0 border-b px-4 py-3">
             <DialogTitle>{configuring?.name}</DialogTitle>
           </DialogHeader>

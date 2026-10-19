@@ -216,7 +216,9 @@ async function freshHandover(
   const closed = await closeShiftWithSettlement({
     shiftId: shift.id,
     actualCash: 100,
-    actorId: cafe.cashier.id,
+    // Annex-branch shifts need a cafe-scoped closer: the scoped close now
+    // refuses a cashier whose own branch does not match the shift branch.
+    actorId: branchId === cafe.branchId ? cafe.cashier.id : cafe.owner.id,
     closedByManager: false,
     handoverTarget: "SHIFT_TO_SHIFT",
     grants: GRANTS_FULL,
@@ -2179,4 +2181,20 @@ describe("SH-17 reachability", () => {
       "and opens its cases the ordinary way, immediately",
     );
   });
+});
+
+test("the outgoing custodian can open their draft over HTTP without disclosing quantities to the incoming reviewer", async () => {
+  const h = await freshHandover();
+  const draft = await as<{ handover: { status: string; count: unknown; requiredItems: unknown[] } }>(fx.cashier.email, `/api/handovers/${h.handoverId}`);
+  assert.equal(draft.status, 200, draft.text);
+  assert.equal(draft.body.handover.status, "DRAFT");
+  assert.equal(draft.body.handover.count, null);
+  assert.equal(draft.body.handover.requiredItems.length, 3);
+  assertNoQuantityKeys(draft.body.handover, "draft");
+  const incoming = await as(fx.manager.email, `/api/handovers/${h.handoverId}`);
+  assert.equal(incoming.status, 409, "the incoming review still starts only after outgoing submission");
+  await startCount(h.handoverId);
+  const counting = await as(fx.cashier.email, `/api/handovers/${h.handoverId}`);
+  assert.equal(counting.status, 200, counting.text);
+  assertNoQuantityKeys(counting.body, "draft-count");
 });

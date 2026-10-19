@@ -11,6 +11,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
+import Link from "next/link";
 import { api } from "@/lib/client";
 import { useApp } from "@/components/app-shell";
 import { VarianceList, type VarianceRow } from "@/components/variances/variance-list";
@@ -91,6 +92,7 @@ export default function VariancesPage() {
     <main className="space-y-4 p-4 sm:p-6">
       <header className="flex flex-wrap items-center gap-3">
         <h1 className="text-lg font-semibold">الفروقات</h1>
+        <Link className="text-primary underline" href="/reports/employee-variances">تقرير فروق الموظفين</Link>
         <div className="ms-auto flex flex-wrap gap-2">
           <Select value={status} onValueChange={(v) => setStatus(v ?? ANY)}>
             <SelectTrigger className="w-44" aria-label="الحالة">

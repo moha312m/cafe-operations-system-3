@@ -18,7 +18,7 @@ import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { db, teardownTaggedCafe } from "./helpers/db";
 import { countCafe, COUNT_PASSWORD, type CountCafe } from "./helpers/count";
-import { requireServer, login, as } from "./helpers/http";
+import { BASE, requireServer, login, as } from "./helpers/http";
 
 let fx: CountCafe;
 
@@ -104,4 +104,53 @@ describe("SEC-004 a suspended account loses API access at once", () => {
     assert.equal(second.status, 403);
     await setUserActive(fx.storekeeper.id, true);
   });
+});
+
+async function capturedManagerCookie() {
+  const response = await fetch(BASE + "/api/auth/login", { method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email: fx.manager.email, password: COUNT_PASSWORD }) });
+  assert.equal(response.status, 200, await response.text());
+  const header = response.headers.getSetCookie().find(value => value.startsWith("cafeops_session="));
+  assert.ok(header, "owned login must issue a session");
+  return header.split(";")[0];
+}
+
+test("logout rejects the exact captured cookie at auth/me and branch mutation; second session survives", async () => {
+  const first = await capturedManagerCookie(), second = await capturedManagerCookie();
+  assert.ok(first !== second, "independent logins must issue distinct tokens");
+  const logout = await fetch(BASE + "/api/auth/logout", { method: "POST", headers: { cookie: first } });
+  assert.equal(logout.status, 200, await logout.text());
+  assert.ok(logout.headers.getSetCookie().some(header => header.startsWith("cafeops_session=;") &&
+    (/max-age=0/i.test(header) || /expires=Thu, 01 Jan 1970/i.test(header))), "logout must expire the cookie");
+  const before = await db.branch.findUniqueOrThrow({ where: { id: fx.branchId } });
+  const me = await fetch(BASE + "/api/auth/me", { headers: { cookie: first } });
+  assert.equal(me.status, 401, await me.text());
+  const denied = await fetch(BASE + "/api/branches/" + fx.branchId, { method: "PATCH",
+    headers: { cookie: first, "Content-Type": "application/json" }, body: JSON.stringify({ phone: "SEC004-denied" }) });
+  assert.equal(denied.status, 401, await denied.text());
+  assert.deepEqual(await db.branch.findUniqueOrThrow({ where: { id: fx.branchId } }), before);
+  const other = await fetch(BASE + "/api/auth/me", { headers: { cookie: second } });
+  assert.equal(other.status, 200, await other.text());
+  const fresh = await capturedManagerCookie();
+  assert.equal((await fetch(BASE + "/api/auth/me", { headers: { cookie: fresh } })).status, 200);
+});
+
+test("removing branches.manage denies the existing session's PATCH and POST while viewing remains authorized", async () => {
+  const cookie = await capturedManagerCookie();
+  await db.userPermissionOverride.create({ data: { userId: fx.manager.id, permissionKey: "branches.manage", allowed: false } });
+  try {
+    const before = await db.branch.findMany({ where: { cafeId: fx.cafeId }, orderBy: { id: "asc" } });
+    const mutation = await fetch(BASE + "/api/branches/" + fx.branchId, { method: "PATCH",
+      headers: { cookie, "Content-Type": "application/json" }, body: JSON.stringify({ phone: "SEC004-denied" }) });
+    assert.equal(mutation.status, 403, await mutation.text());
+    const create = await fetch(BASE + "/api/branches", { method: "POST",
+      headers: { cookie, "Content-Type": "application/json" }, body: JSON.stringify({ name: "SEC004-denied" }) });
+    assert.equal(create.status, 403, await create.text());
+    assert.deepEqual(await db.branch.findMany({ where: { cafeId: fx.cafeId }, orderBy: { id: "asc" } }), before);
+    const view = await fetch(BASE + "/api/branches", { headers: { cookie } });
+    assert.equal(view.status, 200, await view.text());
+  } finally {
+    await db.userPermissionOverride.deleteMany({ where: { userId: fx.manager.id, permissionKey: "branches.manage" } });
+  }
 });

@@ -101,7 +101,7 @@ describe("COUNT-016 periodic full-count boundaries", () => {
   test("cross-cafe branch resolution is rejected", async () => {
     await assert.rejects(
       () => resolvePeriodicFullCount(cafeId, otherCafeBranchId),
-      /branch|cafe|ÙØ±Ø¹|ÙƒØ§ÙÙŠÙ‡/i,
+      /branch|cafe|فرع|كافيه/i,
     );
   });
 

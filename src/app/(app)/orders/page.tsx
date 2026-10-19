@@ -1,17 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { api, money } from "@/lib/client";
+import { api, money, ApiRequestError } from "@/lib/client";
+import { collectOrderPages, type OrderPage } from "@/lib/order-pages-client";
 import { t, formatTime } from "@/lib/i18n";
 import { collectedAmount } from "@/lib/order-payments";
 import { handledBy } from "@/lib/order-staff";
 import { useApp } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   Dialog,
@@ -29,6 +30,9 @@ type OrderItem = {
   lineTotal: string;
   notes: string | null;
   addOns: { id: string; addOnName: string }[];
+  voidedAt: string | null;
+  voidedBy: { id: string; name: string } | null;
+  voidReason: string | null;
 };
 type Payment = { id: string; amount: string; status: string };
 type Order = {
@@ -55,7 +59,21 @@ type Order = {
   approvedAt: string | null;
   items: OrderItem[];
   payments: Payment[];
+  handoverCarries?: {
+    createdAt: string;
+    statusAtHandover: Order["status"];
+    shift: { shiftNumber: number; cashier: { name: string } };
+  }[];
+  deferredStockDeduction?: { servedAt: string; appliedAt: string | null } | null;
 };
+
+function carriedFrom(order: Order) {
+  return order.handoverCarries?.[0] ?? null;
+}
+
+function stockPending(order: Order) {
+  return order.deferredStockDeduction != null && order.deferredStockDeduction.appliedAt === null;
+}
 
 const COLUMNS = [
   { status: "CONFIRMED", label: t.orderStatus.CONFIRMED, next: "PREPARING", nextLabel: "ابدأ التحضير" },
@@ -70,52 +88,150 @@ function paidAmount(order: Order): number {
 
 export default function OrdersPage() {
   const router = useRouter();
-  const { cafe, can } = useApp();
+  const { cafe, can, user } = useApp();
   const currency = cafe?.currency ?? "USD";
   const [orders, setOrders] = useState<Order[]>([]);
   const [busy, setBusy] = useState(false);
   const [sourceFilter, setSourceFilter] = useState<string>("all");
+  const [historyPages, setHistoryPages] = useState(1);
+  const [hasMoreHistory, setHasMoreHistory] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadingOrders, setLoadingOrders] = useState(false);
+  const loadVersion = useRef(0);
   const [detail, setDetail] = useState<Order | null>(null);
+  const [custodyNotice, setCustodyNotice] = useState<{ branchId: string; branchName: string; message: string; recovery: "RESUME_SHIFT" | "HANDOVER" } | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<Order | null>(null);
+  const [cancelReason, setCancelReason] = useState("");
 
   const load = useCallback(async () => {
+    const version = ++loadVersion.current;
+    setLoadingOrders(true);
+    const source = sourceFilter === "all" ? "" : `&source=${sourceFilter}`;
+    const read = (url: string) => (cursor: string | null) => api<OrderPage<Order>>(
+      url + (cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""));
     try {
-      const { orders } = await api<{ orders: Order[] }>("/api/orders");
-      setOrders(orders);
-    } catch {
-      // polling failure is non-fatal; next tick retries
+      const [live, history] = await Promise.all([
+        collectOrderPages(read(`/api/orders?status=CONFIRMED,PREPARING,READY${source}`)),
+        collectOrderPages(read(`/api/orders?status=SERVED,CANCELLED&pageSize=50${source}`), historyPages, true),
+      ]);
+      if (version !== loadVersion.current) return;
+      setOrders([...live.orders, ...history.orders]);
+      setHasMoreHistory(history.pageInfo.hasMore);
+      setLoadError(null);
+    } catch (error) {
+      if (version === loadVersion.current) setLoadError(error instanceof Error ? error.message : "تعذر تحديث الطلبات");
+    } finally {
+      if (version === loadVersion.current) setLoadingOrders(false);
     }
-  }, []);
+  }, [sourceFilter, historyPages]);
 
   useEffect(() => {
-    load();
-    const timer = setInterval(load, 5000);
-    return () => clearInterval(timer);
+    const versionRef = loadVersion;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const refresh = async () => { await load(); if (!stopped) timer = setTimeout(refresh, 5000); };
+    timer = setTimeout(refresh, 0);
+    return () => { stopped = true; clearTimeout(timer); versionRef.current++; };
   }, [load]);
 
-  async function setStatus(order: Order, status: string) {
+  async function setStatus(order: Order, status: string, reason?: string) {
     setBusy(true);
     try {
-      await api(`/api/orders/${order.id}/status`, {
+      const result = await api<{ stockDeferred?: boolean; request?: { id: string; status: string } }>(`/api/orders/${order.id}/status`, {
         method: "PATCH",
-        body: { status },
+        body: { status, ...(reason ? { reason } : {}) },
       });
+      if (status === "CANCELLED" && result.request) toast.success("تم إرسال طلب الإلغاء للمالك؛ الطلب لسه قائم لحد الموافقة والتنفيذ");
+      if (result.stockDeferred) toast.info("اتسلّم ✓ — المخزون متجمّد للتسليم، والخصم هيتسجّل بعد الاستلام");
       await load();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "فشل تحديث الطلب");
+      if (e instanceof ApiRequestError && e.payload && typeof e.payload === "object" &&
+          "code" in e.payload && e.payload.code === "STOCK_CUSTODY_REQUIRED") {
+        const recovery = "recovery" in e.payload && e.payload.recovery === "HANDOVER" ? "HANDOVER" : "RESUME_SHIFT";
+        setCustodyNotice({ branchId: order.branch.id, branchName: order.branch.name, message: e.message, recovery });
+      } else toast.error(e instanceof Error ? e.message : "فشل تحديث الطلب");
     } finally {
       setBusy(false);
     }
+  }
+
+  async function requestItemVoid(order: Order, item: OrderItem) {
+    const reason = window.prompt(`سبب طلب حذف ${item.productName} من الطلب #${order.orderNumber}:`)?.trim();
+    if (!reason || reason.length < 3) return;
+    setBusy(true);
+    try {
+      await api("/api/owner-action-requests", { method: "POST", body: {
+        action: "VOID_ORDER_ITEM", orderId: order.id, orderItemId: item.id,
+        reason, idempotencyKey: crypto.randomUUID(),
+      } });
+      toast.success("تم إرسال طلب حذف الصنف للمالك؛ الصنف ما زال ضمن الطلب حتى الموافقة والتنفيذ");
+      await load();
+    } catch (error) { toast.error(error instanceof Error ? error.message : "تعذر إرسال طلب حذف الصنف"); }
+    finally { setBusy(false); }
+  }
+
+  async function resumeCustody() {
+    if (!custodyNotice) return;
+    setBusy(true);
+    try {
+      const result = await api<{ shift: { branchId: string; custodyGateReason: string | null } }>("/api/shifts", {
+        method: "POST", body: { resumeOnly: true,
+          ...(user.role === "CAFE_OWNER" || user.role === "SUPER_ADMIN" ? { branchId: custodyNotice.branchId } : {}),
+        },
+      });
+      if (result.shift.branchId !== custodyNotice.branchId) {
+        router.refresh();
+        throw new Error("تم تغيير فرعك — حدّث الصفحة وراجع الطلب في فرعه");
+      }
+      if (result.shift.custodyGateReason) throw new Error("الشيفت في انتظار التسليم أو التحقق الافتتاحي — أكمل الإجراءات من صفحة التسليم والاستلام");
+      setCustodyNotice(null);
+      toast.success("تم استئناف الشيفت وربط العهدة — تقدر تسلّم الطلب الآن");
+      await load();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "فشل استئناف الشيفت");
+    } finally { setBusy(false); }
   }
 
   // NOTE: money collection moved to the POS cashier screen — this page
   // only shows payment status and deep-links into /pos?collectOrderId=…
 
   const finished = orders
-    .filter((o) => o.status === "SERVED" || o.status === "CANCELLED")
-    .slice(0, 8);
+    .filter((o) => (o.status === "SERVED" || o.status === "CANCELLED") &&
+      (sourceFilter === "all" || o.source === sourceFilter));
 
   return (
     <div className="space-y-4">
+      <Dialog open={custodyNotice !== null} onOpenChange={(open) => !busy && !open && setCustodyNotice(null)}>
+        <DialogContent>
+          <DialogHeader><DialogTitle>استكمال العهدة قبل تسليم الطلب</DialogTitle></DialogHeader>
+          <p className="text-sm">{custodyNotice?.message}</p>
+          <p className="text-sm text-muted-foreground">الفرع: {custodyNotice?.branchName}</p>
+          <DialogFooter>
+            {custodyNotice?.recovery === "RESUME_SHIFT" && can("shifts:operate") && (
+              <Button disabled={busy} onClick={() => void resumeCustody()}>استئناف شيفتي</Button>
+            )}
+            {can("shifts:operate") && <Button variant="outline" disabled={busy} onClick={() => router.push(custodyNotice?.recovery === "HANDOVER" ? "/handovers" : "/pos")}>
+              {custodyNotice?.recovery === "HANDOVER" ? "التسليم والاستلام" : "فتح الشيفت من نقطة البيع"}
+            </Button>}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={cancelTarget !== null} onOpenChange={(open) => !busy && !open && setCancelTarget(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>طلب إلغاء الطلب #{cancelTarget?.orderNumber}</DialogTitle></DialogHeader>
+          <div className="space-y-2"><Label htmlFor="cancel-order-reason">سبب الإلغاء *</Label><Textarea id="cancel-order-reason" rows={3} value={cancelReason} onChange={(event) => setCancelReason(event.target.value)} placeholder="اكتب سبب الإلغاء" /></div>
+          <p className="text-xs text-muted-foreground">سيظهر الطلب للمالك للموافقة أو الرفض، ولن يتغير وضعه قبل التنفيذ.</p>
+          <DialogFooter>
+            <Button variant="outline" disabled={busy} onClick={() => setCancelTarget(null)}>رجوع</Button>
+            <Button variant="destructive" disabled={busy || cancelReason.trim().length < 3 || !cancelTarget} onClick={async () => {
+              if (!cancelTarget) return;
+              const target = cancelTarget;
+              await setStatus(target, "CANCELLED", cancelReason.trim());
+              setCancelTarget(null); setCancelReason("");
+            }}>إرسال طلب الإلغاء</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <div className="flex flex-wrap items-end justify-between gap-2">
         <div>
           <h1 className="text-2xl font-semibold">{t.nav.orders}</h1>
@@ -135,7 +251,7 @@ export default function OrdersPage() {
               key={f.value}
               size="sm"
               variant={sourceFilter === f.value ? "default" : "outline"}
-              onClick={() => setSourceFilter(f.value)}
+              onClick={() => { setHistoryPages(1); setSourceFilter(f.value); }}
             >
               {f.label}
             </Button>
@@ -143,6 +259,7 @@ export default function OrdersPage() {
         </div>
       </div>
 
+      {loadError && <p role="alert" className="text-sm text-destructive">تعذر تحديث الطلبات؛ البيانات المعروضة قديمة: {loadError}</p>}
       <div className="grid gap-4 lg:grid-cols-3">
         {COLUMNS.map((col) => {
           const colOrders = orders.filter(
@@ -164,9 +281,18 @@ export default function OrdersPage() {
               {colOrders.map((order) => {
                 const paid = paidAmount(order);
                 const isPaid = paid + 0.001 >= Number(order.total);
+                const carry = carriedFrom(order);
                 return (
-                  <Card key={order.id}>
+                  <Card key={order.id} className={carry ? "border-amber-400 dark:border-amber-600" : undefined}>
                     <CardContent className="space-y-2 p-3">
+                      {carry && (
+                        <p
+                          data-testid="carried-order-badge"
+                          className="rounded-md bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
+                        >
+                          📥 مستلم من شيفت #{carry.shift.shiftNumber} ({carry.shift.cashier.name}) · كان {t.orderStatus[carry.statusAtHandover]}
+                        </p>
+                      )}
                       <div className="flex items-center justify-between">
                         <p className="font-semibold">#{order.orderNumber}</p>
                         <div className="flex gap-1">
@@ -264,7 +390,7 @@ export default function OrdersPage() {
                                 variant="ghost"
                                 className="text-destructive"
                                 disabled={busy}
-                                onClick={() => setStatus(order, "CANCELLED")}
+                                onClick={() => { setCancelTarget(order); setCancelReason(""); }}
                               >
                                 إلغاء
                               </Button>
@@ -288,25 +414,39 @@ export default function OrdersPage() {
       </div>
 
       {finished.length > 0 && (
-        <div className="space-y-2">
-          <h2 className="font-medium text-muted-foreground">اتخلصوا قريب</h2>
-          <div className="flex flex-wrap gap-2">
+        <section aria-labelledby="order-history-heading" className="space-y-2">
+          <h2 id="order-history-heading" className="font-medium text-muted-foreground">اتخلصوا قريب</h2>
+          <ul className="flex flex-wrap gap-2">
             {finished.map((order) => (
-              <Badge
-                key={order.id}
-                variant={order.status === "SERVED" ? "secondary" : "outline"}
-              >
-                #{order.orderNumber} · {t.orderStatus[order.status]} ·{" "}
-                {money(order.total, currency)}
-              </Badge>
+              <li key={order.id} className="min-w-0 max-w-full">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-auto min-h-9 max-w-full flex-wrap whitespace-normal py-2 text-start"
+                  aria-haspopup="dialog"
+                  onClick={() => setDetail(order)}
+                >
+                  <span className="sr-only">عرض تفاصيل الطلب </span>
+                  {carriedFrom(order) && "📥 "}
+                  #{order.orderNumber} · {t.orderStatus[order.status]} ·{" "}
+                  {money(order.total, currency)}
+                  {stockPending(order) && (
+                    <span data-testid="stock-pending-badge" className="ms-1 text-amber-700 dark:text-amber-400">
+                      · المخزون يتخصم بعد الاستلام
+                    </span>
+                  )}
+                </Button>
+              </li>
             ))}
-          </div>
-        </div>
+          </ul>
+        </section>
       )}
 
       {/* تفاصيل الطلب + بيانات الموظف */}
+      {hasMoreHistory && <Button variant="outline" disabled={loadingOrders}
+        onClick={() => setHistoryPages(pages => pages + 1)}>عرض طلبات أقدم</Button>}
       <Dialog open={detail !== null} onOpenChange={(o) => !o && setDetail(null)}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-md" scrollable>
           {detail && (
             <>
               <DialogHeader>
@@ -320,6 +460,21 @@ export default function OrdersPage() {
                     <Badge variant="outline">ترابيزة {detail.tableNumber}</Badge>
                   )}
                 </div>
+
+                {(() => {
+                  const carry = carriedFrom(detail);
+                  return carry ? (
+                    <p className="rounded-md bg-amber-50 p-2 text-xs text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+                      📥 الأوردر ده اترحّل من شيفت #{carry.shift.shiftNumber} ({carry.shift.cashier.name}) وقت التسليم
+                      {" "}({formatTime(carry.createdAt)})، وكان وقتها {t.orderStatus[carry.statusAtHandover]}.
+                    </p>
+                  ) : null;
+                })()}
+                {stockPending(detail) && (
+                  <p className="rounded-md bg-muted p-2 text-xs text-muted-foreground">
+                    اتسلّم والمخزون متجمّد للتسليم — الخصم هيتسجّل تلقائيًا على عهدة المستلم أول ما الاستلام يكتمل.
+                  </p>
+                )}
 
                 <div className="rounded-lg border bg-muted/30 p-3">
                   <h3 className="mb-2 font-semibold">{t.staffInfo.section}</h3>
@@ -355,6 +510,8 @@ export default function OrdersPage() {
                       {item.variantName && (
                         <span className="text-muted-foreground"> ({item.variantName})</span>
                       )}
+                      {item.voidedAt ? <span className="ms-2 text-xs text-muted-foreground">ملغي بموافقة المالك بواسطة {item.voidedBy?.name ?? "موظف"} — {item.voidReason}</span>
+                        : can("orders:cancel") && (detail.status === "CONFIRMED" || detail.status === "PREPARING") && <Button className="ms-2 h-7" size="sm" variant="outline" disabled={busy} onClick={() => void requestItemVoid(detail, item)}>طلب حذف الصنف</Button>}
                     </li>
                   ))}
                 </ul>

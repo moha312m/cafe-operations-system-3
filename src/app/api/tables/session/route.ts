@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { requireKey, resolveCafeId, handleApiError, ApiError } from "@/lib/api";
+import { requireKey, resolveCafeId, handleApiError, ApiError, resolveReadScope } from "@/lib/api";
 import { sessionDisplayStatus, BLOCKING_ORDER_STATUSES } from "@/lib/table-sessions";
 
 // Orders excluded from the table bill (never shown as invoices).
@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
     const session = await requireKey("tables.view");
     const params = request.nextUrl.searchParams;
     const cafeId = resolveCafeId(session, params.get("cafeId"));
-    const branchId = session.branchId ?? params.get("branchId") ?? undefined;
+    const branchId = resolveReadScope(session).branchId ?? params.get("branchId") ?? undefined;
     const tableNumber = params.get("tableNumber")?.trim();
     if (!branchId) throw new ApiError(400, "اختار الفرع الأول");
     if (!tableNumber) throw new ApiError(400, "رقم الترابيزة مطلوب");

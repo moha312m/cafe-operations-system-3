@@ -218,6 +218,7 @@ export const t = {
   },
 
   shiftStatus: {
+    SUSPENDED: 'معلّق',
     OPEN: "مفتوح",
     AWAITING_HANDOVER: "في انتظار تسليم العهدة",
     CLOSED: "مقفول",
@@ -231,6 +232,12 @@ export const t = {
     openConfirm: "فتح الشيفت",
     close: "قفل الشيفت",
     closeConfirm: "تأكيد قفل الشيفت",
+    closeHandoverTarget: "تسليم عهدة المخزون إلى",
+    chooseHandoverTarget: "اختر جهة التسليم",
+    handoverToNextShift: "الشيفت التالي",
+    handoverToBranch: "عهدة الفرع (بصلاحية المدير)",
+    handoverTargetHint: "تسوية الكاش أولًا، ويكتمل قفل الشيفت بعد الجرد وتأكيد استلام العهدة.",
+    handoverConfigFailure: "تعذر تحميل إعدادات تسليم المخزون",
     shiftNumber: "رقم الشيفت",
     cashier: "الكاشير",
     branch: "الفرع",

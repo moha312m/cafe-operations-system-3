@@ -1,14 +1,17 @@
+import { lockTableSessions } from "@/lib/transaction-locks";
+import { decimal, money, moneyMax } from "@/lib/money";
+import { protectedTransaction } from "@/lib/protected-transaction";
 // ── Table session engine ─────────────────────────────────────────────
 // A session opens automatically with the first dine-in order for a table
 // and gathers every subsequent order until staff closes it. Totals are
 // denormalised onto the session and recomputed after every change.
 
-import { Prisma } from "@prisma/client";
+import { Prisma, type TableSession } from "@prisma/client";
 import { db } from "@/lib/db";
 import { auditInTransaction } from "@/lib/audit";
-import { retryOnUniqueConflict } from "@/lib/api";
+import { ApiError, retryOnUniqueConflict } from "@/lib/api";
 
-const round2 = (n: number) => Math.round(n * 100) / 100;
+
 
 // Orders in these states never count towards the table bill.
 const INACTIVE_ORDER_STATUSES = ["CANCELLED", "REJECTED", "PENDING_WAITER_APPROVAL"] as const;
@@ -36,7 +39,11 @@ export async function recomputeSessionTotals(
   // Optional so every existing caller is unchanged; supplied when the
   // recompute has to commit or roll back with the writes around it.
   client: Prisma.TransactionClient | typeof db = db
-) {
+): Promise<TableSession> {
+  if (client === db) return protectedTransaction(tx => recomputeSessionTotals(sessionId, tx));
+  // Serialize BEFORE reading aggregates. Separate locked orders can change
+  // one table concurrently, so locking only the final UPDATE loses totals.
+  await lockTableSessions(client, [sessionId]);
   const [orderAgg, payAgg] = await Promise.all([
     client.order.aggregate({
       where: { tableSessionId: sessionId, status: { notIn: [...INACTIVE_ORDER_STATUSES] } },
@@ -54,15 +61,15 @@ export async function recomputeSessionTotals(
       _sum: { amount: true },
     }),
   ]);
-  const total = round2(Number(orderAgg._sum.total ?? 0));
+  const total = money(orderAgg._sum.total ?? 0);
   const collected = payAgg
     .filter((r) => r.type !== "REFUND")
-    .reduce((s, r) => s + Number(r._sum.amount ?? 0), 0);
+    .reduce((sum, r) => sum.plus(r._sum.amount ?? 0), decimal(0));
   const returned = payAgg
     .filter((r) => r.type === "REFUND")
-    .reduce((s, r) => s + Number(r._sum.amount ?? 0), 0);
-  const paid = Math.max(round2(collected - returned), 0);
-  const receivable = Math.max(round2(Number(orderAgg._sum.remainingAmount ?? 0)), 0);
+    .reduce((sum, r) => sum.plus(r._sum.amount ?? 0), decimal(0));
+  const paid = moneyMax(money(collected.minus(returned)), 0);
+  const receivable = moneyMax(money(orderAgg._sum.remainingAmount ?? 0), 0);
   return client.tableSession.update({
     where: { id: sessionId },
     data: {
@@ -85,7 +92,7 @@ export async function attachOrderToTableSession(order: {
   tableNumber: string | null;
   orderNumber: number;
   customerName?: string | null;
-}, actingUserId: string | null) {
+}, actingUserId: string | null, client?: Prisma.TransactionClient) {
   if (order.type !== "DINE_IN" || !order.tableNumber?.trim()) return null;
   const tableNumber = order.tableNumber.trim();
 
@@ -110,7 +117,7 @@ export async function attachOrderToTableSession(order: {
   // ONE bill, so the loser retries, finds the bill the winner just opened,
   // and joins it. The transaction has already rolled back, so the retry is
   // starting clean (R-POS-02B2).
-  return retryOnUniqueConflict(() => db.$transaction(async (tx) => {
+  const work = async (tx: Prisma.TransactionClient) => {
     let session = await tx.tableSession.findFirst({
       where: { cafeId: order.cafeId, branchId: order.branchId, tableNumber, status: "OPEN" },
     });
@@ -129,6 +136,11 @@ export async function attachOrderToTableSession(order: {
       });
       opened = true;
     }
+
+    await lockTableSessions(tx, [session.id]);
+    const current = await tx.tableSession.findUnique({ where: { id: session.id } });
+    if (!current || current.status !== "OPEN") throw new ApiError(409, "Table session closed while the order was being attached; retry");
+    session = current;
 
     await tx.order.update({ where: { id: order.id }, data: { tableSessionId: session.id } });
     // Table-scoped payments (created inline with the POS order) inherit the id.
@@ -152,7 +164,8 @@ export async function attachOrderToTableSession(order: {
     });
 
     return session;
-  }), {
+  };
+  return client ? work(client) : retryOnUniqueConflict(() => protectedTransaction(work, { cafeId: order.cafeId, branchId: order.branchId }), {
     field: "tableNumber",
     message: "الطاولة دي اتفتح عليها حساب في نفس اللحظة — جرّب تاني",
   });
@@ -191,17 +204,17 @@ export function sessionDisplayStatus(
 ): SessionDisplayStatus {
   if (s.status && s.status !== "OPEN") return "CLOSED";
 
-  const total = Number(s.totalAmount);
-  const paid = Number(s.paidAmount);
-  const remaining = Number(s.remainingAmount);
+  const total = money(String(s.totalAmount));
+  const paid = money(String(s.paidAmount));
+  const remaining = money(String(s.remainingAmount));
 
   // Money outstanding is the louder problem and is reported first, even when
   // the kitchen is also still busy — it is the one that stops the customer
   // leaving.
-  if (remaining > 0.001) {
-    return paid > 0 ? "PARTIAL" : "PENDING_COLLECTION";
+  if (remaining.gt(0)) {
+    return paid.gt(0) ? "PARTIAL" : "PENDING_COLLECTION";
   }
-  if (total > 0) {
+  if (total.gt(0)) {
     return unservedOrders > 0 ? "AWAITING_HANDOVER" : "READY_TO_CLOSE";
   }
   return "OCCUPIED";

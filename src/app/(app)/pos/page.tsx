@@ -31,6 +31,7 @@ import { ProductGrid } from "@/components/pos/product-grid";
 import { OrderCart } from "@/components/pos/order-cart";
 import { ShiftControls } from "@/components/pos/shift-controls";
 import { CollectPaymentPanel } from "@/components/pos/collect-payment-panel";
+import { QuickActions, type RepeatItem } from "@/components/pos/quick-actions";
 import type { LoyaltyRedeem } from "@/components/pos/customer-loyalty";
 import type { CustomerDetails } from "@/components/pos/order-type-selector";
 import {
@@ -86,7 +87,9 @@ function CollectionModeParams({
 
 function PosPageInner() {
   const router = useRouter();
-  const { cafe, user } = useApp();
+  const { cafe, user, canKey } = useApp();
+  const canDiscount = canKey("pos.apply_discount");
+  const canCreateOrder = canKey("pos.create_order");
   const currency = cafe?.currency ?? "USD";
   const taxRate = cafe?.taxRate ?? 0;
 
@@ -94,7 +97,9 @@ function PosPageInner() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
-  const [branchId, setBranchId] = useState<string>(user.branchId ?? "");
+  const [selectedBranchId, setBranchId] = useState<string>(user.branchId ?? "");
+  const canChooseBranch = user.role === "CAFE_OWNER" && !user.branchId;
+  const branchId = canChooseBranch ? selectedBranchId : (user.branchId ?? "");
   const [activeCategory, setActiveCategory] = useState<string>("all");
   const [search, setSearch] = useState("");
 
@@ -103,6 +108,7 @@ function PosPageInner() {
   const [orderType, setOrderType] = useState<OrderType>("DINE_IN");
   const [details, setDetails] = useState<CustomerDetails>(EMPTY_DETAILS);
   const [discountInput, setDiscountInput] = useState("");
+  const manualDiscount = canDiscount ? (Number(discountInput) || 0) : 0;
   const [method, setMethod] = useState<PaymentMethod>("CASH");
   const [mixed, setMixed] = useState<{ CASH: string; CARD: string; WALLET: string }>(
     EMPTY_MIXED
@@ -177,10 +183,10 @@ function PosPageInner() {
         setCategories(c.categories.filter((x) => x.isActive));
         setProducts(p.products);
         setBranches(b.branches);
-        if (!user.branchId && b.branches.length > 0) setBranchId(b.branches[0].id);
+        if (canChooseBranch && b.branches.length > 0) setBranchId(b.branches[0].id);
       })
       .catch((e) => toast.error(e.message));
-  }, [user.branchId]);
+  }, [user.branchId, canChooseBranch]);
 
   // Branch tax/service settings drive the live totals (server recomputes
   // authoritatively on submit).
@@ -225,7 +231,7 @@ function PosPageInner() {
     return posProducts.filter(
       (p) =>
         (activeCategory === "all" || p.category.id === activeCategory) &&
-        (term === "" || p.name.toLowerCase().includes(term))
+        (term === "" || p.name.toLowerCase().includes(term) || (p.sku ?? "").toLowerCase().includes(term))
     );
   }, [posProducts, activeCategory, search]);
 
@@ -234,7 +240,8 @@ function PosPageInner() {
     product: Product,
     variant: Variant | null,
     addOns: AddOn[],
-    note: string
+    note: string,
+    quantity = 1
   ) {
     // Clear the search so the cashier can type the next product right away.
     setSearch("");
@@ -243,7 +250,7 @@ function PosPageInner() {
       const existing = prev.find((l) => l.key === key);
       if (existing) {
         return prev.map((l) =>
-          l.key === key ? { ...l, quantity: l.quantity + 1 } : l
+          l.key === key ? { ...l, quantity: l.quantity + quantity } : l
         );
       }
       return [
@@ -254,7 +261,7 @@ function PosPageInner() {
           variant,
           addOns,
           note,
-          quantity: 1,
+          quantity,
           unitPrice: round2(computeUnitPrice(product, variant, addOns)),
         },
       ];
@@ -272,6 +279,34 @@ function PosPageInner() {
     setSelVariant(activeVariants[0]?.id ?? "");
     setSelAddOns(new Set());
     setItemNote("");
+  }
+
+  // Rebuilds the customer's last order from TODAY's menu: a product, size or
+  // add-on that is no longer offered is left out and named, never guessed.
+  function repeatOrder(items: RepeatItem[]) {
+    const skipped: string[] = [];
+    let added = 0;
+    for (const item of items) {
+      const product = posProducts.find((p) => p.id === item.productId);
+      if (!product || !product.isActive || product.isAvailable === false) {
+        skipped.push(item.productName);
+        continue;
+      }
+      const variant = item.variantId
+        ? product.variants.find((v) => v.id === item.variantId && v.isActive) ?? null
+        : null;
+      if (item.variantId && !variant) {
+        skipped.push(`${item.productName}${item.variantName ? ` (${item.variantName})` : ""}`);
+        continue;
+      }
+      const offered = product.addOns.map((a) => a.addOn).filter((a) => a.isActive);
+      const addOns = offered.filter((a) => item.addOnIds.includes(a.id));
+      if (addOns.length < item.addOnIds.length) skipped.push(`إضافات ${item.productName}`);
+      addToCart(product, variant, addOns, item.notes ?? "", item.quantity);
+      added += item.quantity;
+    }
+    if (added > 0) toast.success(`اتضاف ${added} صنف من آخر طلب`);
+    if (skipped.length > 0) toast.warning(`مش متاح دلوقتي: ${skipped.join("، ")}`);
   }
 
   function confirmConfigure() {
@@ -337,13 +372,13 @@ function PosPageInner() {
   // Pre-loyalty total drives the redemption cap (max % of order).
   const preLoyaltyCharges = computeCharges({
     subtotal,
-    discount: Number(discountInput) || 0,
+    discount: manualDiscount,
     orderType,
     settings: effectiveSettings,
   });
   const charges = computeCharges({
     subtotal,
-    discount: (Number(discountInput) || 0) + redeem.discount,
+    discount: manualDiscount + redeem.discount,
     orderType,
     settings: effectiveSettings,
   });
@@ -356,6 +391,7 @@ function PosPageInner() {
   const total = charges.total;
 
   const disabledReason = useMemo(() => {
+    if (!canCreateOrder) return "ليس لديك صلاحية إنشاء طلب";
     if (needsShift && !shiftActive) return t.shifts.mustOpen;
     if (cart.length === 0) return t.pos.validation.emptyCart;
     if (!branchId) return t.pos.validation.noBranch;
@@ -364,7 +400,7 @@ function PosPageInner() {
     if (orderType === "DELIVERY" && !details.customerName.trim())
       return t.pos.validation.needCustomer;
     return null;
-  }, [needsShift, shiftActive, cart.length, branchId, orderType, details]);
+  }, [canCreateOrder, needsShift, shiftActive, cart.length, branchId, orderType, details]);
 
   function changeMixed(field: SplitMethod, value: string) {
     setMixed((prev) => ({ ...prev, [field]: value }));
@@ -402,7 +438,7 @@ function PosPageInner() {
           tableNumber: details.tableNumber.trim() || undefined,
           // Manual discount only — the server recomputes the loyalty
           // discount from the redeemed points.
-          discountAmount: Number(discountInput) || 0,
+          discountAmount: manualDiscount,
           loyaltyPointsToRedeem: redeem.points || undefined,
           collectionMode,
           ...paymentBody,
@@ -456,6 +492,12 @@ function PosPageInner() {
         <CollectionModeParams onParams={applyCollectionParams} />
       </Suspense>
 
+      {!canChooseBranch && !branchId && (
+        <p role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900">
+          حسابك غير معيّن على فرع. اطلب من المدير تعيين الفرع قبل فتح الشيفت.
+        </p>
+      )}
+
       {canOperateShift && branchId && (
         <ShiftControls
           branchId={branchId}
@@ -506,7 +548,7 @@ function PosPageInner() {
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
-          {!user.branchId && branches.length > 1 && (
+          {canChooseBranch && branches.length > 1 && (
             <Select value={branchId} onValueChange={(v) => setBranchId(v ?? "")}>
               <SelectTrigger className="h-10 w-40">
                 <SelectValue placeholder={t.common.branch}>
@@ -531,6 +573,15 @@ function PosPageInner() {
           onChange={setActiveCategory}
         />
 
+        <QuickActions
+          branchId={branchId}
+          products={posProducts}
+          customerPhone={details.customerPhone}
+          showPicks={search.trim() === "" && activeCategory === "all"}
+          onSelect={handleSelectProduct}
+          onRepeat={repeatOrder}
+        />
+
         <ProductGrid
           products={visibleProducts}
           currency={currency}
@@ -550,7 +601,7 @@ function PosPageInner() {
         previewTotalAfterDiscount={(loyaltyDisc) =>
           computeCharges({
             subtotal,
-            discount: (Number(discountInput) || 0) + loyaltyDisc,
+            discount: manualDiscount + loyaltyDisc,
             orderType,
             settings: effectiveSettings,
           }).total
@@ -558,7 +609,7 @@ function PosPageInner() {
         redeem={redeem}
         onRedeemChange={setRedeem}
         subtotal={subtotal}
-        discountInput={discountInput}
+        discountInput={canDiscount ? discountInput : ""}
         discountAmount={discountAmount}
         serviceCharge={serviceCharge}
         taxRate={effectiveTaxRate}

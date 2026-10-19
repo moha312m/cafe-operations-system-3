@@ -40,7 +40,9 @@ export async function GET(request: NextRequest, { params }: Params) {
       throw new ApiError(403, "ليس لديك صلاحية على فرع تاني");
     }
 
-    return NextResponse.json({ case: found });
+    const responsibilityCandidates=await db.user.findMany({where:{cafeId,OR:[{branchId:found.branchId},{id:found.assignedResponsibilityUserId??""}]},select:{id:true,name:true},orderBy:{name:"asc"}});
+    const assignedResponsibility=found.assignedResponsibilityUserId?await db.user.findUnique({where:{id:found.assignedResponsibilityUserId},select:{id:true,name:true}}):null;
+    return NextResponse.json({ case:{...found,assignedResponsibility},responsibilityCandidates });
   } catch (error) {
     return handleApiError(error);
   }

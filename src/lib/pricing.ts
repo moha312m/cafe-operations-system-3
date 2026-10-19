@@ -9,7 +9,8 @@
 // The shift means a branch override moves ALL variant prices of that
 // product by the same amount, so one override per branch is enough.
 
-export const round2 = (n: number) => Math.round(n * 100) / 100;
+import { decimal, money } from "@/lib/money";
+export const round2 = (n: number) => money(n).toNumber();
 
 type Priceable = {
   basePrice: number | string;
@@ -30,7 +31,7 @@ export function branchShift(
   product: Priceable,
   branchId: string | null | undefined
 ): number {
-  return round2(effectiveBasePrice(product, branchId) - Number(product.basePrice));
+  return money(decimal(effectiveBasePrice(product, branchId)).minus(decimal(product.basePrice))).toNumber();
 }
 
 export function unitPrice(
@@ -38,8 +39,12 @@ export function unitPrice(
   variant: { price: number | string } | null,
   branchId: string | null | undefined
 ): number {
-  if (variant) {
-    return round2(Number(variant.price) + branchShift(product, branchId));
-  }
-  return round2(effectiveBasePrice(product, branchId));
+  return unitPriceExact(product, variant, branchId).toNumber();
+}
+
+export function unitPriceExact(product: Priceable, variant: { price: number | string } | null, branchId: string | null | undefined) {
+  const base = decimal(product.basePrice);
+  const override = product.branchPrices?.find(bp => bp.branchId === branchId);
+  const effective = override ? decimal(override.price) : base;
+  return money(variant ? decimal(variant.price).plus(effective.minus(base)) : effective);
 }

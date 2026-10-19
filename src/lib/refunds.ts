@@ -1,380 +1,145 @@
-// ── Payment reversal service ─────────────────────────────────────────
-// The single place a payment is reversed, so the period a reversal lands in
-// is decided once.
-//
-// A refund is recorded as its own transaction: a REFUND-typed row carrying a
-// positive magnitude, linked to the payment it reverses. The original
-// collection is never rewritten — what was taken stays on the books, and
-// what was returned sits beside it. Reporting can then group by intent
-// rather than by the sign of a column (REFUND-001).
-//
-// Which period the refund lands in still depends on the original shift,
-// because a shift close is a historical snapshot (SHIFT-002):
-//
-//   • Original shift still OPEN — the refund posts to that same shift, which
-//     can still absorb its own reversal.
-//
-//   • Original shift already CLOSED — the closed period keeps the figures its
-//     cashier accepted, and the refund posts to the refunder's own open shift,
-//     where the money actually leaves the drawer.
-//
-// Cash never leaves a drawer nobody is holding: a CASH refund requires the
-// person issuing it to hold an open shift at that branch, in either period.
-// Being a manager is not a substitute for holding the drawer.
-
-import { db } from "@/lib/db";
-import { audit } from "@/lib/audit";
-import { ApiError } from "@/lib/api";
-import { recomputeShiftTotals, requireCashCustody } from "@/lib/shifts";
+import { money, sumMoney } from "@/lib/money";
+import { protectedTransaction } from "@/lib/protected-transaction";
+import type { Prisma } from "@prisma/client";
+import type { SessionUser } from "@/lib/auth";
+import { ApiError, resolveReadScope } from "@/lib/api";
+import { auditInTransaction } from "@/lib/audit";
+import { recomputeShiftTotals } from "@/lib/shifts";
 import { recomputeSessionTotals } from "@/lib/table-sessions";
 import { applyRefundToOrderSettlement } from "@/lib/payments";
-import type { SessionUser } from "@/lib/auth";
+import { lockShifts, lockOrders, lockOrderPayments, validateOpenPostingShift } from "@/lib/transaction-locks";
 
-/** A collection is refundable once, and a reversal is not itself refundable. */
-function assertRefundable(p: {
-  type: string; status: string; reversalOfPaymentId: string | null;
-  reversedBy: { id: string }[];
-}) {
-  if (p.type === "REFUND") throw new ApiError(400, "دي عملية عكسية مش دفعة");
-  if (p.reversalOfPaymentId) throw new ApiError(400, "دي عملية عكسية مش دفعة");
-  if (p.status === "REFUNDED") throw new ApiError(400, "الدفعة مرتجعة بالفعل");
-  if (p.reversedBy.length > 0) throw new ApiError(400, "الدفعة مرتجعة بالفعل");
+function assertRefundable(p: { type: string; status: string; reversalOfPaymentId: string | null; reversedBy: { id: string }[] }) {
+  if (p.type !== "COLLECTION" || p.reversalOfPaymentId) throw new ApiError(400, "مينفعش تعمل مرتجع لعملية مرتجع");
+  if (p.status !== "PAID" || p.reversedBy.length) throw new ApiError(400, "الدفعة مرتجعة بالفعل أو لم يتم تحصيلها");
 }
-
-/**
- * Which drawer carries this reversal.
- *
- * Cash requires the person issuing it to hold an open shift at the branch, in
- * either period — money never leaves a drawer nobody is holding, and being a
- * manager is not a substitute. A closed original shift keeps the figures its
- * cashier accepted, so the outflow posts to the refunder's own shift instead
- * (SHIFT-002).
+const verifiedRefundLocks = new WeakMap<object, WeakSet<object>>();
+/** Identify rows inside the transaction, then re-read financial state only
+ * after Shift → Order → Payment locks. Never acquire a new Shift lock later.
  */
-async function resolveRefundShift(
-  payment: { method: string; branchId: string | null; shiftId: string | null },
-  session: SessionUser,
-  closedPeriod: boolean
-): Promise<string | null> {
-  if (payment.method === "CASH") {
-    if (!payment.branchId) {
-      throw new ApiError(400, "الدفعة مش مربوطة بفرع — كلّم الدعم");
+export async function lockRefundOrderForAction(tx: Prisma.TransactionClient, orderId: string, actor: SessionUser) {
+  const scope = resolveReadScope(actor);
+  const candidate = await tx.order.findFirst({
+    where: { id: orderId, ...scope }, select: {
+      id: true, cafeId: true, branchId: true, payments: { select: { shiftId: true } },
     }
-    const custody = await requireCashCustody(
-      payment.branchId,
-      session.id,
-      closedPeriod
-        ? "الشيفت الأصلي مقفول — لازم تفتح شيفت لصرف المرتجع النقدي منه"
-        : "لازم تفتح شيفت علشان تصرف المرتجع النقدي من الدرج"
-    );
-    return closedPeriod ? custody.id : payment.shiftId ?? custody.id;
-  }
-  if (closedPeriod) {
-    // Non-cash after close attaches to the refunder's open shift when they
-    // have one, but never requires a drawer for money that never touched one.
-    const open = payment.branchId
-      ? await db.shift.findFirst({
-          where: { branchId: payment.branchId, cashierId: session.id, status: "OPEN" },
-          select: { id: true },
-        })
-      : null;
-    return open?.id ?? null;
-  }
-  return payment.shiftId;
-}
-
-/**
- * Refund an entire order.
- *
- * An order can hold several collections — a MIXED payment writes one row per
- * method, a PARTIAL order is collected again later, and table allocations pay
- * in instalments. Reversing them one at a time would let somebody refund the
- * cash leg of a mixed order, see "refunded", and leave the card leg standing.
- * So this is all-or-nothing: every collection is reversed inside one
- * transaction, or none is.
- */
-export async function refundOrder(
-  orderId: string,
-  session: SessionUser,
-  reason: string
-) {
-  const trimmed = (reason ?? "").trim();
-  if (!trimmed) throw new ApiError(400, "لازم تكتب سبب الاسترجاع");
-
-  const order = await db.order.findUnique({
-    where: { id: orderId },
-    select: {
-      id: true, cafeId: true, orderNumber: true, paymentStatus: true, tableSessionId: true,
-      payments: {
-        select: {
-          id: true, amount: true, method: true, type: true, status: true, branchId: true,
-          shiftId: true, cafeId: true, tableSessionId: true, orderId: true,
-          reversalOfPaymentId: true,
-          reversedBy: { select: { id: true } },
-          shift: { select: { id: true, status: true, shiftNumber: true } },
-        },
-      },
-    },
+  });
+  if (!candidate) throw new ApiError(404, "الطلب مش موجود");
+  const drawer = await tx.shift.findFirst({ where: { branchId: candidate.branchId, cashierId: actor.id, status: "OPEN" }, orderBy: { openedAt: "desc" }, select: { id: true } });
+  const shiftIds = [...new Set([...candidate.payments.map((p) => p.shiftId).filter((id): id is string => !!id), ...(drawer ? [drawer.id] : [])])];
+  await lockShifts(tx, shiftIds);
+  await lockOrders(tx, [orderId]);
+  await lockOrderPayments(tx, [orderId]);
+  const order = await tx.order.findFirst({
+    where: { id: orderId, ...scope }, include: {
+      payments: { orderBy: { id: "asc" }, include: { reversedBy: { select: { id: true } }, shift: { select: { id: true, status: true, shiftNumber: true } } } },
+    }
   });
   if (!order) throw new ApiError(404, "الطلب مش موجود");
-  if (order.paymentStatus === "REFUNDED") throw new ApiError(400, "الطلب مرتجع بالفعل");
-
-  const collections = order.payments.filter(
-    (p) => p.type === "COLLECTION" && p.status === "PAID" && !p.reversalOfPaymentId
-  );
-  if (collections.length === 0) throw new ApiError(400, "مفيش مبلغ محصّل على الطلب ده");
-  for (const c of collections) assertRefundable(c);
-
-  // Resolve every drawer BEFORE writing anything, so a missing custody on one
-  // leg refuses the whole refund rather than half-reversing the order.
-  const targets = new Map<string, string | null>();
-  for (const c of collections) {
-    targets.set(c.id, await resolveRefundShift(c, session, c.shift?.status === "CLOSED"));
+  if (order.branchId !== candidate.branchId || order.payments.some((p) => p.shiftId && !shiftIds.includes(p.shiftId))) throw new ApiError(409, "التحصيل اتغير أثناء بدء المرتجع — جرّب تاني");
+  const context = { order, drawerId: drawer?.id ?? null };
+  const verified = verifiedRefundLocks.get(tx) ?? new WeakSet<object>();
+  verified.add(context); verifiedRefundLocks.set(tx, verified);
+  return context;
+}
+export type RefundLockContext = Awaited<ReturnType<typeof lockRefundOrderForAction>>;
+function verifyRefundContext(tx: Prisma.TransactionClient, context: RefundLockContext, orderId: string) {
+  if (!verifiedRefundLocks.get(tx)?.has(context) || context.order.id !== orderId) throw new Error("Refund context belongs to another transaction or target");
+  return context;
+}
+type Collection = Awaited<ReturnType<typeof lockRefundOrderForAction>>["order"]["payments"][number];
+async function refundTarget(tx: Prisma.TransactionClient, p: Collection, actor: SessionUser, drawerId: string | null, branchId: string) {
+  const historical = !p.shift || p.shift.status !== "OPEN";
+  if (p.method === "CASH") {
+    if (!drawerId) throw new ApiError(400, "مرتجع الكاش محتاج شيفت مفتوح بعهدتك");
+    const drawer = await validateOpenPostingShift(tx, drawerId, branchId, p.cafeId);
+    if (drawer.cashierId !== actor.id) throw new ApiError(409, "عهدة الشيفت اتغيرت");
   }
-
-  const totalRefunded =
-    Math.round(collections.reduce((s, c) => s + Number(c.amount), 0) * 100) / 100;
-
-  const refunds = await db.$transaction(async (tx) => {
-    // Claim the order before writing anything. Two refund requests that
-    // arrive together — a double-tapped button, a retried request — both read
-    // an unrefunded order and would both proceed, reversing the money twice.
-    // This conditional update is the serialisation point: it locks the row,
-    // and only one caller can find it un-refunded.
-    const claimed = await tx.order.updateMany({
-      where: { id: order.id, paymentStatus: { not: "REFUNDED" } },
-      data: { paymentStatus: "REFUNDED" },
-    });
-    if (claimed.count === 0) throw new ApiError(400, "الطلب مرتجع بالفعل");
-
-    // Re-check inside the lock: a concurrent caller may have reversed these
-    // rows between our read and our claim.
-    const stillOpen = await tx.payment.findMany({
-      where: {
-        orderId: order.id, type: "COLLECTION", status: "PAID",
-        reversalOfPaymentId: null, reversedBy: { none: {} },
-      },
-      select: { id: true },
-    });
-    if (stillOpen.length !== collections.length) {
-      throw new ApiError(400, "الطلب مرتجع بالفعل");
+  const target = historical ? drawerId : p.shiftId;
+  if (target) await validateOpenPostingShift(tx, target, branchId, p.cafeId);
+  // Unattached historical noncash reversals preserve the existing contract.
+  return target;
+}
+async function writeReversal(tx: Prisma.TransactionClient, p: Collection, actor: SessionUser, reason: string, targetShiftId: string | null) {
+  return tx.payment.create({
+    data: {
+      cafeId: p.cafeId, branchId: p.branchId, orderId: p.orderId,
+      shiftId: targetShiftId, cashierId: actor.id, receivedById: actor.id,
+      amount: p.amount, method: p.method, type: "REFUND", status: "PAID",
+      tableSessionId: p.tableSessionId, reversalOfPaymentId: p.id, refundReason: reason,
+      note: p.shift && p.shift.status !== "OPEN" ? `مرتجع من شيفت مقفول رقم ${p.shift.shiftNumber}` : undefined,
     }
-
-    const rows = [];
-    for (const c of collections) {
-      rows.push(
-        await tx.payment.create({
-          data: {
-            cafeId: c.cafeId,
-            branchId: c.branchId,
-            orderId: order.id,
-            shiftId: targets.get(c.id) ?? null,
-            cashierId: session.id,
-            amount: Number(c.amount),
-            method: c.method,
-            type: "REFUND",
-            status: "PAID",
-            receivedById: session.id,
-            tableSessionId: c.tableSessionId,
-            reversalOfPaymentId: c.id,
-            refundReason: trimmed,
-            note:
-              c.shift?.status === "CLOSED"
-                ? `عكس دفعة من شيفت مقفول #${c.shift.shiftNumber}`
-                : undefined,
-          },
-        })
-      );
-    }
-    await applyRefundToOrderSettlement(tx, order.id, totalRefunded);
-    return rows;
   });
-
-  for (const shiftId of new Set([...targets.values()].filter(Boolean) as string[])) {
-    await recomputeShiftTotals(shiftId);
+}
+async function refundOrderCore(tx: Prisma.TransactionClient, orderId: string, actor: SessionUser, reason: string, locked?: RefundLockContext) {
+  const trimmed = reason?.trim();
+  if (!trimmed) throw new ApiError(400, "لازم تكتب سبب المرتجع");
+  const { order, drawerId } = locked ? verifyRefundContext(tx, locked, orderId) : await lockRefundOrderForAction(tx, orderId, actor);
+  if (order.paymentStatus === "REFUNDED") throw new ApiError(400, "الطلب مرتجع بالفعل");
+  const collections = order.payments.filter((p) => p.type === "COLLECTION" && p.status === "PAID" && !p.reversalOfPaymentId && p.reversedBy.length === 0);
+  if (!collections.length) throw new ApiError(400, "مفيش مبلغ متحصل على الطلب ده");
+  const targets = new Map<string, string | null>();
+  for (const p of collections) {
+    assertRefundable(p);
+    targets.set(p.id, await refundTarget(tx, p, actor, drawerId, order.branchId));
   }
-  if (order.tableSessionId) await recomputeSessionTotals(order.tableSessionId);
-
-  await audit({
-    cafeId: order.cafeId,
-    userId: session.id,
-    action: "PAYMENT_REFUNDED",
-    entity: "Order",
-    entityId: order.id,
+  const totalRefunded = money(sumMoney(collections.map(p => p.amount)));
+  const refunds = [];
+  for (const p of collections) refunds.push(await writeReversal(tx, p, actor, trimmed, targets.get(p.id) ?? null));
+  await applyRefundToOrderSettlement(tx, order.id, totalRefunded);
+  for (const id of [...new Set([...targets.values()].filter((id): id is string => !!id))].sort()) await recomputeShiftTotals(id, tx);
+  if (order.tableSessionId) await recomputeSessionTotals(order.tableSessionId, tx);
+  await auditInTransaction(tx, {
+    cafeId: order.cafeId, userId: actor.id, action: "PAYMENT_REFUNDED", entity: "Order", entityId: order.id,
     details: {
-      orderId: order.id,
-      orderNumber: order.orderNumber,
-      mode: "FULL_ORDER_REFUND",
-      totalRefunded,
-      reason: trimmed,
-      legs: collections.map((c) => ({
-        paymentId: c.id,
-        amount: Number(c.amount),
-        method: c.method,
-        postedToShiftId: targets.get(c.id) ?? null,
-        originalShiftId: c.shiftId,
-        originalShiftClosed: c.shift?.status === "CLOSED",
+      orderId, orderNumber: order.orderNumber, mode: "FULL_ORDER_REFUND", totalRefunded, reason: trimmed,
+      legs: collections.map((p) => ({
+        paymentId: p.id, amount: Number(p.amount), method: p.method,
+        postedToShiftId: targets.get(p.id) ?? null, originalShiftId: p.shiftId, originalShiftClosed: p.shift?.status !== "OPEN"
       })),
     },
   });
-
-  const fresh = await db.order.findUniqueOrThrow({
-    where: { id: order.id },
-    select: {
-      id: true, orderNumber: true, total: true, paidAmount: true,
-      remainingAmount: true, paymentStatus: true,
-    },
+  const fresh = await tx.order.findUniqueOrThrow({
+    where: { id: order.id }, select: {
+      id: true, orderNumber: true, total: true, paidAmount: true, remainingAmount: true, paymentStatus: true,
+    }
   });
-  return { order: fresh, refunds, totalRefunded };
+  return { order: fresh, refunds, totalRefunded: totalRefunded.toNumber() };
 }
-
-export async function refundPayment(
-  paymentId: string,
-  session: SessionUser,
-  reason?: string
-) {
-  const payment = await db.payment.findUnique({
-    where: { id: paymentId },
-    include: {
-      order: { select: { orderNumber: true, tableSessionId: true } },
-      shift: { select: { id: true, status: true, shiftNumber: true } },
-      reversedBy: { select: { id: true } },
+async function refundPaymentCore(tx: Prisma.TransactionClient, paymentId: string, actor: SessionUser, reason?: string, locked?: RefundLockContext) {
+  const candidate = locked ? { orderId: locked.order.id } : await tx.payment.findFirst({ where: { id: paymentId, order: resolveReadScope(actor) }, select: { orderId: true } });
+  if (!candidate) throw new ApiError(404, "الدفعة مش موجودة");
+  const { order, drawerId } = locked ? verifyRefundContext(tx, locked, candidate.orderId) : await lockRefundOrderForAction(tx, candidate.orderId, actor);
+  const payment = order.payments.find((p) => p.id === paymentId);
+  if (!payment) throw new ApiError(409, "الدفعة اتغيرت — جرّب تاني");
+  assertRefundable(payment);
+  const targetShiftId = await refundTarget(tx, payment, actor, drawerId, order.branchId);
+  const refund = await writeReversal(tx, payment, actor, reason?.trim() || "مرتجع دفعة", targetShiftId);
+  await applyRefundToOrderSettlement(tx, order.id, payment.amount);
+  if (targetShiftId) await recomputeShiftTotals(targetShiftId, tx);
+  if (order.tableSessionId) await recomputeSessionTotals(order.tableSessionId, tx);
+  await auditInTransaction(tx, {
+    cafeId: order.cafeId, userId: actor.id, action: "PAYMENT_REFUNDED", entity: "Payment", entityId: payment.id,
+    details: {
+      branchId: order.branchId, shiftId: payment.shiftId, orderId: order.id, orderNumber: order.orderNumber,
+      amount: Number(payment.amount), method: payment.method, mode: payment.shift?.status === "OPEN" ? "IN_PERIOD" : "POST_CLOSE_REVERSAL",
+      refundPaymentId: refund.id, postedToShiftId: targetShiftId, closedShiftId: payment.shift?.status !== "OPEN" ? payment.shiftId : null, reason: reason ?? null
     },
-  });
-  if (!payment) throw new ApiError(404, "عملية الدفع مش موجودة");
-  if (payment.type === "REFUND") throw new ApiError(400, "دي عملية عكسية مش دفعة");
-  if (payment.status === "REFUNDED") throw new ApiError(400, "الدفعة مرتجعة بالفعل");
-  if (payment.reversalOfPaymentId) throw new ApiError(400, "دي عملية عكسية مش دفعة");
-  if (payment.reversedBy.length > 0) throw new ApiError(400, "الدفعة مرتجعة بالفعل");
-
-  const closedPeriod = payment.shift?.status === "CLOSED";
-  const amount = Number(payment.amount);
-
-  // Where the refund posts. Cash requires custody either way — the difference
-  // is only which shift can legitimately carry it.
-  let targetShiftId: string | null;
-  if (payment.method === "CASH") {
-    if (!payment.branchId) {
-      throw new ApiError(400, "الدفعة مش مربوطة بفرع — كلّم الدعم");
-    }
-    const custody = await requireCashCustody(
-      payment.branchId,
-      session.id,
-      closedPeriod
-        ? "الشيفت الأصلي مقفول — لازم تفتح شيفت لصرف المرتجع النقدي منه"
-        : "لازم تفتح شيفت علشان تصرف المرتجع النقدي من الدرج"
-    );
-    // In period, the money goes back into the drawer that took it; the
-    // refunder still had to be holding one to hand it over.
-    targetShiftId = closedPeriod ? custody.id : payment.shiftId ?? custody.id;
-  } else if (closedPeriod) {
-    // Non-cash after close: attach to the refunder's open shift when they
-    // have one, but never require a drawer for money that never touched one.
-    const open = payment.branchId
-      ? await db.shift.findFirst({
-          where: { branchId: payment.branchId, cashierId: session.id, status: "OPEN" },
-          select: { id: true },
-        })
-      : null;
-    targetShiftId = open?.id ?? null;
-  } else {
-    targetShiftId = payment.shiftId;
-  }
-
-  const refund = await db.$transaction(async (tx) => {
-    // Lock the collection, then ask again whether it is still unreversed.
-    //
-    // Every check above ran on a read taken OUTSIDE this transaction, and
-    // this block used to open with an unconditional create — so a
-    // double-tapped button or a retried request produced TWO reversals of
-    // one collection. Nothing in the schema refuses that: there is no unique
-    // constraint on `reversalOfPaymentId`. The order still looked settled,
-    // because `applyRefundToOrderSettlement` clamps at zero, but
-    // `recomputeShiftTotals` subtracts every REFUND row — so the cashier was
-    // short by the refund amount at close, with nothing on screen to explain
-    // it.
-    //
-    // `refundOrder` has guarded this since REFUND-004 by claiming the order
-    // row; a payment-level reversal has no equivalent column to claim, so it
-    // takes the lock directly and re-reads under it. The original collection
-    // is deliberately NOT rewritten: `collectedAmount` treats a COLLECTION
-    // marked REFUNDED as zero money in hand, so flipping its status would
-    // double-count the reversal that the new REFUND row already records.
-    await tx.$queryRaw`SELECT "id" FROM "Payment" WHERE "id" = ${paymentId} FOR UPDATE`;
-
-    const stillOpen = await tx.payment.findUnique({
-      where: { id: paymentId },
-      select: { status: true, reversedBy: { select: { id: true } } },
-    });
-    if (!stillOpen) throw new ApiError(404, "عملية الدفع مش موجودة");
-    if (stillOpen.status === "REFUNDED" || stillOpen.reversedBy.length > 0) {
-      throw new ApiError(400, "الدفعة مرتجعة بالفعل");
-    }
-
-    const row = await tx.payment.create({
-      data: {
-        cafeId: payment.cafeId,
-        branchId: payment.branchId,
-        orderId: payment.orderId,
-        shiftId: targetShiftId,
-        cashierId: session.id,
-        amount, // positive magnitude — direction lives in `type`
-        method: payment.method,
-        type: "REFUND",
-        status: "PAID",
-        receivedById: session.id,
-        tableSessionId: payment.tableSessionId,
-        reversalOfPaymentId: payment.id,
-        refundReason: reason,
-        note: closedPeriod
-          ? `عكس دفعة من شيفت مقفول #${payment.shift?.shiftNumber ?? "?"}`
-          : undefined,
-      },
-    });
-    // The order is owed again — paidAmount is a live balance, not a record of
-    // what was once collected (REFUND-002).
-    await applyRefundToOrderSettlement(tx, payment.orderId, amount);
-    return row;
-  });
-
-  if (targetShiftId) await recomputeShiftTotals(targetShiftId);
-  if (payment.order?.tableSessionId) {
-    await recomputeSessionTotals(payment.order.tableSessionId);
-  }
-  await auditRefund(payment, session, {
-    mode: closedPeriod ? "POST_CLOSE_REVERSAL" : "IN_PERIOD",
-    refundPaymentId: refund.id,
-    postedToShiftId: targetShiftId,
-    closedShiftId: closedPeriod ? payment.shift?.id : undefined,
-    reason,
   });
   return refund;
 }
-
-type RefundAuditExtra = Record<string, unknown>;
-
-async function auditRefund(
-  payment: {
-    id: string; cafeId: string; branchId: string | null; shiftId: string | null;
-    orderId: string; amount: unknown; method: string;
-    order: { orderNumber: number } | null;
-  },
-  session: SessionUser,
-  extra: RefundAuditExtra
-) {
-  await audit({
-    cafeId: payment.cafeId,
-    userId: session.id,
-    action: "PAYMENT_REFUNDED",
-    entity: "Payment",
-    entityId: payment.id,
-    details: {
-      branchId: payment.branchId,
-      shiftId: payment.shiftId,
-      orderId: payment.orderId,
-      orderNumber: payment.order?.orderNumber,
-      amount: Number(payment.amount),
-      method: payment.method,
-      ...extra,
-    },
-  });
+export function refundOrder(orderId: string, actor: SessionUser, reason: string) {
+  return protectedTransaction((tx) => refundOrderCore(tx, orderId, actor, reason), resolveReadScope(actor));
+}
+export function refundPayment(paymentId: string, actor: SessionUser, reason?: string) {
+  return protectedTransaction((tx) => refundPaymentCore(tx, paymentId, actor, reason), resolveReadScope(actor));
+}
+export async function refundOrderInTransaction(tx: Prisma.TransactionClient, orderId: string, actor: SessionUser, reason: string, locked?: RefundLockContext) {
+  const result = await refundOrderCore(tx, orderId, actor, reason, locked);
+  return { refundIds: result.refunds.map((p) => p.id), totalRefunded: result.totalRefunded };
+}
+export async function refundPaymentInTransaction(tx: Prisma.TransactionClient, paymentId: string, actor: SessionUser, reason: string, locked?: RefundLockContext) {
+  if (reason.trim().length < 3) throw new ApiError(400, "لازم تكتب سبب المرتجع");
+  const refund = await refundPaymentCore(tx, paymentId, actor, reason, locked);
+  return { refundId: refund.id, amount: Number(refund.amount), postedToShiftId: refund.shiftId };
 }

@@ -88,12 +88,12 @@ const METHOD_LABELS: Record<string, string> = { CASH: "كاش", CARD: "فيزا"
 // Lightweight sitting-time label, refreshed every 60s without touching
 // the rest of the layout.
 function Duration({ since }: { since: string }) {
-  const [, tick] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    const timer = setInterval(() => tick((n) => n + 1), 60_000);
+    const timer = setInterval(() => setNow(Date.now()), 60_000);
     return () => clearInterval(timer);
   }, []);
-  const mins = Math.max(Math.floor((Date.now() - new Date(since).getTime()) / 60_000), 0);
+  const mins = Math.max(Math.floor((now - new Date(since).getTime()) / 60_000), 0);
   const h = Math.floor(mins / 60);
   const m = mins % 60;
   const label =

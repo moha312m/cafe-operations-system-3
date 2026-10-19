@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import type { CollectionMode, PaymentMethod, SplitMethod } from "./types";
+import { useApp } from "@/components/app-shell";
 
 const METHODS: { value: PaymentMethod; label: string; icon: string }[] = [
   { value: "CASH", label: t.paymentMethods.CASH, icon: "💵" },
@@ -78,6 +79,8 @@ export function PaymentSummary({
   onMixedChange: (field: SplitMethod, value: string) => void;
   onPlaceOrder: () => void;
 }) {
+  const { canKey } = useApp();
+  const canDiscount = canKey("pos.apply_discount");
   const mixedSum =
     (Number(mixed.CASH) || 0) + (Number(mixed.CARD) || 0) + (Number(mixed.WALLET) || 0);
   const collectNow = collectionMode === "NOW";
@@ -181,6 +184,8 @@ export function PaymentSummary({
             type="number" min="0" step="0.01" placeholder="0.00" dir="ltr"
             className="h-7 w-24 text-end text-sm"
             value={discountInput}
+            disabled={!canDiscount}
+            aria-label={t.pos.discount}
             onChange={(e) => onDiscountChange(e.target.value)}
           />
         </div>

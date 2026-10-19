@@ -1,42 +1,19 @@
-import { NextResponse, type NextRequest } from "next/server";
-import { db } from "@/lib/db";
-import { getSession } from "@/lib/auth";
-import { handleApiError, ApiError, requireKey } from "@/lib/api";
-import { refundPayment } from "@/lib/refunds";
+import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
+import { handleApiError, requireKey } from "@/lib/api";
+import { requestOwnerAction } from "@/lib/owner-action-approvals";
 
 type Params = { params: Promise<{ id: string }> };
+const bodySchema = z.object({ reason: z.string().trim().min(3).max(500) }).strict();
 
-// POST /api/payments/[id]/refund — reverse a payment. A reversal against a
-// shift that is still open adjusts that shift; against an already-closed
-// shift it posts a linked reversal in the current period instead, leaving
-// the accepted close untouched (see lib/refunds). Only managers/owners
-// (shifts:read) may refund.
-export async function POST(_request: NextRequest, { params }: Params) {
+export async function POST(request: NextRequest, { params }: Params) {
   try {
-    // R-SEC-01 — same key as the order-level refund, for the same reason:
-    // reversing money is `orders.refund`, and it must honour whatever the
-    // café configured rather than the legacy role column.
-    const session = await requireKey(
-      "orders.refund",
-      "المرتجعات للمدير أو صاحب الكافيه فقط"
-    );
+    const actor = await requireKey("orders.request_owner_action");
     const { id } = await params;
-
-    const payment = await db.payment.findUnique({
-      where: { id },
-      select: { cafeId: true, branchId: true },
+    const { reason } = bodySchema.parse(await request.json());
+    const result = await requestOwnerAction({
+      actor, action: "REFUND_PAYMENT", paymentId: id, reason, idempotencyKey: crypto.randomUUID(),
     });
-    if (!payment) throw new ApiError(404, "عملية الدفع مش موجودة");
-    if (session.role !== "SUPER_ADMIN" && payment.cafeId !== session.cafeId) {
-      throw new ApiError(403, "ليس لديك صلاحية لتنفيذ هذا الإجراء");
-    }
-    if (session.branchId && payment.branchId && payment.branchId !== session.branchId) {
-      throw new ApiError(403, "ليس لديك صلاحية لتنفيذ هذا الإجراء");
-    }
-
-    const result = await refundPayment(id, session);
-    return NextResponse.json({ payment: result });
-  } catch (error) {
-    return handleApiError(error);
-  }
+    return NextResponse.json({ request: { id: result.requestId, status: result.status, amount: result.amount } }, { status: 202 });
+  } catch (error) { return handleApiError(error); }
 }

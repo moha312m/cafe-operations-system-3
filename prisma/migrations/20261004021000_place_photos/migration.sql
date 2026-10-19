@@ -1,0 +1,11 @@
+CREATE TABLE "PlacePhoto" ("id" TEXT NOT NULL,"cafeId" TEXT NOT NULL,"branchId" TEXT NOT NULL,"assetId" TEXT,"observationId" TEXT,"uploaderId" TEXT NOT NULL,"storageKey" TEXT NOT NULL,"mime" TEXT NOT NULL DEFAULT 'image/webp',"byteCount" INTEGER NOT NULL,"width" INTEGER NOT NULL,"height" INTEGER NOT NULL,"createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,CONSTRAINT "PlacePhoto_pkey" PRIMARY KEY ("id"));
+CREATE UNIQUE INDEX "PlacePhoto_storageKey_key" ON "PlacePhoto"("storageKey");
+CREATE INDEX "PlacePhoto_cafeId_branchId_createdAt_idx" ON "PlacePhoto"("cafeId","branchId","createdAt");
+CREATE INDEX "PlacePhoto_assetId_idx" ON "PlacePhoto"("assetId");
+CREATE INDEX "PlacePhoto_observationId_idx" ON "PlacePhoto"("observationId");
+ALTER TABLE "PlacePhoto" ADD CONSTRAINT "PlacePhoto_target_check" CHECK (("assetId" IS NOT NULL)::integer + ("observationId" IS NOT NULL)::integer = 1);
+ALTER TABLE "PlacePhoto" ADD CONSTRAINT "PlacePhoto_cafeId_fkey" FOREIGN KEY ("cafeId") REFERENCES "Cafe"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "PlacePhoto" ADD CONSTRAINT "PlacePhoto_branchId_fkey" FOREIGN KEY ("branchId") REFERENCES "Branch"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "PlacePhoto" ADD CONSTRAINT "PlacePhoto_assetId_fkey" FOREIGN KEY ("assetId") REFERENCES "PlaceAsset"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "PlacePhoto" ADD CONSTRAINT "PlacePhoto_observationId_fkey" FOREIGN KEY ("observationId") REFERENCES "PlaceObservation"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "PlacePhoto" ADD CONSTRAINT "PlacePhoto_uploaderId_fkey" FOREIGN KEY ("uploaderId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;

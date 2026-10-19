@@ -1,14 +1,18 @@
-import { NextResponse, type NextRequest } from "next/server";
+﻿import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { resolvePermissions } from "@/lib/perms/effective";
-import { getSession } from "@/lib/auth";
 import { requirePermission, resolveCafeId, resolveBranchId, handleApiError, ApiError, requireFeature, requireActiveSession, isUniqueConflict, retryOnUniqueConflict } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { redactBlindCount } from "@/lib/shifts";
 import { ensureCustodyForShift } from "@/lib/custody";
+import { resolveStaffBranchInTransaction } from "@/lib/staff-branch";
+import { protectedTransaction, protectedContext } from "@/lib/protected-transaction";
+import { lockShifts, lockBranchAllocator } from "@/lib/transaction-locks";
 
 const shiftInclude = {
+  openingCashReceipt: { select: { status: true } },
+  placeReceipt: { select: { status: true, assignedUser: { select: { id: true, name: true } } } },
   cashier: { select: { id: true, name: true } },
   branch: { select: { id: true, name: true } },
 } as const;
@@ -66,21 +70,20 @@ export async function GET(request: NextRequest) {
       orderBy: { openedAt: "desc" },
       take: 200,
     });
-    // SHIFT-003: an open shift the requester holds is one they will have to
-    // count, so its target is withheld. Other people's shifts, and settled
-    // history, are unaffected.
+    // Counters see their submitted amounts without reconciliation totals;
+    // report access retains full shift visibility for oversight.
     return NextResponse.json({
-      shifts: shifts.map((s) => redactBlindCount(s, session.id)),
+      shifts: shifts.map((s) => redactBlindCount(s, canReadAll)),
     });
   } catch (error) {
     return handleApiError(error);
   }
 }
-
 const openShiftSchema = z.object({
   branchId: z.string().optional(),
   cafeId: z.string().optional(),
   openingCashAmount: z.number().min(0).default(0),
+  resumeOnly: z.boolean().default(false),
 });
 
 // POST /api/shifts — open a shift. One open shift per cashier per branch;
@@ -88,51 +91,45 @@ const openShiftSchema = z.object({
 export async function POST(request: NextRequest) {
   try {
     const session = await requirePermission("shifts:operate");
+    const { keys } = await resolvePermissions(session);
+    const canViewReports = keys.has("shifts.view_reports");
     await requireFeature(session, "shiftManagementEnabled");
     const data = openShiftSchema.parse(await request.json());
     const cafeId = resolveCafeId(session, data.cafeId);
     const branchId = resolveBranchId(session, data.branchId);
 
-    const existing = await db.shift.findFirst({
-      where: { branchId, cashierId: session.id, status: "OPEN" },
-      include: shiftInclude,
-    });
-    if (existing) {
-      // Re-opening must not become a side channel to the target (SHIFT-003).
-      return NextResponse.json({
-        shift: redactBlindCount(existing, session.id),
-        alreadyOpen: true,
-      });
-    }
+    const branch = await db.branch.findFirst({ where: { id: branchId, cafeId, isActive: true } });
+    if (!branch) throw new ApiError(400, "الفرع غير موجود أو غير مفعّل في الكافيه");
 
-    const branch = await db.branch.findFirst({
-      where: { id: branchId, cafeId, isActive: true },
-    });
-    if (!branch) throw new ApiError(400, "Branch not found in this cafe");
-
-    // The existing-shift check above takes no lock, so one cashier signing in
-    // on two devices can pass it twice. `Shift_one_open_per_branch_cashier`
-    // (M25) makes the database refuse the second drawer — but two constraints
-    // are in play here and the order they fire in decides what the cashier
-    // must be told.
-    //
-    // Both callers read the same `_max.shiftNumber`, so the shift-number
-    // unique complains FIRST and the cashier index never gets a look in. That
-    // half is contention: hold the branch row so allocation serialises — the
-    // same row the order-number path holds, taken first in both, so there is
-    // no ordering to invert — and retry as the backstop.
-    //
-    // Only once the loser has a number of its own does it reach the cashier
-    // index, and THAT conflict is not contention, it is a fact. Retrying it
-    // would re-run a transaction destined to fail every time. So it escapes
-    // the retry and is answered below with the same `alreadyOpen` response
-    // this route already gives a sequential re-open — because from the
-    // cashier's side "my shift is already open" is the same fact however they
-    // arrived at it (R-POS-02B2b).
+    // Assignment changes and opening share the User lock; drawer numbers
+    // then serialise on Branch. NO KEY UPDATE permits the Branch FK KEY SHARE
+    // needed by an acceptance while bootstrap waits on its Handover row.
+    // The unique constraints and retry remain backstops for other writers.
     let shift;
+    let alreadyOpen = false;
     try {
-      shift = await retryOnUniqueConflict(() => db.$transaction(async (tx) => {
-        await tx.$queryRaw`SELECT "id" FROM "Branch" WHERE "id" = ${branchId} FOR UPDATE`;
+      shift = await retryOnUniqueConflict(() => protectedTransaction(async (tx) => {
+        const scope = await resolveStaffBranchInTransaction(tx, session.id);
+        if (!scope || (session.role !== "CAFE_OWNER" && session.role !== "SUPER_ADMIN" && scope.branchId !== branchId)) {
+          throw new ApiError(409, "تم تغيير فرعك — حدّث الصفحة وافتح الشيفت في فرعك الحالي");
+        }
+        protectedContext(tx).scope = { cafeId, branchId };
+        const candidate = await tx.shift.findFirst({ where: { cafeId, branchId, cashierId: session.id, status: "OPEN" }, select: { id: true } });
+        if (candidate) await lockShifts(tx, [candidate.id]);
+        await lockBranchAllocator(tx, branchId);
+        const existing = await tx.shift.findFirst({
+          where: { cafeId, branchId, cashierId: session.id, status: "OPEN" }, include: shiftInclude,
+        });
+        if (existing) {
+          if (existing.id !== candidate?.id) throw new ApiError(409, "الشيفت اتغير أثناء الفتح — جرّب تاني");
+          await ensureCustodyForShift(tx, {
+            cafeId, branchId, shiftId: existing.id, userId: session.id,
+            openingCashAmount: Number(existing.openingCashAmount),
+          });
+          alreadyOpen = true;
+          return tx.shift.findUniqueOrThrow({ where: { id: existing.id }, include: shiftInclude });
+        }
+        if (data.resumeOnly) throw new ApiError(409, "افتح شيفتك وأدخل رصيد الافتتاح من نقطة البيع أولًا");
         const last = await tx.shift.aggregate({
           where: { branchId },
           _max: { shiftNumber: true },
@@ -155,6 +152,13 @@ export async function POST(request: NextRequest) {
           userId: session.id,
           openingCashAmount: data.openingCashAmount,
         });
+        const placeSettings = await tx.branchOpeningSettings.findUnique({ where: { branchId }, select: { placeAcceptanceRequired: true, placeInspectorId: true } });
+        if (placeSettings?.placeAcceptanceRequired) {
+          if (!placeSettings.placeInspectorId) throw new ApiError(409, "The branch place inspector is not configured");
+          const assets = await tx.placeAsset.findMany({ where: { cafeId, branchId, isActive: true }, orderBy: [{ createdAt: "asc" }, { id: "asc" }], select: { id: true, name: true, area: true, checkpoints: { orderBy: [{ sortOrder: "asc" }, { id: "asc" }], select: { id: true, label: true, required: true, critical: true } } } });
+          if (assets.length === 0) throw new ApiError(409, "The required place checklist is empty");
+          await tx.shiftPlaceReceipt.create({ data: { cafeId, branchId, incomingShiftId: created.id, assignedUserId: placeSettings.placeInspectorId, createdById: session.id, snapshot: assets as unknown as import("@prisma/client").Prisma.InputJsonValue } });
+        }
         return tx.shift.findUniqueOrThrow({ where: { id: created.id }, include: shiftInclude });
       }), {
         field: "shiftNumber",
@@ -171,10 +175,12 @@ export async function POST(request: NextRequest) {
       // and is not ours to translate.
       if (!winner) throw e;
       return NextResponse.json({
-        shift: redactBlindCount(winner, session.id),
+        shift: redactBlindCount(winner, canViewReports),
         alreadyOpen: true,
       });
     }
+
+    if (alreadyOpen) return NextResponse.json({ shift: redactBlindCount(shift, canViewReports), alreadyOpen: true });
 
     await audit({
       cafeId,
@@ -186,14 +192,13 @@ export async function POST(request: NextRequest) {
         branchId,
         shiftId: shift.id,
         shiftNumber: shift.shiftNumber,
-        openingCashAmount: data.openingCashAmount,
+        openingCashAmount: Number(shift.openingCashAmount),
       },
     });
 
-    // Redacted for consistency: the client never holds a target for an open
-    // shift, so nothing stale can surface later in the count UI.
+    // Use the same visibility rule on opening as on subsequent reads.
     return NextResponse.json(
-      { shift: redactBlindCount(shift, session.id) },
+      { shift: redactBlindCount(shift, canViewReports) },
       { status: 201 }
     );
   } catch (error) {

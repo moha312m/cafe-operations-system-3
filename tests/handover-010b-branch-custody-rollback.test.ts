@@ -1087,6 +1087,14 @@ describe("SH-22 Half B concurrency", () => {
         body: JSON.stringify({ type: "PURCHASE", quantity: 4, unitCost: 450 }),
       }),
     ]);
+    if (outcomes[0].status === "rejected") {
+      const error = outcomes[0].reason;
+      console.error("SH22_VERIFICATION_REJECTION", JSON.stringify({
+        capturedAt: new Date().toISOString(), sessionId: v.sessionId,
+        name: error?.name, message: error?.message, code: error?.code,
+        meta: error?.meta, stack: error?.stack,
+      }));
+    }
     assert.equal(outcomes[0].status, "fulfilled", "the verification won");
 
     const alpha = await db.inventoryItem.findUniqueOrThrow({ where: { id: items.alpha.id } });
@@ -1099,6 +1107,83 @@ describe("SH-22 Half B concurrency", () => {
       Number(alpha.currentStock) === 96 || Number(alpha.currentStock) === 100,
       `the shelf holds a whole figure (${alpha.currentStock}, movement landed: ${movementLanded})`,
     );
+  });
+
+  test("a committed movement while verification waits for the item is replayed exactly once", async () => {
+    const v = await readyToVerify();
+    const { lockItemForUpdate, applyStockMutation } = await import("@/lib/ledger");
+    const { acquireInventorySharedLocks } = await import("@/lib/inventory-freeze");
+    let signalItemHeld!: () => void;
+    let releaseMovement!: () => void;
+    const itemHeld = new Promise<void>((resolve) => { signalItemHeld = resolve; });
+    const movementMayCommit = new Promise<void>((resolve) => { releaseMovement = resolve; });
+    let verificationPid = 0;
+    let movementPid = 0;
+    let movement: Promise<unknown> | undefined;
+    const verification = verifyOpening(v, {
+      __afterStep: async (step, client) => {
+        if (step !== 5) return;
+        const tx = client as import("@prisma/client").Prisma.TransactionClient;
+        const [verifyBackend] = await tx.$queryRawUnsafe<{ pid: number }[]>("SELECT pg_backend_pid() AS pid");
+        verificationPid = verifyBackend.pid;
+        movement = db.$transaction(async (moving) => {
+          const [backend] = await moving.$queryRawUnsafe<{ pid: number }[]>("SELECT pg_backend_pid() AS pid");
+          movementPid = backend.pid;
+          await acquireInventorySharedLocks(moving, [fx.branchId]);
+          await lockItemForUpdate(moving, items.alpha.id);
+          signalItemHeld();
+          await movementMayCommit;
+          return applyStockMutation(moving, {
+            inventoryItemId: items.alpha.id, cafeId: fx.cafeId, branchId: fx.branchId,
+            type: "PURCHASE", quantity: 4, unitCost: 450, createdById: fx.manager.id,
+          });
+        });
+        // Observe a fixture failure rather than hanging while waiting for its signal.
+        void movement.catch(() => { signalItemHeld(); });
+        await itemHeld;
+      },
+    });
+    // Attach a rejection observer before waiting on PostgreSQL's lock state.
+    const verificationSettled = verification.then(() => null, (error: unknown) => error);
+    let observedWait = false;
+    let observationError: unknown;
+    try {
+      await Promise.race([itemHeld, verificationSettled.then((error) => {
+        if (error) throw error;
+        throw new Error("verification ended before the competing item lock was held");
+      })]);
+      const deadline = Date.now() + 2_000;
+      while (Date.now() < deadline) {
+        const [wait] = await observer.$queryRawUnsafe<{ blocked: boolean }[]>(
+          "SELECT $2::int = ANY(pg_blocking_pids($1::int)) AS blocked", verificationPid, movementPid,
+        );
+        if (wait.blocked) { observedWait = true; break; }
+        await sleep(20);
+      }
+    } catch (error) {
+      observationError = error;
+    } finally {
+      releaseMovement();
+    }
+    const outcomes = await Promise.allSettled([verification, movement!]);
+    console.log("SH22_CONTROLLED_RACE", JSON.stringify({
+      capturedAt: new Date().toISOString(), verificationPid, movementPid, observedWait,
+      outcomes: outcomes.map((outcome) => outcome.status === "fulfilled"
+        ? { status: outcome.status }
+        : { status: outcome.status, name: outcome.reason?.name, message: outcome.reason?.message,
+            code: outcome.reason?.code, meta: outcome.reason?.meta, stack: outcome.reason?.stack }),
+    }));
+    if (observationError) throw observationError;
+    assert.equal(observedWait, true, "PostgreSQL proved verification waited for the competing item lock");
+    assert.equal(outcomes[0].status, "fulfilled", "verification must finish after the movement commits");
+    assert.equal(outcomes[1].status, "fulfilled", "the controlled +4 movement committed");
+    const alpha = await observer.inventoryItem.findUniqueOrThrow({ where: { id: items.alpha.id } });
+    assert.equal(Number(alpha.currentStock), 100, "counted 96 plus the committed 4, exactly once");
+    const rebase = await observer.stockCountRebase.findUniqueOrThrow({
+      where: { sessionId_inventoryItemId: { sessionId: v.sessionId, inventoryItemId: items.alpha.id } },
+    });
+    assert.equal(Number(rebase.replayedDelta), 4, "the movement above the count cursor was replayed");
+    assert.equal(Number(rebase.stockAfter), 100);
   });
 
   test("a shift close racing a verification leaves one winner", async () => {

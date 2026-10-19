@@ -1,3 +1,5 @@
+import { decimal, money, sumMoney, moneyMin, moneyMax, type Numeric, type Decimal, validCurrencyInput } from "@/lib/money";
+import { protectedTransaction, queueRefusalAudit } from "@/lib/protected-transaction";
 // ── Central payment-collection service ───────────────────────────────
 // THE single source of truth for collecting money against an order.
 // Every collection path (POS single-order collect, POS table invoices,
@@ -5,18 +7,19 @@
 // so remaining-amount math, duplicate guards, and denormalised status
 // updates exist exactly once.
 
-import { db } from "@/lib/db";
-import { audit } from "@/lib/audit";
-import { ApiError } from "@/lib/api";
-import { requireCashCustody, recomputeShiftTotals } from "@/lib/shifts";
+import { auditInTransaction } from "@/lib/audit";
+import { ApiError, resolveReadScope } from "@/lib/api";
+import { recomputeShiftTotals } from "@/lib/shifts";
 import { recomputeSessionTotals } from "@/lib/table-sessions";
 import { maybeAwardLoyaltyPoints } from "@/lib/loyalty";
 import type { Prisma, PaymentMethod } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth";
 
-const round2 = (n: number) => Math.round(n * 100) / 100;
+import { requireCashCustodyInTx, validateOpenPostingShift, assertFinancialLocks, lockOrders, lockOrderPayments, lockCustomers } from "@/lib/transaction-locks";
 
-export type PaymentSplit = { method: Exclude<PaymentMethod, "MIXED">; amount: number };
+
+
+export type PaymentSplit = { method: Exclude<PaymentMethod, "MIXED">; amount: Numeric };
 
 // Close an order out after its money has been returned.
 //
@@ -35,7 +38,7 @@ export type PaymentSplit = { method: Exclude<PaymentMethod, "MIXED">; amount: nu
 export async function applyRefundToOrderSettlement(
   tx: Prisma.TransactionClient,
   orderId: string,
-  amount: number
+  amount: Numeric
 ) {
   const order = await tx.order.findUnique({
     where: { id: orderId },
@@ -43,15 +46,15 @@ export async function applyRefundToOrderSettlement(
   });
   if (!order) return;
 
-  const newPaid = Math.max(round2(Number(order.paidAmount) - amount), 0);
-  const fullyRefunded = newPaid <= 0.001;
+  const newPaid = moneyMax(money(decimal(order.paidAmount).minus(decimal(amount))), 0);
+  const fullyRefunded = newPaid.isZero();
 
   await tx.order.update({
     where: { id: orderId },
     data: {
       paidAmount: newPaid,
       // Terminal on a full refund; a part-refund leaves the balance owed.
-      remainingAmount: fullyRefunded ? 0 : Math.max(round2(Number(order.total) - newPaid), 0),
+      remainingAmount: fullyRefunded ? 0 : moneyMax(money(decimal(order.total).minus(newPaid)), 0),
       paymentStatus: fullyRefunded ? "REFUNDED" : "PARTIAL",
     },
   });
@@ -63,7 +66,7 @@ export async function applyRefundToOrderSettlement(
 export type CollectionRedemption = {
   customerId: string;
   points: number;
-  discount: number; // EGP value = points × pointValueAmount
+  discount: Numeric; // EGP value = points × pointValueAmount
 };
 
 // Applies a loyalty discount to orders FIFO (like money allocation) inside
@@ -81,7 +84,7 @@ export async function applyLoyaltyRedemptionInTx(
   }: {
     orderIds: string[]; // FIFO order (oldest first)
     redemption: CollectionRedemption;
-    pointValue: number;
+    pointValue: Numeric;
     cashierId: string;
   }
 ) {
@@ -107,45 +110,45 @@ export async function applyLoyaltyRedemptionInTx(
     throw new ApiError(400, "لا يوجد رصيد نقاط كافي");
   }
 
-  let discountLeft = redemption.discount;
+  let discountLeft = money(redemption.discount);
   let pointsLeft = redemption.points;
-  const applied: { orderId: string; orderNumber: number; share: number; points: number }[] = [];
+  const applied: { orderId: string; orderNumber: number; share: Decimal; points: number }[] = [];
 
   for (const orderId of orderIds) {
-    if (discountLeft <= 0.001) break;
+    if (discountLeft.lte(0)) break;
     const order = await tx.order.findUnique({
       where: { id: orderId },
       select: {
-        id: true, cafeId: true, orderNumber: true, total: true, paidAmount: true,
+        id: true, cafeId: true, orderNumber: true, total: true, paidAmount: true, paymentStatus: true,
         discountAmount: true, loyaltyDiscountAmount: true, loyaltyPointsRedeemed: true,
       },
     });
-    if (!order) continue;
+    if (!order || order.paymentStatus === "REFUNDED") continue;
     if (order.cafeId !== customer.cafeId) {
       throw new ApiError(403, "لا يمكن استخدام نقاط عميل من كافيه آخر");
     }
-    const remaining = round2(Number(order.total) - Number(order.paidAmount));
-    if (remaining <= 0.001) continue;
+    const remaining = money(decimal(order.total).minus(order.paidAmount));
+    if (remaining.lte(0)) continue;
 
-    const share = round2(Math.min(discountLeft, remaining));
+    const share = money(moneyMin(discountLeft, remaining));
     // Attribute points proportionally; the last affected order absorbs
     // rounding so points always sum exactly.
-    const isLast = round2(discountLeft - share) <= 0.001;
-    const sharePoints = isLast ? pointsLeft : Math.min(Math.floor(share / pointValue), pointsLeft);
-    discountLeft = round2(discountLeft - share);
+    const isLast = discountLeft.minus(share).lte(0);
+    const sharePoints = isLast ? pointsLeft : Math.min(share.div(decimal(pointValue)).floor().toNumber(), pointsLeft);
+    discountLeft = money(discountLeft.minus(share));
     pointsLeft -= sharePoints;
 
-    const newTotal = round2(Number(order.total) - share);
-    const newRemaining = Math.max(round2(newTotal - Number(order.paidAmount)), 0);
+    const newTotal = money(decimal(order.total).minus(share));
+    const newRemaining = moneyMax(money(newTotal.minus(order.paidAmount)), 0);
     await tx.order.update({
       where: { id: order.id },
       data: {
         total: newTotal,
-        discountAmount: round2(Number(order.discountAmount) + share),
-        loyaltyDiscountAmount: round2(Number(order.loyaltyDiscountAmount) + share),
+        discountAmount: money(decimal(order.discountAmount).plus(share)),
+        loyaltyDiscountAmount: money(decimal(order.loyaltyDiscountAmount).plus(share)),
         loyaltyPointsRedeemed: order.loyaltyPointsRedeemed + sharePoints,
         remainingAmount: newRemaining,
-        paymentStatus: newRemaining <= 0.001 ? "PAID" : Number(order.paidAmount) > 0 ? "PARTIAL" : undefined,
+        paymentStatus: newRemaining.isZero() ? "PAID" : decimal(order.paidAmount).gt(0) ? "PARTIAL" : undefined,
         customerId: redemption.customerId, // link (or keep) the redeeming customer
       },
     });
@@ -164,7 +167,7 @@ export async function applyLoyaltyRedemptionInTx(
     applied.push({ orderId: order.id, orderNumber: order.orderNumber, share, points: sharePoints });
   }
 
-  if (discountLeft > 0.001 || applied.length === 0) {
+  if (discountLeft.gt(0) || applied.length === 0) {
     throw new ApiError(400, "قيمة خصم النقاط أكبر من المتبقي على الحساب");
   }
 
@@ -238,16 +241,23 @@ export async function applyOrderPaymentInTx(
   // `FOR UPDATE` makes the second caller wait for the first to commit and
   // then read what it wrote, so the guard below refuses it. Same shape as
   // `lockShift` in cash-close and `lockItemForUpdate` in the ledger.
-  await tx.$queryRaw`SELECT "id" FROM "Order" WHERE "id" = ${orderId} FOR UPDATE`;
+  if (!shiftId) throw new ApiError(400, "التحصيل محتاج شيفت مفتوح");
+  assertFinancialLocks(tx, [orderId], shiftId);
+  const shift = await validateOpenPostingShift(tx, shiftId);
+  if (shift.cashierId !== cashierId) throw new ApiError(409, "عهدة الشيفت اتغيرت");
 
   const order = await tx.order.findUnique({
     where: { id: orderId },
     select: {
       id: true, cafeId: true, branchId: true, orderNumber: true,
-      total: true, paidAmount: true, paymentStatus: true, tableSessionId: true,
+      total: true, paidAmount: true, paymentStatus: true, tableSessionId: true, status: true,
     },
   });
   if (!order) throw new ApiError(404, "الطلب مش موجود");
+
+  if (shift.branchId !== order.branchId || shift.cafeId !== order.cafeId) throw new ApiError(403, "شيفت التحصيل تبع فرع تاني");
+  if (["CANCELLED", "REJECTED", "PENDING_WAITER_APPROVAL"].includes(order.status)) throw new ApiError(400, "حالة الطلب الحالية مش بتسمح بالتحصيل");
+  if (splits.some((p) => !validCurrencyInput(p.amount.toString()) || decimal(p.amount).lte(0))) throw new ApiError(400, "المبالغ لازم تكون موجبة وبحد أقصى رقمين بعد العلامة");
 
   // A refunded sale is closed for good. This has to be checked explicitly:
   // the guard below derives remaining from `total - paidAmount`, and a full
@@ -258,14 +268,14 @@ export async function applyOrderPaymentInTx(
     throw new ApiError(400, "الطلب ده مرتجع — اعمل طلب جديد بدل ما تحصّل عليه");
   }
 
-  const oldRemaining = round2(Number(order.total) - Number(order.paidAmount));
-  if (oldRemaining <= 0.001) {
+  const oldRemaining = money(decimal(order.total).minus(order.paidAmount));
+  if (oldRemaining.lte(0)) {
     throw new DuplicatePaymentError(order.id, order.orderNumber, order.cafeId);
   }
 
-  const payAmount = round2(splits.reduce((s, p) => s + p.amount, 0));
-  if (payAmount <= 0) throw new ApiError(400, "مبلغ الدفع يجب أن يكون أكبر من صفر");
-  if (payAmount > oldRemaining + 0.001) {
+  const payAmount = money(sumMoney(splits.map(p => p.amount)));
+  if (payAmount.lte(0)) throw new ApiError(400, "مبلغ الدفع يجب أن يكون أكبر من صفر");
+  if (payAmount.gt(oldRemaining)) {
     throw new ApiError(400, "مبلغ الدفع أكبر من المتبقي على الطلب");
   }
 
@@ -280,7 +290,7 @@ export async function applyOrderPaymentInTx(
           orderId: order.id,
           shiftId,
           cashierId,
-          amount: s.amount,
+          amount: money(s.amount),
           method: s.method,
           status: "PAID",
           receivedById: cashierId,
@@ -291,9 +301,9 @@ export async function applyOrderPaymentInTx(
     );
   }
 
-  const newPaid = round2(Number(order.paidAmount) + payAmount);
-  const newRemaining = Math.max(round2(Number(order.total) - newPaid), 0);
-  const newStatus = newRemaining <= 0.001 ? ("PAID" as const) : ("PARTIAL" as const);
+  const newPaid = money(decimal(order.paidAmount).plus(payAmount));
+  const newRemaining = moneyMax(money(decimal(order.total).minus(newPaid)), 0);
+  const newStatus = newRemaining.isZero() ? ("PAID" as const) : ("PARTIAL" as const);
   await tx.order.update({
     where: { id: order.id },
     data: { paidAmount: newPaid, remainingAmount: newRemaining, paymentStatus: newStatus },
@@ -328,6 +338,27 @@ export class DuplicatePaymentError extends ApiError {
 // shift gate → transaction (guarded payment) → totals recompute → loyalty
 // earn → audits. The caller has already authorised the user and verified
 // tenant scope on the order.
+const verifiedCollections = new WeakMap<object, WeakSet<object>>();
+export async function prepareOrderCollection(tx: Prisma.TransactionClient, session: SessionUser, orderId: string, branchId: string) {
+    const shift = await requireCashCustodyInTx(tx, branchId, session.id);
+    await lockOrders(tx, [orderId]);
+    await lockOrderPayments(tx, [orderId]);
+    const current = await tx.order.findFirst({ where: { id: orderId, ...resolveReadScope(session) } });
+    if (!current) throw new ApiError(404, "الطلب مش موجود");
+    if (current.branchId !== shift.branchId || current.cafeId !== shift.cafeId) throw new ApiError(403, "الطلب وعهدة الكاش تابعين لفروع مختلفة");
+    if (current.paymentStatus === "REFUNDED") throw new ApiError(400, "الطلب ده مرتجع — اعمل طلب جديد بدل ما تحصّل عليه");
+    if (["CANCELLED", "REJECTED", "PENDING_WAITER_APPROVAL"].includes(current.status)) throw new ApiError(400, "حالة الطلب الحالية مش بتسمح بالتحصيل");
+  const context = { shift, current };
+  const verified = verifiedCollections.get(tx) ?? new WeakSet<object>();
+  verified.add(context); verifiedCollections.set(tx, verified);
+  return context;
+}
+export type CollectionLockContext = Awaited<ReturnType<typeof prepareOrderCollection>>;
+function verifyCollectionContext(tx: Prisma.TransactionClient, context: CollectionLockContext, orderId: string, cashierId: string) {
+  if (!verifiedCollections.get(tx)?.has(context) || context.current.id !== orderId || context.shift.cashierId !== cashierId) throw new Error("Collection context belongs to another transaction or target");
+  return context;
+}
+
 export async function collectOrderPayment({
   session,
   orderId,
@@ -335,6 +366,8 @@ export async function collectOrderPayment({
   splits,
   redemption,
   pointValue,
+  client,
+  locked,
 }: {
   session: SessionUser;
   orderId: string;
@@ -342,118 +375,126 @@ export async function collectOrderPayment({
   splits: PaymentSplit[];
   // Optional loyalty redemption, applied atomically with the payment.
   redemption?: CollectionRedemption;
-  pointValue?: number;
+  pointValue?: Numeric;
+  client?: Prisma.TransactionClient;
+  locked?: CollectionLockContext;
 }) {
   // Anyone touching the drawer must be on an open shift — see
   // requireCashCustody. The caller has already authorised the collection.
-  const shift = await requireCashCustody(branchId, session.id);
+  const work = async (tx: Prisma.TransactionClient) => {
+    const { shift, current } = locked ? verifyCollectionContext(tx, locked, orderId, session.id) : await prepareOrderCollection(tx, session, orderId, branchId);
+    if (redemption && current.loyaltyPointsRedeemed > 0) throw new ApiError(400, "تم استخدام نقاط الولاء لهذا الطلب بالفعل");
+    await lockCustomers(tx, [current.customerId, redemption?.customerId].filter((id): id is string => !!id));
 
-  const moneyAmount = Math.round(splits.reduce((s, p) => s + p.amount, 0) * 100) / 100;
+    const moneyAmount = money(sumMoney(splits.map(p => p.amount)));
 
-  let result;
-  let loyaltyResult: { applied: { orderId: string; orderNumber: number; share: number; points: number }[]; oldBalance: number } | null = null;
-  try {
-    result = await db.$transaction(async (tx) => {
-      // Loyalty discount first (reduces the order total), then real money
-      // against the reduced remaining — one atomic unit.
-      if (redemption) {
-        loyaltyResult = await applyLoyaltyRedemptionInTx(tx, {
-          orderIds: [orderId],
-          redemption,
-          pointValue: pointValue ?? 1,
-          cashierId: session.id,
+    let result;
+    let loyaltyResult: { applied: { orderId: string; orderNumber: number; share: Decimal; points: number }[]; oldBalance: number } | null = null;
+    try {
+      result = await (async () => {
+        // Loyalty discount first (reduces the order total), then real money
+        // against the reduced remaining — one atomic unit.
+        if (redemption) {
+          loyaltyResult = await applyLoyaltyRedemptionInTx(tx, {
+            orderIds: [orderId],
+            redemption,
+            pointValue: pointValue ?? 1,
+            cashierId: session.id,
+          });
+        }
+        if (moneyAmount.gt(0)) {
+          return applyOrderPaymentInTx(tx, {
+            orderId,
+            splits,
+            cashierId: session.id,
+            shiftId: shift?.id ?? null,
+          });
+        }
+        // Points covered the whole remaining — no money rows to write.
+        const order = await tx.order.findUniqueOrThrow({
+          where: { id: orderId },
+          select: {
+            id: true, cafeId: true, branchId: true, orderNumber: true,
+            total: true, paidAmount: true, paymentStatus: true, tableSessionId: true,
+            remainingAmount: true,
+          },
+        });
+        const rem = money(order.remainingAmount);
+        return {
+          order,
+          payments: [] as { id: string }[],
+          payAmount: decimal(0),
+          oldRemaining: money(rem.plus(decimal(redemption?.discount ?? 0))),
+          newRemaining: rem,
+          oldStatus: order.paymentStatus,
+          newStatus: order.paymentStatus,
+          tableSessionId: order.tableSessionId,
+        };
+      })();
+    } catch (e) {
+      if (e instanceof DuplicatePaymentError) {
+        queueRefusalAudit(tx, {
+          cafeId: e.cafeId, userId: session.id,
+          action: "DUPLICATE_PAYMENT_BLOCKED",
+          entity: "Order", entityId: e.orderId,
+          details: { orderId: e.orderId, orderNumber: e.orderNumber, branchId },
         });
       }
-      if (moneyAmount > 0) {
-        return applyOrderPaymentInTx(tx, {
-          orderId,
-          splits,
-          cashierId: session.id,
-          shiftId: shift?.id ?? null,
-        });
-      }
-      // Points covered the whole remaining — no money rows to write.
-      const order = await tx.order.findUniqueOrThrow({
-        where: { id: orderId },
-        select: {
-          id: true, cafeId: true, branchId: true, orderNumber: true,
-          total: true, paidAmount: true, paymentStatus: true, tableSessionId: true,
-          remainingAmount: true,
+      throw e;
+    }
+
+    if (shift) await recomputeShiftTotals(shift.id, tx);
+    if (result.tableSessionId) await recomputeSessionTotals(result.tableSessionId, tx);
+    // Fully-paid orders earn points in the same transaction.
+    if (result.newStatus === "PAID") await maybeAwardLoyaltyPoints(orderId, tx);
+
+    // (loyaltyResult is assigned inside the transaction callback — TS can't
+    // track that, so re-widen the type here.)
+    const lr = loyaltyResult as { applied: unknown; oldBalance: number } | null;
+    if (redemption && lr) {
+      await auditInTransaction(tx, {
+        cafeId: result.order.cafeId, userId: session.id,
+        action: "LOYALTY_POINTS_REDEEMED",
+        entity: "Customer", entityId: redemption.customerId,
+        details: {
+          customerId: redemption.customerId, orderId, branchId,
+          points: redemption.points, amountValue: redemption.discount,
+          oldValue: { balance: lr.oldBalance },
+          newValue: { balance: lr.oldBalance - redemption.points },
         },
       });
-      const rem = Number(order.remainingAmount);
-      return {
-        order,
-        payments: [] as { id: string }[],
-        payAmount: 0,
-        oldRemaining: Math.round((rem + (redemption?.discount ?? 0)) * 100) / 100,
-        newRemaining: rem,
-        oldStatus: order.paymentStatus,
-        newStatus: order.paymentStatus,
-        tableSessionId: order.tableSessionId,
-      };
-    });
-  } catch (e) {
-    if (e instanceof DuplicatePaymentError) {
-      await audit({
-        cafeId: e.cafeId, userId: session.id,
-        action: "DUPLICATE_PAYMENT_BLOCKED",
-        entity: "Order", entityId: e.orderId,
-        details: { orderId: e.orderId, orderNumber: e.orderNumber, branchId },
-      });
     }
-    throw e;
-  }
 
-  if (shift) await recomputeShiftTotals(shift.id);
-  if (result.tableSessionId) await recomputeSessionTotals(result.tableSessionId);
-  // Fully-paid orders earn their loyalty points exactly once (never throws).
-  if (result.newStatus === "PAID") await maybeAwardLoyaltyPoints(orderId);
-
-  // (loyaltyResult is assigned inside the transaction callback — TS can't
-  // track that, so re-widen the type here.)
-  const lr = loyaltyResult as { applied: unknown; oldBalance: number } | null;
-  if (redemption && lr) {
-    await audit({
+    const meta = {
+      branchId,
+      shiftId: shift?.id ?? null,
+      orderId,
+      orderNumber: result.order.orderNumber,
+      tableSessionId: result.tableSessionId,
+    };
+    await auditInTransaction(tx, {
       cafeId: result.order.cafeId, userId: session.id,
-      action: "LOYALTY_POINTS_REDEEMED",
-      entity: "Customer", entityId: redemption.customerId,
+      action: "PAYMENT_COLLECTED_FROM_POS",
+      entity: "Payment", entityId: result.payments[0]?.id ?? null,
       details: {
-        customerId: redemption.customerId, orderId, branchId,
-        points: redemption.points, amountValue: redemption.discount,
-        oldValue: { balance: lr.oldBalance },
-        newValue: { balance: lr.oldBalance - redemption.points },
+        ...meta,
+        amount: result.payAmount,
+        paymentMethod: splits.length > 1 ? "MIXED" : splits[0]?.method,
+        oldRemainingAmount: result.oldRemaining,
+        newRemainingAmount: result.newRemaining,
       },
     });
-  }
+    if (result.oldStatus !== result.newStatus) {
+      await auditInTransaction(tx, {
+        cafeId: result.order.cafeId, userId: session.id,
+        action: "ORDER_PAYMENT_STATUS_CHANGED",
+        entity: "Order", entityId: orderId,
+        details: { ...meta, oldValue: result.oldStatus, newValue: result.newStatus },
+      });
+    }
 
-  const meta = {
-    branchId,
-    shiftId: shift?.id ?? null,
-    orderId,
-    orderNumber: result.order.orderNumber,
-    tableSessionId: result.tableSessionId,
+    return { ...result, shift };
   };
-  await audit({
-    cafeId: result.order.cafeId, userId: session.id,
-    action: "PAYMENT_COLLECTED_FROM_POS",
-    entity: "Payment", entityId: result.payments[0]?.id ?? null,
-    details: {
-      ...meta,
-      amount: result.payAmount,
-      paymentMethod: splits.length > 1 ? "MIXED" : splits[0]?.method,
-      oldRemainingAmount: result.oldRemaining,
-      newRemainingAmount: result.newRemaining,
-    },
-  });
-  if (result.oldStatus !== result.newStatus) {
-    await audit({
-      cafeId: result.order.cafeId, userId: session.id,
-      action: "ORDER_PAYMENT_STATUS_CHANGED",
-      entity: "Order", entityId: orderId,
-      details: { ...meta, oldValue: result.oldStatus, newValue: result.newStatus },
-    });
-  }
-
-  return { ...result, shift };
+  if (client) return work(client);
+  return protectedTransaction(work, resolveReadScope(session));
 }

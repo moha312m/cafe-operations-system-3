@@ -468,6 +468,8 @@ describe("STOCK-004 stock is resolved to this branch of this café", () => {
 
 describe("STOCK-004 a refused order leaves nothing behind", () => {
   test("no order, no payment, no ledger row, no moved balance — even when paying now", async () => {
+    // Reach the stock refusal with the required money-posting custody in place.
+    await db.shift.create({ data: { cafeId: fx.cafeId, branchId: fx.branchId, cashierId: fx.owner.id, shiftNumber: 1 } });
     // STOCK-003 covers the same contract for a pending-collection order. This
     // one attaches money, because creating an order WITH payment is the path
     // that writes a Payment row, and the refusal has to land before it.

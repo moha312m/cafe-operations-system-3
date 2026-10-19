@@ -69,8 +69,10 @@ export function CollectPaymentPanel({
   onDone: () => void;
   onClose: () => void;
 }) {
-  const { canKey } = useApp();
+  const { canKey, can } = useApp();
   const canRedeem = canKey("loyalty.redeem_points");
+  const canServe = can("orders:update-status");
+  const [served, setServed] = useState(false);
 
   const [target, setTarget] = useState<OrderTarget | null>(null);
   const [loyalty, setLoyalty] = useState<LoyaltyCalcSettings | null>(null);
@@ -167,7 +169,24 @@ export function CollectPaymentPanel({
     setRedeemOpen(false);
   }
 
-  async function collect() {
+  const servable = !!target && target.status === "READY" && canServe && !served;
+
+  // Serving is its own request through the ordinary status route, so the
+  // café's payment, stock and custody rules decide it. A refusal after a
+  // successful collection leaves the money recorded and says so plainly.
+  async function serveNow(afterCollect: boolean) {
+    if (!target) return;
+    try {
+      await api(`/api/orders/${target.orderId}/status`, { method: "PATCH", body: { status: "SERVED" } });
+      setServed(true);
+      toast.success(`الطلب #${target.orderNumber} اتقدم ✅`);
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : "فشل التقديم";
+      toast.error(afterCollect ? `اتحصّل بس متقدمش: ${reason}` : reason);
+    }
+  }
+
+  async function collect(andServe = false) {
     if (!target || busy) return;
     const amt = Number(amount) || 0;
     if (amt <= 0 && redeem.points === 0) return toast.error("مبلغ الدفع يجب أن يكون أكبر من صفر");
@@ -183,6 +202,7 @@ export function CollectPaymentPanel({
       const r = await api<{ payments: { id: string }[] }>("/api/payments", { method: "POST", body });
       toast.success("تم تحصيل الدفع بنجاح");
       setReceipt({ paymentId: r.payments[0]?.id ?? null, amount: amt, loyaltyDiscount: redeem.discount });
+      if (andServe) await serveNow(true);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "فشل التحصيل");
       // Refresh so a duplicate attempt shows the settled state.
@@ -238,6 +258,11 @@ export function CollectPaymentPanel({
                 <p className="text-xs text-muted-foreground">
                   تم سداد الحساب بخصم النقاط بالكامل — لا توجد دفعة نقدية لطباعتها.
                 </p>
+              )}
+              {servable && (
+                <Button variant="outline" className="h-11 w-full" onClick={() => serveNow(false)}>
+                  🍽️ قدّم الطلب دلوقتي
+                </Button>
               )}
               <Button variant="ghost" className="h-10 w-full text-muted-foreground" onClick={onDone}>
                 إغلاق
@@ -410,9 +435,16 @@ export function CollectPaymentPanel({
             )}
 
             {settled ? (
-              <p className="rounded-lg bg-emerald-500/10 px-3 py-2 text-sm font-medium text-emerald-700 dark:text-emerald-400">
-                تم تحصيل هذا الحساب بالفعل ✅
-              </p>
+              <div className="space-y-2">
+                <p className="rounded-lg bg-emerald-500/10 px-3 py-2 text-sm font-medium text-emerald-700 dark:text-emerald-400">
+                  تم تحصيل هذا الحساب بالفعل ✅
+                </p>
+                {servable && (
+                  <Button variant="outline" className="h-10 w-full" onClick={() => serveNow(false)}>
+                    🍽️ قدّم الطلب دلوقتي
+                  </Button>
+                )}
+              </div>
             ) : shiftBlocked ? (
               <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
                 لا يمكن تحصيل الدفع بدون شيفت مفتوح — افتح الشيفت من أعلى شاشة الكاشير أولًا.
@@ -456,8 +488,13 @@ export function CollectPaymentPanel({
               رجوع لإنشاء طلب
             </Button>
             {target && !settled && !shiftBlocked && (
-              <Button onClick={collect} disabled={busy}>
+              <Button variant={servable ? "outline" : "default"} onClick={() => collect(false)} disabled={busy}>
                 {busy ? "جاري التحصيل…" : "تحصيل الدفع"}
+              </Button>
+            )}
+            {target && !settled && !shiftBlocked && servable && (
+              <Button data-testid="collect-and-serve" onClick={() => collect(true)} disabled={busy}>
+                {busy ? "جاري…" : "حصّل وقدّم 🍽️"}
               </Button>
             )}
           </DialogFooter>

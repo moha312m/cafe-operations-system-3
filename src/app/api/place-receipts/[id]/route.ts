@@ -1,0 +1,13 @@
+﻿import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
+import { requireActiveSession, requireKey, handleApiError, ApiError } from "@/lib/api";
+import { db } from "@/lib/db";
+import { acceptPlaceReceipt, getPlaceReceipt, recordPlaceObservation } from "@/lib/place-receipts";
+type Params={params:Promise<{id:string}>};
+const bodySchema=z.discriminatedUnion("action",[
+ z.object({action:z.literal("OBSERVE"),assetId:z.string().min(1),checkpointId:z.string().min(1),side:z.enum(["OUTGOING","INCOMING"]),condition:z.enum(["OK","NOTE","FAULT","NOT_CHECKED"]),note:z.string().trim().max(1000).optional()}).strict(),
+ z.object({action:z.literal("ACCEPT"),idempotencyKey:z.string().uuid(),overrideReason:z.string().trim().max(500).optional()}).strict()
+]);
+async function scoped(id:string,actor:{cafeId:string|null;branchId:string|null}){if(!actor.cafeId)throw new ApiError(403,"Cafe required");const receipt=await db.shiftPlaceReceipt.findFirst({where:{id,cafeId:actor.cafeId},select:{id:true,branchId:true,assignedUserId:true}});if(!receipt)throw new ApiError(404,"Place receipt not found");if(actor.branchId&&actor.branchId!==receipt.branchId)throw new ApiError(403,"Receipt is outside this branch");return receipt;}
+export async function GET(_request:NextRequest,{params}:Params){try{const actor=await requireKey("handover.view");const {id}=await params;await scoped(id,actor);return NextResponse.json({receipt:await getPlaceReceipt(db,id,actor.cafeId!)});}catch(error){return handleApiError(error);}}
+export async function PATCH(request:NextRequest,{params}:Params){try{const actor=await requireActiveSession();await requireKey("handover.view");const {id}=await params;const receipt=await scoped(id,actor);const data=bodySchema.parse(await request.json());if(data.action==="OBSERVE"){if(data.side==="INCOMING"&&receipt.assignedUserId!==actor.id)throw new ApiError(403,"Only the named inspector may record the incoming condition");const result=await recordPlaceObservation({receiptId:id,cafeId:actor.cafeId!,assetId:data.assetId,checkpointId:data.checkpointId,side:data.side,condition:data.condition,note:data.note,actorId:actor.id});return NextResponse.json(result);}if(data.overrideReason){await requireKey("handover.exception");}else if(receipt.assignedUserId!==actor.id)throw new ApiError(403,"Only the named inspector may accept this receipt");const result=await acceptPlaceReceipt({receiptId:id,cafeId:actor.cafeId!,actorId:actor.id,idempotencyKey:data.idempotencyKey,overrideReason:data.overrideReason});return NextResponse.json(result);}catch(error){return handleApiError(error);}}

@@ -67,6 +67,7 @@
 // whole invariant, and it is enforced in `resolveTenderSettlement` before any
 // write happens.
 
+import { money, type Numeric } from "@/lib/money";
 import type { Prisma } from "@prisma/client";
 import { ApiError } from "@/lib/api";
 import { auditInTransaction } from "@/lib/audit";
@@ -74,7 +75,7 @@ import { openVarianceCase } from "@/lib/variance-case";
 import { ELECTRONIC_TENDER_METHODS, type ElectronicTenderMethod } from "@/lib/tender";
 
 /** The column is Decimal(10,2); every comparison happens at that resolution. */
-const round2 = (n: number) => Math.round(n * 100) / 100;
+const round2 = (n: Numeric) => money(n).toNumber();
 
 export const TENDER_DIFFERENCE_AUDIT_ACTION = "TENDER_DIFFERENCE_DETECTED";
 
@@ -120,8 +121,8 @@ export type PersistedTenderSettlement = ResolvedTenderSettlement & {
  * could not hold and nobody could explain. The same shape `cashVariance` uses,
  * deliberately: one rule, applied three times, never merged into one number.
  */
-export function tenderVariance(actual: number, expected: number): number {
-  return round2(round2(actual) - round2(expected));
+export function tenderVariance(actual: Numeric, expected: Numeric): number {
+  return money(money(actual).minus(money(expected))).toNumber();
 }
 
 export function tenderVarianceKind(variance: number): TenderVarianceKind {
@@ -151,7 +152,7 @@ const CHANNEL_LABEL: Record<ElectronicTenderMethod, string> = {
  */
 export function resolveTenderSettlement(
   method: ElectronicTenderMethod,
-  expectedAmount: number,
+  expectedAmount: Numeric,
   input: TenderSettlementInput | undefined
 ): ResolvedTenderSettlement | null {
   const expected = round2(expectedAmount);
@@ -198,7 +199,7 @@ export function resolveTenderSettlement(
  * every time.
  */
 export function resolveTenderSettlements(
-  expected: Record<ElectronicTenderMethod, number>,
+  expected: Record<ElectronicTenderMethod, Numeric>,
   inputs: TenderSettlementInputs
 ): ResolvedTenderSettlement[] {
   const resolved: ResolvedTenderSettlement[] = [];

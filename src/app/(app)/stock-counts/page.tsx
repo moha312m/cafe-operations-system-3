@@ -12,6 +12,7 @@ import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/client";
 import { useApp } from "@/components/app-shell";
+import { BranchScopeSelect } from "@/components/stock-counts/branch-scope-select";
 import {
   StockCountList,
   type CountSessionRow,
@@ -35,6 +36,7 @@ const ANY = "ALL";
 export default function StockCountsPage() {
   const { canKey, user, features } = useApp();
   const [sessions, setSessions] = useState<CountSessionRow[]>([]);
+  const [branchId, setBranchId] = useState(user.branchId ?? "");
   const [status, setStatus] = useState<string>(ANY);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -43,10 +45,10 @@ export default function StockCountsPage() {
   const allowed = canKey("stock_count.view");
 
   const load = useCallback(async () => {
-    if (!allowed) return;
+    if (!allowed || !branchId) return;
     setLoading(true);
     try {
-      const params = new URLSearchParams();
+      const params = new URLSearchParams({ branchId });
       if (status !== ANY) params.set("status", status);
       const { sessions } = await api<{ sessions: CountSessionRow[] }>(
         `/api/stock-counts?${params.toString()}`
@@ -58,11 +60,13 @@ export default function StockCountsPage() {
     } finally {
       setLoading(false);
     }
-  }, [allowed, status]);
+  }, [allowed, status, branchId]);
 
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => { const id = new URLSearchParams(window.location.search).get("sessionId"); if (id) setSelectedId(id); }, []);
 
   async function start(type: "CRITICAL" | "FULL") {
     setBusy(true);
@@ -71,7 +75,7 @@ export default function StockCountsPage() {
       // must say which branch, and the server refuses rather than guessing.
       const { session } = await api<{ session: { id: string } }>("/api/stock-counts", {
         method: "POST",
-        body: { type, branchId: user.branchId ?? undefined },
+        body: { type, branchId },
       });
       toast.success("اتفتحت جلسة جرد");
       await load();
@@ -106,11 +110,12 @@ export default function StockCountsPage() {
   return (
     <main className="space-y-4 p-4 sm:p-6">
       <header className="flex flex-wrap items-center gap-3">
+        <BranchScopeSelect value={branchId} onChange={setBranchId} />
         <h1 className="text-lg font-semibold">جرد المخزون</h1>
         <div className="ms-auto flex flex-wrap items-center gap-2">
           <Select value={status} onValueChange={(v) => setStatus(v ?? ANY)}>
             <SelectTrigger className="w-44" aria-label="الحالة">
-              <SelectValue placeholder="الحالة" />
+              <SelectValue>{status === ANY ? "كل الحالات" : COUNT_STATUS_LABEL[status as keyof typeof COUNT_STATUS_LABEL]}</SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectItem value={ANY}>كل الحالات</SelectItem>
@@ -144,11 +149,6 @@ export default function StockCountsPage() {
           )}
         </div>
       </header>
-
-      <p className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">
-        أسباب المخزون بتتكتب بالمعرّف (reasonCodeId) لغاية ما يبقى في endpoint
-        بيرجّع قائمة الأسباب.
-      </p>
 
       {loading ? (
         <div className="h-40 animate-pulse rounded-xl border border-dashed bg-muted/30" />

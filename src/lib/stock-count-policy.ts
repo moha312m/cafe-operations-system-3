@@ -149,7 +149,7 @@ export async function resolvePeriodicFullCount(
   ]);
 
   if (branch.cafeId !== cafeId) {
-    throw new ApiError(400, "Ø§Ù„ÙØ±Ø¹ Ù…Ø´ ØªØ§Ø¨Ø¹ Ù„Ù„ÙƒØ§ÙÙŠÙ‡");
+    throw new ApiError(400, "الفرع مش تابع للكافيه");
   }
 
   const schedule = pick(

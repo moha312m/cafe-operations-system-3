@@ -1,8 +1,10 @@
+import { isDatabaseContention } from "@/lib/database-errors";
 import { NextResponse } from "next/server";
-import { ZodError } from "zod";
+import { ZodError, z } from "zod";
 import { Prisma } from "@prisma/client";
 import { getSession, type SessionUser } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { resolveStaffBranchInTransaction } from "@/lib/staff-branch";
 import { type Permission } from "@/lib/permissions";
 import { resolvePermissions } from "@/lib/perms/effective";
 import { primaryKey } from "@/lib/perms/catalog";
@@ -12,6 +14,12 @@ import {
   type FeatureFlag,
   type WorkflowSwitch,
 } from "@/lib/cafe-settings";
+
+// zod installs its English messages as a bare side effect while declaring
+// `"sideEffects": false`, so the bundler may drop it — every default message
+// then collapses to "Invalid input" and a refusal stops naming the field or
+// key it refused. Installed here, where every route handler already imports.
+z.config(z.locales.en());
 
 export class ApiError extends Error {
   status: number;
@@ -53,24 +61,43 @@ export async function requireActiveSession(): Promise<SessionUser> {
   const session = await getSession();
   if (!session) throw new ApiError(401, "سجّل دخولك الأول");
 
-  const account = await db.user.findUnique({
-    where: { id: session.id },
-    select: {
-      isActive: true,
-      archivedAt: true,
-      cafe: { select: { isActive: true } },
-    },
-  });
+  return db.$transaction(async (tx) => {
+    await tx.$executeRaw`SET LOCAL lock_timeout = '2s'`;
+    await tx.$executeRaw`SET LOCAL statement_timeout = '5s'`;
+    await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${session.id} FOR NO KEY UPDATE`;
+    const account = await tx.user.findUnique({
+      where: { id: session.id },
+      select: {
+        email: true,
+        name: true,
+        role: true,
+        cafeId: true,
+        branchId: true,
+        isActive: true,
+        archivedAt: true,
+        cafe: { select: { isActive: true } },
+      },
+    });
 
-  // A token for a user who no longer exists is not a session.
-  if (!account) throw new ApiError(401, "سجّل دخولك الأول");
-  if (!account.isActive || account.archivedAt) {
-    throw new ApiError(403, "الحساب موقوف — كلم المدير");
-  }
-  if (account.cafe && !account.cafe.isActive) {
-    throw new ApiError(403, "تم إيقاف حساب الكافيه، برجاء التواصل مع إدارة المنصة");
-  }
-  return session;
+    // A token for a user who no longer exists is not a session.
+    if (!account) throw new ApiError(401, "سجّل دخولك الأول");
+    if (!session.tokenId || await tx.sessionRevocation.findUnique({
+      where: { tokenId: session.tokenId },
+      select: { id: true },
+    })) throw new ApiError(401, "سجّل دخولك الأول");
+    if (!account.isActive || account.archivedAt) {
+      throw new ApiError(403, "الحساب موقوف — كلم المدير");
+    }
+    if (account.cafe && !account.cafe.isActive) {
+      throw new ApiError(403, "تم إيقاف حساب الكافيه، برجاء التواصل مع إدارة المنصة");
+    }
+    // Account identity, authority and branch are read under the same User lock.
+    // Activity refusals above run before the resolver can write assignment state.
+    const branch = await resolveStaffBranchInTransaction(tx, session.id);
+    if (!branch) throw new ApiError(401, "سجّل دخولك الأول");
+    return { ...session, email: account.email, name: account.name, role: account.role,
+      cafeId: account.cafeId, ...branch };
+  });
 }
 
 export async function requirePermission(
@@ -125,7 +152,7 @@ export function resolveCafeId(
 }
 
 // Branch-pinned staff (cashier, kitchen, inventory) can only act on
-// their own branch; owners/managers of the cafe may pick any branch.
+// their own branch; unassigned owners/platform admins may pick a branch.
 export function resolveBranchId(
   session: SessionUser,
   requestedBranchId?: string | null
@@ -136,8 +163,24 @@ export function resolveBranchId(
     }
     return session.branchId;
   }
+  if (session.role !== "CAFE_OWNER" && session.role !== "SUPER_ADMIN") {
+    throw new ApiError(403, "حسابك غير معيّن على فرع — كلم المدير لتعيين الفرع");
+  }
   if (!requestedBranchId) throw new ApiError(400, "اختار الفرع الأول");
   return requestedBranchId;
+}
+
+// Read scope must come from the freshly resolved account, never from a
+// caller-supplied branch. A missing staff assignment is not café-wide access.
+// Detail queries apply this predicate before loading related records.
+export function resolveReadScope(session: SessionUser): { cafeId?: string; branchId?: string } {
+  if (session.role === "SUPER_ADMIN") return {};
+  if (!session.cafeId) throw new ApiError(403, "الحساب مش مرتبط بكافيه");
+  if (session.branchId) return { cafeId: session.cafeId, branchId: session.branchId };
+  if (session.role !== "CAFE_OWNER") {
+    throw new ApiError(403, "حسابك غير معيّن على فرع — كلم المدير لتعيين الفرع");
+  }
+  return { cafeId: session.cafeId };
 }
 
 // Feature gate: throws 403 if the cafe has the module disabled. Super
@@ -226,6 +269,7 @@ export function handleApiError(error: unknown): NextResponse {
       { status: 409 }
     );
   }
+  if (isDatabaseContention(error)) return NextResponse.json({ error: "في عملية تانية شغالة على الحساب — جرّب نفس العملية بعد لحظات" }, { status: 409 });
   console.error(error);
   // Schema drift (P2021 missing table / P2022 missing column) means the app
   // was deployed without running the pending migration — tell the caller

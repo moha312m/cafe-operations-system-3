@@ -1,7 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { requirePermission, resolveCafeId, handleApiError, ApiError } from "@/lib/api";
+import { requirePermission, resolveCafeId, handleApiError, ApiError, resolveReadScope } from "@/lib/api";
 import { periodFinancials, salesByStaff, refundsByActor } from "@/lib/reporting";
+import { addDays, dateStrInTz, zonedDayStart } from "@/lib/date-range";
 
 // Daily sales report: totals, payment-method breakdown, per-branch
 // breakdown, and item sales for one calendar day (?date=YYYY-MM-DD).
@@ -10,14 +11,15 @@ export async function GET(request: NextRequest) {
     const session = await requirePermission("reports:read");
     const params = request.nextUrl.searchParams;
     const cafeId = resolveCafeId(session, params.get("cafeId"));
-    const branchId = session.branchId ?? params.get("branchId") ?? undefined;
+    const branchId = resolveReadScope(session).branchId ?? params.get("branchId") ?? undefined;
 
-    const dateParam = params.get("date");
-    const dayStart = dateParam ? new Date(`${dateParam}T00:00:00`) : new Date();
-    if (isNaN(dayStart.getTime())) throw new ApiError(400, "Invalid date");
-    dayStart.setHours(0, 0, 0, 0);
-    const dayEnd = new Date(dayStart);
-    dayEnd.setDate(dayEnd.getDate() + 1);
+    const date = params.get("date") ?? dateStrInTz(new Date());
+    const parsedDate = new Date(`${date}T00:00:00Z`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || isNaN(parsedDate.getTime()) || parsedDate.toISOString().slice(0, 10) !== date) {
+      throw new ApiError(400, "Invalid date");
+    }
+    const dayStart = zonedDayStart(date);
+    const dayEnd = zonedDayStart(addDays(date, 1));
 
     const branchFilter = branchId ? { branchId } : {};
     const dayWindow = { gte: dayStart, lt: dayEnd };
@@ -76,6 +78,7 @@ export async function GET(request: NextRequest) {
         db.orderItem.groupBy({
           by: ["productName", "variantName"],
           where: {
+            voidedAt: null,
             order: { cafeId, ...branchFilter, status: "SERVED", createdAt: dayWindow },
           },
           _sum: { quantity: true, lineTotal: true },
@@ -83,11 +86,11 @@ export async function GET(request: NextRequest) {
         }),
         db.order.groupBy({
           by: ["branchId"],
-          where: { cafeId, status: "SERVED", createdAt: dayWindow },
+          where: { cafeId, ...branchFilter, status: "SERVED", createdAt: dayWindow },
           _sum: { total: true },
           _count: true,
         }),
-        db.branch.findMany({ where: { cafeId }, select: { id: true, name: true } }),
+        db.branch.findMany({ where: { cafeId, ...(branchId ? { id: branchId } : {}) }, select: { id: true, name: true } }),
         // Shifts opened during the day, grouped by status.
         db.shift.groupBy({
           by: ["status"],
@@ -187,7 +190,7 @@ export async function GET(request: NextRequest) {
       .reduce((s, g) => s + Number(g._sum.remainingAmount ?? 0), 0);
 
     return NextResponse.json({
-      date: dayStart.toISOString().slice(0, 10),
+      date,
       totals: {
         orders: orderCount,
         cancelled: cancelledCount,

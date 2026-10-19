@@ -21,7 +21,7 @@
 // against a café that has one.
 
 import bcrypt from "bcryptjs";
-import { assertTestDatabase, db, tag } from "./db";
+import { assertTestDatabase, db, tag, teardownTaggedCafe } from "./db";
 import { login } from "./http";
 
 /** Written down on purpose: these accounts exist only inside a test run. */
@@ -62,7 +62,10 @@ async function actor(
  * Create the café, its two branches and its five accounts, and sign them all
  * in so `as(email, …)` works for any of them.
  */
-export async function countCafe(finding: string): Promise<CountCafe> {
+export async function countCafe(
+  finding: string,
+  options: { beforeLogin?: (created: CountCafe) => Promise<void> } = {}
+): Promise<CountCafe> {
   // Writing starts here for the suites that own their café outright.
   await assertTestDatabase();
   const marker = tag(finding);
@@ -76,27 +79,39 @@ export async function countCafe(finding: string): Promise<CountCafe> {
     include: { branches: { orderBy: { name: "asc" } } },
   });
 
-  const cafeId = cafe.id;
-  const branchId = cafe.branches.find((b) => b.name.endsWith("main"))!.id;
-  const otherBranchId = cafe.branches.find((b) => b.name.endsWith("annex"))!.id;
+  try {
+    const cafeId = cafe.id;
+    const branchId = cafe.branches.find((b) => b.name.endsWith("main"))!.id;
+    const otherBranchId = cafe.branches.find((b) => b.name.endsWith("annex"))!.id;
 
-  const hash = await bcrypt.hash(COUNT_PASSWORD, 10);
-  const manager = await actor(marker, "manager", "BRANCH_MANAGER", cafeId, branchId, hash);
-  const cashier = await actor(marker, "cashier", "CASHIER", cafeId, branchId, hash);
-  const storekeeper = await actor(
-    marker, "store", "INVENTORY_MANAGER", cafeId, branchId, hash
-  );
-  const waiter = await actor(marker, "waiter", "WAITER", cafeId, branchId, hash);
-  const owner = await actor(marker, "owner", "CAFE_OWNER", cafeId, null, hash);
+    const hash = await bcrypt.hash(COUNT_PASSWORD, 10);
+    const manager = await actor(marker, "manager", "BRANCH_MANAGER", cafeId, branchId, hash);
+    const cashier = await actor(marker, "cashier", "CASHIER", cafeId, branchId, hash);
+    const storekeeper = await actor(
+      marker, "store", "INVENTORY_MANAGER", cafeId, branchId, hash
+    );
+    const waiter = await actor(marker, "waiter", "WAITER", cafeId, branchId, hash);
+    const owner = await actor(marker, "owner", "CAFE_OWNER", cafeId, null, hash);
 
-  for (const a of [manager, cashier, storekeeper, waiter, owner]) {
-    await login(a.email, COUNT_PASSWORD);
+    const created: CountCafe = {
+      marker, cafeId, branchId, otherBranchId,
+      manager, cashier, storekeeper, waiter, owner,
+    };
+    // Test utilities alone may disable an owned account to exercise actual
+    // login failure and partial-fixture cleanup without framework mocks.
+    await options.beforeLogin?.(created);
+    for (const a of [manager, cashier, storekeeper, waiter, owner]) {
+      await login(a.email, COUNT_PASSWORD);
+    }
+    return created;
+  } catch (setupError) {
+    try {
+      await teardownTaggedCafe(cafe.id);
+    } catch (cleanupError) {
+      throw new AggregateError([setupError, cleanupError], "Fixture setup and exact owned-cafe cleanup both failed");
+    }
+    throw setupError;
   }
-
-  return {
-    marker, cafeId, branchId, otherBranchId,
-    manager, cashier, storekeeper, waiter, owner,
-  };
 }
 
 /**

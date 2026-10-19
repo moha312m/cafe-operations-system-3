@@ -623,7 +623,7 @@ describe("CASHCLOSE-001 — cash variance is recorded as a fact", () => {
     }
   });
 
-  test("the close response speaks of facts, not of acceptability", async () => {
+  test("the counter's close response records their count without reconciliation", async () => {
     const d = await drawer();
     const r = await close(fx.cashier.email, d.shiftId, {
       actualCashAmount: 4970,
@@ -631,28 +631,22 @@ describe("CASHCLOSE-001 — cash variance is recorded as a fact", () => {
     });
     assert.equal(r.status, 200, r.text);
 
-    // `cashWithinTolerance` and `cashToleranceAmount` are T16 columns and are
-    // serialised with the rest of the row, so their NAMES appear. What must
-    // not appear is a VALUE in any of them: the assertion is that every
-    // acceptability-shaped field came back empty, which is the difference
-    // between a column that exists and a verdict this close reached.
+    // The counter's close response omits all reconciliation and verdict fields.
     const shift = r.body.shift!;
     const verdictKeys = Object.keys(shift).filter((k) =>
       /tolerance|acceptable|threshold|approved/i.test(k)
     );
     assert.deepEqual(
       verdictKeys.sort(),
-      ["cashToleranceAmount", "cashWithinTolerance"],
-      "no NEW acceptability field was introduced by T33"
+      [],
+      "the counter must not see reconciliation or verdict fields"
     );
-    for (const key of verdictKeys) {
-      assert.equal(shift[key], null, `${key} must carry no verdict`);
-    }
-
-    // And the figures that ARE disclosed are the factual ones.
-    assert.equal(Number(shift.expectedCashAmount), 5000);
+    assert.equal("expectedCashAmount" in shift, false);
     assert.equal(Number(shift.actualCashAmount), 4970);
-    assert.equal(Number(shift.cashDifference), -30);
+    assert.equal("cashDifference" in shift, false);
+    const stored = await db.shift.findUniqueOrThrow({ where: { id: d.shiftId } });
+    assert.equal(Number(stored.expectedCashAmount), 5000);
+    assert.equal(Number(stored.cashDifference), -30);
     assert.equal(shift.cashReasonNote, "عجز");
   });
 

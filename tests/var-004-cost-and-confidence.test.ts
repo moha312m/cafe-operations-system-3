@@ -30,6 +30,7 @@
 
 import { test, after, before, describe } from "node:test";
 import assert from "node:assert/strict";
+import { isFinancialLiabilityTable } from "./helpers/financial-liability-tables";
 import { db, tag, teardownTaggedCafe } from "./helpers/db";
 import { RecipeIssue } from "@/lib/costing";
 import { recipeFingerprint } from "@/lib/recipes";
@@ -622,13 +623,15 @@ describe("VAR-004 cost trust and baseline-window confidence", () => {
       assignedResponsibilityUserId: staffId,
     });
 
-    const payrollish = await db.$queryRaw<{ table_name: string }[]>`
+    const tables = await db.$queryRaw<{ table_name: string }[]>`
       SELECT table_name FROM information_schema.tables
-       WHERE table_schema = current_schema()
-         AND (table_name ILIKE '%payroll%' OR table_name ILIKE '%salary%'
-              OR table_name ILIKE '%deduction%' OR table_name ILIKE '%liability%')
+       WHERE table_schema = 'public'
+       ORDER BY table_name
     `;
-    assert.deepEqual(payrollish, [], "there is no payroll surface for this to have touched");
+    assert.deepEqual(
+      tables.filter(({ table_name }) => isFinancialLiabilityTable(table_name)), [],
+      "there is no payroll surface for this to have touched"
+    );
 
     const staff = await db.user.findUniqueOrThrow({ where: { id: staffId } });
     assert.equal(staff.isActive, true, "and the named person's account is untouched");

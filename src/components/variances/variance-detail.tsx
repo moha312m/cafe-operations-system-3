@@ -7,7 +7,6 @@ import { useApp } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Input } from "@/components/ui/input";
 import {
   Dialog,
   DialogContent,
@@ -35,6 +34,7 @@ type CaseDetail = {
   financialImpactUnavailableReason: string | null;
   confidence: "VERIFIED" | "PARTIAL" | "UNVERIFIABLE";
   assignedResponsibilityUserId: string | null;
+  assignedResponsibility: {id:string;name:string}|null;
   blocking: boolean;
   openedAt: string;
   resolvedAt: string | null;
@@ -67,13 +67,15 @@ export function VarianceDetail({
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
   const [assignee, setAssignee] = useState("");
+  const [candidates,setCandidates]=useState<Array<{id:string;name:string}>>([]);
 
   const load = useCallback(async () => {
     if (!caseId) return;
     setLoading(true);
     try {
-      const { case: found } = await api<{ case: CaseDetail }>(`/api/variances/${caseId}`);
+      const { case: found, responsibilityCandidates } = await api<{ case: CaseDetail;responsibilityCandidates:Array<{id:string;name:string}> }>(`/api/variances/${caseId}`);
       setDetail(found);
+      setCandidates(responsibilityCandidates);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "تعذّر فتح الحالة");
       setDetail(null);
@@ -97,7 +99,7 @@ export function VarianceDetail({
         body: {
           to,
           note: note.trim() || undefined,
-          assignedResponsibilityUserId: assignee.trim() || undefined,
+          assignedResponsibilityUserId: to==="RESPONSIBILITY_ASSIGNED"?assignee.trim()||undefined:undefined,
         },
       });
       toast.success(`الحالة بقت «${STATUS_LABEL[to]}»`);
@@ -145,6 +147,7 @@ export function VarianceDetail({
                 ["الصنف", detail.stockCountLine?.inventoryItem.name ?? "—"],
                 ["الوردية", detail.shift ? `#${detail.shift.shiftNumber}` : "—"],
                 ["فتحها", detail.openedBy?.name ?? "—"],
+                ["المسؤول المعتمد",detail.assignedResponsibility?.name??"لم تعتمد المسؤولية"],
               ].map(([label, value]) => (
                 <div key={label} className="flex justify-between gap-3">
                   <dt className="text-muted-foreground">{label}</dt>
@@ -175,12 +178,10 @@ export function VarianceDetail({
 
                 {moves.includes("RESPONSIBILITY_ASSIGNED") && (
                   <div className="space-y-2">
-                    <Label>معرّف الموظف المسؤول</Label>
-                    <Input
-                      value={assignee}
-                      onChange={(e) => setAssignee(e.target.value)}
-                      placeholder="userId"
-                    />
+                    <Label>الموظف المسؤول</Label>
+                    <select aria-label="الموظف المسؤول" className="w-full rounded-md border bg-background p-2" value={assignee} onChange={e=>setAssignee(e.target.value)}>
+                      <option value="">اختار الموظف</option>{candidates.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+                    </select>
                   </div>
                 )}
 
@@ -197,7 +198,7 @@ export function VarianceDetail({
                         key={to}
                         size="sm"
                         variant={closing ? "default" : "outline"}
-                        disabled={busy || (closing && note.trim() === "")}
+                        disabled={busy || (closing && note.trim() === "") || (to==="RESPONSIBILITY_ASSIGNED" && (assignee.trim()==="" || detail.confidence!=="VERIFIED"))}
                         onClick={() => advance(to)}
                         data-testid={`variance-advance-${to}`}
                       >

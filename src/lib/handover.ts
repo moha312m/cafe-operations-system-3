@@ -1,3 +1,4 @@
+import { applyPendingFinishedGoodsReturns } from "@/lib/finished-goods-returns";
 // A handover exists because a shift closed into one.
 //
 // ── WHY THERE IS NO `startHandover` ──
@@ -63,10 +64,15 @@ import type {
   StockCountType,
 } from "@prisma/client";
 import { ApiError } from "@/lib/api";
+import { Prisma as SQL } from "@prisma/client";
+import { isDatabaseContention } from "@/lib/database-errors";
 import { audit, auditInTransaction } from "@/lib/audit";
 import { round3 } from "@/lib/costing";
 import { db } from "@/lib/db";
-import { ledgerDeltaAbove } from "@/lib/ledger";
+import { protectedTransaction, protectedContext, optionalProtectedContext } from "@/lib/protected-transaction";
+import { lockShifts, lockOrders, lockOrderPayments, assertFinancialLocks } from "@/lib/transaction-locks";
+import { isBranchStaff, resolveStaffBranchInTransaction } from "@/lib/staff-branch";
+import { ledgerDeltaAbove, lockItemForUpdate } from "@/lib/ledger";
 import { rebaseFromCountInTransaction, type RebaseResult } from "@/lib/stock-rebase";
 import type { HandoverBlocker } from "@/lib/handover-blockers";
 import {
@@ -83,7 +89,10 @@ import {
   acquireInventoryFreeze,
   activeFreezeFor,
   releaseInventoryFreeze,
+  acquireInventoryExclusiveLock,
 } from "@/lib/inventory-freeze";
+import { applyDeferredDeductions } from "@/lib/deferred-deduction";
+import { stockItemIdsForOrders } from "@/lib/stock-deduction";
 import {
   ACTIVE_COUNT_STATUSES,
   BLIND_LINE_FIELDS,
@@ -94,6 +103,7 @@ import {
 import { buildStockBoundary, persistStockBoundary } from "@/lib/handover-boundary";
 import { openHandoverVarianceCases } from "@/lib/stock-variance-attribution";
 import { transferCustody } from "@/lib/custody";
+import { recordCashHandover } from "@/lib/cash-handover";
 
 export const HANDOVER_STARTED_AUDIT_ACTION = "HANDOVER_STARTED";
 
@@ -424,9 +434,14 @@ async function lockHandover(
   tx: Prisma.TransactionClient,
   handoverId: string
 ): Promise<boolean> {
+  const context = optionalProtectedContext(tx);
+  const scope = context?.scope ?? {};
   const rows = await tx.$queryRaw<{ id: string }[]>`
-    SELECT "id" FROM "HandoverSession" WHERE "id" = ${handoverId} FOR UPDATE
-  `;
+    SELECT "id" FROM "HandoverSession" WHERE "id" = ${handoverId}
+      AND (${scope.cafeId ?? null}::text IS NULL OR "cafeId"=${scope.cafeId ?? null})
+      AND (${scope.branchId ?? null}::text IS NULL OR "branchId"=${scope.branchId ?? null}) FOR UPDATE ${context ? SQL.sql`NOWAIT` : SQL.empty}
+  `.catch(error => { if (context && isDatabaseContention(error)) throw new ApiError(409, "التسليم مشغول بعملية تانية — جرّب تاني"); throw error; });
+  if (context) context.trace.push({ entity: "HandoverSession", ids: rows.map(row => row.id), mode: "FOR UPDATE NOWAIT" });
   return rows.length > 0;
 }
 
@@ -1227,6 +1242,7 @@ const DISCLOSED_HANDOVER_LINE_SELECT = {
 } satisfies Prisma.StockCountLineSelect;
 
 export type IncomingHandoverView = {
+  segregatedReturns: { id: string; quantity: number; inventoryItemId: string }[];
   handoverId: string;
   status: HandoverStatus;
   branchId: string;
@@ -1271,7 +1287,7 @@ const REVIEWABLE_HANDOVER_STATUSES: readonly HandoverStatus[] = [
 export async function incomingHandoverView(
   handoverId: string,
   viewerId: string,
-  scope: { cafeId: string; viewerBranchId: string | null }
+  scope: { cafeId: string; viewerBranchId: string | null; allowOutgoingDraft?: boolean; allowCompletedRead?: boolean }
 ): Promise<IncomingHandoverView> {
   const handover = await db.handoverSession.findUnique({
     where: { id: handoverId },
@@ -1305,7 +1321,10 @@ export async function incomingHandoverView(
   if (scope.viewerBranchId !== null && handover.branchId !== scope.viewerBranchId) {
     throw new ApiError(403, FOREIGN_BRANCH);
   }
-  if (!REVIEWABLE_HANDOVER_STATUSES.includes(handover.status)) {
+  const outgoingDraft = scope.allowOutgoingDraft === true && handover.outgoingUserId === viewerId
+    && (handover.status === "DRAFT" || handover.status === "REJECTED");
+  if (!REVIEWABLE_HANDOVER_STATUSES.includes(handover.status) && !outgoingDraft
+    && !(scope.allowCompletedRead === true && handover.status === "COMPLETED")) {
     throw new ApiError(409, "التسليم مش في مرحلة مراجعة");
   }
 
@@ -1347,6 +1366,7 @@ export async function incomingHandoverView(
         : bound.lines;
 
   return {
+    segregatedReturns: await db.finishedGoodsReturn.findMany({ where: { cafeId: handover.cafeId, branchId: handover.branchId, deferredHandoverId: handover.id, appliedAt: null }, select: { id: true, quantity: true, inventoryItemId: true } }),
     handoverId: handover.id,
     status: handover.status,
     branchId: handover.branchId,
@@ -2178,7 +2198,7 @@ async function buildReplayResult(
   // SH-21 adds no schema. An ordinary completed accept has none, and this
   // stays null rather than inventing one.
   const exceptionRow = await tx.openingException.findFirst({
-    where: { handoverId: handover.id },
+    where: { handoverId: handover.id, kind: { in: ["MANAGER_ADJUSTMENT", "NO_INCOMING"] } },
     select: { id: true },
     orderBy: { createdAt: "asc" },
   });
@@ -2226,7 +2246,82 @@ async function buildReplayResult(
  * signature, matching every sibling service in this module — tenancy is the
  * caller's to state and the service's to enforce.
  */
+/** Prepare only the existing acceptance's referenced financial row set. */
+class HandoverConsumptionChanged extends Error {}
+async function protectedHandoverTransaction<T>(work: (tx: Prisma.TransactionClient) => Promise<T>, scope: { cafeId?: string; branchId?: string } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try { return await protectedTransaction(work, scope); }
+    catch (error) {
+      if (!(error instanceof HandoverConsumptionChanged)) throw error;
+      if (attempt >= 2) throw new ApiError(409, "مرتجعات التسليم اتغيرت؛ جرّب الاستلام تاني بنفس المفتاح");
+    }
+  }
+}
+async function prepareHandoverFinancialLocks(tx: Prisma.TransactionClient, args: {
+  handoverId: string; cafeId: string; viewerBranchId: string | null; incomingShiftId?: string | null;
+}, actorId: string) {
+  const assignment = await resolveStaffBranchInTransaction(tx, actorId);
+  const actor = await tx.user.findUnique({ where: { id: actorId }, select: { role: true, cafeId: true, isActive: true, archivedAt: true } });
+  if (!assignment || !actor?.isActive || actor.archivedAt) throw new ApiError(403, FOREIGN_BRANCH);
+  if (actor.role !== "SUPER_ADMIN" && actor.cafeId !== args.cafeId) throw new ApiError(404, HANDOVER_NOT_FOUND);
+  if (isBranchStaff(actor.role) && !assignment.branchId) throw new ApiError(403, FOREIGN_BRANCH);
+  const context = protectedContext(tx);
+  context.scope = { cafeId: args.cafeId, ...(actor.role !== "SUPER_ADMIN" && assignment.branchId ? { branchId: assignment.branchId } : args.viewerBranchId ? { branchId: args.viewerBranchId } : {}) };
+  context.trace.push({ entity: "User", ids: [actorId], mode: "FOR NO KEY UPDATE" });
+  const handover = await tx.handoverSession.findFirst({ where: { id: args.handoverId, ...context.scope }, select: LOCKED_HANDOVER_SELECT });
+  if (!handover) {
+    // Retain the established same-cafe 403 without locking a foreign branch.
+    if (context.scope.branchId && await tx.handoverSession.findFirst({ where: { id: args.handoverId, cafeId: args.cafeId }, select: { id: true } })) throw new ApiError(403, FOREIGN_BRANCH);
+    throw new ApiError(404, HANDOVER_NOT_FOUND);
+  }
+  if (args.viewerBranchId && handover.branchId !== args.viewerBranchId) throw new ApiError(403, FOREIGN_BRANCH);
+  context.scope = { cafeId: handover.cafeId, branchId: handover.branchId };
+  if (handover.status === "COMPLETED") return assignment;
+  // DRAFT/count-start writers hold Handover before the Shift FK KEY SHARE.
+  // Refuse these invalid requests before acquiring any financial row lock.
+  if (!ACCEPTABLE_STATUSES.includes(handover.status)) throw new ApiError(409, NOT_ACCEPTABLE);
+  const periods = await tx.custodyPeriod.findMany({ where: { ...context.scope, scope: "STOCK", OR: [{ status: "OPEN" }, { id: handover.outgoingStockCustodyId ?? "" }] }, select: { responsibleShiftId: true } });
+  const incoming = handover.target === "SHIFT_TO_SHIFT" ? await tx.shift.findMany({ where: {
+    ...context.scope, ...(args.incomingShiftId ? { id: args.incomingShiftId } : { status: "OPEN", custodyGateReason: "AWAITING_CUSTODY_TRANSFER" }),
+  }, select: { id: true } }) : [];
+  const shifts = [handover.outgoingShiftId, ...incoming.map(row => row.id), ...periods.map(row => row.responsibleShiftId).filter((id): id is string => !!id)];
+  await lockShifts(tx, shifts);
+  const pending = await tx.deferredStockDeduction.findMany({ where: { handoverId: handover.id, appliedAt: null, ...context.scope }, select: { orderId: true } });
+  const returns = await tx.finishedGoodsReturn.findMany({ where: { deferredHandoverId: handover.id, appliedAt: null, ...context.scope }, select: { orderId: true } });
+  const orderIds = [...new Set([...pending, ...returns].map(row => row.orderId))].sort();
+  await lockOrders(tx, orderIds); await lockOrderPayments(tx, orderIds);
+  return assignment;
+}
+
+/** Lock only the count/boundary/deferred union; keep their mutation rules. */
+async function prepareHandoverInventoryLocks(tx: Prisma.TransactionClient, handover: LockedHandover, sessionId: string, incomingShiftId?: string) {
+  const context = protectedContext(tx);
+  if (incomingShiftId && !context.held.get("Shift")?.has(incomingShiftId)) throw new ApiError(409, "شيفت الاستلام اتغير — جرّب تاني");
+  const periods = await tx.custodyPeriod.findMany({ where: { ...context.scope, scope: "STOCK", OR: [{ status: "OPEN" }, { id: handover.outgoingStockCustodyId ?? "" }] }, select: { responsibleShiftId: true } });
+  if (periods.some(row => row.responsibleShiftId && !context.held.get("Shift")?.has(row.responsibleShiftId))) throw new ApiError(409, "عهدة المخزون اتغيرت — جرّب العملية تاني");
+  const pending = await tx.deferredStockDeduction.findMany({ where: { handoverId: handover.id, appliedAt: null, ...context.scope }, select: { orderId: true, order: { select: { stockDeductedAt: true } } } });
+  assertFinancialLocks(tx, pending.map(row => row.orderId), handover.outgoingShiftId);
+  const session = await tx.$queryRaw<{id:string}[]>`SELECT "id" FROM "StockCountSession" WHERE "id"=${sessionId} AND "cafeId"=${handover.cafeId} AND "branchId"=${handover.branchId} FOR UPDATE`;
+  if (session.length !== 1) throw new ApiError(409, NO_BOUND_COUNT);
+  context.trace.push({ entity: "StockCountSession", ids: session.map(row => row.id), mode: "FOR UPDATE" });
+  await acquireInventoryExclusiveLock(tx, handover.branchId, { tryOnly: true });
+  const currentDeferred = await tx.deferredStockDeduction.findMany({ where: { handoverId: handover.id, appliedAt: null, ...context.scope }, select: { orderId: true } });
+  const currentReturns = await tx.finishedGoodsReturn.findMany({ where: { deferredHandoverId: handover.id, appliedAt: null, ...context.scope }, select: { orderId: true, inventoryItemId: true } });
+  if ([...currentDeferred, ...currentReturns].some(row => !context.held.get("Order")?.has(row.orderId))) throw new HandoverConsumptionChanged();
+  const [boundary, lines, deferredIds] = await Promise.all([
+    tx.inventoryItem.findMany({ where: { ...context.scope, isActive: true, archivedAt: null }, select: { id: true } }),
+    tx.stockCountLine.findMany({ where: { sessionId }, select: { inventoryItemId: true } }),
+    stockItemIdsForOrders(tx, currentDeferred.map(row => row.orderId), { boundary: "DEFERRED", forceAllowNegative: true }),
+  ]);
+  const ids = [...new Set([...boundary.map(row => row.id), ...lines.map(row => row.inventoryItemId), ...deferredIds, ...currentReturns.map(row => row.inventoryItemId)])].sort();
+  for (const id of ids) await lockItemForUpdate(tx, id, { nowait: true }).catch(error => { if (isDatabaseContention(error)) throw new ApiError(409, "المخزون مشغول بعملية تانية — جرّب الاستلام تاني"); throw error; });
+}
+
 export async function acceptHandover(args: {
+  countedOpeningCash?: number;
+  cashReasonCodeId?: string;
+  cashReasonNote?: string;
+
   handoverId: string;
   incomingUserId: string;
   incomingShiftId?: string | null;
@@ -2241,8 +2336,16 @@ export async function acceptHandover(args: {
    */
   __afterStep?: AcceptanceCheckpoint;
 }): Promise<AcceptResult> {
-  return db.$transaction(async (tx) => {
-    // 1. The row lock, first, so everything read below is the state written to.
+  return protectedHandoverTransaction(async (tx) => {
+    // Assignment changes and newly acquired responsibility share User first.
+    // Refresh scope before taking Handover, preserving that lock order.
+    const scope = await prepareHandoverFinancialLocks(tx, args, args.incomingUserId);
+    const actor = await tx.user.findUnique({
+      where: { id: args.incomingUserId }, select: { role: true, cafeId: true },
+    });
+    if (!scope || !actor) throw new ApiError(403, FOREIGN_BRANCH);
+
+    // 1. The handover row lock protects all evidence read below.
     if (!(await lockHandover(tx, args.handoverId))) {
       throw new ApiError(404, HANDOVER_NOT_FOUND);
     }
@@ -2259,6 +2362,16 @@ export async function acceptHandover(args: {
       throw new ApiError(403, FOREIGN_BRANCH);
     }
 
+    // Auth may have preceded activation/expiry of a temporary assignment.
+    // Staff cannot gain responsibility in a branch their live account cannot
+    // access; unassigned owners/platform admins retain their branch choice.
+    if (actor.role !== "SUPER_ADMIN" && actor.cafeId !== handover.cafeId) {
+      throw new ApiError(404, HANDOVER_NOT_FOUND);
+    }
+    if (isBranchStaff(actor.role) && (!scope.branchId || scope.branchId !== handover.branchId)) {
+      throw new ApiError(403, FOREIGN_BRANCH);
+    }
+
     // 2. Already accepted. A retry under the SAME key hears the same answer;
     //    a different key is a claim to a second acceptance of one handover,
     //    and there is only ever one.
@@ -2270,11 +2383,13 @@ export async function acceptHandover(args: {
     }
 
     // 3–4. The gate. Every refusal is thrown before the first write.
-    const evidence = await resolveAcceptableEvidence(tx, handover, {
+    let evidence = await resolveAcceptableEvidence(tx, handover, {
       cafeId: args.cafeId,
       viewerBranchId: args.viewerBranchId,
       incomingShiftId: args.incomingShiftId,
     });
+    await prepareHandoverInventoryLocks(tx, handover, evidence.acceptedSessionId, evidence.incomingShiftId);
+    evidence = await resolveAcceptableEvidence(tx, handover, { cafeId: args.cafeId, viewerBranchId: args.viewerBranchId, incomingShiftId: args.incomingShiftId });
 
     // No `exception`: an ordinary accept has no manager authority to carry,
     // and step 5 keeps its refusal.
@@ -2337,6 +2452,10 @@ const NOT_AN_EXCEPTION =
  * The manager can never be substituted for it.
  */
 export async function overrideAcceptHandover(args: {
+  countedOpeningCash?: number;
+  cashReasonCodeId?: string;
+  cashReasonNote?: string;
+
   handoverId: string;
   /** The authenticated manager. From `session.id`; never from a request body. */
   managerId: string;
@@ -2357,7 +2476,8 @@ export async function overrideAcceptHandover(args: {
   const note = args.note?.trim() ?? "";
   if (note.length === 0) throw new ApiError(400, EXCEPTION_NOTE_REQUIRED);
 
-  return db.$transaction(async (tx) => {
+  return protectedHandoverTransaction(async (tx) => {
+    await prepareHandoverFinancialLocks(tx, args, args.managerId);
     // 1. The row lock, first, exactly as the ordinary accept takes it.
     if (!(await lockHandover(tx, args.handoverId))) {
       throw new ApiError(404, HANDOVER_NOT_FOUND);
@@ -2403,10 +2523,12 @@ export async function overrideAcceptHandover(args: {
     // arriving shift and the freeze are all still required. A manager's
     // authority reaches exactly one of SH-20's refusals — the uncounted
     // required item at step 5 — and none of the others.
-    const evidence = await resolveAcceptableEvidence(tx, handover, {
+    let evidence = await resolveAcceptableEvidence(tx, handover, {
       cafeId: args.cafeId,
       viewerBranchId: args.viewerBranchId,
     });
+    await prepareHandoverInventoryLocks(tx, handover, evidence.acceptedSessionId, evidence.incomingShiftId);
+    evidence = await resolveAcceptableEvidence(tx, handover, { cafeId: args.cafeId, viewerBranchId: args.viewerBranchId });
 
     // The recipient is the arriving shift's cashier. When the caller named
     // one it is checked rather than believed, and a mismatch is refused
@@ -2419,6 +2541,9 @@ export async function overrideAcceptHandover(args: {
     const outcome = await runAcceptance(tx, evidence, {
       handoverId: args.handoverId,
       incomingUserId,
+      countedOpeningCash: args.countedOpeningCash,
+      cashReasonCodeId: args.cashReasonCodeId,
+      cashReasonNote: args.cashReasonNote,
       idempotencyKey: args.idempotencyKey,
       exception: {
         managerId: args.managerId,
@@ -2485,6 +2610,10 @@ async function runAcceptance(
   tx: Prisma.TransactionClient,
   evidence: AcceptedEvidence,
   args: {
+  countedOpeningCash?: number;
+  cashReasonCodeId?: string;
+  cashReasonNote?: string;
+
     handoverId: string;
     incomingUserId: string;
     idempotencyKey: string;
@@ -2495,6 +2624,12 @@ async function runAcceptance(
 ): Promise<AcceptanceOutcome> {
   const { handover, acceptedSessionId } = evidence;
   const exception = args.exception;
+  const cashVerification = evidence.outgoingCashCustodyId ? await recordCashHandover(tx, {
+    handoverId: handover.id, incomingShiftId: evidence.incomingShiftId, incomingUserId: args.incomingUserId, at: new Date(),
+    verifiedById: exception?.managerId,
+    countedOpeningCash: args.countedOpeningCash, cashReasonCodeId: args.cashReasonCodeId ?? exception?.reasonCodeId,
+    cashReasonNote: args.cashReasonNote ?? exception?.note,
+  }) : null;
   // Filled at step 14a, after the guarded completion write has won. Declared
   // here only so the result below can name it.
   let openingExceptionId: string | null = null;
@@ -2602,6 +2737,7 @@ async function runAcceptance(
     boundaryByItemId,
     openedById: args.incomingUserId,
   });
+  if (cashVerification?.caseId) variance.caseIds.push(cashVerification.caseId);
   await checkpoint(9);
 
   // One instant, reused at steps 10, 11, 12, 13 and 14. Custody moving, the
@@ -2647,6 +2783,7 @@ async function runAcceptance(
   // never held one has nothing to transfer, and one is not conjured so the
   // record looks complete.
   const incomingCashCustodyId = await transferCashCustody(tx, {
+    countedOpeningCash: cashVerification?.counted,
     outgoingCashCustodyId: evidence.outgoingCashCustodyId,
     branchId: handover.branchId,
     outgoingShiftId: handover.outgoingShiftId,
@@ -2769,6 +2906,10 @@ async function runAcceptance(
     handoverId: handover.id,
     actorId: args.incomingUserId,
   });
+  // Orders served while the shelf was frozen come off it now, against the
+  // custody step 10 just opened for the incoming shift.
+  await applyDeferredDeductions(tx, { handoverId: handover.id, actorId: args.incomingUserId });
+  await applyPendingFinishedGoodsReturns(tx, { handoverId: handover.id, actorId: args.incomingUserId });
   // The last seam, and the one that closes the rollback matrix: everything
   // this acceptance writes now exists, the freeze release included. A failure
   // here — the connection dying between the last write and the commit — must
@@ -2892,6 +3033,7 @@ async function runAcceptance(
 async function transferCashCustody(
   tx: Prisma.TransactionClient,
   args: {
+    countedOpeningCash?: number;
     outgoingCashCustodyId: string | null;
     branchId: string;
     outgoingShiftId: string;
@@ -2925,6 +3067,7 @@ async function transferCashCustody(
     incoming: {
       participants: [{ userId: args.incomingUserId, role: "PRIMARY" }],
       shiftId: args.incomingShiftId,
+      openingCashAmount: args.countedOpeningCash,
       holderType: "USER",
       openedById: args.incomingUserId,
     },
@@ -3230,7 +3373,7 @@ async function buildBranchReplayResult(
   ]);
 
   const exceptionRow = await tx.openingException.findFirst({
-    where: { handoverId: handover.id },
+    where: { handoverId: handover.id, kind: { in: ["MANAGER_ADJUSTMENT", "NO_INCOMING"] } },
     select: { id: true },
     orderBy: { createdAt: "asc" },
   });
@@ -3314,7 +3457,8 @@ export async function acceptToBranchCustody(args: {
     throw new ApiError(400, BRANCH_OMISSION_REASON_REQUIRED);
   }
 
-  return db.$transaction(async (tx) => {
+  return protectedHandoverTransaction(async (tx) => {
+    await prepareHandoverFinancialLocks(tx, args, args.managerId);
     // 1. The row lock, first, so everything read below is the state written
     //    to — and so a concurrent shift-open blocks on it (see R-A1).
     if (!(await lockHandover(tx, args.handoverId))) {
@@ -3343,10 +3487,12 @@ export async function acceptToBranchCustody(args: {
     }
 
     // 4. The gate. Every refusal is thrown before the first write.
-    const evidence = await resolveBranchAcceptableEvidence(tx, handover, {
+    let evidence = await resolveBranchAcceptableEvidence(tx, handover, {
       cafeId: args.cafeId,
       viewerBranchId: args.viewerBranchId,
     });
+    await prepareHandoverInventoryLocks(tx, handover, evidence.acceptedSessionId);
+    evidence = await resolveBranchAcceptableEvidence(tx, handover, { cafeId: args.cafeId, viewerBranchId: args.viewerBranchId });
 
     return runBranchAcceptance(tx, evidence, {
       managerId: args.managerId,
@@ -3593,6 +3739,10 @@ async function runBranchAcceptance(
     handoverId: handover.id,
     actorId: args.managerId,
   });
+  // Orders served while the shelf was frozen come off it now, against the
+  // branch custody step 12 just opened.
+  await applyDeferredDeductions(tx, { handoverId: handover.id, actorId: args.managerId });
+  await applyPendingFinishedGoodsReturns(tx, { handoverId: handover.id, actorId: args.managerId });
   await checkpoint(17);
 
   const result: BranchCustodyAcceptResult = {
