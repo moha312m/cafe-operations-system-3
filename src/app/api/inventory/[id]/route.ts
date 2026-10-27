@@ -4,7 +4,7 @@ import { lockItemForUpdate } from "@/lib/ledger";
 import { assertFinishedStockEditable } from "@/lib/finished-stock-history";
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
-import { requirePermission, handleApiError } from "@/lib/api";
+import { requireKey, handleApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { publicInventoryItem } from "@/lib/public-shape";
 import { findScopedItem } from "@/lib/inventory-scope";
@@ -26,7 +26,7 @@ const updateSchema = z.object({
 
 export async function PATCH(request: NextRequest, { params }: Params) {
   try {
-    const session = await requirePermission("inventory:manage");
+    const session = await requireKey("inventory.edit");
     const { id } = await params;
     const item = await findScopedItem(id, session);
     const data = updateSchema.parse(await request.json());
@@ -76,7 +76,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
 // Soft delete (archive) — never hard-delete, to keep ledger history.
 export async function DELETE(_request: NextRequest, { params }: Params) {
   try {
-    const session = await requirePermission("inventory:manage");
+    const session = await requireKey("inventory.edit");
     const { id } = await params;
     const item = await findScopedItem(id, session);
 

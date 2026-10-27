@@ -79,7 +79,9 @@ export async function PATCH(request: NextRequest, { params }: Params) {
         throw new ApiError(403, "الطلب تبع فرع تاني");
       }
 
-      if (!(status === "SERVED" && order.status === "SERVED") && !TRANSITIONS[order.status].includes(status)) {
+      const refundedReadyCancellation = status === "CANCELLED" && order.status === "READY"
+        && order.paymentStatus === "REFUNDED" && order.paidAmount.isZero() && order.remainingAmount.isZero();
+      if (!(status === "SERVED" && order.status === "SERVED") && !refundedReadyCancellation && !TRANSITIONS[order.status].includes(status)) {
         throw new ApiError(400, "الحالة دي مش مسموحة للطلب في وضعه الحالي");
       }
       if (status === "CANCELLED") {

@@ -9,16 +9,18 @@ before(async () => { fx = await countCafe("PLACE004"); });
 after(async () => { if (fx) await teardownTaggedCafe(fx.cafeId); await db.$disconnect(); });
 
 async function routeBundle(email: string, html: string, route: "settings" | "handovers") {
-  // Next 16 dev server emits page chunks by path, e.g.
-  // /_next/static/chunks/app/(app)/settings/page.js — not the legacy
-  // flattened webpack name (src_app_(app)_settings_page_tsx_<hash>.js).
-  const routeChunk = html.match(new RegExp(`src="([^"]*chunks/app/\\(app\\)/${route}/page\\.js[^"]*)"`));
-  assert.ok(routeChunk, `${route} client bundle should be reachable from the page`);
-  const routeCode = await as(email, routeChunk[1]);
-  const dependencies = [...routeCode.text.matchAll(/"static\/chunks\/([^"]+\.js)"/g)]
-    .map((match) => `/_next/static/chunks/${match[1]}`);
-  const dependencyCode = await Promise.all(dependencies.map((path) => as(email, path)));
-  return [routeCode.text, ...dependencyCode.map((result) => result.text)].join("\n");
+  // Retrieve the scripts the rendered page actually advertises. Their names
+  // and grouping differ between Turbopack, webpack and production builds.
+  const chunks = [...new Set([...html.matchAll(/<script\b[^>]*src="([^"]*\/_next\/static\/chunks\/[^"]+\.js(?:\?[^"]*)?)"/g)]
+    .map((match) => match[1].replaceAll("&amp;", "&")))];
+  assert.ok(chunks.length > 0, `${route} client bundles should be reachable from the page`);
+  const code = await Promise.all(chunks.map(async (chunk) => {
+    const response = await as(email, chunk);
+    assert.equal(response.status, 200, `${route} chunk ${chunk} must be retrievable`);
+    assert.match(response.headers.get("content-type") ?? "", /(?:java|ecma)script/i, `${chunk} must return JavaScript`);
+    return response.text;
+  }));
+  return code.join("\n");
 }
 
 test("owner settings and branch handover pages expose place configuration and incoming inspection", async () => {

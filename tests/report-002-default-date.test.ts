@@ -39,8 +39,10 @@ for (const { now, expected } of [
   test(`report picker defaults to Cairo ${expected} at ${now}`, () => {
     mock.timers.enable({ apis: ["Date"], now: new Date(now).getTime() });
     const html = renderToStaticMarkup(createElement(pageModule.exports.default));
-    const input = html.match(/<input\b[^>]*type="date"[^>]*>/)?.[0];
-    assert.ok(input, "the daily report renders its date picker");
-    assert.ok(input.includes(`value="${expected}"`), input);
+    for (const label of ["\u0628\u062f\u0627\u064a\u0629 \u0623\u064a\u0627\u0645 \u0627\u0644\u0639\u0645\u0644", "\u0646\u0647\u0627\u064a\u0629 \u0623\u064a\u0627\u0645 \u0627\u0644\u0639\u0645\u0644"]) {
+      const picker = html.match(new RegExp(`<button\\b[^>]*aria-label="${label}"[^>]*>[\\s\\S]*?</button>`))?.[0];
+      assert.ok(picker, `the daily report renders its ${label} date picker`);
+      assert.ok(picker.includes(`>${expected}</button>`), picker);
+    }
   });
 }

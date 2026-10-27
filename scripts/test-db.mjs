@@ -61,6 +61,9 @@ if (TEST_DB_PORT === 5433) {
   throw new Error("Refusing TEST_DB_PORT=5433: that port is the owner's real cafe database.");
 }
 export const TEST_DB_NAME = process.env.TEST_DB_NAME ?? "cafe_ops_test";
+if (!TEST_DB_NAME_PATTERN.test(TEST_DB_NAME)) {
+  throw new Error("Refusing TEST_DB_NAME: disposable database names must match cafe_ops_test with optional alphanumeric suffixes.");
+}
 export const TEST_DATABASE_URL = `postgresql://postgres@127.0.0.1:${TEST_DB_PORT}/${TEST_DB_NAME}?schema=public`;
 // TEST_SERVER_PORT may be overridden (e.g. 3101) to target a dedicated
 // isolated test server on an unused port; the default stays :3100.

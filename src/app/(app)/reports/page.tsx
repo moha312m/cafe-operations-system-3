@@ -41,8 +41,11 @@ type Report = {
   financials: {
     grossSales: number;
     refunds: number;
+    salesRefunds: number;
+    unservedRefunds: number;
     netSales: number;
     collections: number;
+    netMoneyMovement: number;
     cashRefunds: number;
     cardRefunds: number;
   };
@@ -80,7 +83,8 @@ type Report = {
   items: { product: string; variant: string | null; quantity: number; revenue: number }[];
 };
 
-const METHOD_LABELS: Record<string, string> = {
+const METHOD_LABELS: Record<string, string>
+ = {
   CASH: "كاش",
   CARD: "فيزا",
   WALLET: "محفظة",
@@ -135,9 +139,12 @@ export default function ReportsPage() {
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             {[
               { label: "المبيعات قبل المرتجعات", value: money(report.financials.grossSales, currency) },
-              { label: "المرتجعات", value: money(report.financials.refunds, currency) },
+              { label: "مرتجعات المبيعات", value: money(report.financials.salesRefunds, currency) },
               { label: "صافي المبيعات", value: money(report.financials.netSales, currency) },
               { label: "اللي اتحصّل فعليًا", value: money(report.financials.collections, currency) },
+              { label: "كل المبالغ المرتجعة", value: money(report.financials.refunds, currency) },
+              { label: "مرتجعات قبل التسليم", value: money(report.financials.unservedRefunds, currency) },
+              { label: "صافي حركة الأموال", value: money(report.financials.netMoneyMovement, currency) },
               { label: "عدد الطلبات", value: String(report.totals.orders) },
               { label: "متوسط قيمة الطلب", value: money(report.totals.avgOrderValue, currency) },
               { label: "الخصومات", value: money(report.totals.discounts, currency) },
@@ -181,6 +188,8 @@ export default function ReportsPage() {
               </Card>
             ))}
           </div>
+
+          <p className="text-sm text-muted-foreground" data-testid="refund-recognition-note">مرتجعات الطلبات قبل التسليم تؤثر على حركة الأموال فقط.</p>
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Card>
@@ -250,7 +259,7 @@ export default function ReportsPage() {
 
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">مبيعات كل كاشير</CardTitle>
+              <CardTitle className="text-base">تحصيلات كل كاشير</CardTitle>
             </CardHeader>
             <CardContent>
               {report.byCashier.length === 0 ? (

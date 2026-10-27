@@ -1,4 +1,5 @@
 import { stockBindingsSchema, saveProductStockBindings } from "@/lib/product-stock-bindings";
+import { assertNoPendingRecipeAmendments } from "@/lib/amendment-product-modes";
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
@@ -98,7 +99,11 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     }
 
     const product = await db.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT "id" FROM "Product" WHERE "id"=${id} FOR UPDATE`;
+      const locked = await tx.$queryRaw<{ id: string; stockMode: string }[]>`SELECT "id", "stockMode" FROM "Product" WHERE "id"=${id} FOR UPDATE`;
+      if (!locked.length) throw new ApiError(404, "Product not found");
+      if (data.stockMode === "FINISHED_GOOD" && locked[0].stockMode !== "FINISHED_GOOD") {
+        await assertNoPendingRecipeAmendments(tx, existing.cafeId, id);
+      }
       if (data.variants) {
         const ids = data.variants.flatMap(v => v.id ? [v.id] : []);
         if (new Set(ids).size !== ids.length || await tx.productVariant.count({ where: { id: { in: ids }, productId: id } }) !== ids.length) throw new ApiError(400, "حجم خارج المنتج أو مكرر");

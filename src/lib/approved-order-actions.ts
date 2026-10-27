@@ -164,9 +164,13 @@ export async function executeApprovedAction(args: {
     } else if (request.action === "CANCEL_ORDER") {
       const order = await tx.order.findFirst({
         where: { id: request.targetOrderId!, cafeId: request.cafeId },
-        select: { id: true, branchId: true, orderNumber: true, status: true, customerId: true, total: true, tableSessionId: true, payments: true },
+        select: { id: true, branchId: true, orderNumber: true, status: true, paymentStatus: true, paidAmount: true, remainingAmount: true, customerId: true, total: true, tableSessionId: true, payments: true },
       });
-      if (!order || !["CONFIRMED", "PREPARING"].includes(order.status)) throw new ApiError(409, "Order can no longer be cancelled");
+      const fullyRefundedReady = order?.status === "READY"
+        && order.paymentStatus === "REFUNDED"
+        && decimal(order.paidAmount).eq(0)
+        && decimal(order.remainingAmount).eq(0);
+      if (!order || (!["CONFIRMED", "PREPARING"].includes(order.status) && !fullyRefundedReady)) throw new ApiError(409, "Order can no longer be cancelled");
       if (order.payments.some((payment) => payment.type === "COLLECTION" && payment.status === "PAID" && !payment.reversalOfPaymentId)) {
         const reversed = await tx.payment.findMany({ where: { orderId: order.id, type: "COLLECTION", reversedBy: { some: {} } }, select: { id: true } });
         const collections = order.payments.filter((payment) => payment.type === "COLLECTION" && payment.status === "PAID" && !payment.reversalOfPaymentId);

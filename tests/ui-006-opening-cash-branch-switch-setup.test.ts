@@ -6,7 +6,7 @@
 // world they observe and records it for the matching teardown file.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { db } from "./helpers/db";
@@ -90,6 +90,7 @@ test("UI-006 setup: café with pending night-cash storage in both branches", asy
   assert.equal(pendingB.body.storages[0]?.drawerLabel, "UI006 drawer B-annex");
   assert.equal(pendingB.body.storages[0]?.expectedAmount, 111.5);
 
+  mkdirSync(path.dirname(FIXTURE_FILE), { recursive: true });
   writeFileSync(
     FIXTURE_FILE,
     JSON.stringify(

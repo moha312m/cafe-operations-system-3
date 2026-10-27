@@ -67,7 +67,9 @@ describe("UI-003 the two-stage close is reported honestly", () => {
     const code = read(CONTROLS);
     assert.match(code, /data-testid="handover-required-notice"/);
     assert.match(code, /t\.shifts\.settledNotDischarged/);
-    assert.match(code, /href="\/handovers"/, "the notice must link to the handover screen");
+    assert.match(code, /countAction\(branchId, handoverNotice\.handoverId/, "the notice targets the handover returned by close");
+    assert.match(code, /href=\{action\?\.href \?\? `\/handovers\?branchId=/, "the notice links to the action or branch handovers");
+    assert.match(code, /data-testid="handover-notice-action"/);
 
     const i18n = read("src/lib/i18n.ts");
     assert.match(i18n, /settledNotDischarged:/);
@@ -92,7 +94,8 @@ describe("UI-003 the two-stage close is reported honestly", () => {
 
   test("a refusal shows every blocker the server named", () => {
     const code = read(CONTROLS);
-    assert.match(code, /import \{ api, blockersOf, money \}/);
+    const clientImports = code.match(/import\s*\{([^}]+)\}\s*from "@\/lib\/client"/)?.[1].split(",").map((name) => name.trim());
+    assert.ok(clientImports?.includes("api") && clientImports.includes("blockersOf") && clientImports.includes("money"));
     assert.match(code, /setBlockers\(blockersOf\(e\)\)/);
     assert.match(code, /data-testid="close-blockers"/);
     assert.match(code, /blockers\.map\(/);

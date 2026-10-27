@@ -20,6 +20,7 @@ import {acquireInventorySharedLocks} from '@/lib/inventory-freeze';
 import {lockItemForUpdate,applyStockMutation} from '@/lib/ledger';
 import {allowsKnownShortage} from '@/lib/inventory-policy';
 import {assertOpeningReceiptEvidence} from '@/lib/opening-readiness';
+import {lockRecipeAmendmentProducts} from '@/lib/amendment-product-modes';
 
 const discount=z.object({type:z.enum(['NONE','PERCENT','FIXED']),value:z.string().regex(/^\d+(\.\d{1,2})?$/)}).strict();
 export const amendmentSchema=z.object({
@@ -60,6 +61,7 @@ async function proposal(tx:Prisma.TransactionClient,order:SavedOrder,input:Amend
    if(row.productId||row.variantId||row.addOnIds)throw new ApiError(400,'لا يمكن تبديل هوية الصنف المحفوظ');
    // Accepted finished-goods stock is immutable per line (DB trigger); refuse here, before approval or settlement.
    if(saved.stockModeSnapshot==='FINISHED_GOOD'&&row.quantity!==saved.quantity)throw new ApiError(409,FINISHED_AMENDMENT_REFUSED);
+   if(saved.stockModeSnapshot==='RECIPE'&&saved.stockAcceptedAt&&row.quantity>0&&row.quantity!==saved.quantity)throw new ApiError(409,'Accepted recipe quantities cannot be changed in place; remove the whole line or use a new order');
    if(row.quantity===0)continue;
    const base=originalLine(saved);
    if(row.unitPrice!==undefined&&!money(row.unitPrice).eq(saved.unitPrice))requiredPermissions.add('sales.override_price');
@@ -86,6 +88,7 @@ async function proposal(tx:Prisma.TransactionClient,order:SavedOrder,input:Amend
  const priced=priceAmendment(lines,input.invoiceDiscount,{taxRate:order.taxRateSnapshot?.toString()??'0',serviceRate:order.serviceRateSnapshot?.toString()??'0',fixedService:!order.serviceRateSnapshot||order.serviceRateSnapshot.isZero()?order.serviceChargeAmount.toString():'0'});
  const positiveLines=lines.flatMap(l=>{const old=existing.find(i=>i.id===l.id);const delta=l.quantity-(old?.quantity??0);return delta>0?[{...l,quantity:delta}]:[];});
  const quantityRemoved=existing.flatMap(i=>{const after=lines.find(l=>l.id===i.id)?.quantity??0;return after<i.quantity?[{id:i.id,quantity:i.quantity-after,prepared:i.kitchenStatus!=='NEW'||!!order.stockDeductedAt}]:[];});
+ await lockRecipeAmendmentProducts(tx,order.cafeId,positiveLines);
  const availability=await checkCartAvailability({cafeId:order.cafeId,branchId:order.branchId,mode:order.inventoryEnforcementMode,lines:(order.stockDeductedAt||order.status==='SERVED'?positiveLines:lines).filter(l=>l.productId).map(l=>({productId:l.productId!,label:l.productName,variantId:l.variantId,addOnIds:l.addOns.map(a=>a.addOnId).filter((a):a is string=>!!a),quantity:l.quantity}))},tx);
  if(!availability.ok)throw new ApiError(409,availability.message??'المخزون أو الوصفة لا يسمحان بهذا التعديل');
  const wasteLines=order.stockDeductedAt||order.status==='SERVED'?[]:quantityRemoved.filter(r=>r.prepared).map(r=>({...originalLine(existing.find(i=>i.id===r.id)!),quantity:r.quantity}));
@@ -193,6 +196,7 @@ export async function beginAmendmentSettlement(actor:SessionUser,id:string,reque
   if(a.status==='COMMITTED')throw new ApiError(409,'التعديل مكتمل');
   if(await tx.amendmentSettlement.findFirst({where:{amendmentId:id,status:{in:['PENDING','OBSERVED','UNKNOWN','CONFIRMED']}}}))throw new ApiError(409,'راجع محاولة التسوية الحالية قبل إعادة المحاولة');
   await currentProposalAuthority(tx,a,actor,keys);
+  await lockRecipeAmendmentProducts(tx,a.cafeId,(a.proposed as unknown as Proposed).positiveLines);
   const authorization=await approvalEvidence(tx,a,actor);
   const p=a.proposed as unknown as Proposed,s=p.settlement;
   if(a.ownerApprovalRequired&&!keys.has('orders.request_owner_action'))throw new ApiError(403,'صلاحية المرتجع أو إزالة الأصناف غير متاحة');
@@ -247,6 +251,7 @@ export async function commitAmendment(actor:SessionUser,id:string){
   a=await getAmendment(tx,id,actor);if(a.status==='COMMITTED')return tx.orderRevision.findUniqueOrThrow({where:{amendmentId:id}});
   if(a.status==='CANCELLED')throw new ApiError(409,'التعديل ملغي');
   const p=a.proposed as unknown as Proposed;
+  await lockRecipeAmendmentProducts(tx,a.cafeId,p.positiveLines);
   const attempt=await tx.amendmentSettlement.findFirst({where:{amendmentId:id,status:{in:['OBSERVED','CONFIRMED']}},orderBy:{createdAt:'desc'}});
   if(p.settlement.direction!=='NONE'&&(!attempt||attempt.status!=='OBSERVED'||attempt.shiftId!==shift.id))throw new ApiError(409,'أكد التسوية الفعلية أولًا؛ لا تعِد تحريك الأموال');
   // Approvals were consumed/reserved at START before money moved. No-settlement
@@ -264,7 +269,7 @@ export async function commitAmendment(actor:SessionUser,id:string){
    await tx.orderItem.update({where:{id:item.id},data:{quantity:next.quantity,unitPrice:next.unitPrice,lineTotal:next.lineTotal!,itemDiscountType:next.discount.type,itemDiscountValue:next.discount.value,itemDiscountAmount:next.itemDiscount!,invoiceDiscountShare:next.invoiceShare!}});
   }
   for(const next of p.lines.filter(l=>!order.items.some(i=>i.id===l.id))){
-   await tx.orderItem.create({data:{id:next.id,orderId:order.id,productId:next.productId,variantId:next.variantId,productName:next.productName,variantName:next.variantName,quantity:next.quantity,unitPrice:next.unitPrice,lineTotal:next.lineTotal!,notes:next.notes,itemDiscountType:next.discount.type,itemDiscountValue:next.discount.value,itemDiscountAmount:next.itemDiscount!,invoiceDiscountShare:next.invoiceShare!,addOns:{create:next.addOns}}});
+   await tx.orderItem.create({data:{id:next.id,orderId:order.id,productId:next.productId,variantId:next.variantId,stockModeSnapshot:'RECIPE',stockAcceptedAt:now,stockProductIdSnapshot:next.productId,stockVariantIdSnapshot:next.variantId,productName:next.productName,variantName:next.variantName,quantity:next.quantity,unitPrice:next.unitPrice,lineTotal:next.lineTotal!,notes:next.notes,itemDiscountType:next.discount.type,itemDiscountValue:next.discount.value,itemDiscountAmount:next.itemDiscount!,invoiceDiscountShare:next.invoiceShare!,addOns:{create:next.addOns}}});
   }
   await tx.order.update({where:{id:order.id},data:{subtotal:p.subtotal,total:p.total,discountAmount:p.discountAmount,taxAmount:p.taxAmount,serviceChargeAmount:p.serviceChargeAmount,invoiceDiscountType:p.invoiceDiscount.type,invoiceDiscountValue:p.invoiceDiscount.value}});
   const movementIds:string[]=[];
@@ -326,6 +331,7 @@ export async function serveAmendmentAdditions(actor:SessionUser,id:string){
   await lockOrders(tx,[a.orderId]);await lockOrderPayments(tx,[a.orderId]);
   const fresh=await getAmendment(tx,id,actor);if(fresh.kitchenStatus==='SERVED')return {alreadyServed:true};if(fresh.status!=='COMMITTED'||fresh.kitchenStatus!=='PENDING')throw new ApiError(409,'إضافات التحضير غير متاحة');
   const order=await readOrder(tx,a.orderId,actor),p=a.proposed as unknown as Proposed;
+  await lockRecipeAmendmentProducts(tx,a.cafeId,p.positiveLines);
   if(['CANCELLED','REJECTED'].includes(order.status))throw new ApiError(409,'راجع إلغاء الطلب قبل تسليم الإضافات');
   await acquireInventorySharedLocks(tx,[a.branchId]);
   const attribution=await amendmentStockCustody(tx,a,custody);

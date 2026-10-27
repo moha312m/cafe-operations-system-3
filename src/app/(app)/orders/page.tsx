@@ -51,6 +51,8 @@ type Order = {
   customerName: string | null;
   tableNumber: string | null;
   total: string;
+  paidAmount: string;
+  remainingAmount: string;
   paymentStatus: "UNPAID" | "PENDING_COLLECTION" | "PARTIAL" | "PAID" | "REFUNDED" | "CANCELLED";
   createdAt: string;
   branch: { id: string; name: string };
@@ -88,7 +90,7 @@ function paidAmount(order: Order): number {
 
 export default function OrdersPage() {
   const router = useRouter();
-  const { cafe, can, user } = useApp();
+  const { cafe, can, canKey, user } = useApp();
   const currency = cafe?.currency ?? "USD";
   const [orders, setOrders] = useState<Order[]>([]);
   const [busy, setBusy] = useState(false);
@@ -137,9 +139,12 @@ export default function OrdersPage() {
   async function setStatus(order: Order, status: string, reason?: string) {
     setBusy(true);
     try {
-      const result = await api<{ stockDeferred?: boolean; request?: { id: string; status: string } }>(`/api/orders/${order.id}/status`, {
-        method: "PATCH",
-        body: { status, ...(reason ? { reason } : {}) },
+      const cancelling = status === "CANCELLED";
+      const result = await api<{ stockDeferred?: boolean; request?: { id: string; status: string } }>(cancelling ? "/api/owner-action-requests" : `/api/orders/${order.id}/status`, {
+        method: cancelling ? "POST" : "PATCH",
+        body: cancelling
+          ? { action: "CANCEL_ORDER", orderId: order.id, reason: reason ?? "", idempotencyKey: crypto.randomUUID() }
+          : { status, ...(reason ? { reason } : {}) },
       });
       if (status === "CANCELLED" && result.request) toast.success("تم إرسال طلب الإلغاء للمالك؛ الطلب لسه قائم لحد الموافقة والتنفيذ");
       if (result.stockDeferred) toast.info("اتسلّم ✓ — المخزون متجمّد للتسليم، والخصم هيتسجّل بعد الاستلام");
@@ -373,7 +378,7 @@ export default function OrdersPage() {
                             تفاصيل
                           </Button>
                           {/* التحصيل يتم من شاشة الكاشير فقط — navigate with context */}
-                          {!isPaid && can("payments:create") && (
+                          {!isPaid && order.paymentStatus !== "REFUNDED" && can("payments:create") && (
                             <Button
                               size="sm"
                               variant="outline"
@@ -383,8 +388,10 @@ export default function OrdersPage() {
                               💵 تحصيل من الكاشير
                             </Button>
                           )}
-                          {can("orders:cancel") &&
-                            (order.status === "CONFIRMED" || order.status === "PREPARING") && (
+                          {canKey("orders.request_owner_action") &&
+                            (order.status === "CONFIRMED" || order.status === "PREPARING"
+                              || (order.status === "READY" && order.paymentStatus === "REFUNDED"
+                                && Number(order.paidAmount) === 0 && Number(order.remainingAmount) === 0)) && (
                               <Button
                                 size="sm"
                                 variant="ghost"
@@ -511,7 +518,7 @@ export default function OrdersPage() {
                         <span className="text-muted-foreground"> ({item.variantName})</span>
                       )}
                       {item.voidedAt ? <span className="ms-2 text-xs text-muted-foreground">ملغي بموافقة المالك بواسطة {item.voidedBy?.name ?? "موظف"} — {item.voidReason}</span>
-                        : can("orders:cancel") && (detail.status === "CONFIRMED" || detail.status === "PREPARING") && <Button className="ms-2 h-7" size="sm" variant="outline" disabled={busy} onClick={() => void requestItemVoid(detail, item)}>طلب حذف الصنف</Button>}
+                        : canKey("orders.request_owner_action") && (detail.status === "CONFIRMED" || detail.status === "PREPARING") && <Button className="ms-2 h-7" size="sm" variant="outline" disabled={busy} onClick={() => void requestItemVoid(detail, item)}>طلب حذف الصنف</Button>}
                     </li>
                   ))}
                 </ul>

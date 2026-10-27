@@ -189,7 +189,9 @@ describe("OPS-003 sending on close", () => {
     assert.equal(params.length, 8);
     assert.ok(params.every((p) => p.length > 0 && !/[\n\t]| {5,}/.test(p)), "WhatsApp refuses newlines, tabs and long space runs");
     assert.ok(params[1].includes(`#${shift.shiftNumber}`));
-    assert.equal(params[7], `http://localhost:3100/reports/shift/${shift.id}`);
+    const appBase = process.env.APP_BASE_URL?.replace(/\/+$/, "");
+    assert.ok(appBase, "APP_BASE_URL must be configured on both the test server and test runner to verify the report link");
+    assert.equal(params[7], `${appBase}/reports/shift/${shift.id}`);
 
     const audit = await db.auditLog.findFirst({ where: { cafeId: fx.cafeId, action: "WHATSAPP_SHIFT_REPORT_SENT", entityId: shift.id } });
     assert.ok(audit);

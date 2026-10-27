@@ -11,7 +11,10 @@
 //                 discount/tax rules already baked into that column). A
 //                 refunded order still sold, so it still counts.
 //   REFUNDS       money returned: Payment.type = REFUND.
-//   NET SALES     Gross Sales - Refunds.
+//   SALES REFUNDS refunds linked to recognized SERVED orders, including
+//                 legacy refunded collections. Unserved refunds affect money
+//                 movement only because no sale was recognized.
+//   NET SALES     Gross Sales - Sales Refunds.
 //   COLLECTIONS   money received: Payment.type = COLLECTION. This is NOT Net
 //                 Sales — an order can be sold in one period and collected in
 //                 another, and the two figures answer different questions.
@@ -19,12 +22,14 @@
 //
 // Accounting is by transaction period. A refund belongs to the day it was
 // issued, never to the day of the sale it reverses, so a day that only
-// returned money legitimately reports negative Net Sales.
+// returned money for an earlier recognized sale legitimately reports negative
+// Net Sales. A never-served refund does not reverse recognized sales.
 //
 // Nothing here reads meaning from the sign of an amount or treats
 // `paymentStatus = PAID` as a sale.
 
 import { db } from "@/lib/db";
+import type { Prisma } from "@prisma/client";
 import {reportEventWhere,type EventWindow} from './report-window-scope';
 export function financialEventWhere(scope:FinancialScope,field='createdAt',viaOrder=false){return scope.windows?reportEventWhere(scope.windows,field,viaOrder):{[field]:scope.period};}
 
@@ -61,7 +66,10 @@ export type FinancialScope = {
 
 export type Financials = {
   grossSales: number;
+  /** All money returned, including never-served orders. */
   refunds: number;
+  salesRefunds: number;
+  unservedRefunds: number;
   netSales: number;
   collections: number;
   netMoneyMovement: number;
@@ -98,18 +106,27 @@ export function movementWhere(scope: FinancialScope) {
   };
 }
 
-/**
- * The four headline figures, by database aggregation rather than by loading
- * rows: one aggregate over orders and one grouped aggregate over payments.
- */
+/** Refund activity that reverses recognized sales, dated by the payment. */
+export function salesRefundWhere(scope: FinancialScope): Prisma.PaymentWhereInput {
+  return {
+    AND: [
+      movementWhere(scope),
+      { order: { status: SALE_STATUS } },
+      { OR: [{ type: "REFUND" }, { type: "COLLECTION", status: "REFUNDED" }] },
+    ],
+  };
+}
+
+/** Sales recognition and money movement, aggregated independently. */
 export async function periodFinancials(scope: FinancialScope): Promise<Financials> {
-  const [sales, movement] = await Promise.all([
+  const [sales, movement, salesRefundMovement] = await Promise.all([
     db.order.aggregate({ where: salesWhere(scope), _sum: { total: true } }),
     db.payment.groupBy({
       by: ["type", "method", "status"],
       where: movementWhere(scope),
       _sum: { amount: true },
     }),
+    db.payment.aggregate({ where: salesRefundWhere(scope), _sum: { amount: true } }),
   ]);
 
   const bucket = { CASH: 0, CARD: 0, WALLET: 0, MIXED: 0 };
@@ -131,13 +148,16 @@ export async function periodFinancials(scope: FinancialScope): Promise<Financial
 
   const collections = r2(collectedBy.CASH + collectedBy.CARD + collectedBy.WALLET + collectedBy.MIXED);
   const refunds = r2(refundedBy.CASH + refundedBy.CARD + refundedBy.WALLET + refundedBy.MIXED);
+  const salesRefunds = r2(Number(salesRefundMovement._sum.amount ?? 0));
   const recognition=await revisionRecognition(scope);
   const grossSales = r2(Number(sales._sum.total ?? 0)+recognition.reduce((sum,r)=>sum+r.amount,0));
 
   return {
     grossSales,
     refunds,
-    netSales: r2(grossSales - refunds),
+    salesRefunds,
+    unservedRefunds: r2(refunds - salesRefunds),
+    netSales: r2(grossSales - salesRefunds),
     collections,
     netMoneyMovement: r2(collections - refunds),
     cashCollections: r2(collectedBy.CASH),
@@ -159,7 +179,9 @@ export type StaffSales = {
 };
 
 /**
- * Sales per employee, attributed to whoever made the sale.
+ * Sales per employee, attributed to whoever made the sale. Only refunds of
+ * recognized SERVED orders reduce selling performance; refund processing is
+ * reported independently, including never-served orders.
  *
  * Ownership follows the model already used on screen (src/lib/order-staff.ts):
  * a WAITER or CASHIER_POS order belongs to its creator, a QR_MENU order to the
@@ -187,7 +209,7 @@ export async function salesByStaff(scope: FinancialScope): Promise<StaffSales[]>
     // Refunds are rare next to sales, so resolving each back to its seller is
     // a small read rather than a scan.
     db.payment.findMany({
-      where: { ...movementWhere(scope), type: "REFUND" },
+      where: salesRefundWhere(scope),
       select: {
         amount: true,
         order: { select: { source: true, createdById: true, approvedById: true } },

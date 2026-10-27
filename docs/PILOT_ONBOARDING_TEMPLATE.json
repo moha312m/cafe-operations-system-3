@@ -1,0 +1,113 @@
+{
+  "cafe": {
+    "name": "",
+    "currency": "",
+    "taxRate": null
+  },
+  "branch": {
+    "name": "",
+    "timezone": "",
+    "businessDayStart": ""
+  },
+  "owner": {
+    "name": "",
+    "email": "",
+    "credentialsProvisioning": ""
+  },
+  "staff": [
+    {
+      "name": "",
+      "email": "",
+      "role": "",
+      "branch": "",
+      "permissionGrants": [],
+      "permissionDenials": [],
+      "discountLimitType": "",
+      "discountLimitValue": null
+    }
+  ],
+  "menu": [
+    {
+      "externalKey": "",
+      "name": "",
+      "category": "",
+      "stockMode": "",
+      "basePrice": null,
+      "variants": [],
+      "addOnKeys": []
+    }
+  ],
+  "addOns": [
+    {
+      "externalKey": "",
+      "name": "",
+      "price": null
+    }
+  ],
+  "recipes": [
+    {
+      "scope": "",
+      "productKey": "",
+      "variantKey": "",
+      "addOnKey": "",
+      "ingredients": [
+        {
+          "inventoryKey": "",
+          "branch": "",
+          "quantity": null,
+          "unit": "",
+          "wastePercentage": null
+        }
+      ],
+      "verifiedBy": ""
+    }
+  ],
+  "inventory": [
+    {
+      "externalKey": "",
+      "name": "",
+      "branch": "",
+      "unit": "",
+      "costPerUnit": null,
+      "countedOpeningQuantity": null,
+      "countedBy": "",
+      "countedAt": ""
+    }
+  ],
+  "suppliers": [
+    {
+      "name": "",
+      "openingBalance": null,
+      "balanceAsOf": "",
+      "sourceDocument": ""
+    }
+  ],
+  "openingCash": {
+    "branch": "",
+    "amount": null,
+    "countedBy": "",
+    "countedAt": ""
+  },
+  "handover": {
+    "mode": "",
+    "selectedInventoryKeys": [],
+    "schedule": "",
+    "responsibleRoles": []
+  },
+  "refundApproval": {
+    "activeOwnerEmail": "",
+    "mode": ""
+  },
+  "operations": {
+    "internetReliabilityConfirmed": null,
+    "devices": [],
+    "printingRequirement": "",
+    "backupRPO": "",
+    "backupRTO": ""
+  },
+  "ownerApproval": {
+    "previewVersion": "",
+    "approvedBy": "",
+    "approvedAt": ""
+  }
+}
