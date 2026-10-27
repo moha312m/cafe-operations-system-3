@@ -18,9 +18,10 @@ export type SystemRole = {
 };
 
 const MANAGER_KEYS = [
+  "sales.edit", "sales.approve", "sales.override_price", "sales.configure_limits",
   "dashboard.view",
   "pos.view", "pos.create_order", "pos.apply_discount", "pos.collect_payment", "pos.view_payments",
-  "orders.view", "orders.update_status", "orders.cancel",
+  "orders.view", "orders.update_status", "orders.cancel", "orders.request_owner_action",
   "qr_orders.view", "qr_orders.approve", "qr_orders.reject", "qr_orders.edit_before_approval",
   "qr_orders.assign_settings", "settings.edit_qr_approval",
   "kitchen.view", "kitchen.update_status",
@@ -63,8 +64,9 @@ const MANAGER_KEYS = [
 ];
 
 const CASHIER_KEYS = [
+  "sales.view", "sales.edit",
   "pos.view", "pos.create_order", "pos.collect_payment", "pos.view_payments",
-  "orders.view", "orders.update_status",
+  "orders.view", "orders.update_status", "orders.request_owner_action",
   // Cashiers can confirm QR orders routed to them (assignment-checked).
   "qr_orders.view", "qr_orders.approve", "qr_orders.reject",
   "tables.view", "tables.open", "tables.close",
@@ -87,7 +89,7 @@ const CASHIER_KEYS = [
 
 const WAITER_KEYS = [
   "pos.view", "pos.create_order",
-  "orders.view", "orders.update_status",
+  "orders.view", "orders.update_status", "orders.request_owner_action",
   "qr_orders.view", "qr_orders.approve", "qr_orders.reject", "qr_orders.edit_before_approval",
   "tables.view", "tables.open",
   "menu.view",
@@ -96,7 +98,7 @@ const WAITER_KEYS = [
 
 const BARISTA_KEYS = [
   "kitchen.view", "kitchen.update_status",
-  "orders.view",
+  "orders.view", "orders.request_owner_action",
   "menu.view",
 ];
 
@@ -167,6 +169,8 @@ export const ROLE_TO_SYSTEM: Record<Role, SystemRoleCode | "SUPER"> = {
 export function defaultKeysForRole(role: Role): string[] {
   if (role === "SUPER_ADMIN") return [...CAFE_KEYS, "platform.manage"];
   const keys = new Set<string>();
+  if(role==='CASHIER')for(const key of ['sales.view','sales.edit'])keys.add(key);
+  if(role==='BRANCH_MANAGER')for(const key of ['sales.view','sales.edit','sales.approve','sales.override_price','sales.configure_limits'])keys.add(key);
   for (const legacy of ROLE_PERMISSIONS[role] ?? []) {
     for (const k of LEGACY_TO_KEYS[legacy] ?? []) keys.add(k);
   }

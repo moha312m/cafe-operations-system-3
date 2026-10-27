@@ -1,26 +1,16 @@
+import { protectedTransaction } from "@/lib/protected-transaction";
+import { acquireInventorySharedLocks } from "@/lib/inventory-freeze";
+import { lockItemForUpdate } from "@/lib/ledger";
+import { assertFinishedStockEditable } from "@/lib/finished-stock-history";
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
-import { requirePermission, handleApiError, ApiError } from "@/lib/api";
+import { requireKey, handleApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { publicInventoryItem } from "@/lib/public-shape";
-import type { SessionUser } from "@/lib/auth";
+import { findScopedItem } from "@/lib/inventory-scope";
 import type { Prisma } from "@prisma/client";
 
 type Params = { params: Promise<{ id: string }> };
-
-// Loads an item and enforces cafe + branch scope in one place.
-export async function findScopedItem(id: string, session: SessionUser) {
-  const item = await db.inventoryItem.findUnique({ where: { id } });
-  if (!item) throw new ApiError(404, "الخامة مش موجودة");
-  if (session.role !== "SUPER_ADMIN" && item.cafeId !== session.cafeId) {
-    throw new ApiError(403, "ليس لديك صلاحية لتنفيذ هذا الإجراء");
-  }
-  if (session.branchId && item.branchId !== session.branchId) {
-    throw new ApiError(403, "ليس لديك صلاحية على فرع تاني");
-  }
-  return item;
-}
 
 const updateSchema = z.object({
   name: z.string().min(1, "اسم الخامة مطلوب").optional(),
@@ -36,7 +26,7 @@ const updateSchema = z.object({
 
 export async function PATCH(request: NextRequest, { params }: Params) {
   try {
-    const session = await requirePermission("inventory:manage");
+    const session = await requireKey("inventory.edit");
     const { id } = await params;
     const item = await findScopedItem(id, session);
     const data = updateSchema.parse(await request.json());
@@ -61,7 +51,12 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       update.archivedAt = null;
     }
 
-    const updated = await db.inventoryItem.update({ where: { id }, data: update });
+    const updated = await protectedTransaction(async tx => {
+      await acquireInventorySharedLocks(tx, [item.branchId]);
+      const locked = await lockItemForUpdate(tx, id);
+      await assertFinishedStockEditable(tx, id, { retire: data.archived === true || data.isActive === false, changingUnit: data.unit !== undefined && data.unit !== locked.unit });
+      return tx.inventoryItem.update({ where: { id }, data: update });
+    }, { cafeId: item.cafeId, branchId: item.branchId });
 
     await audit({
       cafeId: item.cafeId,
@@ -81,14 +76,16 @@ export async function PATCH(request: NextRequest, { params }: Params) {
 // Soft delete (archive) — never hard-delete, to keep ledger history.
 export async function DELETE(_request: NextRequest, { params }: Params) {
   try {
-    const session = await requirePermission("inventory:manage");
+    const session = await requireKey("inventory.edit");
     const { id } = await params;
     const item = await findScopedItem(id, session);
 
-    await db.inventoryItem.update({
-      where: { id },
-      data: { archivedAt: new Date(), isActive: false },
-    });
+    await protectedTransaction(async tx => {
+      await acquireInventorySharedLocks(tx, [item.branchId]);
+      await lockItemForUpdate(tx, id);
+      await assertFinishedStockEditable(tx, id, { retire: true });
+      await tx.inventoryItem.update({ where: { id }, data: { archivedAt: new Date(), isActive: false } });
+    }, { cafeId: item.cafeId, branchId: item.branchId });
 
     await audit({
       cafeId: item.cafeId,

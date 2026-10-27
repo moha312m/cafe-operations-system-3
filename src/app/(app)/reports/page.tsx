@@ -1,10 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef,useState } from "react";
 import { toast } from "sonner";
+import Link from "next/link";
 import { api, money } from "@/lib/client";
+import { dateStrInTz } from "@/lib/date-range";
 import { useApp } from "@/components/app-shell";
-import { Input } from "@/components/ui/input";
+import {ReportingControls,type ReportingMetadata} from '@/components/sales/reporting-controls';
+import {ReportOutputActions} from '@/components/sales/report-output-actions';
+import {TouchSelect} from '@/components/pos/touch-select';
 import {
   Card,
   CardContent,
@@ -21,6 +25,8 @@ import {
 } from "@/components/ui/table";
 
 type Report = {
+  reporting:ReportingMetadata;
+  outputSnapshot:string;
   date: string;
   totals: {
     orders: number;
@@ -35,8 +41,11 @@ type Report = {
   financials: {
     grossSales: number;
     refunds: number;
+    salesRefunds: number;
+    unservedRefunds: number;
     netSales: number;
     collections: number;
+    netMoneyMovement: number;
     cashRefunds: number;
     cardRefunds: number;
   };
@@ -74,7 +83,8 @@ type Report = {
   items: { product: string; variant: string | null; quantity: number; revenue: number }[];
 };
 
-const METHOD_LABELS: Record<string, string> = {
+const METHOD_LABELS: Record<string, string>
+ = {
   CASH: "كاش",
   CARD: "فيزا",
   WALLET: "محفظة",
@@ -82,43 +92,59 @@ const METHOD_LABELS: Record<string, string> = {
 };
 
 export default function ReportsPage() {
-  const { cafe } = useApp();
+  const { cafe, canKey, user } = useApp();
   const currency = cafe?.currency ?? "USD";
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [filters,setFilters]=useState<Record<string,string>>({reportMode:'business',businessFrom:dateStrInTz(new Date()),businessTo:dateStrInTz(new Date())});
   const [report, setReport] = useState<Report | null>(null);
+  const [error,setError]=useState(''),[loading,setLoading]=useState(false);
 
+  const loadId=useRef(0);
   const load = useCallback(async () => {
+    const id=++loadId.current;
+    setLoading(true);
     try {
-      setReport(await api<Report>(`/api/reports/daily?date=${date}`));
+      const next=await api<Report>('/api/reports/daily?'+new URLSearchParams(Object.fromEntries(Object.entries(filters).filter(([,v])=>v))));
+      if(id===loadId.current){setReport(next);setError('');}
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "فشل تحميل التقرير");
+      if(id===loadId.current){const message=e instanceof Error ? e.message : "فشل تحميل التقرير";setError(message);toast.error(message);}
+    }finally{
+      if(id===loadId.current)setLoading(false);
     }
-  }, [date]);
+  }, [filters]);
 
   useEffect(() => {
-    load();
+    const timer = window.setTimeout(() => load(), 0);
+    return () => clearTimeout(timer);
   }, [load]);
 
   return (
     <div className="max-w-4xl space-y-4">
+      {(user.role === "CAFE_OWNER" || user.role === "SUPER_ADMIN") && canKey("finance.view_revenue") && (
+        <><Link className="inline-block text-primary underline" href="/reports/historical-sales">المبيعات التاريخية المستوردة من Next Cup خلال السنة</Link><br/></>
+      )}
+      <Link className="inline-block text-primary underline" href="/reports/opening-receipts">تقرير استلام الكاش والخامات والمكان — المطابق والمؤجل والفروق</Link><br/>
+      <Link className="inline-block text-primary underline" href="/reports/employee-variances">تقرير فروق الموظفين — كاش وفيزا ومحفظة وخامات</Link>
+      <br/><Link className="inline-block text-primary underline" href="/reports/employee-actions">تقرير مسؤولية الموظفين عن الإلغاء والاسترداد</Link>
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">تقرير قفلة اليوم</h1>
-        <Input
-          type="date"
-          className="w-44"
-          value={date}
-          onChange={(e) => setDate(e.target.value)}
-        />
+        <TouchSelect aria-label="فرع التقرير" value={filters.branchId??''} onValueChange={v=>setFilters({...filters,branchId:v})}><option value="">كل الفروع المسموحة — كل فرع بساعاته</option>{report?.reporting.branches.map(b=><option key={b.id} value={b.id}>{b.name}</option>)}</TouchSelect>
       </div>
+      <ReportingControls filters={filters} onChange={setFilters} metadata={report?.reporting} onSaved={()=>void load()}/>
+      {loading&&<p role="status">جاري تحديث فترة التقرير…</p>}
+      {error&&<p role="alert" className="rounded border p-3 text-destructive">{error} — المعروض أدناه هو آخر تقرير ناجح. صحّح المدخلات لإعادة حسابه.</p>}
+      <ReportOutputActions snapshot={report?.outputSnapshot} disabled={loading||!!error}/>
 
       {report && (
         <>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             {[
               { label: "المبيعات قبل المرتجعات", value: money(report.financials.grossSales, currency) },
-              { label: "المرتجعات", value: money(report.financials.refunds, currency) },
+              { label: "مرتجعات المبيعات", value: money(report.financials.salesRefunds, currency) },
               { label: "صافي المبيعات", value: money(report.financials.netSales, currency) },
               { label: "اللي اتحصّل فعليًا", value: money(report.financials.collections, currency) },
+              { label: "كل المبالغ المرتجعة", value: money(report.financials.refunds, currency) },
+              { label: "مرتجعات قبل التسليم", value: money(report.financials.unservedRefunds, currency) },
+              { label: "صافي حركة الأموال", value: money(report.financials.netMoneyMovement, currency) },
               { label: "عدد الطلبات", value: String(report.totals.orders) },
               { label: "متوسط قيمة الطلب", value: money(report.totals.avgOrderValue, currency) },
               { label: "الخصومات", value: money(report.totals.discounts, currency) },
@@ -162,6 +188,8 @@ export default function ReportsPage() {
               </Card>
             ))}
           </div>
+
+          <p className="text-sm text-muted-foreground" data-testid="refund-recognition-note">مرتجعات الطلبات قبل التسليم تؤثر على حركة الأموال فقط.</p>
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Card>
@@ -231,7 +259,7 @@ export default function ReportsPage() {
 
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">مبيعات كل كاشير</CardTitle>
+              <CardTitle className="text-base">تحصيلات كل كاشير</CardTitle>
             </CardHeader>
             <CardContent>
               {report.byCashier.length === 0 ? (

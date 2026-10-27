@@ -35,7 +35,7 @@
 import { after, before, beforeEach, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import bcrypt from "bcryptjs";
-import { db, tag, teardownTaggedCafe } from "./helpers/db";
+import { db, tag, teardownTaggedCafe, purgeOrderTracesFor } from "./helpers/db";
 import { countCafe, countItem, COUNT_PASSWORD, type CountCafe } from "./helpers/count";
 import { as, login, requireServer } from "./helpers/http";
 
@@ -140,7 +140,7 @@ async function resetBranch(branchId: string) {
   await db.tenderReconciliation.deleteMany({ where: { branchId } });
   await db.payment.deleteMany({ where: { branchId } });
   await db.inventoryTransaction.deleteMany({ where: { branchId } });
-  await db.order.deleteMany({ where: { branchId } });
+  await purgeOrderTracesFor({ branchId }); await db.order.deleteMany({ where: { branchId } });
   await db.shiftCustody.deleteMany({ where: { shift: { branchId } } });
   await db.custodyParticipant.deleteMany({ where: { custodyPeriod: { branchId } } });
   await db.custodyPeriod.updateMany({ where: { branchId }, data: { previousPeriodId: null } });
@@ -1981,4 +1981,26 @@ describe("SH-20 accept route", () => {
     assert.equal(r.status, 200, r.text);
     assert.equal(r.body.incomingShiftId, h.incomingShiftId);
   });
+});
+
+test('cash handover: mismatch needs reason, is persisted once, and custody agrees with incoming opening',async()=>{
+  const h=await acceptableHandover();
+  await db.shift.update({where:{id:h.incomingShiftId},data:{openingCashAmount:80,expectedCashAmount:80}});
+  const url='/api/handovers/'+h.handoverId+'/accept';
+  const key=MARKER+'cash-'+h.handoverId;
+  const denied=await as(incoming.email,url,{method:'POST',body:JSON.stringify({idempotencyKey:key})});
+  assert.equal(denied.status,400,denied.text);
+  assert.equal((await db.handoverSession.findUniqueOrThrow({where:{id:h.handoverId}})).status,'INCOMING_REVIEW');
+  const body={idempotencyKey:key,countedOpeningCash:80,cashReasonCodeId:handoverReasonId,cashReasonNote:'20 missing on receipt'};
+  const accepted=await as(incoming.email,url,{method:'POST',body:JSON.stringify(body)});
+  assert.equal(accepted.status,200,accepted.text);
+  const persisted=await db.handoverSession.findUniqueOrThrow({where:{id:h.handoverId}});
+  assert.equal(Number(persisted.cashVarianceAmount),-20);
+  const custody=await db.custodyPeriod.findUniqueOrThrow({where:{id:persisted.incomingCashCustodyId!}});
+  assert.equal(Number(custody.openingCashAmount),80);
+  const replay=await as(incoming.email,url,{method:'POST',body:JSON.stringify(body)});
+  assert.equal(replay.status,200,replay.text);
+  assert.equal(await db.varianceCase.count({where:{acceptedHandoverId:h.handoverId,type:'OPENING_EXCEPTION'}}),1);
+  const wrongReplay=await as(fx.manager.email,'/api/handovers/'+h.handoverId+'/override-accept',{method:'POST',body:JSON.stringify({idempotencyKey:key,reasonCodeId:handoverReasonId,note:'Must not turn ordinary cash receipt into manager override',kind:'MANAGER_ADJUSTMENT'})});
+  assert.equal(wrongReplay.status,409,wrongReplay.text);
 });

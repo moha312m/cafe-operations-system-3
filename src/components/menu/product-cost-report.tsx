@@ -29,7 +29,7 @@ type Row = {
   category: string;
   sellingPrice: number;
   hasRecipe: boolean;
-  costStatus: "AVAILABLE" | "RECIPE_INCOMPLETE" | "NOT_APPLICABLE";
+  costStatus: "AVAILABLE" | "RECIPE_INCOMPLETE" | "NOT_APPLICABLE" | "MISSING_COST";
   cost: number | null;
   profit: number | null;
   margin: number | null;
@@ -105,6 +105,9 @@ export function ProductCostReport({ currency = "EGP" }: { currency?: string }) {
 
   return (
     <div className="space-y-4">
+      <p className="text-xs text-muted-foreground">
+        الربح المتوقع تقدير بالتكلفة المرجعية الحالية للفرع. المرتجعات الفعلية تُقيّم بتكلفة الاستهلاك الأصلية، ورد الأموال يُسجّل منفصلًا؛ هذا التقرير لا يحسب الربح المحقق للطلبات.
+      </p>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {cards.map((c) => (
           <Card key={c.label}>
@@ -177,7 +180,7 @@ export function ProductCostReport({ currency = "EGP" }: { currency?: string }) {
                 {r.tier ? (
                   <Badge className={TIER_STYLE[r.tier]}>{PROFIT_LABEL[r.tier]}</Badge>
                 ) : (
-                  <Badge variant="outline">{r.costStatus === "NOT_APPLICABLE" ? "غير منطبق" : "الوصفة غير مكتملة"}</Badge>
+                  <Badge variant="outline">{r.costStatus === "NOT_APPLICABLE" ? "غير منطبق" : r.costStatus === "MISSING_COST" ? "تكلفة المخزون غير متاحة" : "الوصفة غير مكتملة"}</Badge>
                 )}
               </TableCell>
               <TableCell>

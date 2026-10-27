@@ -50,9 +50,14 @@ type Category = {
 };
 type AddOn = { id: string; name: string; price: string; isActive: boolean };
 type Branch = { id: string; name: string };
-type VariantRow = { name: string; price: string; isAvailable: boolean };
+type StockBinding = { branchId: string; variantId: string | null; inventoryItemId: string };
+type BindingStock = { id: string; name: string; branchId: string };
+type VariantRow = { id?: string; name: string; price: string; isAvailable: boolean };
 type Product = {
+  stockMode: "RECIPE" | "FINISHED_GOOD";
+  stockBindings: StockBinding[];
   id: string;
+  sku: string | null;
   name: string;
   description: string | null;
   basePrice: string;
@@ -69,7 +74,7 @@ type Product = {
   branchPrices: { branchId: string; price: string }[];
   // Attached only when the caller has cost:read.
   hasRecipe?: boolean;
-  costStatus?: "AVAILABLE" | "RECIPE_INCOMPLETE" | "NOT_APPLICABLE" | "MULTIPLE_CONFIGURATIONS";
+  costStatus?: "AVAILABLE" | "RECIPE_INCOMPLETE" | "NOT_APPLICABLE" | "MISSING_COST" | "MULTIPLE_CONFIGURATIONS";
   cost?: number | null;
   profit?: number | null;
   margin?: number | null;
@@ -77,6 +82,8 @@ type Product = {
 };
 
 type ProductForm = {
+  stockMode: "RECIPE" | "FINISHED_GOOD";
+  stockBindings: StockBinding[];
   id: string | null;
   name: string;
   description: string;
@@ -104,6 +111,7 @@ type CategoryForm = {
 
 const emptyProductForm = (categoryId = ""): ProductForm => ({
   id: null,
+  stockMode: "RECIPE", stockBindings: [],
   name: "",
   description: "",
   categoryId,
@@ -126,18 +134,21 @@ type VisibilityFilter = "all" | "visible" | "hidden";
 // ─────────────────────────── Page ───────────────────────────
 
 export default function MenuPage() {
-  const { cafe, can } = useApp();
+  const { cafe, can, canKey } = useApp();
+  const canPrices = canKey("menu.edit_prices");
   const currency = cafe?.currency ?? "EGP";
   const showCost = can("cost:read");
 
   const [categories, setCategories] = useState<Category[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [addOns, setAddOns] = useState<AddOn[]>([]);
+  const [bindingStock, setBindingStock] = useState<BindingStock[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [busy, setBusy] = useState(false);
 
   // Filters
   const [search, setSearch] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [availabilityFilter, setAvailabilityFilter] =
     useState<AvailabilityFilter>("all");
@@ -160,12 +171,13 @@ export default function MenuPage() {
     try {
       const [c, p, a, b] = await Promise.all([
         api<{ categories: Category[] }>("/api/categories"),
-        api<{ products: Product[] }>("/api/products"),
+        api<{ products: Product[]; bindingStockItems: BindingStock[] }>("/api/products"),
         api<{ addOns: AddOn[] }>("/api/addons"),
         api<{ branches: Branch[] }>("/api/branches"),
       ]);
       setCategories(c.categories);
       setProducts(p.products);
+      setBindingStock(p.bindingStockItems ?? []);
       setAddOns(a.addOns);
       setBranches(b.branches);
     } catch (e) {
@@ -174,7 +186,8 @@ export default function MenuPage() {
   }, []);
 
   useEffect(() => {
-    load();
+    const timer = window.setTimeout(() => { void load(); }, 0);
+    return () => window.clearTimeout(timer);
   }, [load]);
 
   async function run(action: () => Promise<unknown>, success: string) {
@@ -196,20 +209,23 @@ export default function MenuPage() {
   const visibleProducts = useMemo(() => {
     const term = search.trim().toLowerCase();
     return products.filter((p) => {
+      if (!showArchived && !p.isActive) return false;
       if (categoryFilter !== "all" && p.category.id !== categoryFilter) return false;
       if (availabilityFilter === "available" && !p.isAvailable) return false;
       if (availabilityFilter === "unavailable" && p.isAvailable) return false;
       if (visibilityFilter === "visible" && !p.showInCustomerMenu) return false;
       if (visibilityFilter === "hidden" && p.showInCustomerMenu) return false;
-      if (term && !p.name.toLowerCase().includes(term)) return false;
+      if (term && !p.name.toLowerCase().includes(term) && !(p.sku ?? "").toLowerCase().includes(term)) return false;
       return true;
     });
-  }, [products, search, categoryFilter, availabilityFilter, visibilityFilter]);
+  }, [products, search, categoryFilter, availabilityFilter, visibilityFilter, showArchived]);
 
   // ── Product save ─────────────────────────────────────────────
   async function saveProduct() {
     if (!productForm) return;
-    const body = {
+    const body: Record<string, unknown> = {
+      stockMode: productForm.stockMode,
+      stockBindings: productForm.stockBindings.filter(b => b.inventoryItemId && (!b.variantId || productForm.variants.some(v => v.id === b.variantId))),
       name: productForm.name,
       description: productForm.description || undefined,
       categoryId: productForm.categoryId,
@@ -223,7 +239,8 @@ export default function MenuPage() {
       variants: productForm.variants
         .filter((v) => v.name.trim() !== "" && v.price !== "")
         .map((v, i) => ({
-          name: v.name,
+          id: v.id,
+        name: v.name,
           price: Number(v.price),
           isAvailable: v.isAvailable,
           sortOrder: i,
@@ -235,6 +252,12 @@ export default function MenuPage() {
             .map(([branchId, price]) => ({ branchId, price: Number(price) }))
         : [],
     };
+    if (!canPrices) {
+      if (!productForm.id) return;
+      delete body.basePrice;
+      delete body.variants;
+      delete body.branchPrices;
+    }
     const ok = await run(
       () =>
         productForm.id
@@ -248,6 +271,7 @@ export default function MenuPage() {
   function editProduct(p: Product) {
     setProductForm({
       id: p.id,
+      stockMode: p.stockMode ?? "RECIPE", stockBindings: p.stockBindings ?? [],
       name: p.name,
       description: p.description ?? "",
       categoryId: p.category.id,
@@ -284,6 +308,7 @@ export default function MenuPage() {
   }
 
   async function commitQuickPrice(p: Product) {
+    if (!canPrices) return;
     const newPrice = Number(priceDraft);
     setPriceEditId(null);
     if (!priceDraft || isNaN(newPrice) || newPrice < 0 || newPrice === Number(p.basePrice)) {
@@ -423,7 +448,11 @@ export default function MenuPage() {
                   </SelectContent>
                 </Select>
                 <div className="ms-auto flex gap-2">
-                  <Button variant="outline" onClick={() => setImportOpen(true)}>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} />
+                    عرض الأصناف المؤرشفة
+                  </label>
+                  <Button variant="outline" disabled={!canPrices} onClick={() => setImportOpen(true)}>
                     📄 استيراد المنيو من Excel
                   </Button>
                   <Button
@@ -436,7 +465,7 @@ export default function MenuPage() {
                         )
                       )
                     }
-                    disabled={categories.length === 0}
+                    disabled={!canPrices || categories.length === 0}
                   >
                     إضافة منتج جديد
                   </Button>
@@ -462,6 +491,7 @@ export default function MenuPage() {
                     <TableRow key={p.id} className={cn(!p.isActive && "opacity-50")}>
                       <TableCell className="font-medium">
                         {p.name}
+                        {p.sku && <span className="ms-2 text-xs text-muted-foreground" dir="ltr">SKU {p.sku}</span>}
                         {p.branchPrices.length > 0 && (
                           <span className="ms-1 text-xs text-muted-foreground">
                             🏬 سعر حسب الفرع
@@ -493,6 +523,7 @@ export default function MenuPage() {
                             type="button"
                             className="rounded px-1 font-semibold underline decoration-dotted underline-offset-4 hover:bg-accent"
                             title="اضغط لتعديل السعر"
+                            disabled={!canPrices}
                             onClick={() => {
                               setPriceDraft(String(p.basePrice));
                               setPriceEditId(p.id);
@@ -685,6 +716,7 @@ export default function MenuPage() {
             className="flex max-w-md gap-2"
             onSubmit={(e) => {
               e.preventDefault();
+              if (!canPrices) return;
               run(
                 () =>
                   api("/api/addons", {
@@ -716,7 +748,7 @@ export default function MenuPage() {
               onChange={(e) => setAddOnPrice(e.target.value)}
               required
             />
-            <Button type="submit" disabled={busy}>
+            <Button type="submit" disabled={busy || !canPrices}>
               إضافة جديدة
             </Button>
           </form>
@@ -820,6 +852,7 @@ export default function MenuPage() {
                     min="0"
                     dir="ltr"
                     value={productForm.basePrice}
+                    disabled={!canPrices}
                     onChange={(e) =>
                       setProductForm({ ...productForm, basePrice: e.target.value })
                     }
@@ -873,6 +906,24 @@ export default function MenuPage() {
                 />
               </div>
 
+              <div className="space-y-2 rounded border p-3">
+                <Label>طريقة استهلاك المخزون</Label>
+                <select aria-label="طريقة استهلاك المخزون" className="w-full rounded border p-2" value={productForm.stockMode} onChange={e => setProductForm({ ...productForm, stockMode: e.target.value as ProductForm["stockMode"] })}>
+                  <option value="RECIPE">وصفة وتحضير</option><option value="FINISHED_GOOD">منتج جاهز — قطعة لكل وحدة مباعة</option>
+                </select>
+                {productForm.stockMode === "FINISHED_GOOD" && <>
+                  <p className="text-sm text-muted-foreground">اختار مخزون الفرع والحجم بالضبط. البيع محتاج تفعيل المنتجات الجاهزة من إعدادات المنشأة. الإضافات تستهلك وصفاتها.</p>
+                  {productForm.variants.some(v => !v.id) && <p className="text-sm">احفظ الأحجام الجديدة أولاً، ثم افتح المنتج لربطها بالمخزون.</p>}
+                  {branches.flatMap(branch => (productForm.variants.length ? productForm.variants.filter(v => v.id).map(v => ({ id: v.id!, name: v.name })) : [{ id: null, name: "المنتج الأساسي" }]).map(variant => {
+                    const binding = productForm.stockBindings.find(b => b.branchId === branch.id && b.variantId === variant.id);
+                    return <label key={branch.id + (variant.id ?? "base")} className="block text-sm">{branch.name} / {variant.name}
+                      <select aria-label={branch.name + " / " + variant.name} className="w-full rounded border p-2" value={binding?.inventoryItemId ?? ""} onChange={e => setProductForm({ ...productForm, stockBindings: [...productForm.stockBindings.filter(b => !(b.branchId === branch.id && b.variantId === variant.id)), ...(e.target.value ? [{ branchId: branch.id, variantId: variant.id, inventoryItemId: e.target.value }] : [])] })}>
+                        <option value="">غير مربوط — لا يمكن بيعه</option>{bindingStock.filter(i => i.branchId === branch.id).map(i => <option key={i.id} value={i.id}>{i.name} (قطعة)</option>)}
+                      </select>
+                    </label>;
+                  }))}
+                </>}
+              </div>
               {/* Visibility */}
               <div className="flex flex-wrap gap-4">
                 {(
@@ -902,7 +953,7 @@ export default function MenuPage() {
               <Separator />
 
               {/* Variants — absolute prices */}
-              <div className="space-y-2">
+              <fieldset disabled={!canPrices} className="space-y-2">
                 <div className="flex items-center justify-between">
                   <Label>الأحجام (كل حجم بسعره النهائي)</Label>
                   <Button
@@ -979,7 +1030,7 @@ export default function MenuPage() {
                     لو في أحجام، سعر الحجم هو اللي بيتحاسب بيه — مش سعر البيع الأساسي.
                   </p>
                 )}
-              </div>
+              </fieldset>
 
               {/* Add-ons */}
               {addOns.length > 0 && (
@@ -1008,7 +1059,7 @@ export default function MenuPage() {
               <Separator />
 
               {/* Branch pricing */}
-              <div className="space-y-2">
+              <fieldset disabled={!canPrices} className="space-y-2">
                 <Label>التسعير حسب الفرع</Label>
                 <div className="flex gap-2">
                   <Button
@@ -1065,7 +1116,7 @@ export default function MenuPage() {
                     )}
                   </div>
                 )}
-              </div>
+              </fieldset>
 
               {/* الوصفة والتكلفة — only for saved products, cost-privileged roles */}
               {showCost && productForm.id && (

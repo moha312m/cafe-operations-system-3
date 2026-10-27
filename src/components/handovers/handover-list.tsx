@@ -1,6 +1,7 @@
 "use client";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Table,
   TableBody,
@@ -34,10 +35,14 @@ export function HandoverList({
   handovers,
   selectedId,
   onSelect,
+  viewerUserId,
+  canReviewDraft = false,
 }: {
   handovers: HandoverRow[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  viewerUserId: string;
+  canReviewDraft?: boolean;
 }) {
   if (handovers.length === 0) {
     return (
@@ -64,7 +69,8 @@ export function HandoverList({
             // Only a handover under review can be opened; the detail endpoint
             // refuses the rest with 409, so they are shown without being made
             // to look clickable.
-            const openable = REVIEWABLE.includes(h.status);
+            const openable = REVIEWABLE.includes(h.status) ||
+              ((h.outgoingUserId === viewerUserId || (canReviewDraft && h.stockCountSessionId)) && (h.status === "DRAFT" || h.status === "REJECTED"));
             return (
               <TableRow
                 key={h.id}
@@ -77,6 +83,7 @@ export function HandoverList({
                 <TableCell>
                   <div className="flex items-center gap-2">
                     {HANDOVER_STATUS_LABEL[h.status] ?? h.status}
+                    {openable && <Button size="sm" variant="outline" onClick={event => { event.stopPropagation(); onSelect(h.id); }}>متابعة التسليم</Button>}
                     {!openable && (
                       <Badge className="bg-muted text-muted-foreground hover:bg-muted">
                         للاطلاع

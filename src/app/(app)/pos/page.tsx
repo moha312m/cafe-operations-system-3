@@ -1,6 +1,9 @@
 "use client";
+import { TouchSelect } from "@/components/pos/touch-select";
+import { TouchNumberInput } from "@/components/pos/touch-number-input";
+import {priceAmendment} from '@/lib/order-amendment-math';
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { api, money } from "@/lib/client";
@@ -31,6 +34,8 @@ import { ProductGrid } from "@/components/pos/product-grid";
 import { OrderCart } from "@/components/pos/order-cart";
 import { ShiftControls } from "@/components/pos/shift-controls";
 import { CollectPaymentPanel } from "@/components/pos/collect-payment-panel";
+import { PaymentReceiptPreview } from "@/components/receipts/payment-receipt-preview";
+import { QuickActions, type RepeatItem } from "@/components/pos/quick-actions";
 import type { LoyaltyRedeem } from "@/components/pos/customer-loyalty";
 import type { CustomerDetails } from "@/components/pos/order-type-selector";
 import {
@@ -59,7 +64,7 @@ const EMPTY_DETAILS: CustomerDetails = {
   tableNumber: "",
 };
 
-type PlacedOrder = { id: string; orderNumber: number; total: string };
+type PlacedOrder = { id: string; orderNumber: number; total: string; payments?: { id: string }[] };
 
 // The POS tree must not sit inside the Suspense boundary that useSearchParams
 // requires. On a full page load React streams such a boundary as "queued"
@@ -86,7 +91,9 @@ function CollectionModeParams({
 
 function PosPageInner() {
   const router = useRouter();
-  const { cafe, user } = useApp();
+  const { cafe, user, canKey } = useApp();
+  const canDiscount = canKey("pos.apply_discount");
+  const canCreateOrder = canKey("pos.create_order");
   const currency = cafe?.currency ?? "USD";
   const taxRate = cafe?.taxRate ?? 0;
 
@@ -94,8 +101,48 @@ function PosPageInner() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
-  const [branchId, setBranchId] = useState<string>(user.branchId ?? "");
+  const [selectedBranchId, setBranchId] = useState<string>(user.branchId ?? "");
+  const canChooseBranch = user.role === "CAFE_OWNER" && !user.branchId;
+  const branchId = canChooseBranch ? selectedBranchId : (user.branchId ?? "");
   const [activeCategory, setActiveCategory] = useState<string>("all");
+  const [menuReady, setMenuReady] = useState(false);
+  const [compactView, setCompactView] = useState<"products" | "cart">("products");
+  const workspaceId = useId();
+  const productsId = `${workspaceId}-products`;
+  const orderId = `${workspaceId}-order`;
+  const productSearchRef = useRef<HTMLInputElement>(null);
+  const orderHeadingRef = useRef<HTMLHeadingElement>(null);
+  const pendingWorkspaceFocus = useRef<"products" | "cart" | null>(null);
+  function showCompactWorkspace(view: "products" | "cart") {
+    if (view === compactView) {
+      (view === "products" ? productSearchRef.current : orderHeadingRef.current)?.focus();
+      return;
+    }
+    pendingWorkspaceFocus.current = view;
+    setCompactView(view);
+  }
+  useEffect(() => {
+    const destination = pendingWorkspaceFocus.current;
+    if (!destination) return;
+    (destination === "products" ? productSearchRef.current : orderHeadingRef.current)?.focus();
+    pendingWorkspaceFocus.current = null;
+  }, [compactView]);
+  const categoryStorageKey = `nextcup-category:${user.id}:${branchId}`;
+  useEffect(() => {
+    if (!menuReady) return;
+    let saved = "all";
+    try { saved = sessionStorage.getItem(categoryStorageKey) ?? "all"; } catch {}
+    if (saved !== "all" && !categories.some(category => category.id === saved)) {
+      saved = "all";
+      try { sessionStorage.removeItem(categoryStorageKey); } catch {}
+    }
+    const timer = setTimeout(() => setActiveCategory(saved), 0);
+    return () => clearTimeout(timer);
+  }, [categoryStorageKey, categories, menuReady]);
+  function selectCategory(id: string) {
+    setActiveCategory(id);
+    try { sessionStorage.setItem(categoryStorageKey, id); } catch {}
+  }
   const [search, setSearch] = useState("");
 
   // ── Order state ──────────────────────────────────────────────
@@ -103,6 +150,18 @@ function PosPageInner() {
   const [orderType, setOrderType] = useState<OrderType>("DINE_IN");
   const [details, setDetails] = useState<CustomerDetails>(EMPTY_DETAILS);
   const [discountInput, setDiscountInput] = useState("");
+  const [invoiceDiscountType,setInvoiceDiscountType]=useState<'NONE'|'PERCENT'|'FIXED'>('FIXED');
+  let manualDiscount=0,discountError:string|null=null,invoiceDiscountError:string|null=null;
+  if(canDiscount&&cart.length){const amendmentLines=cart.map(l=>({id:l.key,unitPrice:String(l.unitPrice),addOnTotal:'0',quantity:l.quantity,discount:l.discount??{type:'NONE',value:'0'}}));try{manualDiscount=Number(priceAmendment(amendmentLines,{type:invoiceDiscountType,value:discountInput||'0'}).discountAmount);}catch(e){discountError=e instanceof Error?e.message:'خصم غير صالح';}
+    // The same message is thrown for line and invoice discounts. Mark the invoice field when it is invalid on its own (line discounts neutralized)
+    // or when the combination fails while the line discounts alone are valid; leave it unmarked only when a line discount is the sole cause.
+    if(discountError){
+      const noLineDiscount=amendmentLines.map(l=>({...l,discount:{type:'NONE',value:'0'}}));
+      let invoiceOnlyError:string|null=null,lineOnlyError=false;
+      try{priceAmendment(noLineDiscount,{type:invoiceDiscountType,value:discountInput||'0'});}catch(e){invoiceOnlyError=e instanceof Error?e.message:'خصم غير صالح';}
+      try{priceAmendment(amendmentLines,{type:'NONE',value:'0'});}catch{lineOnlyError=true;}
+      invoiceDiscountError=invoiceOnlyError??(lineOnlyError?null:discountError);
+    }}
   const [method, setMethod] = useState<PaymentMethod>("CASH");
   const [mixed, setMixed] = useState<{ CASH: string; CARD: string; WALLET: string }>(
     EMPTY_MIXED
@@ -111,6 +170,9 @@ function PosPageInner() {
   const [paidInput, setPaidInput] = useState("");
   const [finSettings, setFinSettings] = useState<ChargeSettings | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const submissionInFlight = useRef(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [receiptPaymentId, setReceiptPaymentId] = useState<string | null>(null);
   // Bumped after a dine-in order is placed so the table invoice cards refetch.
   const [tableReload, setTableReload] = useState(0);
   // Loyalty points the cashier is redeeming for this order.
@@ -175,12 +237,13 @@ function PosPageInner() {
     ])
       .then(([c, p, b]) => {
         setCategories(c.categories.filter((x) => x.isActive));
+        setMenuReady(true);
         setProducts(p.products);
         setBranches(b.branches);
-        if (!user.branchId && b.branches.length > 0) setBranchId(b.branches[0].id);
+        if (canChooseBranch && b.branches.length > 0) setBranchId(b.branches[0].id);
       })
       .catch((e) => toast.error(e.message));
-  }, [user.branchId]);
+  }, [user.branchId, canChooseBranch]);
 
   // Branch tax/service settings drive the live totals (server recomputes
   // authoritatively on submit).
@@ -225,7 +288,7 @@ function PosPageInner() {
     return posProducts.filter(
       (p) =>
         (activeCategory === "all" || p.category.id === activeCategory) &&
-        (term === "" || p.name.toLowerCase().includes(term))
+        (term === "" || p.name.toLowerCase().includes(term) || (p.sku ?? "").toLowerCase().includes(term))
     );
   }, [posProducts, activeCategory, search]);
 
@@ -234,7 +297,8 @@ function PosPageInner() {
     product: Product,
     variant: Variant | null,
     addOns: AddOn[],
-    note: string
+    note: string,
+    quantity = 1
   ) {
     // Clear the search so the cashier can type the next product right away.
     setSearch("");
@@ -243,7 +307,7 @@ function PosPageInner() {
       const existing = prev.find((l) => l.key === key);
       if (existing) {
         return prev.map((l) =>
-          l.key === key ? { ...l, quantity: l.quantity + 1 } : l
+          l.key === key ? { ...l, quantity: l.quantity + quantity } : l
         );
       }
       return [
@@ -254,7 +318,7 @@ function PosPageInner() {
           variant,
           addOns,
           note,
-          quantity: 1,
+          quantity,
           unitPrice: round2(computeUnitPrice(product, variant, addOns)),
         },
       ];
@@ -262,16 +326,46 @@ function PosPageInner() {
   }
 
   function handleSelectProduct(product: Product) {
+    if (submissionInFlight.current || !product.isActive || product.isAvailable === false) return;
     const activeVariants = product.variants.filter((v) => v.isActive);
     const activeAddOns = product.addOns.filter((a) => a.addOn.isActive);
     if (activeVariants.length === 0 && activeAddOns.length === 0) {
       addToCart(product, null, [], "");
+      toast.success(`تمت إضافة ${product.name}`, {duration: 1200});
       return;
     }
     setConfiguring(product);
     setSelVariant(activeVariants[0]?.id ?? "");
     setSelAddOns(new Set());
     setItemNote("");
+  }
+
+  // Rebuilds the customer's last order from TODAY's menu: a product, size or
+  // add-on that is no longer offered is left out and named, never guessed.
+  function repeatOrder(items: RepeatItem[]) {
+    const skipped: string[] = [];
+    let added = 0;
+    for (const item of items) {
+      const product = posProducts.find((p) => p.id === item.productId);
+      if (!product || !product.isActive || product.isAvailable === false) {
+        skipped.push(item.productName);
+        continue;
+      }
+      const variant = item.variantId
+        ? product.variants.find((v) => v.id === item.variantId && v.isActive) ?? null
+        : null;
+      if (item.variantId && !variant) {
+        skipped.push(`${item.productName}${item.variantName ? ` (${item.variantName})` : ""}`);
+        continue;
+      }
+      const offered = product.addOns.map((a) => a.addOn).filter((a) => a.isActive);
+      const addOns = offered.filter((a) => item.addOnIds.includes(a.id));
+      if (addOns.length < item.addOnIds.length) skipped.push(`إضافات ${item.productName}`);
+      addToCart(product, variant, addOns, item.notes ?? "", item.quantity);
+      added += item.quantity;
+    }
+    if (added > 0) toast.success(`اتضاف ${added} صنف من آخر طلب`);
+    if (skipped.length > 0) toast.warning(`مش متاح دلوقتي: ${skipped.join("، ")}`);
   }
 
   function confirmConfigure() {
@@ -287,8 +381,7 @@ function PosPageInner() {
   function changeQuantity(key: string, delta: number) {
     setCart((prev) =>
       prev
-        .map((l) => (l.key === key ? { ...l, quantity: l.quantity + delta } : l))
-        .filter((l) => l.quantity > 0)
+        .map((l) => (l.key === key ? { ...l, quantity: Math.max(1, l.quantity + delta) } : l))
     );
   }
 
@@ -337,13 +430,13 @@ function PosPageInner() {
   // Pre-loyalty total drives the redemption cap (max % of order).
   const preLoyaltyCharges = computeCharges({
     subtotal,
-    discount: Number(discountInput) || 0,
+    discount: manualDiscount,
     orderType,
     settings: effectiveSettings,
   });
   const charges = computeCharges({
     subtotal,
-    discount: (Number(discountInput) || 0) + redeem.discount,
+    discount: manualDiscount + redeem.discount,
     orderType,
     settings: effectiveSettings,
   });
@@ -356,6 +449,8 @@ function PosPageInner() {
   const total = charges.total;
 
   const disabledReason = useMemo(() => {
+    if(discountError)return discountError;
+    if (!canCreateOrder) return "ليس لديك صلاحية إنشاء طلب";
     if (needsShift && !shiftActive) return t.shifts.mustOpen;
     if (cart.length === 0) return t.pos.validation.emptyCart;
     if (!branchId) return t.pos.validation.noBranch;
@@ -364,7 +459,7 @@ function PosPageInner() {
     if (orderType === "DELIVERY" && !details.customerName.trim())
       return t.pos.validation.needCustomer;
     return null;
-  }, [needsShift, shiftActive, cart.length, branchId, orderType, details]);
+  }, [canCreateOrder, needsShift, shiftActive, cart.length, branchId, orderType, details,discountError]);
 
   function changeMixed(field: SplitMethod, value: string) {
     setMixed((prev) => ({ ...prev, [field]: value }));
@@ -372,7 +467,9 @@ function PosPageInner() {
 
   // ── Order submission ─────────────────────────────────────────
   async function placeOrder() {
-    if (disabledReason) return;
+    if (disabledReason || submissionInFlight.current) return;
+    submissionInFlight.current = true;
+    setSubmitError(null);
     setSubmitting(true);
     try {
       // Payment collection is resolved server-side (order + payment created
@@ -402,11 +499,13 @@ function PosPageInner() {
           tableNumber: details.tableNumber.trim() || undefined,
           // Manual discount only — the server recomputes the loyalty
           // discount from the redeemed points.
-          discountAmount: Number(discountInput) || 0,
+          discountAmount: 0,
+          invoiceDiscount: {type:canDiscount?invoiceDiscountType:'NONE',value:canDiscount?(discountInput||'0'):'0'},
           loyaltyPointsToRedeem: redeem.points || undefined,
           collectionMode,
           ...paymentBody,
           items: cart.map((l) => ({
+            discount:canDiscount?(l.discount??{type:'NONE',value:'0'}):{type:'NONE',value:'0'},
             productId: l.product.id,
             variantId: l.variant?.id ?? null,
             quantity: l.quantity,
@@ -442,9 +541,17 @@ function PosPageInner() {
       setPaidInput("");
       setRedeem({ points: 0, discount: 0 });
       if (isDineIn) setTableReload((k) => k + 1);
+      // Use the payment committed with this order, for every method and partial
+      // collection. Closing/printing must never resubmit the emptied cart.
+      if (collectionMode !== "PENDING" && order.payments?.[0]?.id) {
+        setReceiptPaymentId(order.payments[0].id);
+      }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "فشل تسجيل الطلب");
+      const message = e instanceof Error ? e.message : "فشل تسجيل الطلب";
+      setSubmitError(message);
+      toast.error(message);
     } finally {
+      submissionInFlight.current = false;
       setSubmitting(false);
     }
   }
@@ -452,9 +559,18 @@ function PosPageInner() {
   // ── Render ───────────────────────────────────────────────────
   return (
     <div className="flex flex-col gap-4">
+      {receiptPaymentId && (
+        <PaymentReceiptPreview key={receiptPaymentId} paymentId={receiptPaymentId} scope="order" onClose={() => setReceiptPaymentId(null)} />
+      )}
       <Suspense fallback={null}>
         <CollectionModeParams onParams={applyCollectionParams} />
       </Suspense>
+
+      {!canChooseBranch && !branchId && (
+        <p role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900">
+          حسابك غير معيّن على فرع. اطلب من المدير تعيين الفرع قبل فتح الشيفت.
+        </p>
+      )}
 
       {canOperateShift && branchId && (
         <ShiftControls
@@ -491,22 +607,31 @@ function PosPageInner() {
         />
       )}
 
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
+      {submitError && <p role="alert" className="rounded-lg border border-destructive p-3">{submitError} — البيانات محفوظة للمراجعة وإعادة المحاولة.</p>}
+      {submitting && <p role="status">جاري حفظ الطلب وتسجيل الدفع…</p>}
+      <fieldset disabled={submitting} aria-busy={submitting} className="cashier-workspace min-w-0" data-compact-view={compactView}>
+      <div className="cashier-compact-tabs gap-2" aria-label="عرض الكاشير">
+        <Button aria-controls={productsId} aria-pressed={compactView === "products"} variant={compactView === "products" ? "default" : "outline"} onClick={() => showCompactWorkspace("products")}>المنتجات والتصنيفات</Button>
+        <Button aria-controls={orderId} aria-pressed={compactView === "cart"} variant={compactView === "cart" ? "default" : "outline"} onClick={() => showCompactWorkspace("cart")}>الطلب والدفع ({cart.reduce((sum,line) => sum + line.quantity,0)})</Button>
+      </div>
       {/* Main area: search, categories, product grid */}
-      <div className="flex min-w-0 flex-1 flex-col gap-3 lg:h-[calc(100vh-5.5rem)] lg:overflow-hidden">
+      <div id={productsId} role="region" aria-labelledby={`${productsId}-heading`} className="cashier-catalog flex min-w-0 flex-1 flex-col gap-3">
+        <h2 id={`${productsId}-heading`} className="sr-only">المنتجات والتصنيفات</h2>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
           <div className="relative min-w-48 flex-1">
             <span className="pointer-events-none absolute start-3 top-1/2 -translate-y-1/2 text-muted-foreground">
               🔍
             </span>
             <Input
+              ref={productSearchRef}
               placeholder={t.pos.searchProducts}
+              aria-label={t.pos.searchProducts}
               className="h-10 ps-9"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
-          {!user.branchId && branches.length > 1 && (
+          {canChooseBranch && branches.length > 1 && (
             <Select value={branchId} onValueChange={(v) => setBranchId(v ?? "")}>
               <SelectTrigger className="h-10 w-40">
                 <SelectValue placeholder={t.common.branch}>
@@ -525,10 +650,20 @@ function PosPageInner() {
         </div>
 
         <CategoryTabs
+          key={`${branchId}:${categories.length}`}
           categories={categories}
           active={activeCategory}
           counts={countsByCategory}
-          onChange={setActiveCategory}
+          onChange={selectCategory}
+        />
+
+        <QuickActions
+          branchId={branchId}
+          products={posProducts}
+          customerPhone={details.customerPhone}
+          showPicks={search.trim() === "" && activeCategory === "all"}
+          onSelect={handleSelectProduct}
+          onRepeat={repeatOrder}
         />
 
         <ProductGrid
@@ -540,6 +675,10 @@ function PosPageInner() {
 
       {/* Sticky order cart */}
       <OrderCart
+        id={orderId}
+        headingId={`${orderId}-heading`}
+        headingRef={orderHeadingRef}
+        discountControls={canDiscount&&cart.length>0?<details className="space-y-2 rounded border p-2 text-sm"><summary>خصومات الأصناف والفاتورة</summary>{cart.map(l=><div key={l.key} className="flex flex-wrap items-center gap-1"><span>{l.product.name}</span><TouchSelect aria-label={'نوع خصم '+l.product.name} value={l.discount?.type??'NONE'} className="rounded border bg-background p-1" onValueChange={touchValue => setCart(rows=>rows.map(r=>r.key===l.key?{...r,discount:{type:touchValue as 'NONE'|'PERCENT'|'FIXED',value:'0'}}:r))}><option value="NONE">بدون خصم</option><option value="PERCENT">%</option><option value="FIXED">ج.م</option></TouchSelect><TouchNumberInput aria-label={'قيمة خصم '+l.product.name} type="number" min="0" step="0.01" className="w-20 rounded border bg-background p-1" disabled={!l.discount||l.discount.type==='NONE'} value={l.discount?.value??'0'} onValueChange={touchValue => setCart(rows=>rows.map(r=>r.key===l.key?{...r,discount:{type:r.discount!.type,value:touchValue}}:r))}/></div>)}<label className="block">نوع خصم الفاتورة <TouchSelect aria-label="نوع خصم الفاتورة قبل التأكيد" className="rounded border bg-background p-1" value={invoiceDiscountType} onValueChange={touchValue => {setInvoiceDiscountType(touchValue as typeof invoiceDiscountType);setDiscountInput('');}}><option value="FIXED">مبلغ ج.م</option><option value="PERCENT">نسبة %</option><option value="NONE">بدون خصم</option></TouchSelect></label><p>تُحسب خصومات الأصناف أولًا. ما يتجاوز حدك يحتاج اعتماد المدير عبر طلب تعديل بالمبيعات.</p></details>:null}
         cart={cart}
         currency={currency}
         orderType={orderType}
@@ -550,7 +689,7 @@ function PosPageInner() {
         previewTotalAfterDiscount={(loyaltyDisc) =>
           computeCharges({
             subtotal,
-            discount: (Number(discountInput) || 0) + loyaltyDisc,
+            discount: manualDiscount + loyaltyDisc,
             orderType,
             settings: effectiveSettings,
           }).total
@@ -558,7 +697,8 @@ function PosPageInner() {
         redeem={redeem}
         onRedeemChange={setRedeem}
         subtotal={subtotal}
-        discountInput={discountInput}
+        discountInput={canDiscount ? discountInput : ""}
+        discountError={invoiceDiscountError}
         discountAmount={discountAmount}
         serviceCharge={serviceCharge}
         taxRate={effectiveTaxRate}
@@ -583,6 +723,11 @@ function PosPageInner() {
         onMixedChange={changeMixed}
         onPlaceOrder={placeOrder}
       />
+
+      <div className="cashier-compact-checkout space-y-2 rounded-xl border bg-card p-3">
+        <div className="flex items-center justify-between gap-2 text-lg font-bold"><span>الإجمالي النهائي</span><span>{money(total,currency)}</span></div>
+        <Button aria-controls={orderId} className="min-h-14 w-full text-base" onClick={() => showCompactWorkspace("cart")}>مراجعة الطلب والدفع ({cart.reduce((sum,line) => sum + line.quantity,0)})</Button>
+      </div>
 
       {/* Variant / add-ons / note dialog */}
       <Dialog open={configuring !== null} onOpenChange={(o) => !o && setConfiguring(null)}>
@@ -649,13 +794,14 @@ function PosPageInner() {
             </div>
           )}
           <DialogFooter>
+            <Button variant="outline" onClick={() => setConfiguring(null)}>إلغاء</Button>
             <Button onClick={confirmConfigure} className="w-full sm:w-auto">
               {t.pos.addToOrder}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      </div>
+      </fieldset>
     </div>
   );
 }

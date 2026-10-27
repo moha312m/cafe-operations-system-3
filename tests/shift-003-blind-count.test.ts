@@ -2,12 +2,12 @@
 //
 // Invariant: the employee who will count the drawer must not be able to learn
 // the reconciliation target before they commit a count. Expected cash,
-// shortage and overage are revealed only after the server confirms the count
-// was persisted.
+// shortage and overage are visible to the owner after the count is stored.
+// A counter receives an acknowledgement of their submission, not the target
+// or a report that lets them copy it on the next shift.
 //
-// The control is keyed on custody, not role: the target is withheld from the
-// holder of an OPEN shift. A supervisor looking at somebody else's shift is
-// not the one counting it and keeps visibility.
+// The control follows effective report permission: a counter sees their own
+// submitted counts, while an owner can review the reconciliation.
 //
 // These run against the real API because the defect is in what the server
 // hands the cashier's browser.
@@ -31,6 +31,18 @@ type ShiftPayload = Record<string, unknown> & { id: string; status: string };
 
 const CASHIER = "cashier@demo.com";
 const OWNER = "owner@demo.com";
+const BARISTA = "kitchen@demo.com";
+const PRIVATE_TOTALS = [
+  "expectedCashAmount", "cashDifference", "totalSales", "totalCashSales",
+  "totalCardSales", "totalWalletSales", "totalDiscounts", "totalRefunds",
+  "orderCount",
+] as const;
+
+function assertNoPrivateTotals(payload: Record<string, unknown>) {
+  for (const field of PRIVATE_TOTALS) {
+    assert.equal(field in payload, false, `${field} reached the employee session`);
+  }
+}
 
 /**
  * The item every sale here is rung up on.
@@ -65,10 +77,13 @@ let productId: string;
  */
 let seededCafeId: string;
 let previousStockCountPolicy: StockCountPolicy;
+let seededBranchId: string;
+let previousBranchPolicy: StockCountPolicy | null;
 before(async () => {
   await requireServer();
   await login(CASHIER, "cashier123");
   await login(OWNER, "owner1234");
+  await login(BARISTA, "kitchen123");
   const fx = await fixture();
   productId = (await policyProduct(fx, "PH1-SHIFT003")).id;
 
@@ -78,6 +93,18 @@ before(async () => {
     select: { stockCountPolicy: true },
   });
   previousStockCountPolicy = settings.stockCountPolicy;
+  seededBranchId = fx.branchId;
+  const branch = await db.branch.findUniqueOrThrow({
+    where: { id: seededBranchId },
+    select: { stockCountPolicyOverride: true },
+  });
+  previousBranchPolicy = branch.stockCountPolicyOverride;
+  // An explicit branch override wins over the cafe policy. Isolate both
+  // levels so this blind-count suite does not depend on seed handover settings.
+  await db.branch.update({
+    where: { id: seededBranchId },
+    data: { stockCountPolicyOverride: "NO_SHIFT_COUNT" },
+  });
   await db.cafeSettings.update({
     where: { cafeId: seededCafeId },
     data: { stockCountPolicy: "NO_SHIFT_COUNT" },
@@ -85,14 +112,24 @@ before(async () => {
 });
 
 after(async () => {
-  await cleanupProduct(productId);
-  if (seededCafeId) {
-    await db.cafeSettings.update({
-      where: { cafeId: seededCafeId },
-      data: { stockCountPolicy: previousStockCountPolicy },
-    });
+  try {
+    await cleanupProduct(productId);
+  } finally {
+    try {
+      const restore = [];
+      if (seededCafeId) restore.push(db.cafeSettings.update({
+        where: { cafeId: seededCafeId },
+        data: { stockCountPolicy: previousStockCountPolicy },
+      }));
+      if (seededBranchId) restore.push(db.branch.update({
+        where: { id: seededBranchId },
+        data: { stockCountPolicyOverride: previousBranchPolicy },
+      }));
+      if (restore.length) await db.$transaction(restore);
+    } finally {
+      await db.$disconnect();
+    }
   }
-  await db.$disconnect();
 });
 
 /**
@@ -147,13 +184,11 @@ describe("SHIFT-003 blind count", () => {
       );
       assert.equal(r.status, 200);
       assert.ok(r.body.shift, "expected an active shift");
-      assert.ok(
-        !("expectedCashAmount" in r.body.shift),
-        "active-shift payload disclosed the reconciliation target before counting"
-      );
-      // Operationally useful figures stay available.
+      assertNoPrivateTotals(r.body.shift);
+      // The float the cashier accepted at opening remains available.
       assert.ok("openingCashAmount" in r.body.shift, "opening float should remain visible");
-      assert.ok("totalCashSales" in r.body.shift, "sales summary should remain visible");
+      assert.equal(r.body.shift.cardSettlementRequired, false);
+      assert.equal(r.body.shift.walletSettlementRequired, false);
     } finally {
       await cleanup(marker);
       await dropShift(shiftId);
@@ -167,10 +202,7 @@ describe("SHIFT-003 blind count", () => {
       assert.equal(r.status, 200);
       const mine = r.body.shifts.find((s) => s.id === shiftId);
       assert.ok(mine, "cashier should still see their own open shift");
-      assert.ok(
-        !("expectedCashAmount" in mine),
-        "shift list disclosed the target for the holder's own open shift"
-      );
+      assertNoPrivateTotals(mine);
     } finally {
       await cleanup(marker);
       await dropShift(shiftId);
@@ -185,10 +217,7 @@ describe("SHIFT-003 blind count", () => {
         { method: "POST", body: JSON.stringify({ branchId: fx.branchId, openingCashAmount: 0 }) }
       );
       assert.equal(again.body.alreadyOpen, true, "expected the already-open branch");
-      assert.ok(
-        !("expectedCashAmount" in again.body.shift),
-        "already-open response disclosed the target"
-      );
+      assertNoPrivateTotals(again.body.shift);
     } finally {
       await cleanup(marker);
       await dropShift(shiftId);
@@ -206,27 +235,51 @@ describe("SHIFT-003 blind count", () => {
         "expectedCashAmount" in theirs,
         "oversight must not be blinded — only the counting holder is"
       );
+      assert.ok(Number(theirs.totalCashSales) > 0);
     } finally {
       await cleanup(marker);
       await dropShift(shiftId);
     }
   });
 
-  // ── Test C: reveal only after the server persists the count ──
-  test("C: a successful close returns the full reconciliation", async () => {
+  test("the employee cannot open the shift detail while it is open", async () => {
+    const { shiftId, marker } = await openWithSale(100, "PH1-SHIFT003-detail");
+    try {
+      assert.equal((await as(CASHIER, `/api/shifts/${shiftId}`)).status, 403);
+      assert.equal((await as(OWNER, `/api/shifts/${shiftId}`)).status, 200);
+    } finally {
+      await cleanup(marker);
+      await dropShift(shiftId);
+    }
+  });
+
+  test("a barista cannot use the cash shift or read its financial report", async () => {
+    const { fx, shiftId, marker } = await openWithSale(100, "PH1-SHIFT003-barista");
+    try {
+      assert.equal((await as(BARISTA, `/api/shifts/active?branchId=${fx.branchId}`)).status, 403);
+      assert.equal((await as(BARISTA, `/api/shifts/${shiftId}`)).status, 403);
+      assert.equal((await as(BARISTA, `/api/shifts/${shiftId}/report`)).status, 403);
+    } finally {
+      await cleanup(marker);
+      await dropShift(shiftId);
+    }
+  });
+
+  // ── Test C: only the supervisor receives the calculated reconciliation ──
+  test("C: close records the count but returns no calculation to the employee", async () => {
     const { shiftId, marker } = await openWithSale(100, "PH1-SHIFT003-C");
     try {
       const r = await as<{ shift: ShiftPayload }>(CASHIER, `/api/shifts/${shiftId}/close`, {
         method: "POST", body: JSON.stringify({ actualCashAmount: 120, reason: "سبب الفرق — عد فعلي" }),
       });
       assert.ok(r.status < 300, `close failed: ${r.text}`);
-      assert.ok("expectedCashAmount" in r.body.shift, "reveal expected after commit");
+      assertNoPrivateTotals(r.body.shift);
       assert.equal(Number(r.body.shift.actualCashAmount), 120);
-      assert.equal(
-        Number(r.body.shift.cashDifference),
-        Number(r.body.shift.actualCashAmount) - Number(r.body.shift.expectedCashAmount),
-        "difference must equal actual - expected"
-      );
+      assert.equal((await as(CASHIER, `/api/shifts/${shiftId}/report`)).status, 403);
+      const owner = await as<{ shift: ShiftPayload }>(OWNER, `/api/shifts/${shiftId}`);
+      assert.equal(owner.status, 200);
+      assert.ok(Number(owner.body.shift.expectedCashAmount) > 100);
+      assert.ok("cashDifference" in owner.body.shift);
     } finally {
       await cleanup(marker);
       await dropShift(shiftId);
@@ -285,8 +338,8 @@ describe("SHIFT-003 blind count", () => {
     }
   });
 
-  // ── Test E: after commit, history is legitimately visible ──
-  test("E: after close the reconciliation is readable and the shift is no longer active", async () => {
+  // ── Test E: submitted count stays visible, reconciliation stays with oversight ──
+  test("E: after close the counter sees their count and the owner sees the difference", async () => {
     const { fx, shiftId, marker } = await openWithSale(100, "PH1-SHIFT003-E");
     try {
       await as(CASHIER, `/api/shifts/${shiftId}/close`, {
@@ -301,11 +354,13 @@ describe("SHIFT-003 blind count", () => {
       const closed = await as<{ shifts: ShiftPayload[] }>(CASHIER, "/api/shifts?status=CLOSED");
       const row = closed.body.shifts.find((s) => s.id === shiftId);
       assert.ok(row, "the closed shift should be readable");
-      assert.ok(
-        "expectedCashAmount" in row,
-        "a committed reconciliation is history and stays visible"
-      );
+      assertNoPrivateTotals(row);
       assert.equal(Number(row.actualCashAmount), 128.5);
+      const owner = await as<{ shifts: ShiftPayload[] }>(OWNER, "/api/shifts?status=CLOSED");
+      const reviewed = owner.body.shifts.find((s) => s.id === shiftId);
+      assert.ok(reviewed);
+      assert.ok(Number(reviewed.expectedCashAmount) > 100);
+      assert.ok("cashDifference" in reviewed);
     } finally {
       await cleanup(marker);
       await dropShift(shiftId);

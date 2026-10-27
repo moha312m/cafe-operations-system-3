@@ -195,16 +195,18 @@ describe("PERM-001 catalog, templates, and nav", () => {
     assert.equal(keysForModule("VARIANCE").length, 3);
   });
 
-  test("the owner holds all eighteen with no reseed, and reads 108 keys", async () => {
+  test("the owner holds all eighteen with no reseed, and reads 114 keys", async () => {
     const keys = await keysFor("owner@demo.com");
     for (const [key] of NEW_KEYS) {
       assert.ok(keys.has(key), `owner must hold ${key}`);
     }
     // 89 before the stock-count milestone, +18 there, +1 in SH-23
-    // (`handover.request_recount`) = 108. `resolvePermissions` re-adds
+    // (`handover.request_recount`), +1 owner-action request key = 109, +5 SALES
+    // amendment keys = 114. `resolvePermissions` re-adds
     // CAFE_KEYS on every call, so catalog growth reaches existing owners
     // without touching a single row of their data.
-    assert.equal(keys.size, 108, "owner should read 89 + 18 + 1 keys");
+    assert.equal(keys.size, 114, "owner should read 89 + 18 + 1 + 1 + 5 keys");
+    for (const key of ["sales.edit", "sales.approve", "sales.override_price", "sales.configure_limits"]) assert.ok(keys.has(key), `owner must hold ${key}`);
   });
 
   test("the branch manager holds its column exactly — no more, no less", async () => {

@@ -83,6 +83,35 @@ enum PaymentStatus {
   CANCELLED // ملغي
 }
 
+enum OwnerAction {
+  AMEND_ORDER_REFUND
+  AMEND_ORDER_VOID
+  CANCEL_ORDER
+  VOID_ORDER_ITEM
+  REFUND_ORDER
+  REFUND_PAYMENT
+}
+
+enum OwnerActionMode {
+  OWNER_REQUEST
+  OWNER_PASSCODE
+  EITHER
+}
+
+enum OwnerActionStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXECUTED
+  STALE
+  EXPIRED
+}
+
+enum OwnerActionApprovalMethod {
+  OWNER_REQUEST
+  OWNER_PASSCODE
+}
+
 enum ServiceChargeType {
   PERCENTAGE // نسبة
   FIXED // مبلغ ثابت
@@ -106,10 +135,35 @@ enum ChargeApplicationScope {
 
 enum ShiftStatus {
   OPEN
+  SUSPENDED
   /// Money settled and the shelf frozen; stock custody not yet transferred.
   /// Closed for cash, still open for the handover that has to follow it.
   AWAITING_HANDOVER
   CLOSED
+}
+
+enum IdempotencyStatus {
+  STARTED
+  COMPLETED
+  FAILED
+}
+
+// Request reservation and response commit together with the business write.
+model IdempotencyKey {
+  id          String            @id
+  scope       String            @db.VarChar(512)
+  key         String            @db.VarChar(128)
+  requestHash String            @db.VarChar(64)
+  status      IdempotencyStatus  @default(STARTED)
+  ownerToken  String
+  lockedUntil DateTime
+  response    Json?
+  statusCode  Int?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  @@unique([scope, key])
+  @@index([status, lockedUntil])
 }
 
 enum ShiftCustodyGate {
@@ -176,6 +230,12 @@ enum SubscriptionStatus {
 // ─────────────────────────── Tenancy core ────────────────────────────
 
 model Cafe {
+  branchOpeningSettings BranchOpeningSettings[]
+  cashStorages CashStorage[]
+  cashStorageMovements CashStorageMovement[]
+  openingCashReceipts OpeningCashReceipt[]
+  openingCashReceiptEvents OpeningCashReceiptEvent[]
+
   id                 String  @id @default(cuid())
   name               String
   slug               String  @unique
@@ -201,37 +261,51 @@ model Cafe {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  branches              Branch[]
-  users                 User[]
-  categories            MenuCategory[]
-  products              Product[]
-  addOns                AddOn[]
-  orders                Order[]
-  payments              Payment[]
-  shifts                Shift[]
-  auditLogs             AuditLog[]
-  inventoryItems        InventoryItem[]
-  inventoryTxns         InventoryTransaction[]
-  recipes               Recipe[]
-  settings              CafeSettings?
-  roles                 CafeRole[]
-  tableSessions         TableSession[]
-  suppliers             Supplier[]
-  purchaseInvoices      PurchaseInvoice[]
-  tables                CafeTable[]
-  qrApprovalSettings    QrOrderApprovalSettings[]
-  customers             Customer[]
-  loyaltySettings       LoyaltySettings?
-  loyaltyTxns           LoyaltyTransaction[]
-  reasonCodes           ReasonCode[]
-  custodyPeriods        CustodyPeriod[]
-  stockCountSessions    StockCountSession[]
-  toleranceRules        ToleranceRule[]
-  tenderReconciliations TenderReconciliation[]
-  handoverSessions      HandoverSession[]
-  inventoryFreezes      InventoryFreeze[]
-  openingExceptions     OpeningException[]
-  varianceCases         VarianceCase[]
+  branches                Branch[]
+  users                   User[]
+  categories              MenuCategory[]
+  products                Product[]
+  historicalSaleLines     HistoricalSaleLine[]
+  addOns                  AddOn[]
+  orders                  Order[]
+  payments                Payment[]
+  shifts                  Shift[]
+  auditLogs               AuditLog[]
+  inventoryItems          InventoryItem[]
+  inventoryTxns           InventoryTransaction[]
+  recipes                 Recipe[]
+  settings                CafeSettings?
+  roles                   CafeRole[]
+  tableSessions           TableSession[]
+  suppliers               Supplier[]
+  purchaseInvoices        PurchaseInvoice[]
+  tables                  CafeTable[]
+  qrApprovalSettings      QrOrderApprovalSettings[]
+  customers               Customer[]
+  loyaltySettings         LoyaltySettings?
+  loyaltyTxns             LoyaltyTransaction[]
+  reasonCodes             ReasonCode[]
+  custodyPeriods          CustodyPeriod[]
+  stockCountSessions      StockCountSession[]
+  toleranceRules          ToleranceRule[]
+  tenderReconciliations   TenderReconciliation[]
+  handoverSessions        HandoverSession[]
+  inventoryFreezes        InventoryFreeze[]
+  openingExceptions       OpeningException[]
+  varianceCases           VarianceCase[]
+  handoverCarriedOrders   HandoverCarriedOrder[]
+  whatsAppIntegration     WhatsAppIntegration?
+  whatsAppMessageLogs     WhatsAppMessageLog[]
+  deferredStockDeductions DeferredStockDeduction[]
+placeAssets PlaceAsset[]
+  placeReceipts ShiftPlaceReceipt[]
+  placeIncidents PlaceIncident[]
+  placePhotos PlacePhoto[]
+  ownerActionSettings OwnerActionSettings?
+  ownerActionRequests OwnerActionRequest[]
+  ownerActionEvents OwnerActionEvent[]
+  ownerPasscode OwnerPasscode?
+  ownerPasscodeAttempts OwnerPasscodeAttempt[]
 }
 
 // Per-cafe module flags + workflow, controlled ONLY by SUPER_ADMIN.
@@ -258,6 +332,7 @@ enum InventoryEnforcementMode {
 }
 
 model CafeSettings {
+  finishedGoodsSalesEnabled Boolean @default(false)
   id     String @id @default(cuid())
   cafeId String @unique
 
@@ -291,6 +366,28 @@ model CafeSettings {
   /// ALLOW_NEGATIVE_STOCK), so no café's behaviour changes and none is
   /// silently promoted to OVERRIDE_ALL.
   inventoryEnforcementMode InventoryEnforcementMode @default(STRICT)
+
+  /// Early low-stock warning: an ingredient is "low" once its balance falls to
+  /// this percent of its most recent delivery (PURCHASE / TRANSFER_IN), or to
+  /// its own minimumStock, whichever is higher. 0 turns the percent rule off.
+  /// Informational only — it never blocks a sale.
+  lowStockAlertPercent Int @default(20)
+
+  /// Owner's choice for a handover close that finds orders still open in the
+  /// branch. false (default): the close is refused until they are served or
+  /// cancelled. true: they pass to the incoming shift — it serves them and
+  /// collects whatever is unpaid — and orders already being made (PREPARING /
+  /// READY) have their recipe deducted against the OUTGOING custody before the
+  /// shelf is frozen, so the handover count is not short by drinks already
+  /// poured. Every carried order is recorded in HandoverCarriedOrder.
+  carryOpenOrdersOnHandover Boolean @default(false)
+
+  /// Hours after which an order still not served (or served but not fully
+  /// paid) is flagged to the owner and branch manager as forgotten. 0 turns
+  /// the alert off. Informational only — it never changes an order.
+  staleOrderAlertHours Int @default(2)
+  /// Minute-precision reminder. NULL retains legacy hours multiplied by 60.
+  staleOrderAlertMinutes Int?
 
   // Count configuration. The DEFAULTs are what a NEW café gets; the
   // migration pins every EXISTING café to NO_SHIFT_COUNT, so no shop is
@@ -330,6 +427,13 @@ model CafeSettings {
 }
 
 model Branch {
+  stockBindings ProductStockBinding[] @relation("FinishedBindingBranch")
+  inventorySaleIdentityItems InventoryItem[] @relation("InventorySaleIdentityBranch")
+  reportingVersions BranchReportingVersion[]
+  openingSettings BranchOpeningSettings?
+  cashStorages CashStorage[]
+  openingCashReceipts OpeningCashReceipt[]
+
   id        String   @id @default(cuid())
   cafeId    String
   name      String
@@ -360,30 +464,55 @@ model Branch {
   periodicFullCountScheduleOverride PeriodicFullCountSchedule?
   periodicFullCountWeekdayOverride  Int?
 
-  cafe                  Cafe                     @relation(fields: [cafeId], references: [id], onDelete: Cascade)
-  users                 User[]
-  orders                Order[]
-  payments              Payment[]
-  shifts                Shift[]
-  inventoryItems        InventoryItem[]
-  inventoryTxns         InventoryTransaction[]
-  productPrices         ProductBranchPrice[]
-  financialSettings     BranchFinancialSettings?
-  tableSessions         TableSession[]
-  purchaseInvoices      PurchaseInvoice[]
-  tables                CafeTable[]
-  qrApprovalSettings    QrOrderApprovalSettings?
-  custodyPeriods        CustodyPeriod[]
-  stockCountSessions    StockCountSession[]
-  toleranceRules        ToleranceRule[]
-  tenderReconciliations TenderReconciliation[]
-  handoverSessions      HandoverSession[]
-  inventoryFreezes      InventoryFreeze[]
-  openingExceptions     OpeningException[]
-  varianceCases         VarianceCase[]
+  cafe                    Cafe                     @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  users                   User[]
+  temporaryStaff          User[]                   @relation("TemporaryStaffBranch")
+  orders                  Order[]
+  payments                Payment[]
+  shifts                  Shift[]
+  inventoryItems          InventoryItem[]
+  inventoryTxns           InventoryTransaction[]
+  productPrices           ProductBranchPrice[]
+  financialSettings       BranchFinancialSettings?
+  tableSessions           TableSession[]
+  purchaseInvoices        PurchaseInvoice[]
+  tables                  CafeTable[]
+  qrApprovalSettings      QrOrderApprovalSettings?
+  custodyPeriods          CustodyPeriod[]
+  stockCountSessions      StockCountSession[]
+  toleranceRules          ToleranceRule[]
+  tenderReconciliations   TenderReconciliation[]
+  handoverSessions        HandoverSession[]
+  inventoryFreezes        InventoryFreeze[]
+  openingExceptions       OpeningException[]
+  varianceCases           VarianceCase[]
+  handoverCarriedOrders   HandoverCarriedOrder[]
+  deferredStockDeductions DeferredStockDeduction[]
+  ownerActionRequests OwnerActionRequest[]
 
   @@unique([cafeId, menuSlug])
   @@index([cafeId])
+placeAssets PlaceAsset[]
+  placeReceipts ShiftPlaceReceipt[]
+  placeIncidents PlaceIncident[]
+  placePhotos PlacePhoto[]
+
+  @@unique([id, cafeId], map: "Branch_sale_identity_key")
+}
+
+// Append-only reporting configuration. An absent version preserves calendar-day reporting.
+model BranchReportingVersion {
+  id String @id @default(cuid())
+  branchId String
+  effectiveDate String
+  startTime String
+  endTime String
+  timezone String
+  is24Hours Boolean
+  createdById String
+  createdAt DateTime @default(now())
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  @@unique([branchId, effectiveDate])
 }
 
 // ─────────────────────────── Table sessions ──────────────────────────
@@ -527,25 +656,40 @@ model BranchFinancialSettings {
 }
 
 model User {
-  id           String    @id @default(cuid())
-  cafeId       String? // null only for SUPER_ADMIN
-  branchId     String? // set for branch-level staff (manager, cashier, kitchen, inventory)
-  cafeRoleId   String? // custom permission role (overrides the legacy `role` defaults)
-  email        String    @unique
-  passwordHash String
-  name         String
-  phone        String?
-  role         Role
-  isActive     Boolean   @default(true)
-  lastLoginAt  DateTime?
-  archivedAt   DateTime? // soft delete: archived staff keep their history on orders/shifts/audit
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  finishedGoodsReturns FinishedGoodsReturn[] @relation("FinishedReturnActor")
+  branchOpeningSettingsUpdated BranchOpeningSettings[]
+  cashStoragesDeclared CashStorage[]
+  cashStorageMovements CashStorageMovement[]
+  openingCashClaims OpeningCashReceipt[] @relation("OpeningCashClaimant")
+  openingCashVerifications OpeningCashReceipt[] @relation("OpeningCashVerifier")
+  openingCashReceiptEvents OpeningCashReceiptEvent[]
+
+  id                         String    @id @default(cuid())
+  cafeId                     String? // null only for SUPER_ADMIN
+  branchId                   String? // set for branch-level staff (manager, cashier, kitchen, inventory)
+  // branchId is the permanent home; temporary movement waits for current responsibilities.
+  temporaryBranchId          String?
+  temporaryBranchUntil       DateTime?
+  temporaryBranchStartedAt   DateTime?
+  temporaryBranchCancelledAt DateTime?
+  cafeRoleId                 String? // custom permission role (overrides the legacy `role` defaults)
+  email                      String    @unique
+  passwordHash               String
+  name                       String
+  phone                      String?
+  role                       Role
+  isActive                   Boolean   @default(true)
+  lastLoginAt                DateTime?
+  archivedAt                 DateTime? // soft delete: archived staff keep their history on orders/shifts/audit
+  createdAt                  DateTime  @default(now())
+  updatedAt                  DateTime  @updatedAt
 
   cafe                        Cafe?                          @relation(fields: [cafeId], references: [id], onDelete: Cascade)
   branch                      Branch?                        @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  temporaryBranch             Branch?                        @relation("TemporaryStaffBranch", fields: [temporaryBranchId], references: [id], onDelete: SetNull)
   cafeRole                    CafeRole?                      @relation(fields: [cafeRoleId], references: [id], onDelete: SetNull)
   permissionOverrides         UserPermissionOverride[]
+  sessionRevocations          SessionRevocation[]
   ordersCreated               Order[]                        @relation("OrderCreatedBy")
   ordersApproved              Order[]                        @relation("OrderApprovedBy")
   ordersRejected              Order[]                        @relation("OrderRejectedBy")
@@ -589,6 +733,27 @@ model User {
   @@index([cafeId])
   @@index([branchId])
   @@index([cafeRoleId])
+branchPlaceSettings BranchOpeningSettings[] @relation("BranchPlaceInspector")
+  placeAssetsCreated PlaceAsset[] @relation("PlaceAssetCreator")
+  placeReceiptsAssigned ShiftPlaceReceipt[] @relation("PlaceReceiptAssignee")
+  placeReceiptsCreated ShiftPlaceReceipt[] @relation("PlaceReceiptCreator")
+  placeReceiptsAccepted ShiftPlaceReceipt[] @relation("PlaceReceiptAcceptor")
+  placeReceiptsOverridden ShiftPlaceReceipt[] @relation("PlaceReceiptOverrider")
+  placeObservations PlaceObservation[]
+  placeEvents PlaceReceiptEvent[]
+  placeIncidentsReported PlaceIncident[] @relation("PlaceIncidentReporter")
+  placeIncidentsResolved PlaceIncident[] @relation("PlaceIncidentResolver")
+  placePhotosUploaded PlacePhoto[] @relation("PlacePhotoUploader")
+  ownerActionSettingsSelected OwnerActionSettings[] @relation("OwnerActionSettingsOwner")
+  ownerActionRequestsMade OwnerActionRequest[] @relation("OwnerActionRequester")
+  ownerActionRequestsFor OwnerActionRequest[] @relation("OwnerActionAssignedOwner")
+  ownerActionDecisions OwnerActionRequest[] @relation("OwnerActionDecider")
+  ownerActionExecutions OwnerActionRequest[] @relation("OwnerActionExecutor")
+  ownerActionEvents OwnerActionEvent[]
+  ownerPasscodesSelected OwnerPasscode[] @relation("OwnerPasscodeOwner")
+  ownerPasscodeAttemptsAsOwner OwnerPasscodeAttempt[] @relation("OwnerPasscodeAttemptOwner")
+  ownerPasscodeAttemptsByRequester OwnerPasscodeAttempt[] @relation("OwnerPasscodeAttemptRequester")
+  orderItemsVoided OrderItem[] @relation("OrderItemVoidedBy")
 }
 
 // ───────────────────────── Custom cafe roles ─────────────────────────
@@ -645,6 +810,25 @@ model UserPermissionOverride {
   @@index([userId])
 }
 
+// Logged-out session tokens. The session cookie is a signed bearer token, so
+// clearing the cookie alone cannot stop a captured copy: logout records the
+// token's jti here and every guarded request rejects a listed jti, per
+// session — other sessions of the same user are untouched. Rows become
+// irrelevant once the token itself expires, so expiresAt mirrors the token's
+// verified expiration. Fixture cleanup follows the owning User cascade.
+model SessionRevocation {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenId   String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tokenId])
+  @@index([userId])
+}
+
 // ─────────────────────────────── Menu ────────────────────────────────
 
 model MenuCategory {
@@ -664,8 +848,11 @@ model MenuCategory {
 }
 
 model Product {
+  stockMode ProductStockMode @default(RECIPE)
+  stockBindings ProductStockBinding[] @relation("FinishedBindingProduct")
   id          String   @id @default(cuid())
   cafeId      String
+  sku         String?
   categoryId  String
   name        String
   description String?
@@ -691,17 +878,57 @@ model Product {
   orderItems   OrderItem[]
 
   @@index([cafeId])
+  @@unique([cafeId, sku])
   @@index([categoryId])
   @@index([cafeId, isAvailable])
   @@index([cafeId, showInCustomerMenu])
   @@index([cafeId, showInPOS])
   @@index([cafeId, sortOrder])
+
+  @@unique([id, cafeId], map: "Product_sale_identity_key")
+}
+
+// A source sales export is historical evidence, not a POS order. Keeping it
+// separate prevents backdated payments, shifts, and stock deductions.
+model HistoricalSaleLine {
+  id             String   @id @default(cuid())
+  cafeId         String
+  sourceHash     String
+  sourceRow      Int
+  sku            String
+  productName    String
+  invoiceNo      String
+  saleLocalDate  String
+  saleDate       String
+  saleMonth      String
+  quantity       Decimal  @db.Decimal(12, 3)
+  quantityUnit   String
+  unitPrice      Decimal  @db.Decimal(12, 2)
+  discount       Decimal  @db.Decimal(12, 2)
+  tax            Decimal  @db.Decimal(12, 2)
+  priceIncTax    Decimal  @db.Decimal(12, 2)
+  total          Decimal  @db.Decimal(12, 2)
+  paymentMethod  String?
+  customerName   String?
+  contactId      String?
+  contactNumber  String?
+  email          String?
+  location       String?
+  importedAt     DateTime @default(now())
+
+  cafe Cafe @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+
+  @@unique([cafeId, sourceHash, sourceRow])
+  @@index([cafeId, saleDate])
+  @@index([cafeId, saleMonth])
+  @@index([cafeId, sku])
 }
 
 // A variant is a size/kind choice (صغير / وسط / كبير) with its own
 // absolute price. When a product has variants, the variant price is
 // the unit price; otherwise basePrice applies.
 model ProductVariant {
+  stockBindings ProductStockBinding[] @relation("FinishedBindingVariant")
   id        String  @id @default(cuid())
   productId String
   name      String
@@ -714,6 +941,8 @@ model ProductVariant {
   recipes    Recipe[]
 
   @@index([productId])
+
+  @@unique([id, productId], map: "ProductVariant_sale_identity_key")
 }
 
 // سعر مختلف حسب الفرع — optional base-price override per branch. For
@@ -842,6 +1071,13 @@ model RecipeItem {
 // ─────────────────────────────── Orders ──────────────────────────────
 
 model Order {
+  finishedStockItems OrderItem[] @relation("FinishedSnapshotOrder")
+  revision Int @default(0)
+  activeAmendmentId String?
+  saleShiftId String?
+  invoiceDiscountType String?
+  invoiceDiscountValue Decimal? @db.Decimal(12,2)
+  revisions OrderRevision[]
   id                  String      @id @default(cuid())
   cafeId              String
   branchId            String
@@ -921,21 +1157,24 @@ model Order {
   loyaltyDiscountAmount  Decimal   @default(0) @db.Decimal(10, 2)
   loyaltyPointsAwardedAt DateTime? // set exactly once (double-earn guard)
 
-  cafe                     Cafe                   @relation(fields: [cafeId], references: [id], onDelete: Cascade)
-  branch                   Branch                 @relation(fields: [branchId], references: [id], onDelete: Cascade)
-  tableSession             TableSession?          @relation(fields: [tableSessionId], references: [id], onDelete: SetNull)
-  createdBy                User?                  @relation("OrderCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
-  approvedBy               User?                  @relation("OrderApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
-  rejectedBy               User?                  @relation("OrderRejectedBy", fields: [rejectedById], references: [id], onDelete: SetNull)
-  assignedApprover         User?                  @relation("OrderAssignedApprover", fields: [assignedApproverUserId], references: [id], onDelete: SetNull)
-  servedBy                 User?                  @relation("OrderServedBy", fields: [servedById], references: [id], onDelete: Restrict)
-  servedStockCustodyPeriod CustodyPeriod?         @relation("OrderServedStockCustody", fields: [servedStockCustodyPeriodId], references: [id], onDelete: Restrict)
-  servedShift              Shift?                 @relation("OrderServedShift", fields: [servedShiftId], references: [id], onDelete: Restrict)
-  customer                 Customer?              @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  cafe                     Cafe                    @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  branch                   Branch                  @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  tableSession             TableSession?           @relation(fields: [tableSessionId], references: [id], onDelete: SetNull)
+  createdBy                User?                   @relation("OrderCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  approvedBy               User?                   @relation("OrderApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+  rejectedBy               User?                   @relation("OrderRejectedBy", fields: [rejectedById], references: [id], onDelete: SetNull)
+  assignedApprover         User?                   @relation("OrderAssignedApprover", fields: [assignedApproverUserId], references: [id], onDelete: SetNull)
+  servedBy                 User?                   @relation("OrderServedBy", fields: [servedById], references: [id], onDelete: Restrict)
+  servedStockCustodyPeriod CustodyPeriod?          @relation("OrderServedStockCustody", fields: [servedStockCustodyPeriodId], references: [id], onDelete: Restrict)
+  servedShift              Shift?                  @relation("OrderServedShift", fields: [servedShiftId], references: [id], onDelete: Restrict)
+  customer                 Customer?               @relation(fields: [customerId], references: [id], onDelete: SetNull)
   items                    OrderItem[]
   payments                 Payment[]
   inventoryTxns            InventoryTransaction[]
   loyaltyTxns              LoyaltyTransaction[]
+  handoverCarries          HandoverCarriedOrder[]
+  deferredStockDeduction   DeferredStockDeduction?
+  ownerActionRequests OwnerActionRequest[]
 
   @@unique([branchId, orderNumber])
   @@index([customerId])
@@ -952,11 +1191,33 @@ model Order {
   @@index([servedById])
   @@index([servedStockCustodyPeriodId])
   @@index([servedShiftId])
+
+  @@unique([id, cafeId, branchId], map: "Order_sale_identity_key")
 }
 
 // Item rows snapshot name & price at sale time so menu edits never
 // rewrite history.
 model OrderItem {
+  // Nullable legacy; nonnull provisional mode until stockAcceptedAt is set.
+  stockModeSnapshot ProductStockMode?
+  stockAcceptedAt DateTime?
+  stockProductIdSnapshot String?
+  stockVariantIdSnapshot String?
+  finishedStockCafeId String?
+  finishedStockBranchId String?
+  finishedStockItemId String?
+  finishedStockUnit InventoryUnit?
+  finishedStockQuantity Int?
+  finishedStockDeductedAt DateTime?
+  finishedStockTransactionId String?
+  finishedStockOrder Order? @relation("FinishedSnapshotOrder", fields: [orderId, finishedStockCafeId, finishedStockBranchId], references: [id, cafeId, branchId], onDelete: Restrict, onUpdate: Restrict, map: "OrderItem_finished_order_fkey")
+  finishedStockItem InventoryItem? @relation("FinishedSnapshotInventory", fields: [finishedStockItemId, finishedStockCafeId, finishedStockBranchId, finishedStockUnit], references: [id, cafeId, branchId, unit], onDelete: Restrict, onUpdate: Restrict, map: "OrderItem_finished_inventory_fkey")
+  finishedStockTransaction InventoryTransaction? @relation("FinishedUsageLedger", fields: [finishedStockTransactionId, finishedStockCafeId, finishedStockBranchId, finishedStockItemId, orderId], references: [id, cafeId, branchId, inventoryItemId, orderId], onDelete: Restrict, onUpdate: Restrict, map: "OrderItem_finished_usage_fkey")
+  finishedGoodsReturns FinishedGoodsReturn[] @relation("FinishedReturnLine")
+  itemDiscountType String @default("NONE")
+  itemDiscountValue Decimal @default(0) @db.Decimal(12,2)
+  itemDiscountAmount Decimal @default(0) @db.Decimal(12,2)
+  invoiceDiscountShare Decimal @default(0) @db.Decimal(12,2)
   id            String        @id @default(cuid())
   orderId       String
   productId     String?
@@ -968,14 +1229,26 @@ model OrderItem {
   lineTotal     Decimal       @db.Decimal(10, 2) // (unitPrice + add-ons) * quantity
   notes         String?
   kitchenStatus KitchenStatus @default(NEW)
+  voidedAt DateTime?
+  voidedById String?
+  voidApprovalRequestId String? @unique
+  voidReason String?
 
   order        Order              @relation(fields: [orderId], references: [id], onDelete: Cascade)
   product      Product?           @relation(fields: [productId], references: [id], onDelete: SetNull)
   variant      ProductVariant?    @relation(fields: [variantId], references: [id], onDelete: SetNull)
   addOns       OrderItemAddOn[]
   itemPayments OrderItemPayment[]
+  voidedBy User? @relation("OrderItemVoidedBy", fields: [voidedById], references: [id], onDelete: SetNull)
+  voidApprovalRequest OwnerActionRequest? @relation("OrderItemVoidApproval", fields: [voidApprovalRequestId], references: [id], onDelete: SetNull)
+  ownerActionRequests OwnerActionRequest[]
 
   @@index([orderId])
+
+  @@unique([id, orderId, finishedStockCafeId, finishedStockBranchId, finishedStockItemId, finishedStockUnit], map: "OrderItem_finished_identity_key")
+  @@index([orderId, stockModeSnapshot, finishedStockDeductedAt], map: "OrderItem_finished_pending_idx")
+  @@index([finishedStockItemId], map: "OrderItem_finished_inventory_idx")
+  @@index([finishedStockTransactionId], map: "OrderItem_finished_transaction_idx")
 }
 
 model OrderItemAddOn {
@@ -994,6 +1267,8 @@ model OrderItemAddOn {
 // ────────────────────────────── Payments ─────────────────────────────
 
 model Payment {
+  amendmentId String?
+  amendmentLegKey String? @unique
   id                  String        @id @default(cuid())
   cafeId              String
   branchId            String? // الفرع — مشتق من الأوردر (nullable للصفوف القديمة)
@@ -1029,6 +1304,7 @@ model Payment {
   itemPayments OrderItemPayment[]
   reversalOf   Payment?           @relation("PaymentReversal", fields: [reversalOfPaymentId], references: [id], onDelete: Restrict)
   reversedBy   Payment[]          @relation("PaymentReversal")
+  ownerActionRequests OwnerActionRequest[]
 
   @@index([cafeId, createdAt])
   @@index([cafeId, type, createdAt])
@@ -1043,11 +1319,131 @@ model Payment {
   @@index([reversalOfPaymentId])
 }
 
+model OrderRevision {
+  id String @id @default(cuid())
+  orderId String
+  order Order @relation(fields:[orderId], references:[id], onDelete:Restrict)
+  number Int
+  amendmentId String @unique
+  cafeId String
+  branchId String
+  actorId String
+  approverId String?
+  originalCashierId String?
+  originalShiftId String?
+  postingShiftId String?
+  reason String
+  before Json
+  after Json
+  oldTotal Decimal @db.Decimal(12,2)
+  newTotal Decimal @db.Decimal(12,2)
+  discountDelta Decimal @db.Decimal(12,2)
+  recognizedDelta Decimal @db.Decimal(12,2)
+  createdAt DateTime @default(now())
+  @@unique([orderId,number])
+  @@index([cafeId,branchId,createdAt])
+}
+
+model OrderAmendment {
+  kitchenStatus String?
+  stockPlan Json?
+  id String @id @default(cuid())
+  cafeId String
+  branchId String
+  orderId String
+  requesterId String
+  requestKey String
+  requestHash String
+  baseRevision Int
+  fingerprint String
+  before Json
+  proposed Json
+  reason String
+  status String @default("READY")
+  approvalRequired Boolean @default(false)
+  ownerApprovalRequired Boolean @default(false)
+  approverId String?
+  approvalSettingsVersion Int?
+  ownerRequestId String?
+  ownerVoidRequestId String?
+  originalShiftId String?
+  originalShiftClosed Boolean @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([cafeId,requesterId,requestKey])
+  @@index([cafeId,branchId,orderId,createdAt])
+}
+
+model AmendmentSettlement {
+  id String @id @default(cuid())
+  amendmentId String
+  cafeId String
+  branchId String
+  actorId String
+  shiftId String
+  requestKey String
+  direction String
+  amount Decimal @db.Decimal(12,2)
+  legs Json
+  status String @default("PENDING")
+  evidence Json?
+  failureReason String?
+  createdAt DateTime @default(now())
+  observedAt DateTime?
+  @@unique([amendmentId,requestKey])
+  @@index([amendmentId,status])
+}
+
+model SalesDiscountLimit {
+  userId String @id
+  cafeId String
+  maxPercent Decimal @default(0) @db.Decimal(5,2)
+  maxAmount Decimal @default(0) @db.Decimal(12,2)
+  updatedById String
+  updatedAt DateTime @updatedAt
+  @@index([cafeId])
+}
+
+model AmendmentTenderReference {
+  id String @id @default(cuid())
+  cafeId String
+  branchId String
+  attemptId String
+  method String
+  reference String @db.VarChar(200)
+  actorId String
+  createdAt DateTime @default(now())
+  @@unique([cafeId,method,reference])
+  @@index([attemptId])
+}
+
+model OrderTrace {
+  id String @id @default(cuid())
+  cafeId String
+  branchId String
+  orderId String
+  amendmentId String?
+  revision Int
+  action String
+  actorId String
+  originalCashierId String?
+  approverId String?
+  shiftId String?
+  reason String
+  details Json
+  createdAt DateTime @default(now())
+  @@index([cafeId,branchId,createdAt])
+  @@index([orderId,createdAt])
+}
+
 // ─────────────────────────────── Shifts ──────────────────────────────
 // وردية الكاشير: بتتفتح قبل تسجيل الطلبات وبتتقفل آخر اليوم بتسوية الكاش.
 // كل المبالغ EGP، والأرقام التجميعية بتتحدّث مع كل دفع/مرتجع.
 
 model Shift {
+  cashStorage CashStorage?
+  openingCashReceipt OpeningCashReceipt?
+
   id                 String    @id @default(cuid())
   cafeId             String
   branchId           String
@@ -1120,6 +1516,7 @@ model Shift {
   responsibleStockCustodies CustodyPeriod[]        @relation("ResponsibleStockCustodyShift")
   inventoryTransactions     InventoryTransaction[] @relation("InventoryTransactionShift")
   servedOrders              Order[]                @relation("OrderServedShift")
+  carriedOrders             HandoverCarriedOrder[]
 
   @@unique([branchId, shiftNumber])
   @@index([cafeId])
@@ -1133,6 +1530,7 @@ model Shift {
   @@index([branchId, custodyReadyAt])
   @@index([cashReasonCodeId])
   @@index([closedById])
+placeReceipt ShiftPlaceReceipt?
 }
 
 // ───────────────────────────── Inventory ─────────────────────────────
@@ -1998,6 +2396,7 @@ enum HandoverStatus {
 }
 
 enum OpeningExceptionKind {
+  OVERNIGHT_CASH_MISMATCH
   CASH_MISMATCH
   STOCK_MISMATCH
   FREE_FORM_OPENING
@@ -2012,6 +2411,8 @@ enum StockAckDecision {
 }
 
 model HandoverSession {
+  cashStorage CashStorage?
+
   id       String         @id @default(cuid())
   cafeId   String
   branchId String
@@ -2104,10 +2505,120 @@ model HandoverSession {
   stockAcknowledgements       HandoverStockAcknowledgement[]
   openingExceptions           OpeningException[]
   inventoryFreeze             InventoryFreeze?
+  carriedOrders               HandoverCarriedOrder[]
 
   @@index([cafeId, status])
   @@index([branchId, createdAt])
   @@index([outgoingShiftId])
+}
+
+/// An order still open when a shift closed into a handover, passed to the
+/// incoming shift because the café enabled `carryOpenOrdersOnHandover`.
+/// The row is the evidence of who was answerable for what at that instant:
+/// the order's state and its unpaid balance, and whether its recipe was
+/// deducted at the handover (against the OUTGOING custody) or left to be
+/// deducted when the incoming shift serves it. Never updated after insert.
+model HandoverCarriedOrder {
+  id          String  @id @default(cuid())
+  cafeId      String
+  branchId    String
+  /// The shift that closed and handed the order on.
+  shiftId     String
+  handoverId  String?
+  orderId     String
+  orderNumber Int
+
+  statusAtHandover        OrderStatus
+  paymentStatusAtHandover PaymentStatus
+  remainingAtHandover     Decimal       @db.Decimal(10, 2)
+  /// true when the recipe came off the shelf during the close, attributed to
+  /// the outgoing custody, so serving it later moves no stock.
+  stockDeductedAtHandover Boolean       @default(false)
+  createdAt               DateTime      @default(now())
+
+  cafe     Cafe             @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  branch   Branch           @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  shift    Shift            @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  handover HandoverSession? @relation(fields: [handoverId], references: [id], onDelete: SetNull)
+  order    Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@unique([shiftId, orderId])
+  @@index([cafeId])
+  @@index([branchId, createdAt])
+  @@index([handoverId])
+  @@index([orderId])
+}
+
+/// An order served while a stock handover froze the branch's inventory. The
+/// freeze forbids every stock movement so the count stays true, so the recipe
+/// is NOT deducted at serve time; it is deducted when the freeze is released
+/// (handover accepted, or taken into branch custody), in that same
+/// transaction, against the STOCK custody open at that moment.
+model DeferredStockDeduction {
+  id                     String    @id @default(cuid())
+  cafeId                 String
+  branchId               String
+  orderId                String    @unique
+  freezeId               String
+  handoverId             String
+  servedById             String?
+  servedAt               DateTime
+  appliedAt              DateTime?
+  /// Where the deduction landed once applied.
+  appliedCustodyPeriodId String?
+  appliedShiftId         String?
+  createdAt              DateTime  @default(now())
+
+  cafe   Cafe   @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  order  Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([handoverId, appliedAt])
+  @@index([branchId, appliedAt])
+}
+
+/// The café's WhatsApp Business Cloud API connection, used to send the owner
+/// a report when a shift closes. One per café. The access token is stored
+/// only as AES-256-GCM ciphertext (`src/lib/secret-box.ts`) and is never
+/// returned by any API — the settings screen only learns whether one is set.
+model WhatsAppIntegration {
+  id                String   @id @default(cuid())
+  cafeId            String   @unique
+  enabled           Boolean  @default(false)
+  phoneNumberId     String?
+  accessTokenCipher String?
+  templateName      String?
+  templateLanguage  String   @default("ar")
+  /// International format, digits only (e.g. 201012345678).
+  recipientPhone    String?
+  updatedById       String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  cafe Cafe @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+}
+
+/// One attempt to deliver a WhatsApp message. Written after the attempt, so
+/// a failure is evidence rather than a silent gap. `shiftId` is a plain
+/// reference: the log outlives nothing it describes but must not block it.
+model WhatsAppMessageLog {
+  id                String   @id @default(cuid())
+  cafeId            String
+  branchId          String?
+  shiftId           String?
+  kind              String
+  trigger           String
+  status            String
+  providerMessageId String?
+  error             String?
+  recipientMasked   String?
+  triggeredById     String?
+  createdAt         DateTime @default(now())
+
+  cafe Cafe @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+
+  @@index([cafeId, createdAt])
+  @@index([shiftId, kind, status])
 }
 
 model HandoverRequiredItem {
@@ -2172,6 +2683,7 @@ model HandoverStockBoundary {
 /// The partial one-active-per-branch index is defined manually in M16 because
 /// Prisma cannot express a partial index predicate.
 model InventoryFreeze {
+  finishedGoodsReturns FinishedGoodsReturn[] @relation("FinishedReturnFreeze")
   id           String    @id @default(cuid())
   cafeId       String
   branchId     String
@@ -2191,6 +2703,8 @@ model InventoryFreeze {
   @@index([branchId, startedAt])
   @@index([startedById])
   @@index([releasedById])
+
+  @@unique([id, handoverId, cafeId, branchId], map: "InventoryFreeze_sale_identity_key")
 }
 
 /// The incoming side inspects stock, line by line, blind.
@@ -2230,6 +2744,8 @@ model HandoverStockAcknowledgement {
 
 /// Opening a shift against the evidence, on somebody's authority.
 model OpeningException {
+  overnightReceipt OpeningCashReceipt?
+
   id              String  @id @default(cuid())
   cafeId          String
   branchId        String
@@ -2299,6 +2815,9 @@ enum InventoryTransactionType {
 // Raw materials / ingredients tracked per branch. currentStock is the
 // running balance kept in sync with the InventoryTransaction ledger.
 model InventoryItem {
+  saleIdentityBranch Branch @relation("InventorySaleIdentityBranch", fields: [branchId, cafeId], references: [id, cafeId], onDelete: Cascade, onUpdate: Restrict, map: "InventoryItem_sale_branch_fkey")
+  stockBindings ProductStockBinding[] @relation("FinishedBindingInventory")
+  finishedStockLines OrderItem[] @relation("FinishedSnapshotInventory")
   id           String        @id @default(cuid())
   cafeId       String
   branchId     String
@@ -2344,11 +2863,15 @@ model InventoryItem {
   @@index([currentStock])
   @@index([minimumStock])
   @@index([branchId, isCritical, archivedAt])
+
+  @@unique([id, cafeId, branchId, unit], map: "InventoryItem_sale_identity_key")
 }
 
 // Immutable ledger of every stock change. currentStock on the item is
 // derived from these rows (delta applied on create).
 model InventoryTransaction {
+  finishedStockLines OrderItem[] @relation("FinishedUsageLedger")
+  finishedGoodsReturns FinishedGoodsReturn[] @relation("FinishedReturnLedger")
   id              String                   @id @default(cuid())
   cafeId          String
   branchId        String
@@ -2390,6 +2913,8 @@ model InventoryTransaction {
   @@index([orderId])
   @@index([custodyPeriodId, type])
   @@index([shiftId])
+
+  @@unique([id, cafeId, branchId, inventoryItemId, orderId], map: "InventoryTransaction_sale_identity_key")
 }
 
 // ─────────────────────────── Purchases ───────────────────────────────
@@ -2634,4 +3159,451 @@ model LoyaltyTransaction {
   @@index([cafeId, createdAt])
   @@index([customerId, createdAt])
   @@index([orderId])
+}
+
+
+enum OpeningCashReceiptStatus {
+  PENDING
+  DISPUTED
+  DEFERRED
+  ACCEPTED
+  OVERRIDDEN
+}
+
+model BranchOpeningSettings {
+  branchId String @id
+  cafeId String
+  overnightCashEnabled Boolean @default(false)
+  drawerLabel String @default("Main drawer")
+  placeAcceptanceRequired Boolean @default(false)
+  placeInspectorId String?
+  updatedById String
+  updatedAt DateTime @updatedAt
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  cafe Cafe @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  updatedBy User @relation(fields: [updatedById], references: [id], onDelete: Restrict)
+  @@index([cafeId])
+  @@index([updatedById])
+placeInspector User? @relation("BranchPlaceInspector", fields:[placeInspectorId], references:[id], onDelete:SetNull)
+}
+
+model CashStorage {
+  id String @id @default(cuid())
+  cafeId String
+  branchId String
+  outgoingShiftId String @unique
+  handoverId String @unique
+  closingAmount Decimal @db.Decimal(10,2)
+  leftInDrawer Decimal @db.Decimal(10,2)
+  toTreasury Decimal @db.Decimal(10,2)
+  drawerLabel String
+  note String?
+  declaredById String
+  declaredAt DateTime @default(now())
+  cafe Cafe @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  outgoingShift Shift @relation(fields: [outgoingShiftId], references: [id], onDelete: Restrict)
+  handover HandoverSession @relation(fields: [handoverId], references: [id], onDelete: Restrict)
+  declaredBy User @relation(fields: [declaredById], references: [id], onDelete: Restrict)
+  movements CashStorageMovement[]
+  receipt OpeningCashReceipt?
+  @@index([cafeId, branchId, declaredAt])
+  @@index([branchId, declaredAt])
+  @@index([declaredById])
+}
+
+model CashStorageMovement {
+  id String @id @default(cuid())
+  cafeId String
+  storageId String
+  amount Decimal @db.Decimal(10,2)
+  counterparty String @default("TREASURY")
+  actorId String
+  reason String
+  idempotencyKey String?
+  createdAt DateTime @default(now())
+  cafe Cafe @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  storage CashStorage @relation(fields: [storageId], references: [id], onDelete: Restrict)
+  actor User @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  @@unique([storageId, idempotencyKey])
+  @@index([cafeId, createdAt])
+  @@index([actorId])
+}
+
+model OpeningCashReceipt {
+  id String @id @default(cuid())
+  cafeId String
+  branchId String
+  storageId String @unique
+  incomingShiftId String @unique
+  claimantId String
+  status OpeningCashReceiptStatus @default(PENDING)
+  expectedAmount Decimal @db.Decimal(10,2)
+  actualAmount Decimal? @db.Decimal(10,2)
+  varianceAmount Decimal? @db.Decimal(10,2)
+  verifiedById String?
+  acceptedAt DateTime?
+  idempotencyKey String?
+  acceptanceFingerprint String?
+  openingExceptionId String? @unique
+  claimedAt DateTime @default(now())
+  cafe Cafe @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  storage CashStorage @relation(fields: [storageId], references: [id], onDelete: Restrict)
+  incomingShift Shift @relation(fields: [incomingShiftId], references: [id], onDelete: Restrict)
+  claimant User @relation("OpeningCashClaimant", fields: [claimantId], references: [id], onDelete: Restrict)
+  verifiedBy User? @relation("OpeningCashVerifier", fields: [verifiedById], references: [id], onDelete: Restrict)
+  openingException OpeningException? @relation(fields: [openingExceptionId], references: [id], onDelete: Restrict)
+  events OpeningCashReceiptEvent[]
+  @@index([cafeId, branchId, claimedAt])
+  @@index([branchId, status])
+  @@index([claimantId])
+  @@index([verifiedById])
+}
+
+model OpeningCashReceiptEvent {
+  id String @id @default(cuid())
+  cafeId String
+  receiptId String
+  actorId String
+  action String
+  note String?
+  details Json?
+  createdAt DateTime @default(now())
+  cafe Cafe @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  receipt OpeningCashReceipt @relation(fields: [receiptId], references: [id], onDelete: Restrict)
+  actor User @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  @@index([receiptId, createdAt])
+  @@index([cafeId, createdAt])
+  @@index([actorId])
+}
+
+
+enum PlaceReceiptStatus {
+  PENDING
+  ACCEPTED
+  OVERRIDDEN
+}
+
+enum PlaceObservationSide {
+  OUTGOING
+  INCOMING
+}
+
+enum PlaceCondition {
+  OK
+  NOTE
+  FAULT
+  NOT_CHECKED
+}
+
+enum PlaceIncidentStatus {
+  OPEN
+  RESOLVED
+}
+
+model PlaceAsset {
+  id String @id @default(cuid())
+  cafeId String
+  branchId String
+  name String
+  area String?
+  isActive Boolean @default(true)
+  createdById String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  cafe Cafe @relation(fields:[cafeId], references:[id], onDelete:Cascade)
+  branch Branch @relation(fields:[branchId], references:[id], onDelete:Cascade)
+  createdBy User @relation("PlaceAssetCreator", fields:[createdById], references:[id], onDelete:Restrict)
+  checkpoints PlaceCheckPoint[]
+  observations PlaceObservation[]
+  incidents PlaceIncident[]
+  @@index([cafeId,branchId,isActive])
+  photos PlacePhoto[]
+}
+
+model PlaceCheckPoint {
+  id String @id @default(cuid())
+  assetId String
+  label String
+  required Boolean @default(true)
+  critical Boolean @default(false)
+  sortOrder Int @default(0)
+  createdAt DateTime @default(now())
+  asset PlaceAsset @relation(fields:[assetId], references:[id], onDelete:Cascade)
+  observations PlaceObservation[]
+  @@index([assetId,sortOrder])
+}
+
+model ShiftPlaceReceipt {
+  id String @id @default(cuid())
+  cafeId String
+  branchId String
+  incomingShiftId String @unique
+  assignedUserId String
+  createdById String
+  snapshot Json
+  status PlaceReceiptStatus @default(PENDING)
+  acceptedById String?
+  acceptedAt DateTime?
+  overriddenById String?
+  overrideReason String?
+  createdAt DateTime @default(now())
+  cafe Cafe @relation(fields:[cafeId], references:[id], onDelete:Cascade)
+  branch Branch @relation(fields:[branchId], references:[id], onDelete:Cascade)
+  incomingShift Shift @relation(fields:[incomingShiftId], references:[id], onDelete:Cascade)
+  assignedUser User @relation("PlaceReceiptAssignee", fields:[assignedUserId], references:[id], onDelete:Restrict)
+  createdBy User @relation("PlaceReceiptCreator", fields:[createdById], references:[id], onDelete:Restrict)
+  acceptedBy User? @relation("PlaceReceiptAcceptor", fields:[acceptedById], references:[id], onDelete:SetNull)
+  overriddenBy User? @relation("PlaceReceiptOverrider", fields:[overriddenById], references:[id], onDelete:SetNull)
+  observations PlaceObservation[]
+  events PlaceReceiptEvent[]
+  incidents PlaceIncident[]
+  @@index([cafeId,branchId,status,createdAt])
+}
+
+model PlaceObservation {
+  id String @id @default(cuid())
+  receiptId String
+  assetId String
+  checkpointId String
+  side PlaceObservationSide
+  condition PlaceCondition
+  note String?
+  actorId String
+  createdAt DateTime @default(now())
+  receipt ShiftPlaceReceipt @relation(fields:[receiptId], references:[id], onDelete:Cascade)
+  asset PlaceAsset @relation(fields:[assetId], references:[id], onDelete:Restrict)
+  checkpoint PlaceCheckPoint @relation(fields:[checkpointId], references:[id], onDelete:Restrict)
+  actor User @relation(fields:[actorId], references:[id], onDelete:Restrict)
+  incident PlaceIncident?
+  @@index([receiptId,side,createdAt])
+  @@index([assetId])
+  photos PlacePhoto[]
+}
+
+model PlaceReceiptEvent {
+  id String @id @default(cuid())
+  receiptId String
+  actorId String
+  action String
+  idempotencyKey String?
+  note String?
+  createdAt DateTime @default(now())
+  receipt ShiftPlaceReceipt @relation(fields:[receiptId], references:[id], onDelete:Cascade)
+  actor User @relation(fields:[actorId], references:[id], onDelete:Restrict)
+  @@unique([receiptId,idempotencyKey])
+  @@index([receiptId,createdAt])
+}
+
+model PlaceIncident {
+  id String @id @default(cuid())
+  cafeId String
+  branchId String
+  receiptId String
+  observationId String @unique
+  assetId String
+  status PlaceIncidentStatus @default(OPEN)
+  reportedById String
+  resolvedById String?
+  repairNote String?
+  createdAt DateTime @default(now())
+  resolvedAt DateTime?
+  cafe Cafe @relation(fields:[cafeId], references:[id], onDelete:Cascade)
+  branch Branch @relation(fields:[branchId], references:[id], onDelete:Cascade)
+  receipt ShiftPlaceReceipt @relation(fields:[receiptId], references:[id], onDelete:Cascade)
+  observation PlaceObservation @relation(fields:[observationId], references:[id], onDelete:Restrict)
+  asset PlaceAsset @relation(fields:[assetId], references:[id], onDelete:Restrict)
+  reportedBy User @relation("PlaceIncidentReporter", fields:[reportedById], references:[id], onDelete:Restrict)
+  resolvedBy User? @relation("PlaceIncidentResolver", fields:[resolvedById], references:[id], onDelete:SetNull)
+  @@index([cafeId,branchId,status,createdAt])
+}
+
+model PlacePhoto {
+  id String @id @default(cuid())
+  cafeId String
+  branchId String
+  assetId String?
+  observationId String?
+  uploaderId String
+  storageKey String @unique
+  mime String @default("image/webp")
+  byteCount Int
+  width Int
+  height Int
+  createdAt DateTime @default(now())
+  cafe Cafe @relation(fields:[cafeId], references:[id], onDelete:Cascade)
+  branch Branch @relation(fields:[branchId], references:[id], onDelete:Cascade)
+  asset PlaceAsset? @relation(fields:[assetId], references:[id], onDelete:Restrict)
+  observation PlaceObservation? @relation(fields:[observationId], references:[id], onDelete:Restrict)
+  uploader User @relation("PlacePhotoUploader", fields:[uploaderId], references:[id], onDelete:Restrict)
+  @@index([cafeId,branchId,createdAt])
+  @@index([assetId])
+  @@index([observationId])
+}
+
+model OwnerActionSettings {
+  id String @id @default(cuid())
+  cafeId String @unique
+  ownerId String
+  refundMode OwnerActionMode @default(OWNER_REQUEST)
+  cancelMode OwnerActionMode @default(OWNER_REQUEST)
+  itemVoidMode OwnerActionMode @default(OWNER_REQUEST)
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  cafe Cafe @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  owner User @relation("OwnerActionSettingsOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+}
+
+model OwnerActionRequest {
+  targetAmendmentId String?
+  id String @id @default(cuid())
+  cafeId String
+  branchId String
+  requesterId String
+  ownerId String
+  action OwnerAction
+  targetOrderId String?
+  targetOrderItemId String?
+  targetPaymentId String?
+  reason String
+  targetSnapshot Json
+  targetFingerprint String @db.VarChar(64)
+  amount Decimal @default(0) @db.Decimal(10, 2)
+  mode OwnerActionMode
+  settingsVersion Int
+  status OwnerActionStatus @default(PENDING)
+  idempotencyKey String @db.VarChar(64)
+  credentialVersion Int?
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+  decidedAt DateTime?
+  decidedById String?
+  decisionNote String?
+  executedAt DateTime?
+  executorId String?
+  executionIdempotencyKey String? @db.VarChar(64)
+  executionExpiresAt DateTime?
+  decisionMethod OwnerActionApprovalMethod?
+  cafe Cafe @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  requester User @relation("OwnerActionRequester", fields: [requesterId], references: [id], onDelete: Restrict)
+  owner User @relation("OwnerActionAssignedOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  decider User? @relation("OwnerActionDecider", fields: [decidedById], references: [id], onDelete: SetNull)
+  executor User? @relation("OwnerActionExecutor", fields: [executorId], references: [id], onDelete: SetNull)
+  order Order? @relation(fields: [targetOrderId], references: [id], onDelete: Restrict)
+  orderItem OrderItem? @relation(fields: [targetOrderItemId], references: [id], onDelete: Restrict)
+  payment Payment? @relation(fields: [targetPaymentId], references: [id], onDelete: Restrict)
+  events OwnerActionEvent[]
+  passcodeAttempts OwnerPasscodeAttempt[]
+  voidedOrderItem OrderItem? @relation("OrderItemVoidApproval")
+  @@unique([requesterId, idempotencyKey])
+  @@index([cafeId, status, createdAt])
+  @@index([branchId, status, createdAt])
+  @@index([ownerId, status, createdAt])
+  @@index([targetOrderId])
+  @@index([targetPaymentId])
+  @@index([targetOrderItemId])
+}
+
+model OwnerActionEvent {
+  id String @id @default(cuid())
+  cafeId String
+  requestId String
+  actorId String
+  event String @db.VarChar(40)
+  note String?
+  details Json?
+  createdAt DateTime @default(now())
+  cafe Cafe @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  request OwnerActionRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  actor User @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  @@index([cafeId, createdAt])
+  @@index([requestId, createdAt])
+}
+
+model OwnerPasscode {
+  id String @id @default(cuid())
+  cafeId String @unique
+  ownerId String
+  passcodeHash String
+  version Int @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  cafe Cafe @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  owner User @relation("OwnerPasscodeOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  attempts OwnerPasscodeAttempt[]
+}
+
+model OwnerPasscodeAttempt {
+  id String @id @default(cuid())
+  cafeId String
+  ownerId String
+  passcodeId String
+  requesterId String
+  requestId String?
+  success Boolean @default(false)
+  createdAt DateTime @default(now())
+  cafe Cafe @relation(fields: [cafeId], references: [id], onDelete: Cascade)
+  owner User @relation("OwnerPasscodeAttemptOwner", fields: [ownerId], references: [id], onDelete: Restrict)
+  requester User @relation("OwnerPasscodeAttemptRequester", fields: [requesterId], references: [id], onDelete: Restrict)
+  request OwnerActionRequest? @relation(fields: [requestId], references: [id], onDelete: SetNull)
+  passcode OwnerPasscode @relation(fields: [passcodeId], references: [id], onDelete: Cascade)
+  @@index([cafeId, ownerId, requesterId, createdAt])
+}
+
+// OWNER-UAT-RESALE-001 proposed additive models.
+enum ProductStockMode {
+  RECIPE
+  FINISHED_GOOD
+}
+model ProductStockBinding {
+  id String @id @default(cuid())
+  cafeId String
+  branchId String
+  productId String
+  variantId String?
+  inventoryItemId String
+  unit InventoryUnit @default(PIECE)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  product Product @relation("FinishedBindingProduct", fields: [productId, cafeId], references: [id, cafeId], onDelete: Cascade, onUpdate: Restrict, map: "ProductStockBinding_product_fkey")
+  variant ProductVariant? @relation("FinishedBindingVariant", fields: [variantId, productId], references: [id, productId], onDelete: Cascade, onUpdate: Restrict, map: "ProductStockBinding_variant_fkey")
+  branch Branch @relation("FinishedBindingBranch", fields: [branchId, cafeId], references: [id, cafeId], onDelete: Restrict, onUpdate: Restrict, map: "ProductStockBinding_branch_fkey")
+  inventoryItem InventoryItem @relation("FinishedBindingInventory", fields: [inventoryItemId, cafeId, branchId, unit], references: [id, cafeId, branchId, unit], onDelete: Restrict, onUpdate: Restrict, map: "ProductStockBinding_inventory_fkey")
+  // Exact null/non-null configuration uniqueness is enforced in SQL.
+  @@index([inventoryItemId], map: "ProductStockBinding_inventory_idx")
+  @@index([variantId, productId], map: "ProductStockBinding_variant_idx")
+  @@index([branchId, cafeId], map: "ProductStockBinding_branch_idx")
+}
+model FinishedGoodsReturn {
+  id String @id @default(cuid())
+  cafeId String
+  branchId String
+  orderId String
+  orderItemId String
+  inventoryItemId String
+  unit InventoryUnit @default(PIECE)
+  quantity Int
+  reason String
+  createdById String
+  idempotencyScope String
+  idempotencyKey String
+  requestHash String
+  receivedAt DateTime @default(now())
+  appliedAt DateTime?
+  inventoryTransactionId String?
+  deferredFreezeId String?
+  deferredHandoverId String?
+  line OrderItem @relation("FinishedReturnLine", fields: [orderItemId, orderId, cafeId, branchId, inventoryItemId, unit], references: [id, orderId, finishedStockCafeId, finishedStockBranchId, finishedStockItemId, finishedStockUnit], onDelete: Restrict, onUpdate: Restrict, map: "FinishedGoodsReturn_line_fkey")
+  actor User @relation("FinishedReturnActor", fields: [createdById], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "FinishedGoodsReturn_actor_fkey")
+  inventoryTransaction InventoryTransaction? @relation("FinishedReturnLedger", fields: [inventoryTransactionId, cafeId, branchId, inventoryItemId, orderId], references: [id, cafeId, branchId, inventoryItemId, orderId], onDelete: Restrict, onUpdate: Restrict, map: "FinishedGoodsReturn_ledger_fkey")
+  freeze InventoryFreeze? @relation("FinishedReturnFreeze", fields: [deferredFreezeId, deferredHandoverId, cafeId, branchId], references: [id, handoverId, cafeId, branchId], onDelete: Restrict, onUpdate: Restrict, map: "FinishedGoodsReturn_freeze_fkey")
+  @@unique([idempotencyScope, idempotencyKey], map: "FinishedGoodsReturn_request_key")
+  // One receipt per RETURN movement is a SQL-only nonnull partial unique.
+  @@index([orderItemId], map: "FinishedGoodsReturn_line_idx")
+  @@index([branchId, appliedAt], map: "FinishedGoodsReturn_branch_pending_idx")
+  @@index([deferredHandoverId, appliedAt], map: "FinishedGoodsReturn_handover_pending_idx")
+  @@index([inventoryTransactionId], map: "FinishedGoodsReturn_ledger_idx")
 }

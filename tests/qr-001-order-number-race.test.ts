@@ -30,7 +30,7 @@
 import { test, before, after, describe } from "node:test";
 import assert from "node:assert/strict";
 import { BASE, requireServer, login, as } from "./helpers/http";
-import { db, fixture, type Fixture } from "./helpers/db";
+import { db, fixture, type Fixture, purgeOrderTracesFor } from "./helpers/db";
 
 const OWNER = { email: "owner@demo.com", password: "owner1234" };
 const MARKER = "PH15-QRNUM";
@@ -46,7 +46,7 @@ type QrResponse = {
 async function scan(marker: string, table: string) {
   const r = await fetch(`${BASE}/api/qr/${fx.branchId}/orders`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
     body: JSON.stringify({
       customerName: "عميل اختبار",
       tableNumber: table,
@@ -85,7 +85,7 @@ async function purge(marker: string) {
   const sessionIds = [...new Set(orders.map((o) => o.tableSessionId).filter(Boolean))] as string[];
   await db.payment.deleteMany({ where: { orderId: { in: ids } } });
   await db.orderItem.deleteMany({ where: { orderId: { in: ids } } });
-  await db.order.deleteMany({ where: { id: { in: ids } } });
+  await purgeOrderTracesFor({ id: { in: ids } }); await db.order.deleteMany({ where: { id: { in: ids } } });
   if (sessionIds.length) {
     await db.tableSession.deleteMany({ where: { id: { in: sessionIds } } });
   }

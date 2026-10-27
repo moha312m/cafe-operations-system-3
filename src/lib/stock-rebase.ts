@@ -377,8 +377,6 @@ async function applyOneLine(executor: RebaseExecutor, args: {
   try {
     return await executor.run(async (tx: Prisma.TransactionClient) => {
       await acquireInventorySharedLocks(tx, [args.branchId]);
-      const replay = await ledgerDeltaAbove(tx, args.inventoryItemId, args.countCursor);
-      const stockAfter = round3(args.effectiveCounted + replay.delta);
 
       // Take the lock through the ledger module's own helper rather than
       // hand-rolling the same SELECT ... FOR UPDATE. Holding it from here
@@ -386,6 +384,10 @@ async function applyOneLine(executor: RebaseExecutor, args: {
       // `applyStockMutation` re-reads it under the same lock, in the same
       // transaction.
       const locked = await lockItemForUpdate(tx, args.inventoryItemId);
+      // A movement can commit while this lock is waiting. Read its replay
+      // only after acquiring the item, or the rebase would erase that movement.
+      const replay = await ledgerDeltaAbove(tx, args.inventoryItemId, args.countCursor);
+      const stockAfter = round3(args.effectiveCounted + replay.delta);
       const stockBefore = round3(locked.currentStock);
       const appliedDelta = round3(stockAfter - stockBefore);
 

@@ -1,12 +1,17 @@
+import { stockBindingsSchema, saveProductStockBindings } from "@/lib/product-stock-bindings";
+import { assertNoPendingRecipeAmendments } from "@/lib/amendment-product-modes";
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { requirePermission, handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
+import { requireCatalogPriceAuthority } from "@/lib/price-authorization";
+import { validCurrencyInput } from "@/lib/money";
 
 type Params = { params: Promise<{ id: string }> };
 
 const productInclude = {
+  stockBindings: true,
   category: { select: { id: true, name: true } },
   variants: {
     orderBy: [{ sortOrder: "asc" as const }, { price: "asc" as const }],
@@ -25,10 +30,12 @@ async function findOwnedProduct(id: string, session: { role: string; cafeId: str
 }
 
 const updateProductSchema = z.object({
+  stockMode: z.enum(["RECIPE", "FINISHED_GOOD"]).optional(),
+  stockBindings: stockBindingsSchema.optional(),
   name: z.string().min(1).optional(),
   description: z.string().nullable().optional(),
   categoryId: z.string().optional(),
-  basePrice: z.number().min(0).optional(),
+  basePrice: z.number().min(0).refine(validCurrencyInput, "Invalid currency amount").optional(),
   costPrice: z.number().min(0).nullable().optional(),
   imageUrl: z.string().url().nullable().optional().or(z.literal("")),
   isActive: z.boolean().optional(),
@@ -40,8 +47,9 @@ const updateProductSchema = z.object({
   variants: z
     .array(
       z.object({
+        id: z.string().optional(),
         name: z.string().min(1),
-        price: z.number().min(0),
+        price: z.number().min(0).refine(validCurrencyInput, "Invalid currency amount"),
         isAvailable: z.boolean().default(true),
         sortOrder: z.number().int().default(0),
       })
@@ -49,7 +57,7 @@ const updateProductSchema = z.object({
     .optional(),
   addOnIds: z.array(z.string()).optional(),
   branchPrices: z
-    .array(z.object({ branchId: z.string(), price: z.number().min(0) }))
+    .array(z.object({ branchId: z.string(), price: z.number().min(0).refine(validCurrencyInput, "Invalid currency amount") }))
     .optional(),
 });
 
@@ -60,6 +68,9 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     const existing = await findOwnedProduct(id, session);
 
     const data = updateProductSchema.parse(await request.json());
+    if (data.basePrice !== undefined || data.variants !== undefined || data.branchPrices !== undefined) {
+      await requireCatalogPriceAuthority(session, existing.cafeId);
+    }
 
     if (data.categoryId) {
       const category = await db.menuCategory.findFirst({
@@ -88,9 +99,22 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     }
 
     const product = await db.$transaction(async (tx) => {
-      if (data.variants) {
-        await tx.productVariant.deleteMany({ where: { productId: id } });
+      const locked = await tx.$queryRaw<{ id: string; stockMode: string }[]>`SELECT "id", "stockMode" FROM "Product" WHERE "id"=${id} FOR UPDATE`;
+      if (!locked.length) throw new ApiError(404, "Product not found");
+      if (data.stockMode === "FINISHED_GOOD" && locked[0].stockMode !== "FINISHED_GOOD") {
+        await assertNoPendingRecipeAmendments(tx, existing.cafeId, id);
       }
+      if (data.variants) {
+        const ids = data.variants.flatMap(v => v.id ? [v.id] : []);
+        if (new Set(ids).size !== ids.length || await tx.productVariant.count({ where: { id: { in: ids }, productId: id } }) !== ids.length) throw new ApiError(400, "حجم خارج المنتج أو مكرر");
+        await tx.productVariant.deleteMany({ where: { productId: id, id: { notIn: ids } } });
+        for (const [i,v] of data.variants.entries()) {
+          const values = { name: v.name, price: v.price, isActive: v.isAvailable, sortOrder: v.sortOrder || i };
+          if (v.id) await tx.productVariant.update({ where: { id: v.id }, data: values });
+          else await tx.productVariant.create({ data: { ...values, productId: id } });
+        }
+      }
+      if (data.stockBindings) await saveProductStockBindings(tx, id, existing.cafeId, data.stockBindings, session.branchId);
       if (data.addOnIds) {
         await tx.productAddOn.deleteMany({ where: { productId: id } });
       }
@@ -100,6 +124,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       return tx.product.update({
         where: { id },
         data: {
+          stockMode: data.stockMode,
           name: data.name,
           description: data.description,
           categoryId: data.categoryId,
@@ -111,18 +136,6 @@ export async function PATCH(request: NextRequest, { params }: Params) {
           showInPOS: data.showInPOS,
           isAvailable: data.isAvailable,
           sortOrder: data.sortOrder,
-          ...(data.variants
-            ? {
-                variants: {
-                  create: data.variants.map((v, i) => ({
-                    name: v.name,
-                    price: v.price,
-                    isActive: v.isAvailable,
-                    sortOrder: v.sortOrder || i,
-                  })),
-                },
-              }
-            : {}),
           ...(data.addOnIds
             ? { addOns: { create: data.addOnIds.map((addOnId) => ({ addOnId })) } }
             : {}),
@@ -130,11 +143,15 @@ export async function PATCH(request: NextRequest, { params }: Params) {
             ? { branchPrices: { create: data.branchPrices } }
             : {}),
         },
-        include: productInclude,
+        include: { ...productInclude, stockBindings: { where: session.branchId ? { branchId: session.branchId } : {} } },
       });
     });
 
     // Price changes get their own dedicated audit trail entry.
+    if (data.variants !== undefined || data.branchPrices !== undefined) {
+      await audit({ cafeId: existing.cafeId, userId: session.id, action: "CATALOG_PRICES_CHANGED", entity: "Product", entityId: id,
+        details: { variantsChanged: data.variants !== undefined, branchOverridesChanged: data.branchPrices !== undefined } });
+    }
     const oldPrice = Number(existing.basePrice);
     if (data.basePrice !== undefined && data.basePrice !== oldPrice) {
       await audit({

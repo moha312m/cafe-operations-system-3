@@ -13,6 +13,7 @@
 // ALLOW_NEGATIVE_STOCK sits between STRICT and OVERRIDE_ALL rather than being
 // a synonym for either.
 
+import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import type { InventoryEnforcementMode } from "@prisma/client";
 
@@ -59,9 +60,10 @@ export const OVERRIDE_SALE_WARNING =
  * the serving-policy route applies to its own absent row.
  */
 export async function getInventoryEnforcementMode(
-  cafeId: string
+  cafeId: string,
+  client: Prisma.TransactionClient | typeof db = db
 ): Promise<InventoryEnforcementMode> {
-  const settings = await db.cafeSettings.findUnique({
+  const settings = await client.cafeSettings.findUnique({
     where: { cafeId },
     select: { inventoryEnforcementMode: true },
   });

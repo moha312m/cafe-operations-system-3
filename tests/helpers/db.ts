@@ -12,7 +12,7 @@
 // Every record created here is tagged "PH1-…" so remediation data is
 // distinguishable from audit data and can be removed independently.
 
-import { PrismaClient, type Role } from "@prisma/client";
+import { PrismaClient, type Prisma, type Role } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth";
 import {
   assertTestDatabaseUrl,
@@ -45,6 +45,24 @@ let markerCheck: Promise<unknown> | null = null;
 export function assertTestDatabase(): Promise<unknown> {
   markerCheck ??= assertTestDatabaseMarker(db);
   return markerCheck;
+}
+
+/**
+ * Fixture resets delete orders, but every API-created order also writes an
+ * append-only OrderTrace row (immutability trigger + ON DELETE RESTRICT), so
+ * the order delete is refused. In the disposable database only, remove the
+ * traces of exactly the orders about to be deleted, with the trigger disabled
+ * inside this one transaction. Product code never deletes orders.
+ */
+export async function purgeOrderTracesFor(where: Prisma.OrderWhereInput) {
+  await assertTestDatabase();
+  const ids = (await db.order.findMany({ where, select: { id: true } })).map((o) => o.id);
+  if (ids.length === 0) return;
+  await db.$transaction([
+    db.$executeRawUnsafe(`ALTER TABLE "OrderTrace" DISABLE TRIGGER "OrderTrace_immutable"`),
+    db.$executeRaw`DELETE FROM "OrderTrace" WHERE "orderId" = ANY(${ids})`,
+    db.$executeRawUnsafe(`ALTER TABLE "OrderTrace" ENABLE TRIGGER "OrderTrace_immutable"`),
+  ]);
 }
 
 export const TAG_PREFIX = "PH1";
@@ -233,8 +251,9 @@ export async function cleanup(marker: string) {
   });
   const ids = orders.map((o) => o.id);
   if (ids.length) {
+    await db.ownerActionRequest.deleteMany({ where: { targetOrderId: { in: ids } } });
     await db.inventoryTransaction.deleteMany({ where: { orderId: { in: ids } } });
-    await db.order.deleteMany({ where: { id: { in: ids } } });
+    await purgeOrderTracesFor({ id: { in: ids } }); await db.order.deleteMany({ where: { id: { in: ids } } });
   }
 }
 
@@ -481,48 +500,69 @@ export async function assertPurgeableTestCafe(
 export async function purgeCafe(cafeId: string): Promise<void> {
   await assertPurgeableTestCafe(cafeId);
 
-  const scoped = await db.$queryRaw<{ table_name: string }[]>`
-    SELECT c.table_name
-      FROM information_schema.columns c
-      JOIN information_schema.tables t
-        ON t.table_schema = c.table_schema AND t.table_name = c.table_name
-     WHERE c.table_schema = current_schema()
-       AND t.table_type = 'BASE TABLE'
-       AND c.column_name = 'cafeId'
-  `;
-
-  let pending = scoped.map((r) => r.table_name).filter((n) => SAFE_IDENTIFIER.test(n));
-  let lastFailure: unknown;
-
-  while (pending.length > 0) {
-    const blocked: string[] = [];
-    for (const table of pending) {
-      try {
-        await db.$executeRawUnsafe(`DELETE FROM "${table}" WHERE "cafeId" = $1`, cafeId);
-      } catch (e) {
-        lastFailure = e;
-        blocked.push(table);
-      }
+  // PostgreSQL rolls back ALTER TABLE together with the deletes, including on a
+  // lost connection. Never expose disabled evidence triggers between commits.
+  await db.$transaction(async (tx) => {
+    const [{ schema }] = await tx.$queryRaw<{ schema: string }[]>`SELECT current_schema() AS schema`;
+    const quote = (name: string) => `"${name.replaceAll('"', '""')}"`;
+    const qualified = (table: string) => `${quote(schema)}.${quote(table)}`;
+    const scoped = await tx.$queryRaw<{ table_name: string }[]>`
+      SELECT c.table_name
+        FROM information_schema.columns c
+        JOIN information_schema.tables t
+          ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+       WHERE c.table_schema = current_schema()
+         AND t.table_type = 'BASE TABLE'
+         AND c.column_name = 'cafeId'
+    `;
+    let pending = scoped.map((r) => r.table_name).filter((n) => SAFE_IDENTIFIER.test(n));
+    let lastFailure: unknown;
+    const immutable = (await tx.$queryRaw<{ schema: string; tbl: string; tg: string; enabled: string }[]>`
+      SELECT n.nspname AS schema, c.relname AS tbl, t.tgname AS tg, t.tgenabled AS enabled
+        FROM pg_trigger t
+        JOIN pg_class c ON c.oid = t.tgrelid
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE NOT t.tgisinternal AND t.tgname LIKE '%immutable%'
+         AND n.nspname = current_schema() AND c.relname = ANY(${pending})
+         AND t.tgenabled <> 'D'
+    `).filter((r) => SAFE_IDENTIFIER.test(r.tbl) && SAFE_IDENTIFIER.test(r.tg));
+    for (const r of immutable) {
+      if (!["O", "R", "A"].includes(r.enabled)) throw new Error(`Unknown trigger mode: ${r.enabled}`);
+      await tx.$executeRawUnsafe(`ALTER TABLE ${qualified(r.tbl)} DISABLE TRIGGER ${quote(r.tg)}`);
     }
-    if (blocked.length === pending.length) break; // no progress — stop retrying
-    pending = blocked;
-  }
 
-  try {
-    await db.$executeRawUnsafe(`DELETE FROM "Cafe" WHERE "id" = $1`, cafeId);
-  } catch (e) {
-    lastFailure = e;
-  }
-
-  const survivors = await db.cafe.count({ where: { id: cafeId } });
-  if (survivors > 0) {
-    throw new Error(
-      `Tagged café ${cafeId} survived teardown and is now litter in the working ` +
-        `database. Last failure: ${describeError(lastFailure)}`
-    );
-  }
+    // A caught FK violation still aborts a PostgreSQL transaction. Savepoints
+    // recover only that DELETE so the dependency retry can make progress.
+    const remove = async (table: string, column: string): Promise<boolean> => {
+      await tx.$executeRawUnsafe('SAVEPOINT purge_cafe_delete');
+      try {
+        await tx.$executeRawUnsafe(`DELETE FROM ${qualified(table)} WHERE ${quote(column)} = $1`, cafeId);
+        await tx.$executeRawUnsafe('RELEASE SAVEPOINT purge_cafe_delete');
+        return true;
+      } catch (error) {
+        lastFailure = error;
+        await tx.$executeRawUnsafe('ROLLBACK TO SAVEPOINT purge_cafe_delete');
+        await tx.$executeRawUnsafe('RELEASE SAVEPOINT purge_cafe_delete');
+        return false;
+      }
+    };
+    while (pending.length > 0) {
+      const blocked: string[] = [];
+      for (const table of pending) if (!await remove(table, 'cafeId')) blocked.push(table);
+      if (blocked.length === pending.length) break;
+      pending = blocked;
+    }
+    await remove('Cafe', 'id');
+    if (await tx.cafe.count({ where: { id: cafeId } }) > 0) {
+      throw new Error(`Tagged café ${cafeId} survived teardown. Last failure: ${describeError(lastFailure)}`);
+    }
+    // Preserve REPLICA/ALWAYS modes; already-disabled triggers were not touched.
+    for (const r of immutable) {
+      const mode = r.enabled === 'R' ? 'ENABLE REPLICA' : r.enabled === 'A' ? 'ENABLE ALWAYS' : 'ENABLE';
+      await tx.$executeRawUnsafe(`ALTER TABLE ${qualified(r.tbl)} ${mode} TRIGGER ${quote(r.tg)}`);
+    }
+  }, { maxWait: 10000, timeout: 60000 });
 }
-
 function describeError(e: unknown): string {
   if (e instanceof Error) return `${e.name}: ${e.message}`;
   return String(e);

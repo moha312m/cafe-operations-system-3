@@ -21,7 +21,7 @@ export function ProductGrid({
     );
   }
   return (
-    <div className="grid flex-1 auto-rows-min grid-cols-2 gap-3 overflow-y-auto pb-4 pe-1 sm:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+    <div role="group" className="cashier-products grid min-h-0 flex-1 auto-rows-min grid-cols-2 gap-3 overflow-y-auto pb-4 pe-1 2xl:grid-cols-3" aria-label="المنتجات">
       {products.map((product) => (
         <ProductCard
           key={product.id}

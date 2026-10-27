@@ -35,6 +35,9 @@
 
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   assertTestDatabaseUrl,
   TEST_DB_NAME_PATTERN,
@@ -122,5 +125,25 @@ describe("TOOLING-005 the test-database guard fails closed", () => {
     assert.ok(!TEST_DB_NAME_PATTERN.test("cafe_ops"));
     assert.ok(!TEST_DB_NAME_PATTERN.test("test_cafe_ops"));
     assert.ok(!TEST_DB_NAME_PATTERN.test("cafe_ops_testing_prod"), "no loose containment");
+  });
+});
+
+// Import only: no provisioning command or database connection can execute.
+describe("TOOLING-005 provisioning name override is validated at import", () => {
+  function importWithName(name: string) {
+    return spawnSync(process.execPath, ["--input-type=module", "-e",
+      `await import(${JSON.stringify(pathToFileURL(resolve("scripts/test-db.mjs")).href)});`,
+    ], { env: { ...process.env, TEST_DB_NAME: name }, encoding: "utf8" });
+  }
+  for (const name of ["owner_data", 'cafe_ops_test"quoted', "cafe_ops_test'; DROP DATABASE owner_data; --", "cafe_ops_test_bad-suffix"]) {
+    test(`refuses invalid TEST_DB_NAME ${JSON.stringify(name)} before CLI execution`, () => {
+      const result = importWithName(name);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /Refusing TEST_DB_NAME/);
+    });
+  }
+  test("accepts approved suffixed disposable database name without invoking CLI", () => {
+    const result = importWithName("cafe_ops_test_r11");
+    assert.equal(result.status, 0, result.stderr);
   });
 });

@@ -1,11 +1,11 @@
 // Pure charge engine — no DB, safe to import in client components (POS
 // live totals) and on the server (authoritative order creation).
+import { decimal, money, moneyMin, moneyMax, type Numeric } from "@/lib/money";
 
 export type ChargeScope = "ALL_ORDERS" | "DINE_IN_ONLY" | "TAKEAWAY_ONLY" | "DELIVERY_ONLY";
 export type ChargeOrderType = "DINE_IN" | "TAKEAWAY" | "DELIVERY";
 
 // Accepts numbers (client JSON), strings, or Prisma Decimals (server).
-type Numeric = number | string | { toString(): string };
 
 export type ChargeSettings = {
   taxEnabled: boolean;
@@ -28,7 +28,6 @@ export type ChargeResult = {
   serviceRateSnapshot: number;
 };
 
-const round2 = (n: number) => Math.round(n * 100) / 100;
 
 function scopeMatches(scope: ChargeScope, orderType: ChargeOrderType): boolean {
   switch (scope) {
@@ -44,47 +43,52 @@ function scopeMatches(scope: ChargeScope, orderType: ChargeOrderType): boolean {
 }
 
 // Tax applies AFTER service (service is part of the taxable base).
-export function computeCharges({
+export function computeChargesExact({
   subtotal,
   discount,
   orderType,
   settings,
 }: {
-  subtotal: number;
-  discount: number;
+  subtotal: Numeric;
+  discount: Numeric;
   orderType: ChargeOrderType;
   settings: ChargeSettings;
-}): ChargeResult {
-  const discountAmount = round2(Math.min(Math.max(discount, 0), subtotal));
-  const afterDiscount = round2(subtotal - discountAmount);
+}) {
+  const discountAmount = money(moneyMin(moneyMax(discount, 0), subtotal));
+  const afterDiscount = money(decimal(subtotal).minus(discountAmount));
 
-  let serviceChargeAmount = 0;
-  let serviceRateSnapshot = 0;
+  let serviceChargeAmount = decimal(0);
+  let serviceRateSnapshot = decimal(0);
   if (settings.serviceChargeEnabled && scopeMatches(settings.applyServiceTo, orderType)) {
     if (settings.serviceChargeType === "PERCENTAGE") {
-      const rate = Number(settings.serviceChargeRate) || 0;
-      serviceChargeAmount = round2(afterDiscount * (rate / 100));
+      const rate = decimal(settings.serviceChargeRate);
+      serviceChargeAmount = money(afterDiscount.times(rate).div(100));
       serviceRateSnapshot = rate;
     } else {
-      serviceChargeAmount = round2(Number(settings.serviceChargeFixedAmount) || 0);
+      serviceChargeAmount = money(settings.serviceChargeFixedAmount);
     }
   }
 
-  let taxAmount = 0;
-  let taxRateSnapshot = 0;
+  let taxAmount = decimal(0);
+  let taxRateSnapshot = decimal(0);
   if (settings.taxEnabled && scopeMatches(settings.applyTaxTo, orderType)) {
-    const rate = Number(settings.taxRate) || 0;
-    taxAmount = round2((afterDiscount + serviceChargeAmount) * (rate / 100));
+    const rate = decimal(settings.taxRate);
+    taxAmount = money(afterDiscount.plus(serviceChargeAmount).times(rate).div(100));
     taxRateSnapshot = rate;
   }
 
   return {
-    subtotal: round2(subtotal),
+    subtotal: money(subtotal),
     discountAmount,
     serviceChargeAmount,
     taxAmount,
-    total: round2(afterDiscount + serviceChargeAmount + taxAmount),
+    total: money(afterDiscount.plus(serviceChargeAmount).plus(taxAmount)),
     taxRateSnapshot,
     serviceRateSnapshot,
   };
+}
+
+export function computeCharges(args: Parameters<typeof computeChargesExact>[0]): ChargeResult {
+  const result = computeChargesExact(args);
+  return Object.fromEntries(Object.entries(result).map(([key, value]) => [key, value.toNumber()])) as ChargeResult;
 }

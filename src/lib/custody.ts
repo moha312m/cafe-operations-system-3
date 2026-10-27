@@ -24,7 +24,9 @@ import type {
   ShiftCustodyGate,
 } from "@prisma/client";
 import { db } from "@/lib/db";
+import { claimOpeningCash } from "@/lib/overnight-cash";
 import { ApiError } from "@/lib/api";
+import { auditInTransaction } from "@/lib/audit";
 
 type Participant = { userId: string; role: CustodyRole };
 
@@ -190,7 +192,17 @@ export async function ensureCustodyForShift(
   // against a branch state that no longer exists. Locking first means both
   // the live-handover verdict and the custody rows below are read on the far
   // side of any acceptance that was in flight.
+  const claimedCash = await claimOpeningCash(tx, { shiftId: args.shiftId, actorId: args.userId });
+  if (claimedCash.receiptId) {
+    const receipt = await tx.openingCashReceipt.findUniqueOrThrow({ where: { id: claimedCash.receiptId } });
+    args = { ...args, openingCashAmount: receipt.actualAmount === null ? 0 : Number(receipt.actualAmount) };
+  }
   const midHandover = await branchIsMidHandover(tx, args.branchId);
+  const shift = await tx.shift.findFirst({
+    where: { id: args.shiftId, cafeId: args.cafeId, branchId: args.branchId, cashierId: args.userId, status: "OPEN" },
+    select: { id: true },
+  });
+  if (!shift) throw new ApiError(409, "لازم يكون شيفتك مفتوح في نفس الفرع لاستلام العهدة");
   const [cash, stock] = await Promise.all([
     tx.custodyPeriod.findFirst({
       where: { branchId: args.branchId, scope: "CASH", status: "OPEN" },
@@ -279,9 +291,22 @@ export async function ensureCustodyForShift(
       if (scope === "CASH") result.cashCustodyPeriodId = period.id;
       else result.stockCustodyPeriodId = period.id;
     }
+    // Claim only an unassigned period. The conditional write serialises
+    // competing claimants and never overwrites an existing responsibility.
+    const claimed = await tx.custodyPeriod.updateMany({
+      where: { id: stock.id, cafeId: args.cafeId, branchId: args.branchId, status: "OPEN", holderType: "USER", responsibleShiftId: null },
+      data: { responsibleShiftId: args.shiftId },
+    });
+    if (claimed.count) {
+      await auditInTransaction(tx, {
+        cafeId: args.cafeId, userId: args.userId, action: "STOCK_CUSTODY_RESPONSIBILITY_ASSIGNED",
+        entity: "CustodyPeriod", entityId: stock.id,
+        details: { branchId: args.branchId, responsibleShiftId: args.shiftId },
+      });
+    }
     result.operational = true;
   } else {
-    throw new ApiError(409, "Open custody state is incomplete for this branch");
+    throw new ApiError(409, "حالة العهدة غير مكتملة في الفرع — راجع إجراءات التسليم والاستلام");
   }
 
   await tx.shift.update({
@@ -290,6 +315,10 @@ export async function ensureCustodyForShift(
       ? { custodyGateReason: result.gate, custodyReadyAt: null }
       : { custodyGateReason: null, custodyReadyAt: new Date() },
   });
+  if (claimedCash.receiptId) {
+    const receipt = await tx.openingCashReceipt.findUniqueOrThrow({ where: { id: claimedCash.receiptId } });
+    if (!receipt.acceptedAt) result.operational = false;
+  }
   return result;
 }
 
@@ -303,13 +332,14 @@ export async function linkShiftCustody(
   tx: Prisma.TransactionClient,
   args: { shiftId: string; custodyPeriodId: string; scope: CustodyScope }
 ): Promise<void> {
-  await tx.shiftCustody.create({
-    data: {
-      shiftId: args.shiftId,
-      custodyPeriodId: args.custodyPeriodId,
-      scope: args.scope,
-    },
+  const link = await tx.shiftCustody.upsert({
+    where: { shiftId_scope: { shiftId: args.shiftId, scope: args.scope } },
+    create: { shiftId: args.shiftId, custodyPeriodId: args.custodyPeriodId, scope: args.scope },
+    update: {},
   });
+  if (link.custodyPeriodId !== args.custodyPeriodId) {
+    throw new ApiError(409, "الشيفت مرتبط بعهدة مختلفة — لازم تراجع التسليم والاستلام");
+  }
 }
 
 /**
@@ -350,6 +380,8 @@ export async function transferCustody(
     incoming: {
       participants: Participant[];
       shiftId: string | null;
+      /** Counted receipt, when it differs from the predecessor's declaration. */
+      openingCashAmount?: number;
       /** STOCK only — the shift answerable for the successor period. */
       responsibleShiftId?: string | null;
       /** Defaults to USER. BRANCH is stock-only, and SH-22 is its consumer. */
@@ -411,7 +443,7 @@ export async function transferCustody(
     openedById: args.incoming.openedById ?? null,
     responsibleShiftId,
     // The incoming custodian starts holding what the outgoing one closed at.
-    openingCashAmount: args.scope === "CASH" ? args.closingCashAmount ?? null : null,
+    openingCashAmount: args.scope === "CASH" ? args.incoming.openingCashAmount ?? args.closingCashAmount ?? null : null,
   });
 
   // Written through the transaction client rather than the fire-and-forget
@@ -432,6 +464,7 @@ export async function transferCustody(
         incomingPeriodId,
         incomingParticipants: args.incoming.participants.map((p) => p.userId),
         closingCashAmount: args.closingCashAmount ?? null,
+        incomingOpeningCashAmount: args.incoming.openingCashAmount ?? args.closingCashAmount ?? null,
         // Who accepted the custody that closed, and what answers for the one
         // that opened — the two facts an accountability reader needs and
         // could not previously reconstruct from this row.

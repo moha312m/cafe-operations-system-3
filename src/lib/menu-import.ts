@@ -1,6 +1,7 @@
 // Menu Excel/CSV import — shared, pure logic used by both the client
 // (header mapping for the preview) and the server (validation + import).
 // Arabic and English column headers are both accepted.
+import { validCurrencyInput } from "@/lib/money";
 
 // ── Column mapping ────────────────────────────────────────────
 
@@ -146,6 +147,11 @@ export function validateRow(raw: RawImportRow, rowNumber: number): ValidatedRow 
   const sortOrder = numField(raw.sortOrder, "ترتيب الظهور");
   const variantPrice = numField(raw.variantPrice, "سعر الحجم");
   const addonPrice = numField(raw.addonPrice, "سعر الإضافة");
+  for (const amount of [price, costPrice, variantPrice, addonPrice]) {
+    if (typeof amount === "number" && (amount < 0 || !validCurrencyInput(amount))) {
+      errors.push("الأسعار يجب أن تكون ضمن النطاق المسموح وبحد أقصى رقمين بعد العلامة");
+    }
+  }
 
   const variantName = str(raw.variantName) || undefined;
   if (variantName && variantPrice === undefined) {

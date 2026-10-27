@@ -92,6 +92,7 @@ export const PERMISSION_KEYS: PermKey[] = [
   { key: "orders.update_status", module: "ORDERS", label: "تحديث حالة الطلب" },
   { key: "orders.cancel", module: "ORDERS", label: "إلغاء الطلب", sensitive: true },
   { key: "orders.refund", module: "ORDERS", label: "استرجاع مبلغ", sensitive: true },
+  { key: "orders.request_owner_action", module: "ORDERS", label: "طلب موافقة المالك على إلغاء أو استرجاع" },
 
   // QR / customer orders
   { key: "qr_orders.view", module: "QR_ORDERS", label: "عرض طلبات المنيو" },
@@ -175,6 +176,10 @@ export const PERMISSION_KEYS: PermKey[] = [
 
   // Sales
   { key: "sales.view", module: "SALES", label: "عرض المبيعات" },
+  { key: "sales.edit", module: "SALES", label: "تعديل الفواتير مع حفظ المراجعات", sensitive: true },
+  { key: "sales.approve", module: "SALES", label: "اعتماد تعديل أو تصحيح شيفت مقفول", sensitive: true },
+  { key: "sales.override_price", module: "SALES", label: "تجاوز سعر صنف في فاتورة", sensitive: true },
+  { key: "sales.configure_limits", module: "SALES", label: "ضبط حدود خصم المستخدم", sensitive: true },
 
   // Reports
   { key: "reports.view", module: "REPORTS", label: "عرض التقارير" },
@@ -305,10 +310,10 @@ export const LEGACY_TO_KEYS: Record<string, string[]> = {
   // NOTE: pos.collect_payment intentionally does NOT ride here — money
   // collection is centralized behind payments:create (POS cashier flow),
   // so order-takers (waiters) can place orders without touching the drawer.
-  "orders:create": ["pos.view", "pos.create_order", "pos.view_payments", "tables.view", "tables.open", "pos.apply_discount", "customers.lookup"],
+  "orders:create": ["pos.view", "pos.create_order", "pos.view_payments", "tables.view", "tables.open", "pos.apply_discount", "customers.lookup", "orders.request_owner_action"],
   "orders:read": ["orders.view"],
-  "orders:update-status": ["orders.update_status", "kitchen.view", "kitchen.update_status"],
-  "orders:cancel": ["orders.cancel", "orders.refund"],
+  "orders:update-status": ["orders.update_status", "kitchen.view", "kitchen.update_status", "orders.request_owner_action"],
+  "orders:cancel": ["orders.cancel", "orders.refund", "orders.request_owner_action"],
   "orders:approve": ["qr_orders.view", "qr_orders.approve", "qr_orders.reject", "qr_orders.edit_before_approval"],
   "payments:create": [
     "pos.collect_payment",

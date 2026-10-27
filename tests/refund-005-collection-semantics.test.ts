@@ -265,19 +265,21 @@ describe("REFUND-005 collection semantics", () => {
       );
       assert.equal(beforeCash - afterCash, 70, "I: drawer moves by the cash portion only");
 
-      // H: reporting definitions unchanged
+      // H: owner policy separates unserved money refunds from sales reversals
       const day = new Date();
       const ds = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
-      const rep = await as<{ financials?: { grossSales: number; refunds: number; netSales: number; collections: number } }>(
+      const rep = await as<{ financials?: { grossSales: number; refunds: number; salesRefunds: number; unservedRefunds: number; netSales: number; collections: number } }>(
         MANAGER, `/api/reports/daily?date=${ds}`
       );
       const f = rep.body.financials;
       assert.ok(f, "H: financials block still present");
       assert.equal(
-        Math.round((f.grossSales - f.refunds) * 100) / 100, f.netSales,
-        "H: Net Sales still reconciles as Gross - Refunds"
+        Math.round((f.grossSales - f.salesRefunds) * 100) / 100, f.netSales,
+        "H: net sales deduct only refunds of recognized served sales"
       );
       assert.ok(f.refunds >= 120, "H: the refund is still reported as a refund");
+      assert.notEqual((await db.order.findUniqueOrThrow({ where: { id: order.id } })).status, "SERVED");
+      assert.ok(f.unservedRefunds >= 120, "H: both unserved payment legs remain in money activity");
     } finally {
       await purge(order.id);
       await cleanup(marker);

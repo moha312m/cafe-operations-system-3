@@ -34,7 +34,7 @@
 import { after, before, beforeEach, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import bcrypt from "bcryptjs";
-import { db, tag, teardownTaggedCafe } from "./helpers/db";
+import { db, tag, teardownTaggedCafe, purgeOrderTracesFor } from "./helpers/db";
 import { countCafe, countItem, COUNT_PASSWORD, type CountCafe } from "./helpers/count";
 import { as, login, requireServer } from "./helpers/http";
 
@@ -152,7 +152,7 @@ async function resetBranch(branchId: string) {
   await db.tenderReconciliation.deleteMany({ where: { branchId } });
   await db.payment.deleteMany({ where: { branchId } });
   await db.inventoryTransaction.deleteMany({ where: { branchId } });
-  await db.order.deleteMany({ where: { branchId } });
+  await purgeOrderTracesFor({ branchId }); await db.order.deleteMany({ where: { branchId } });
   await db.shiftCustody.deleteMany({ where: { shift: { branchId } } });
   await db.custodyParticipant.deleteMany({ where: { custodyPeriod: { branchId } } });
   await db.custodyPeriod.updateMany({ where: { branchId }, data: { previousPeriodId: null } });
@@ -217,7 +217,9 @@ async function freshHandover(
   const closed = await closeShiftWithSettlement({
     shiftId: shift.id,
     actualCash: 100,
-    actorId: cafe.cashier.id,
+    // Annex-branch shifts need a café-scoped closer: the scoped close now
+    // refuses a cashier whose own branch does not match the shift's branch.
+    actorId: branchId === cafe.branchId ? cafe.cashier.id : cafe.owner.id,
     closedByManager: false,
     handoverTarget: "SHIFT_TO_SHIFT",
     grants: GRANTS_FULL,

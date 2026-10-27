@@ -23,7 +23,7 @@ export function PageHeader({
         <h1 className="font-heading text-2xl font-bold tracking-tight text-slate-900">
           {title}
         </h1>
-        {subtitle && <p className="mt-1 text-sm text-slate-500">{subtitle}</p>}
+        {subtitle && <p className="mt-1 text-sm text-slate-600">{subtitle}</p>}
       </div>
       {children && <div className="flex items-center gap-2">{children}</div>}
     </div>
@@ -59,7 +59,7 @@ export function StatCard({
         <p className="mt-1 truncate text-2xl font-bold tabular-nums text-slate-900">
           {value}
         </p>
-        {hint && <p className="mt-1 line-clamp-2 text-xs text-slate-400">{hint}</p>}
+        {hint && <p className="mt-1 line-clamp-2 text-xs text-slate-500">{hint}</p>}
       </div>
       {icon && (
         <span

@@ -22,7 +22,7 @@ import { PrismaClient } from "@prisma/client";
 import { db, assertTestDatabase, tag, teardownTaggedCafe } from "./helpers/db";
 import { countCafe, type CountCafe } from "./helpers/count";
 import { requireServer, as, BASE } from "./helpers/http";
-import { MARKER_TABLE, TEST_DB_NAME_PATTERN } from "../scripts/test-db.mjs";
+import { MARKER_TABLE, TEST_BASE_URL, TEST_DB_NAME_PATTERN } from "../scripts/test-db.mjs";
 
 /**
  * A read-only connection to the developer's own database.
@@ -45,12 +45,23 @@ let fx: CountCafe;
 before(async () => {
   await requireServer();
   if (!OWNER_URL) { ownerReachable = false; return; }
-  owner = new PrismaClient({ datasourceUrl: OWNER_URL });
+  const target = new URL(OWNER_URL);
+  assert.equal(target.hostname, "127.0.0.1", "owner inspection stays local");
+  assert.equal(target.port, "5433", "owner inspection uses the main port");
+  assert.equal(target.pathname, "/postgres", "owner inspection uses the main database");
+  target.searchParams.set("options", "-c default_transaction_read_only=on");
+  target.searchParams.set("connection_limit", "1");
+  owner = new PrismaClient({ datasourceUrl: target.href });
+  let readOnly: string | undefined;
   try {
-    await owner.$queryRawUnsafe("SELECT 1");
+    const rows = await owner.$queryRawUnsafe<{ transaction_read_only: string }[]>("SHOW transaction_read_only");
+    readOnly = rows[0]?.transaction_read_only;
     ownerReachable = true;
   } catch {
     ownerReachable = false;
+  }
+  if (ownerReachable) {
+    assert.equal(readOnly, "on", "PostgreSQL must enforce read-only before owner inspection");
   }
 });
 
@@ -203,9 +214,8 @@ describe("TOOLING-006 test writes land only in the test database", () => {
   });
 
   test("the HTTP server under test is the test server, not the dev server", async () => {
-    // The split-brain case. `npm test` proves co-location before any test
-    // runs; this pins the port so a stray TEST_BASE_URL cannot quietly point
-    // the suite at the developer's :3000 server.
-    assert.match(BASE, /:3100$/, `tests must drive the test server, got ${BASE}`);
+    // The runner proves database co-location before this suite. Compare its
+    // canonical configured endpoint, including an isolated port override.
+    assert.equal(BASE, TEST_BASE_URL, `tests must drive the configured test server, got ${BASE}`);
   });
 });

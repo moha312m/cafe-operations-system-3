@@ -18,6 +18,7 @@ import {
 } from "../scripts/owner-fingerprint.mjs";
 import {
   TEST_DATABASE_URL,
+  TEST_DB_NAME,
   assertTestDatabaseMarker,
 } from "../scripts/test-db.mjs";
 import { db } from "./helpers/db";
@@ -137,7 +138,7 @@ describe("TOOLING-007 disposable database fingerprint", () => {
 
     const result = await fingerprint(url.href, { allowDisposable: true });
 
-    assert.equal(result.database, "cafe_ops_test");
+    assert.equal(result.database, TEST_DB_NAME);
   });
 
   test("every public table discovered through information_schema is covered", async () => {

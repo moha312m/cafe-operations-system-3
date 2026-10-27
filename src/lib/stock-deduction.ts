@@ -1,162 +1,67 @@
 import type { Prisma } from "@prisma/client";
-import { audit } from "@/lib/audit";
-import { round2, round3 } from "@/lib/costing";
-import { theoreticalConsumption } from "@/lib/recipes";
-import { applyStockMutation, lockItemForUpdate, type StockAttributionSnapshot } from "@/lib/ledger";
+import { audit, auditInTransaction } from "@/lib/audit";
+import { round3 } from "@/lib/costing";
+import { decimal, money } from "@/lib/money";
+import { applyStockMutation, lockItemForUpdate, MissingInventoryItemError, type StockAttributionSnapshot } from "@/lib/ledger";
 import { allowsKnownShortage } from "@/lib/inventory-policy";
 import { acquireInventorySharedLocks } from "@/lib/inventory-freeze";
-
+import { planOrderConsumption, type ConsumptionBoundary } from "@/lib/sale-consumption";
 type Tx = Prisma.TransactionClient;
-
 export class StockError extends Error {}
+type Options = { boundary?: ConsumptionBoundary; forceAllowNegative?: boolean };
 
-// Deduct all recipe ingredients for an order when it becomes SERVED.
-//
-// Guarantees:
-//  • runs inside a transaction (atomic: all-or-nothing)
-//  • double-deduction guarded by Order.stockDeductedAt
-//  • products without a recipe are skipped (audited, never block serving)
-//  • insufficient stock throws unless the cafe allows negative stock
-//  • one USAGE InventoryTransaction per ingredient, tagged with orderId
-//
-// Returns a summary; the caller sets stockDeductedAt and writes the
-// order-level audit.
-export async function deductStockForOrder(
-  tx: Tx,
-  orderId: string,
-  userId: string | null,
-  attribution?: StockAttributionSnapshot
-): Promise<{
-  deducted: { name: string; quantity: number }[];
-  productsWithoutRecipe: string[];
-  configurationsWithIncompleteRecipe: { label: string; issues: string[] }[];
-}> {
-  const order = await tx.order.findUnique({
-    where: { id: orderId },
-    include: {
-      // variantId and the chosen add-ons decide what was actually made: a
-      // large latte is not a small one, and an extra shot is more beans.
-      items: {
-        select: {
-          productId: true, variantId: true, productName: true, variantName: true,
-          quantity: true, addOns: { select: { addOnId: true } },
-        },
-      },
-    },
-  });
+async function prepareStockForOrder(tx: Tx, orderId: string, options: Options = {}) {
+  const boundary = options.boundary ?? "SERVE";
+  const order = await tx.order.findUnique({ where: { id: orderId } });
   if (!order) throw new StockError("الطلب مش موجود");
-  if (order.stockDeductedAt) {
-    throw new StockError("تم خصم المخزون لهذا الطلب من قبل");
-  }
+  if (options.forceAllowNegative && boundary !== "DEFERRED") throw new StockError("الرصيد السالب الإجباري مسموح لتسوية الخدمة المؤجلة فقط");
+  if (boundary === "DEFERRED" && (order.status !== "SERVED" || !await tx.deferredStockDeduction.findFirst({ where: { orderId, appliedAt: null } }))) throw new StockError("تسوية مؤجلة بدون دليل خدمة مؤجلة");
+  const plan = await planOrderConsumption(tx, orderId, boundary);
+  return { order, plan, boundary };
+}
 
-  const branchId = order.branchId;
-  const cafeId = order.cafeId;
-  // The policy this ORDER was accepted under, not the one the café is running
-  // now. The two moments of an order's inventory lifecycle — availability at
-  // the till and this locked deduction — can be hours apart, and the owner can
-  // change the setting in between. Reading it fresh here made the change
-  // retroactive, in both directions: an order accepted permissively could no
-  // longer be handed over once policy tightened, and an order accepted under
-  // STRICT could have a shortage waived that the till would have refused.
-  //
-  // The snapshot is taken at creation from CafeSettings and is never client
-  // -supplied, so this is still the café's own decision — just the one that
-  // was actually in force when the customer was told yes.
-  const mode = order.inventoryEnforcementMode;
-  const allowNegative = allowsKnownShortage(mode);
+export async function stockItemIdsForOrders(tx: Tx, orderIds: string[], options: Options = {}) {
+  const plans = await Promise.all(orderIds.map(id => prepareStockForOrder(tx, id, options)));
+  return [...new Set(plans.flatMap(p => p.plan.demands.map(d => d.inventoryItemId)))].sort();
+}
+export async function lockStockForOrders(tx: Tx, orderIds: string[], options: Options = {}) {
+  if (orderIds.length === 0) return; // nothing made, nothing to lock (e.g. only CONFIRMED orders carried)
+  const plans = await Promise.all(orderIds.map(id => prepareStockForOrder(tx, id, options)));
+  await acquireInventorySharedLocks(tx, [...new Set(plans.map(p => p.plan.branchId))]);
+  const ids = [...new Set(plans.flatMap(p => p.plan.demands.map(d => d.inventoryItemId)))].sort();
+  for (const id of ids) await lockItemForUpdate(tx, id).catch(error => { if (error instanceof MissingInventoryItemError) return null; throw error; });
+}
 
-  // What each line theoretically consumes, resolved from the exact sold
-  // configuration — product, size, and add-ons — rather than from the product
-  // alone. Recipes name cafe-level inventory items; stock comes off the
-  // ORDER'S BRANCH copy, matched by name+unit.
-  const productsWithoutRecipe: string[] = [];
-  const configurationsWithIncompleteRecipe: { label: string; issues: string[] }[] = [];
-  const need = new Map<string, { name: string; unit: string; qty: number }>();
-
-  for (const item of order.items) {
-    if (!item.productId) continue;
-    const consumption = await theoreticalConsumption({
-      productId: item.productId,
-      variantId: item.variantId ?? null,
-      addOnIds: item.addOns.map((a) => a.addOnId).filter(Boolean) as string[],
-      quantity: item.quantity,
-    });
-    const label = item.variantName ? `${item.productName} (${item.variantName})` : item.productName;
-
-    // A configuration we cannot resolve is recorded and skipped, exactly as
-    // before: an unconfigured recipe must never stop a customer being served.
-    // It is reported so the gap is visible rather than silently absorbed.
-    if (consumption.lines.length === 0) {
-      if (!productsWithoutRecipe.includes(label)) productsWithoutRecipe.push(label);
-      continue;
-    }
-
-    // Half-resolved is its own gap, and the same rule covers it. What did
-    // resolve is deducted below; what did not contributes nothing, so leaving
-    // it undisclosed would let a zero-by-omission stand as a measured figure
-    // and be read later as somebody's stock shortage. No quantity is guessed
-    // for the missing part — only the fact that it is missing, and why.
-    if (!consumption.complete && !configurationsWithIncompleteRecipe.some((c) => c.label === label)) {
-      configurationsWithIncompleteRecipe.push({ label, issues: consumption.issues });
-    }
-
-    for (const line of consumption.lines) {
-      const cafeItem = await tx.inventoryItem.findUnique({ where: { id: line.inventoryItemId } });
-      if (!cafeItem) continue;
-      const branchItem = await tx.inventoryItem.findFirst({
-        where: {
-          cafeId, branchId, name: cafeItem.name, unit: cafeItem.unit, archivedAt: null,
-        },
-      });
-      if (!branchItem) {
-        if (!allowNegative) {
-          throw new StockError(`الخامة «${cafeItem.name}» غير متوفرة في الفرع`);
-        }
-        continue;
-      }
-      const cur = need.get(branchItem.id);
-      if (cur) cur.qty = round3(cur.qty + line.quantityInStockUnit);
-      else need.set(branchItem.id, {
-        name: branchItem.name, unit: branchItem.unit, qty: line.quantityInStockUnit,
-      });
-    }
-  }
-
-  // Verify sufficiency first (unless negative allowed), then apply.
+export async function deductStockForOrder(tx: Tx, orderId: string, userId: string | null, attribution?: StockAttributionSnapshot, options: Options = {}) {
+  const { order, plan, boundary } = await prepareStockForOrder(tx, orderId, options);
   const deducted: { name: string; quantity: number }[] = [];
-  await acquireInventorySharedLocks(tx, [branchId]);
-  for (const [itemId, req] of need) {
-    // The locked read is what makes the sufficiency check meaningful: without
-    // it, two concurrent orders could both see enough stock for the last
-    // portion and both serve it.
-    const item = await lockItemForUpdate(tx, itemId).catch(() => null);
-    if (!item) continue;
-    const after = round3(item.currentStock - req.qty);
-    if (after < 0 && !allowNegative) {
-      throw new StockError(
-        `لا توجد كمية كافية من الخامة «${req.name}» (المتاح ${item.currentStock}، المطلوب ${req.qty})`
-      );
-    }
-    await applyStockMutation(tx, {
-      inventoryItemId: itemId,
-      cafeId,
-      branchId,
-      orderId,
-      type: "USAGE",
-      quantity: -req.qty,
-      unitCost: item.costPerUnit,
-      totalCost: round2(req.qty * item.costPerUnit),
-      note: `خصم تلقائي بسبب الطلب رقم ${order.orderNumber}`,
-      createdById: userId,
-      attribution,
-      // The sufficiency decision is made above, with the café's own policy
-      // and its own message; the writer must not second-guess it.
-      allowNegative: true,
-    });
-    deducted.push({ name: req.name, quantity: req.qty });
+  const shortages: { inventoryItemId: string; available: number; required: number; stockAfter: number }[] = [];
+  await acquireInventorySharedLocks(tx, [plan.branchId]);
+  // Acquire the whole sorted union before any writer or linkage trigger runs.
+  const locked = new Map<string, Awaited<ReturnType<typeof lockItemForUpdate>>>();
+  for (const demand of plan.demands) {
+    try { locked.set(demand.inventoryItemId, await lockItemForUpdate(tx, demand.inventoryItemId)); }
+    catch (error) { if (error instanceof MissingInventoryItemError && !demand.finishedAllocations.length) continue; throw error; }
   }
-
-  return { deducted, productsWithoutRecipe, configurationsWithIncompleteRecipe };
+  for (const demand of plan.demands) {
+    const item = locked.get(demand.inventoryItemId);
+    if (!item) continue;
+    if (item.unit !== demand.unit) throw new StockError("وحدة مخزون الطلب تغيرت");
+    const after = round3(item.currentStock - demand.quantity);
+    const allowNegative = boundary === "DEFERRED" || (!demand.finishedAllocations.length && allowsKnownShortage(order.inventoryEnforcementMode));
+    if (after < 0 && !allowNegative) throw new StockError(`لا توجد كمية كافية من «${demand.name}» (المتاح ${item.currentStock}، المطلوب ${demand.quantity})`);
+    if (after < 0 && boundary === "DEFERRED") shortages.push({ inventoryItemId: demand.inventoryItemId, available: item.currentStock, required: demand.quantity, stockAfter: after });
+    const movement = await applyStockMutation(tx, {
+      inventoryItemId: demand.inventoryItemId, cafeId: plan.cafeId, branchId: plan.branchId, orderId, type: "USAGE", quantity: -demand.quantity,
+      unitCost: item.costPerUnitExact.toNumber(), totalCost: money(decimal(demand.quantity).times(item.costPerUnitExact)).toNumber(),
+      note: `خصم تلقائي بسبب الطلب رقم ${order.orderNumber}`, createdById: userId, attribution, allowNegative,
+    });
+    for (const allocation of demand.finishedAllocations) await tx.orderItem.update({ where: { id: allocation.orderItemId }, data: { finishedStockDeductedAt: new Date(), finishedStockTransactionId: movement.transactionId } });
+    deducted.push({ name: demand.name, quantity: demand.quantity });
+  }
+  if (plan.processRecipes) await tx.order.update({ where: { id: orderId }, data: { stockDeductedAt: new Date() } });
+  if (shortages.length) await auditInTransaction(tx, { cafeId: plan.cafeId, userId, action: "DEFERRED_FINISHED_STOCK_SHORTAGE", entity: "Order", entityId: orderId, details: { branchId: plan.branchId, shortages, boundary, savedInventoryEnforcementMode: order.inventoryEnforcementMode, deferredSettlementException: true, servedAt: order.servedAt?.toISOString() ?? null, servedById: order.servedById, servedCustodyPeriodId: order.servedStockCustodyPeriodId, servedShiftId: order.servedShiftId, postingCustodyPeriodId: attribution?.custodyPeriodId ?? null, postingShiftId: attribution?.shiftId ?? null } });
+  return { deducted, productsWithoutRecipe: plan.productsWithoutRecipe, configurationsWithIncompleteRecipe: plan.configurationsWithIncompleteRecipe, shortages };
 }
 
 // Post-transaction audit writes (called after commit).
@@ -170,10 +75,12 @@ export async function auditDeduction(
     deducted: { name: string; quantity: number }[];
     productsWithoutRecipe: string[];
     configurationsWithIncompleteRecipe?: { label: string; issues: string[] }[];
-  }
+  },
+  client?: Tx
 ) {
+  const writeAudit = (entry: Parameters<typeof audit>[0]) => client ? auditInTransaction(client, entry) : audit(entry);
   if (result.deducted.length > 0) {
-    await audit({
+    await writeAudit({
       cafeId,
       userId,
       action: "STOCK_DEDUCTED_FOR_ORDER",
@@ -183,7 +90,7 @@ export async function auditDeduction(
     });
   }
   for (const name of result.productsWithoutRecipe) {
-    await audit({
+    await writeAudit({
       cafeId,
       userId,
       action: "PRODUCT_WITHOUT_RECIPE_SERVED",
@@ -196,7 +103,7 @@ export async function auditDeduction(
   // distinction a reconciliation needs is not "was there a recipe" but "was
   // the figure it produced complete".
   for (const c of result.configurationsWithIncompleteRecipe ?? []) {
-    await audit({
+    await writeAudit({
       cafeId,
       userId,
       action: "PRODUCT_WITH_INCOMPLETE_RECIPE_SERVED",

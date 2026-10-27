@@ -37,7 +37,7 @@
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import bcrypt from "bcryptjs";
-import { db, tag, teardownTaggedCafe } from "./helpers/db";
+import { db, tag, teardownTaggedCafe, purgeOrderTracesFor } from "./helpers/db";
 import { countCafe, countItem, COUNT_PASSWORD, type CountCafe } from "./helpers/count";
 import { as, login, requireServer } from "./helpers/http";
 
@@ -169,7 +169,7 @@ async function resetBranch(branchId: string) {
   await db.inventoryTransaction.deleteMany({ where: { branchId } });
   await db.orderItemAddOn.deleteMany({ where: { orderItem: { order: { branchId } } } });
   await db.orderItem.deleteMany({ where: { order: { branchId } } });
-  await db.order.deleteMany({ where: { branchId } });
+  await purgeOrderTracesFor({ branchId }); await db.order.deleteMany({ where: { branchId } });
   await db.shiftCustody.deleteMany({ where: { shift: { branchId } } });
   await db.custodyParticipant.deleteMany({ where: { custodyPeriod: { branchId } } });
   await db.custodyPeriod.updateMany({ where: { branchId }, data: { previousPeriodId: null } });
@@ -1637,5 +1637,94 @@ describe("SH-22 Half B · replay and refusal", () => {
       where: { branchId: fx.branchId, scope: "STOCK", status: "OPEN" },
     });
     assert.equal(custody.holderType, "BRANCH", "the branch still holds the shelf");
+  });
+});
+
+// ═══════════════════════ SERVING DURING THE FREEZE ════════════════════════
+
+describe("Serving while the handover holds the shelf frozen", () => {
+  test("the order is served, its recipe deducted only when the freeze lifts, against the new custody", async () => {
+    const h = await freshBranchHandover();
+
+    const category = await db.menuCategory.findFirstOrThrow({ where: { cafeId: fx.cafeId } });
+    const drink = await db.product.create({
+      data: { cafeId: fx.cafeId, categoryId: category.id, name: `${MARKER} frozen-latte`, basePrice: 20 },
+    });
+    await db.recipe.create({
+      data: {
+        cafeId: fx.cafeId,
+        productId: drink.id,
+        items: { create: [{ inventoryItemId: items.alpha.id, quantity: "0.500", unit: "KG" }] },
+      },
+    });
+    const last = await db.order.aggregate({ where: { branchId: fx.branchId }, _max: { orderNumber: true } });
+    const order = await db.order.create({
+      data: {
+        cafeId: fx.cafeId, branchId: fx.branchId,
+        orderNumber: (last._max.orderNumber ?? 0) + 1,
+        type: "DINE_IN", status: "READY", source: "CASHIER_POS",
+        customerName: MARKER,
+        subtotal: 20, total: 20, remainingAmount: 20, paymentStatus: "UNPAID",
+        createdById: fx.cashier.id,
+        items: { create: [{ productId: drink.id, productName: "frozen-latte", unitPrice: 20, quantity: 1, lineTotal: 20 }] },
+      },
+    });
+
+    // ── served during the freeze: nothing moves ──
+    const served = await as<{ order?: { status: string }; error?: string }>(
+      fx.owner.email, `/api/orders/${order.id}/status`,
+      { method: "PATCH", body: JSON.stringify({ status: "SERVED" }) },
+    );
+    assert.equal(served.status, 200, served.text);
+    assert.equal(served.body.order?.status, "SERVED");
+    const whileFrozen = await db.order.findUniqueOrThrow({ where: { id: order.id } });
+    assert.equal(whileFrozen.stockDeductedAt, null, "no deduction while the shelf is frozen");
+    assert.equal(await db.inventoryTransaction.count({ where: { orderId: order.id } }), 0);
+    assert.equal(
+      Number((await db.inventoryItem.findUniqueOrThrow({ where: { id: items.alpha.id } })).currentStock),
+      100,
+    );
+    const pending = await db.deferredStockDeduction.findUniqueOrThrow({ where: { orderId: order.id } });
+    assert.equal(pending.handoverId, h.handoverId);
+    assert.equal(pending.freezeId, h.freezeId);
+    assert.equal(pending.appliedAt, null);
+    assert.ok(await db.auditLog.findFirst({ where: { action: "STOCK_DEDUCTION_DEFERRED", entityId: order.id } }));
+
+    // ── the count runs over an unmoved shelf, and the handover completes ──
+    const started = await startCountHttp(h.handoverId);
+    assert.equal(started.status, 200, started.text);
+    const sessionId = started.body.countSession.id;
+    await walkTheCount(sessionId);
+    const confirmed = await confirmCount(fx.manager.email, sessionId, `${MARKER}-${sessionId}`);
+    assert.ok(confirmed.status < 300, `confirm failed: ${confirmed.text}`);
+    const submitted = await submitHandoverHttp(h.handoverId);
+    assert.equal(submitted.status, 200, submitted.text);
+    await acknowledgeAll(h.handoverId, sessionId);
+    const result = await acceptToBranch(h.handoverId);
+    assert.equal(result.status, "COMPLETED");
+
+    // ── the freeze lifted and the deferred recipe came off, once, against the branch ──
+    const applied = await db.deferredStockDeduction.findUniqueOrThrow({ where: { orderId: order.id } });
+    assert.ok(applied.appliedAt);
+    assert.equal(applied.appliedCustodyPeriodId, result.incomingStockCustodyId);
+    assert.equal(applied.appliedShiftId, null, "branch custody answers for it, not a shift");
+    const movements = await db.inventoryTransaction.findMany({ where: { orderId: order.id } });
+    assert.equal(movements.length, 1);
+    assert.equal(Number(movements[0].quantity), -0.5);
+    assert.equal(movements[0].custodyPeriodId, result.incomingStockCustodyId);
+    assert.equal(
+      Number((await db.inventoryItem.findUniqueOrThrow({ where: { id: items.alpha.id } })).currentStock),
+      99.5,
+    );
+    assert.ok((await db.order.findUniqueOrThrow({ where: { id: order.id } })).stockDeductedAt);
+    assert.ok(await db.auditLog.findFirst({ where: { action: "DEFERRED_STOCK_DEDUCTION_APPLIED", entityId: order.id } }));
+
+    // A replayed release applies nothing twice.
+    const { applyDeferredDeductions } = await import("@/lib/deferred-deduction");
+    const replay = await db.$transaction((tx) =>
+      applyDeferredDeductions(tx, { handoverId: h.handoverId, actorId: fx.manager.id }),
+    );
+    assert.equal(replay.applied, 0);
+    assert.equal(await db.inventoryTransaction.count({ where: { orderId: order.id } }), 1);
   });
 });

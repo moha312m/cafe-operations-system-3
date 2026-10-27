@@ -457,14 +457,17 @@ describe("POLICY-006 the SERVED guard is unchanged", () => {
     await db.order.update({
       where: { id: r.body.order!.id }, data: { stockDeductedAt: new Date() },
     });
-    await assert.rejects(
-      () => serve(r.body.order!.id),
-      (e: unknown) => e instanceof StockError && /من قبل/.test((e as Error).message)
-    );
+    // The consumption planner makes a repeat a no-op (deferred finished stock may still
+    // settle later); an explicit refusal is equally acceptable. Either way: one deduction.
+    await serve(r.body.order!.id).catch((e: unknown) => {
+      if (!(e instanceof StockError && /من قبل/.test((e as Error).message))) throw e;
+    });
     assert.equal(await stockOf(ice.id), "4.78", "exactly one deduction");
   });
 
   test("a blocked order still creates nothing at all", async () => {
+    // Cash collection now acquires and validates the shift before stock reads.
+    await db.shift.create({ data: { cafeId: fx.cafeId, branchId: fx.branchId, cashierId: fx.owner.id, shiftNumber: 1 } });
     await setMode("STRICT");
     const ice = await ingredient("ice nothing", 0);
     const p = await product("shake nothing");

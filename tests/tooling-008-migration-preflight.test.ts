@@ -2,13 +2,16 @@ import { after, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
-  rmSync,
+  rmdirSync,
+  statSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -42,9 +45,26 @@ const CONCEPTS = [
 
 const temporaryRoots: string[] = [];
 
+// Git marks object/pack files read-only (0444), and on Windows Node's
+// rmSync(recursive) fails the whole tree with EPERM on the first read-only
+// entry instead of chmod-ing through it. Teardown therefore walks the tree
+// itself: make every entry writable, then unlink files and rmdir bottom-up.
+function removeTree(target: string): void {
+  for (const name of readdirSync(target)) {
+    const p = path.join(target, name);
+    if (statSync(p).isDirectory()) {
+      removeTree(p);
+    } else {
+      try { chmodSync(p, 0o666); } catch { /* already writable */ }
+      unlinkSync(p);
+    }
+  }
+  rmdirSync(target);
+}
+
 after(() => {
   for (const root of temporaryRoots) {
-    rmSync(root, { recursive: true, force: true });
+    removeTree(root);
   }
 });
 

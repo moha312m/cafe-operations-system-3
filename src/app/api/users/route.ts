@@ -12,6 +12,7 @@ import { hashPassword } from "@/lib/auth";
 import { MANAGEABLE_ROLES } from "@/lib/permissions";
 import { resolvePermissions } from "@/lib/perms/effective";
 import { audit } from "@/lib/audit";
+import { projectStaffBranch } from "@/lib/staff-branch";
 
 // Validate a requested cafe-role assignment: it must live in the cafe, be
 // active, and never grant keys the acting user doesn't hold (no escalation).
@@ -42,6 +43,12 @@ const userSelect = {
   archivedAt: true,
   lastLoginAt: true,
   branchId: true,
+  cafeId: true,
+  temporaryBranchId: true,
+  temporaryBranchUntil: true,
+  temporaryBranchStartedAt: true,
+  temporaryBranchCancelledAt: true,
+  temporaryBranch: { select: { name: true } },
   branch: { select: { name: true } },
   cafeRoleId: true,
   cafeRole: { select: { id: true, name: true, isActive: true } },
@@ -91,7 +98,13 @@ export async function GET(request: NextRequest) {
       select: userSelect,
       orderBy: { createdAt: "asc" },
     });
-    return NextResponse.json({ users });
+    const projected = await Promise.all(users.map(async (user) => {
+      const branch = await projectStaffBranch(db, user);
+      return { ...user, effectiveBranchId: branch.branchId,
+        temporaryBranchId: branch.temporaryBranchId, temporaryBranchUntil: branch.temporaryBranchUntil,
+        temporaryBranchStatus: branch.temporaryBranchStatus };
+    }));
+    return NextResponse.json({ users: projected });
   } catch (error) {
     return handleApiError(error);
   }

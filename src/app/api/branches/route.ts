@@ -3,6 +3,7 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import {
   requirePermission,
+  requireKey,
   resolveCafeId,
   handleApiError,
   requireFeature,
@@ -35,7 +36,7 @@ const createBranchSchema = z.object({
 
 export async function POST(request: NextRequest) {
   try {
-    const session = await requirePermission("branches:manage");
+    const session = await requireKey("branches.manage");
     await requireFeature(session, "branchManagementEnabled");
     const data = createBranchSchema.parse(await request.json());
     const cafeId = resolveCafeId(session, data.cafeId);

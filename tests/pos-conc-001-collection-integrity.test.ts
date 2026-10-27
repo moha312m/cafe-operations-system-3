@@ -30,8 +30,7 @@ import {
   cleanupShift,
   clearOpenShifts,
   openShift,
-  makeOrder,
-} from "./helpers/db";
+  makeOrder, purgeOrderTracesFor } from "./helpers/db";
 import { recomputeShiftTotals } from "@/lib/shifts";
 
 const MARKER = "PH15-POSC1";
@@ -52,7 +51,7 @@ async function scene(marker: string, total: number) {
 async function purge(orderId: string) {
   await db.payment.deleteMany({ where: { orderId } });
   await db.orderItem.deleteMany({ where: { orderId } });
-  await db.order.deleteMany({ where: { id: orderId } });
+  await purgeOrderTracesFor({ id: orderId }); await db.order.deleteMany({ where: { id: orderId } });
 }
 
 describe("POS-CONC-001 a double-tapped collection takes the money once", () => {

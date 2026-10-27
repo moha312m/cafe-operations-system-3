@@ -2,14 +2,84 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
+/* Cashier controls retain the same sizing for touch, keyboard and mouse. */
+html[data-cashier-touch="true"] :is(button, [role="button"], a[href], select, summary, [role="option"], [role="tab"], [role="menuitem"], input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]), textarea) {
+  min-height: 48px;
+  min-width: 48px;
+  height: auto;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  touch-action: manipulation;
+  scroll-margin-block: 1rem;
+}
+html[data-cashier-touch="true"] :is(button, [role="button"], a[href], select, summary, [role="option"], [role="tab"], [role="menuitem"]) { padding-block: .65rem; }
+html[data-cashier-touch="true"] :is(input, select, textarea) { font-size: 16px; }
+html[data-cashier-touch="true"] :is(button, [role="button"], a[href]):focus-visible { outline: 3px solid var(--primary); outline-offset: 2px; }
+html[data-cashier-touch="true"] button:active:not(:disabled) { filter: brightness(.92); }
+html[data-cashier-touch="true"] label:has(> input:is([type="checkbox"], [type="radio"])) { display: flex; align-items: center; gap: 12px; min-height: 48px; min-width: 48px; padding: 8px; }
+html[data-cashier-touch="true"] input:is([type="checkbox"], [type="radio"]) { width: 24px; height: 24px; flex-shrink: 0; }
+html[data-cashier-touch="true"] nav { gap: 8px; }
+html[data-cashier-touch="true"] nav a { margin-bottom: 8px; }
+html[data-cashier-touch="true"] :is([class~="gap-1"], [class~="gap-1.5"]) { gap: 8px; }
+html[data-cashier-touch="true"] [data-slot="dialog-content"] {
+  top: calc(var(--cashier-viewport-top, 0px) + var(--cashier-viewport-height, 100dvh) / 2);
+  max-height: calc(var(--cashier-viewport-height, 100dvh) - 1rem);
+  padding-top: 4rem;
+}
+html[data-cashier-touch="true"] .cashier-dialog-close { width: 90px; min-width: 90px; height: 48px; gap: 6px; padding-inline: 12px; flex-wrap: nowrap; }
+html[data-cashier-touch="true"] .cashier-dialog-back { display: inline; }
+html[data-cashier-touch="true"] [data-slot="dialog-actions"] { background: var(--popover); }
+html[data-cashier-touch="true"] .touch-number { display: inline-flex; min-width: min(100%, 10rem); max-width: 100%; padding: 0; border: 0; }
+html[data-cashier-touch="true"] .touch-number > input { width: 3rem; }
+.cashier-workspace { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; border: 0; padding: 0; }
+.cashier-catalog { min-height: 0; }
+.cashier-cart { height: min(800px, calc(100dvh - 2rem)); }
+.cashier-categories { position: sticky; top: 0; z-index: 10; }
+.cashier-products { max-height: 55dvh; min-height: 180px; }
+.cashier-compact-tabs, .cashier-compact-checkout { display: none; }
+@media (min-width: 1100px) {
+  .cashier-workspace { grid-template-columns: minmax(0, 1fr) minmax(370px, 420px); align-items: start; }
+  .cashier-catalog, .cashier-cart { height: var(--cashier-workspace-height, calc(100dvh - 6rem)); }
+  .cashier-catalog { overflow: hidden; }
+  .cashier-cart { position: sticky; top: 1rem; }
+  .cashier-products { max-height: none; min-height: 0; }
+}
+@media (max-width: 1099px) {
+  .cashier-workspace { display: flex; height: var(--cashier-workspace-height, calc(100dvh - 10rem)); min-height: 220px; flex-direction: column; gap: 8px; }
+  .cashier-compact-tabs { display: flex; flex-shrink: 0; }
+  .cashier-compact-tabs > button { flex: 1; }
+  .cashier-catalog { flex: 1; min-height: 0; overflow-y: auto; }
+  .cashier-cart { flex: 1; min-height: 0; height: auto; }
+  .cashier-products { min-height: 160px; max-height: none; }
+  .cashier-compact-checkout { display: block; flex-shrink: 0; }
+  .category-all-products { display: inline-flex; }
+  .cashier-categories :is(.category-pages, .category-navigation) { display: none; }
+  .cashier-workspace[data-compact-view="products"] .cashier-cart { display: none; }
+  .cashier-workspace[data-compact-view="cart"] :is(.cashier-catalog, .cashier-compact-checkout) { display: none; }
+}
+@media (max-height: 500px) {
+  html[data-cashier-touch="true"] [data-slot="dialog-content"] { padding-top: 3.5rem; }
+  html[data-cashier-touch="true"] .touch-keypad [data-slot="dialog-scroll-area"] { gap: 8px; }
+}
+/* Short compact viewports (landscape phone, on-screen keyboard): the 220px workspace floor leaves the
+   catalog a ~46px scrollport that the 86px sticky category block fills completely, so no product card is
+   reachable. In the products view let the content grow and the page scroll instead. */
+@media (max-width: 1099px) and (max-height: 500px) {
+  .cashier-workspace[data-compact-view="products"] { height: auto; min-height: 0; }
+  .cashier-workspace[data-compact-view="products"] .cashier-catalog { flex: none; overflow: visible; }
+  .cashier-workspace[data-compact-view="products"] .cashier-categories { position: static; }
+  .cashier-workspace[data-compact-view="products"] .cashier-products { flex: none; overflow-y: visible; }
+}
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
   --color-background: var(--background);
+  --color-workspace: var(--workspace);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
+  --font-sans: var(--font-cairo), system-ui, sans-serif;
   --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-sans);
+  --font-heading: var(--font-cairo), system-ui, sans-serif;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -17,6 +87,7 @@
   --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
   --color-sidebar-primary: var(--sidebar-primary);
   --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-muted-foreground: var(--sidebar-muted-foreground);
   --color-sidebar: var(--sidebar);
   --color-chart-5: var(--chart-5);
   --color-chart-4: var(--chart-4);
@@ -50,6 +121,7 @@
 
 :root {
   --background: oklch(1 0 0);
+  --workspace: var(--color-slate-50);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
   --card-foreground: oklch(0.145 0 0);
@@ -73,18 +145,20 @@
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
   --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --sidebar: #0f172a;
+  --sidebar-foreground: var(--color-slate-300);
+  --sidebar-muted-foreground: var(--color-slate-400);
+  --sidebar-primary: var(--color-emerald-700);
+  --sidebar-primary-foreground: var(--color-white);
+  --sidebar-accent: rgb(255 255 255 / 5%);
+  --sidebar-accent-foreground: var(--color-white);
+  --sidebar-border: rgb(255 255 255 / 10%);
+  --sidebar-ring: var(--color-emerald-400);
 }
 
 .dark {
   --background: oklch(0.145 0 0);
+  --workspace: var(--background);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.205 0 0);
   --card-foreground: oklch(0.985 0 0);
@@ -107,14 +181,15 @@
   --chart-3: oklch(0.439 0 0);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --sidebar: #0f172a;
+  --sidebar-foreground: var(--color-slate-300);
+  --sidebar-muted-foreground: var(--color-slate-400);
+  --sidebar-primary: var(--color-emerald-700);
+  --sidebar-primary-foreground: var(--color-white);
+  --sidebar-accent: rgb(255 255 255 / 5%);
+  --sidebar-accent-foreground: var(--color-white);
+  --sidebar-border: rgb(255 255 255 / 10%);
+  --sidebar-ring: var(--color-emerald-400);
 }
 
 @layer base {
