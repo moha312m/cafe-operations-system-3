@@ -1,12 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef,useState } from "react";
 import { toast } from "sonner";
 import Link from "next/link";
 import { api, money } from "@/lib/client";
 import { dateStrInTz } from "@/lib/date-range";
 import { useApp } from "@/components/app-shell";
-import { Input } from "@/components/ui/input";
+import {ReportingControls,type ReportingMetadata} from '@/components/sales/reporting-controls';
+import {ReportOutputActions} from '@/components/sales/report-output-actions';
+import {TouchSelect} from '@/components/pos/touch-select';
 import {
   Card,
   CardContent,
@@ -23,6 +25,8 @@ import {
 } from "@/components/ui/table";
 
 type Report = {
+  reporting:ReportingMetadata;
+  outputSnapshot:string;
   date: string;
   totals: {
     orders: number;
@@ -86,16 +90,23 @@ const METHOD_LABELS: Record<string, string> = {
 export default function ReportsPage() {
   const { cafe, canKey, user } = useApp();
   const currency = cafe?.currency ?? "USD";
-  const [date, setDate] = useState(() => dateStrInTz(new Date()));
+  const [filters,setFilters]=useState<Record<string,string>>({reportMode:'business',businessFrom:dateStrInTz(new Date()),businessTo:dateStrInTz(new Date())});
   const [report, setReport] = useState<Report | null>(null);
+  const [error,setError]=useState(''),[loading,setLoading]=useState(false);
 
+  const loadId=useRef(0);
   const load = useCallback(async () => {
+    const id=++loadId.current;
+    setLoading(true);
     try {
-      setReport(await api<Report>(`/api/reports/daily?date=${date}`));
+      const next=await api<Report>('/api/reports/daily?'+new URLSearchParams(Object.fromEntries(Object.entries(filters).filter(([,v])=>v))));
+      if(id===loadId.current){setReport(next);setError('');}
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "فشل تحميل التقرير");
+      if(id===loadId.current){const message=e instanceof Error ? e.message : "فشل تحميل التقرير";setError(message);toast.error(message);}
+    }finally{
+      if(id===loadId.current)setLoading(false);
     }
-  }, [date]);
+  }, [filters]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => load(), 0);
@@ -112,13 +123,12 @@ export default function ReportsPage() {
       <br/><Link className="inline-block text-primary underline" href="/reports/employee-actions">تقرير مسؤولية الموظفين عن الإلغاء والاسترداد</Link>
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">تقرير قفلة اليوم</h1>
-        <Input
-          type="date"
-          className="w-44"
-          value={date}
-          onChange={(e) => setDate(e.target.value)}
-        />
+        <TouchSelect aria-label="فرع التقرير" value={filters.branchId??''} onValueChange={v=>setFilters({...filters,branchId:v})}><option value="">كل الفروع المسموحة — كل فرع بساعاته</option>{report?.reporting.branches.map(b=><option key={b.id} value={b.id}>{b.name}</option>)}</TouchSelect>
       </div>
+      <ReportingControls filters={filters} onChange={setFilters} metadata={report?.reporting} onSaved={()=>void load()}/>
+      {loading&&<p role="status">جاري تحديث فترة التقرير…</p>}
+      {error&&<p role="alert" className="rounded border p-3 text-destructive">{error} — المعروض أدناه هو آخر تقرير ناجح. صحّح المدخلات لإعادة حسابه.</p>}
+      <ReportOutputActions snapshot={report?.outputSnapshot} disabled={loading||!!error}/>
 
       {report && (
         <>

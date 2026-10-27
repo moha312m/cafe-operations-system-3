@@ -20,7 +20,7 @@ type StaleOrder = {
   since: string;
   actions: StaleAction[];
 };
-type Summary = { staleHours: number; stale: StaleOrder[]; staleCount: number };
+type Summary = { staleMinutes: number; stale: StaleOrder[]; staleCount: number };
 
 const DISMISS_KEY = "stale-orders-banner-dismissed";
 const STATUS_AR: Record<string, string> = {
@@ -108,7 +108,7 @@ export function StaleOrdersBanner({
     >
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <span className="font-semibold">
-          ⏰ في {summary.staleCount} أوردر منسي بقاله أكتر من {summary.staleHours} ساعة
+          ⏰ في {summary.staleCount} أوردر منسي بقاله أكتر من {summary.staleMinutes} دقيقة
         </span>
         <span className="flex-1" />
         <button type="button" className="font-medium underline underline-offset-2" onClick={() => setOpen((v) => !v)}>

@@ -66,7 +66,15 @@ export default function StockCountsPage() {
     load();
   }, [load]);
 
-  useEffect(() => { const id = new URLSearchParams(window.location.search).get("sessionId"); if (id) setSelectedId(id); }, []);
+  // Deep links (from the shift-close guidance): `sessionId` opens that count; `branchId` keeps the branch the link came from for an unpinned
+  // account (a pinned one stays on its own). Navigation only selects — nothing is started or changed by arriving here.
+  useEffect(() => {
+    const search = new URLSearchParams(window.location.search);
+    const id = search.get("sessionId");
+    const branch = search.get("branchId");
+    if (branch && !user.branchId) setBranchId(branch);
+    if (id) setSelectedId(id);
+  }, [user.branchId]);
 
   async function start(type: "CRITICAL" | "FULL") {
     setBusy(true);

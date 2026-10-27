@@ -1285,7 +1285,7 @@ const REVIEWABLE_HANDOVER_STATUSES: readonly HandoverStatus[] = [
 export async function incomingHandoverView(
   handoverId: string,
   viewerId: string,
-  scope: { cafeId: string; viewerBranchId: string | null; allowOutgoingDraft?: boolean }
+  scope: { cafeId: string; viewerBranchId: string | null; allowOutgoingDraft?: boolean; allowCompletedRead?: boolean }
 ): Promise<IncomingHandoverView> {
   const handover = await db.handoverSession.findUnique({
     where: { id: handoverId },
@@ -1321,7 +1321,8 @@ export async function incomingHandoverView(
   }
   const outgoingDraft = scope.allowOutgoingDraft === true && handover.outgoingUserId === viewerId
     && (handover.status === "DRAFT" || handover.status === "REJECTED");
-  if (!REVIEWABLE_HANDOVER_STATUSES.includes(handover.status) && !outgoingDraft) {
+  if (!REVIEWABLE_HANDOVER_STATUSES.includes(handover.status) && !outgoingDraft
+    && !(scope.allowCompletedRead === true && handover.status === "COMPLETED")) {
     throw new ApiError(409, "التسليم مش في مرحلة مراجعة");
   }
 

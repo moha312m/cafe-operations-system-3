@@ -1,0 +1,9 @@
+'use client';
+import {useCallback,useEffect,useState} from 'react';import {api} from '@/lib/client';import {Button} from '@/components/ui/button';import {useApp} from '@/components/app-shell';
+type Ticket={id:string;orderId:string;baseRevision:number;reason:string;proposed:{positiveLines:{productName:string;variantName:string|null;quantity:number}[]}};
+export function KitchenAmendmentTickets(){const {canKey}=useApp(),[tickets,setTickets]=useState<Ticket[]>([]),[error,setError]=useState(''),[busy,setBusy]=useState('');
+ const load=useCallback(async()=>{try{setTickets((await api<{tickets:Ticket[]}>('/api/sales/kitchen')).tickets);setError('');}catch(e){setError(e instanceof Error?e.message:'تعذر تحديث إضافات المراجعات');}},[]);
+ useEffect(()=>{const initial=window.setTimeout(()=>void load(),0);const timer=setInterval(()=>void load(),20000);return ()=>{clearTimeout(initial);clearInterval(timer);};},[load]);
+ if(!tickets.length&&!error)return null;
+ return <section className="space-y-2 rounded border border-amber-500 p-3"><h2 className="font-bold">إضافات فواتير سبق تسليمها — تحضير الفرق فقط</h2>{error&&<p role="alert" className="text-destructive">{error}</p>}{tickets.map(t=><div className="flex flex-wrap items-center justify-between gap-2 border-t p-2" key={t.id}><div><p className="text-xs break-all">طلب {t.orderId} · مراجعة {t.baseRevision+1}</p>{t.proposed.positiveLines.map((l,i)=><p key={i}>{l.productName} {l.variantName} × <b>{l.quantity}</b></p>)}<p className="text-xs">{t.reason}</p></div>{canKey('kitchen.update_status')&&<Button disabled={!!busy} onClick={async()=>{setBusy(t.id);try{await api('/api/sales/kitchen',{method:'POST',body:{id:t.id}});await load();}catch(e){setError(e instanceof Error?e.message:'تعذر التسليم');}finally{setBusy('');}}}>تم تسليم الإضافات — خصم مخزون الفرق</Button>}</div>)}</section>;
+}

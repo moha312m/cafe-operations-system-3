@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { api } from "@/lib/client";
 import { t } from "@/lib/i18n";
@@ -146,21 +147,59 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: 
   );
 }
 
-export default function SettingsPage() {
+function SettingsWorkspace() {
   const { user, canKey } = useApp();
+  const params = useSearchParams();
+  const requestedBranchId = params.get("branchId");
   const [branches, setBranches] = useState<Branch[]>([]);
-  const [branchId, setBranchId] = useState(user.branchId ?? "");
+  // The branch is DERIVED: a link may name one (`?branchId=`, used by the shift-close guidance so it lands on the branch it came from); an account
+  // pinned to a branch always stays on it; an owner's own pick wins until the link changes; otherwise the first branch, as before.
+  const [picked, setPicked] = useState<{ forRequest: string | null; id: string } | null>(null);
   const [s, setS] = useState<FinSettings | null>(null);
   const [busy, setBusy] = useState(false);
+  const requestedKnown = !!requestedBranchId && branches.some((b) => b.id === requestedBranchId);
+  const pickedNow = picked && picked.forRequest === requestedBranchId ? picked.id : null;
+  const branchId = user.branchId ?? pickedNow ?? (requestedKnown ? requestedBranchId : null) ?? branches[0]?.id ?? "";
+  // A requested branch this account cannot use is said out loud instead of silently landing on a different one.
+  const branchNotice = requestedBranchId && (user.branchId ? requestedBranchId !== user.branchId : branches.length > 0 && !requestedKnown)
+    ? "الفرع المطلوب غير متاح لهذا الحساب — اتفتحت إعدادات فرع تاني. راجع اسم الفرع قبل أي تغيير."
+    : null;
 
   useEffect(() => {
     api<{ branches: Branch[] }>("/api/branches")
-      .then((r) => {
-        setBranches(r.branches);
-        if (!user.branchId && r.branches[0]) setBranchId((b) => b || r.branches[0].id);
-      })
+      .then((r) => setBranches(r.branches))
       .catch((e) => toast.error(e instanceof Error ? e.message : "فشل التحميل"));
-  }, [user.branchId]);
+  }, []);
+
+  // Arrival at the handover-config panel for a `#handover-config` link: once the page has loaded, bring the panel into view and put focus on it,
+  // once per branch. The cards above it fetch their own data and can still push it down, so it is kept in view while the layout settles (bounded,
+  // and given up the moment the person scrolls, presses a key or touches the screen). The panel's own loading/error states render inside the anchor.
+  const arrivedFor = useRef<string | null>(null);
+  const settingsLoaded = !!s;
+  useEffect(() => {
+    if (!settingsLoaded || !branchId || typeof window === "undefined" || window.location.hash !== "#handover-config") return;
+    if (arrivedFor.current !== null) return; // only the first arrival: choosing another branch afterwards must not yank the page
+    const el = document.getElementById("handover-config");
+    if (!el) return;
+    arrivedFor.current = branchId;
+    const bring = () => el.scrollIntoView?.({ block: "start" });
+    bring();
+    el.focus({ preventScroll: true });
+    const give = ["wheel", "touchstart", "keydown", "pointerdown"] as const;
+    let stopped = false;
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => { if (!stopped) bring(); });
+    const timer = window.setTimeout(() => stop(), 3000);
+    function stop() {
+      if (stopped) return;
+      stopped = true;
+      observer?.disconnect();
+      window.clearTimeout(timer);
+      for (const ev of give) window.removeEventListener(ev, stop, true);
+    }
+    observer?.observe(document.body);
+    for (const ev of give) window.addEventListener(ev, stop, { capture: true });
+    return stop;
+  }, [settingsLoaded, branchId]);
 
   const load = useCallback(async () => {
     if (!branchId) return;
@@ -208,7 +247,7 @@ export default function SettingsPage() {
         <h1 className="text-2xl font-semibold">{t.finance.settingsTitle}</h1>
         {/* Owner picks a branch; managers are pinned to theirs. */}
         {!user.branchId && branches.length > 1 && (
-          <Select value={branchId} onValueChange={(v) => setBranchId(v ?? "")}>
+          <Select value={branchId} onValueChange={(v) => setPicked({ forRequest: requestedBranchId, id: v ?? "" })}>
             <SelectTrigger className="w-48">
               <SelectValue>{branches.find((b) => b.id === branchId)?.name}</SelectValue>
             </SelectTrigger>
@@ -220,6 +259,8 @@ export default function SettingsPage() {
           </Select>
         )}
       </div>
+
+      {branchNotice && <p role="status" data-testid="settings-branch-notice" className="rounded-lg border border-amber-500/60 bg-amber-50 p-3 text-sm dark:bg-amber-950/30">{branchNotice}</p>}
 
       {!s ? (
         <p className="text-sm text-muted-foreground">{t.common.loading}</p>
@@ -299,7 +340,11 @@ export default function SettingsPage() {
           {user.role === "CAFE_OWNER" && canKey("settings.edit") && <PlaceChecklistCard branchId={branchId} />}
           {canKey("settings.edit") && <WhatsAppCard />}
 
-          {canKey("stock_count.configure") && <HandoverConfigPanel branchId={branchId} />}
+          {canKey("stock_count.configure") && (
+            <section id="handover-config" tabIndex={-1} aria-label={t.handoverConfig.title} data-testid="handover-config-anchor" className="scroll-mt-4 outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              <HandoverConfigPanel branchId={branchId} />
+            </section>
+          )}
 
           <LoyaltySettingsCard />
           {user.role === "CAFE_OWNER" && canKey("settings.edit") && <OwnerActionSettingsCard />}
@@ -307,4 +352,8 @@ export default function SettingsPage() {
       )}
     </div>
   );
+}
+
+export default function SettingsPage() {
+  return <Suspense fallback={<p className="p-4 text-sm text-muted-foreground">{t.common.loading}</p>}><SettingsWorkspace /></Suspense>;
 }

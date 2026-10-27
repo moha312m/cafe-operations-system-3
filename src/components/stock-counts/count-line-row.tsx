@@ -33,16 +33,18 @@ export type CountLine = {
   inventoryItem: { id: string; name: string; category: string | null; unit: string };
   expectedQuantity?: string | null;
   varianceQuantity?: string | null;
+  reasonCodeId?: string | null;
   costImpact?: string | null;
   costImpactAvailable?: boolean;
 };
 
-export type LineAction = "capture" | "recount" | "accept-variance" | "correction";
+export type LineAction = "capture" | "recount" | "accept-variance" | "correction" | "reason";
 
 export function CountLineRow({
   line,
   sessionStatus,
   blind,
+  handover = false,
   can,
   busy,
   onCapture,
@@ -51,6 +53,7 @@ export function CountLineRow({
   line: CountLine;
   sessionStatus: CountStatus;
   blind: boolean;
+  handover?: boolean;
   can: (key: string) => boolean;
   busy: boolean;
   onCapture: (lineId: string, quantity: number) => void;
@@ -90,7 +93,7 @@ export function CountLineRow({
               <Button
                 size="sm"
                 variant="outline"
-                disabled={busy || draft.trim() === ""}
+                disabled={busy || draft.trim() === "" || !Number.isFinite(Number(draft)) || Number(draft) < 0}
                 onClick={() => {
                   onCapture(line.id, Number(draft));
                   setDraft("");
@@ -125,6 +128,8 @@ export function CountLineRow({
               اعتماد الفرق
             </Button>
           )}
+
+          {handover && ["SUBMITTED", "RECOUNT_REQUIRED", "CONFIRMED"].includes(sessionStatus) && !blind && !line.reasonCodeId && line.varianceQuantity != null && Number(line.varianceQuantity) !== 0 && can("stock_count.confirm") && <Button size="sm" variant="outline" disabled={busy} onClick={() => onAct("reason", line)}>تسجيل سبب الفرق</Button>}
 
           {line.countedQuantity !== null && can("stock_count.correct") && (
             <Button

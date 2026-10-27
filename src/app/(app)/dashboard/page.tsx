@@ -6,6 +6,7 @@ import { api, money } from "@/lib/client";
 import { t, formatWeekday, formatTime } from "@/lib/i18n";
 import { useApp } from "@/components/app-shell";
 import { OwnerDashboard } from "@/components/dashboard/owner-dashboard";
+import type {ReportingMetadata} from '@/components/sales/reporting-controls';
 import { normalizeRangeKey, type RangeKey } from "@/lib/date-range";
 import type { OrderStatus, OrderSource } from "@prisma/client";
 import {
@@ -23,6 +24,7 @@ import {
 type DateFilter = { range: RangeKey; date?: string; from?: string; to?: string };
 
 type DashboardData = {
+  reporting?:ReportingMetadata|null;
   range: string;
   period: { from: string; to: string };
   todayRevenue: number;
@@ -384,6 +386,7 @@ function DashboardInner() {
       {filterBar}
 
       {/* Refreshing dims (no layout jump) while the new period loads. */}
+      {data.reporting&&<details className="mb-4 rounded-lg border p-3"><summary>ساعات تقارير الفروع مطبّقة — عرض الفترات الفعلية</summary><p>البداية مشمولة والنهاية مستبعدة؛ فترات الإغلاق لا تدخل في الملخص. يمكن فحصها في تقرير خارج الساعات.</p>{data.reporting.windows.map((w,i)=><p key={i} dir="auto">{data.reporting?.branches.find(b=>b.id===w.branchId)?.name} · {w.startLocal} → {w.endLocal} · {w.timezone} · UTC {w.from} → {w.to}{w.warnings.map(warning=><span className="block" key={warning}>{warning}</span>)}</p>)}</details>}
       <div className={refreshing ? "pointer-events-none opacity-60 transition-opacity" : "transition-opacity"}>
       <OwnerDashboard isOwner={isOwner} data={data} formatMoney={fmt}>
 

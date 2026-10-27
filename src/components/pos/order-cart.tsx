@@ -1,4 +1,5 @@
 "use client";
+import type {ReactNode, Ref} from 'react';
 
 import { Badge } from "@/components/ui/badge";
 import { t } from "@/lib/i18n";
@@ -12,6 +13,10 @@ import { CustomerLoyalty, type LoyaltyRedeem } from "./customer-loyalty";
 import type { CartLine, CollectionMode, OrderType, PaymentMethod, SplitMethod } from "./types";
 
 export function OrderCart({
+  id,
+  headingId,
+  headingRef,
+  discountControls,
   cart,
   currency,
   orderType,
@@ -24,6 +29,7 @@ export function OrderCart({
   onRedeemChange,
   subtotal,
   discountInput,
+  discountError = null,
   discountAmount,
   serviceCharge,
   taxRate,
@@ -48,6 +54,10 @@ export function OrderCart({
   onMixedChange,
   onPlaceOrder,
 }: {
+  id?: string;
+  headingId?: string;
+  headingRef?: Ref<HTMLHeadingElement>;
+  discountControls?:ReactNode;
   cart: CartLine[];
   currency: string;
   orderType: OrderType;
@@ -60,6 +70,7 @@ export function OrderCart({
   onRedeemChange: (redeem: LoyaltyRedeem) => void;
   subtotal: number;
   discountInput: string;
+  discountError?: string | null;
   discountAmount: number;
   serviceCharge: number;
   taxRate: number;
@@ -87,10 +98,10 @@ export function OrderCart({
   const itemCount = cart.reduce((sum, line) => sum + line.quantity, 0);
 
   return (
-    <aside className="flex max-h-[calc(100vh-5.5rem)] w-full shrink-0 flex-col overflow-hidden rounded-xl border bg-card shadow-sm lg:sticky lg:top-4 lg:h-[calc(100vh-5.5rem)] lg:w-[24rem] xl:w-[26rem]">
+    <aside id={id} className="cashier-cart flex w-full min-w-0 flex-col overflow-hidden rounded-xl border bg-card shadow-sm" aria-label="الطلب الحالي" aria-labelledby={headingId}>
       {/* Header (fixed) */}
       <div className="flex shrink-0 items-center justify-between border-b px-4 py-3">
-        <h2 className="font-semibold">{t.pos.currentOrder}</h2>
+        <h2 id={headingId} ref={headingRef} tabIndex={-1} className="rounded font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">{t.pos.currentOrder}</h2>
         <Badge variant="secondary" className="tabular-nums">
           {itemCount} {t.pos.items}
         </Badge>
@@ -123,6 +134,7 @@ export function OrderCart({
         </div>
 
         <div className="space-y-2 border-t pt-3">
+          {discountControls}
           {cart.length === 0 ? (
             <div className="flex min-h-40 flex-col items-center justify-center gap-2 text-center">
               <span className="text-4xl">🛒</span>
@@ -144,15 +156,12 @@ export function OrderCart({
             ))
           )}
         </div>
-      </div>
-
-      {/* Pinned footer: totals + submit (always visible; scrolls only on very
-          short screens so the submit is never clipped). */}
-      <div className="max-h-[70%] shrink-0 overflow-y-auto border-t bg-card p-3">
+      <div className="border-t pt-3">
         <PaymentSummary
           currency={currency}
           subtotal={subtotal}
           discountInput={discountInput}
+          discountError={discountError}
           discountAmount={discountAmount}
           loyaltyPoints={redeem.points}
           loyaltyDiscount={redeem.discount}
@@ -174,6 +183,14 @@ export function OrderCart({
           onMixedChange={onMixedChange}
           onPlaceOrder={onPlaceOrder}
         />
+      </div>
+      </div>
+      <div className="shrink-0 border-t bg-card p-3">
+        <PaymentSummary checkoutOnly currency={currency} subtotal={subtotal} discountInput={discountInput} discountAmount={discountAmount}
+          serviceCharge={serviceCharge} taxRate={taxRate} taxAmount={taxAmount} total={total} collectionMode={collectionMode}
+          paidInput={paidInput} method={method} mixed={mixed} placeDisabled={placeDisabled} disabledReason={disabledReason} submitting={submitting}
+          onDiscountChange={onDiscountChange} onCollectionModeChange={onCollectionModeChange} onPaidChange={onPaidChange}
+          onMethodChange={onMethodChange} onMixedChange={onMixedChange} onPlaceOrder={onPlaceOrder} />
       </div>
     </aside>
   );

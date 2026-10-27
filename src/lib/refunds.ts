@@ -9,9 +9,10 @@ import { recomputeSessionTotals } from "@/lib/table-sessions";
 import { applyRefundToOrderSettlement } from "@/lib/payments";
 import { lockShifts, lockOrders, lockOrderPayments, validateOpenPostingShift } from "@/lib/transaction-locks";
 
-function assertRefundable(p: { type: string; status: string; reversalOfPaymentId: string | null; reversedBy: { id: string }[] }) {
+function remainingRefundable(p: {amount:Prisma.Decimal;reversedBy:{amount:Prisma.Decimal;status:string}[]}) {return money(p.amount.minus(sumMoney(p.reversedBy.filter(r=>r.status==='PAID').map(r=>r.amount))));}
+function assertRefundable(p: { amount:Prisma.Decimal; type: string; status: string; reversalOfPaymentId: string | null; reversedBy: { id: string; amount:Prisma.Decimal;status:string }[] }) {
   if (p.type !== "COLLECTION" || p.reversalOfPaymentId) throw new ApiError(400, "مينفعش تعمل مرتجع لعملية مرتجع");
-  if (p.status !== "PAID" || p.reversedBy.length) throw new ApiError(400, "الدفعة مرتجعة بالفعل أو لم يتم تحصيلها");
+  if (p.status !== "PAID" || remainingRefundable(p).lte(0)) throw new ApiError(400, "الدفعة مرتجعة بالكامل أو لم يتم تحصيلها");
 }
 const verifiedRefundLocks = new WeakMap<object, WeakSet<object>>();
 /** Identify rows inside the transaction, then re-read financial state only
@@ -32,7 +33,7 @@ export async function lockRefundOrderForAction(tx: Prisma.TransactionClient, ord
   await lockOrderPayments(tx, [orderId]);
   const order = await tx.order.findFirst({
     where: { id: orderId, ...scope }, include: {
-      payments: { orderBy: { id: "asc" }, include: { reversedBy: { select: { id: true } }, shift: { select: { id: true, status: true, shiftNumber: true } } } },
+      payments: { orderBy: { id: "asc" }, include: { reversedBy: { select: { id: true, amount:true, status:true } }, shift: { select: { id: true, status: true, shiftNumber: true } } } },
     }
   });
   if (!order) throw new ApiError(404, "الطلب مش موجود");
@@ -65,7 +66,7 @@ async function writeReversal(tx: Prisma.TransactionClient, p: Collection, actor:
     data: {
       cafeId: p.cafeId, branchId: p.branchId, orderId: p.orderId,
       shiftId: targetShiftId, cashierId: actor.id, receivedById: actor.id,
-      amount: p.amount, method: p.method, type: "REFUND", status: "PAID",
+      amount: remainingRefundable(p), method: p.method, type: "REFUND", status: "PAID",
       tableSessionId: p.tableSessionId, reversalOfPaymentId: p.id, refundReason: reason,
       note: p.shift && p.shift.status !== "OPEN" ? `مرتجع من شيفت مقفول رقم ${p.shift.shiftNumber}` : undefined,
     }
@@ -76,14 +77,14 @@ async function refundOrderCore(tx: Prisma.TransactionClient, orderId: string, ac
   if (!trimmed) throw new ApiError(400, "لازم تكتب سبب المرتجع");
   const { order, drawerId } = locked ? verifyRefundContext(tx, locked, orderId) : await lockRefundOrderForAction(tx, orderId, actor);
   if (order.paymentStatus === "REFUNDED") throw new ApiError(400, "الطلب مرتجع بالفعل");
-  const collections = order.payments.filter((p) => p.type === "COLLECTION" && p.status === "PAID" && !p.reversalOfPaymentId && p.reversedBy.length === 0);
+  const collections = order.payments.filter((p) => p.type === "COLLECTION" && p.status === "PAID" && !p.reversalOfPaymentId && remainingRefundable(p).gt(0));
   if (!collections.length) throw new ApiError(400, "مفيش مبلغ متحصل على الطلب ده");
   const targets = new Map<string, string | null>();
   for (const p of collections) {
     assertRefundable(p);
     targets.set(p.id, await refundTarget(tx, p, actor, drawerId, order.branchId));
   }
-  const totalRefunded = money(sumMoney(collections.map(p => p.amount)));
+  const totalRefunded = money(sumMoney(collections.map(remainingRefundable)));
   const refunds = [];
   for (const p of collections) refunds.push(await writeReversal(tx, p, actor, trimmed, targets.get(p.id) ?? null));
   await applyRefundToOrderSettlement(tx, order.id, totalRefunded);
@@ -115,7 +116,7 @@ async function refundPaymentCore(tx: Prisma.TransactionClient, paymentId: string
   assertRefundable(payment);
   const targetShiftId = await refundTarget(tx, payment, actor, drawerId, order.branchId);
   const refund = await writeReversal(tx, payment, actor, reason?.trim() || "مرتجع دفعة", targetShiftId);
-  await applyRefundToOrderSettlement(tx, order.id, payment.amount);
+  await applyRefundToOrderSettlement(tx, order.id, remainingRefundable(payment));
   if (targetShiftId) await recomputeShiftTotals(targetShiftId, tx);
   if (order.tableSessionId) await recomputeSessionTotals(order.tableSessionId, tx);
   await auditInTransaction(tx, {

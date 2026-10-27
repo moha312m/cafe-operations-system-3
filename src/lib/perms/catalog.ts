@@ -176,6 +176,10 @@ export const PERMISSION_KEYS: PermKey[] = [
 
   // Sales
   { key: "sales.view", module: "SALES", label: "عرض المبيعات" },
+  { key: "sales.edit", module: "SALES", label: "تعديل الفواتير مع حفظ المراجعات", sensitive: true },
+  { key: "sales.approve", module: "SALES", label: "اعتماد تعديل أو تصحيح شيفت مقفول", sensitive: true },
+  { key: "sales.override_price", module: "SALES", label: "تجاوز سعر صنف في فاتورة", sensitive: true },
+  { key: "sales.configure_limits", module: "SALES", label: "ضبط حدود خصم المستخدم", sensitive: true },
 
   // Reports
   { key: "reports.view", module: "REPORTS", label: "عرض التقارير" },

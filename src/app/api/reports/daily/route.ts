@@ -2,7 +2,11 @@ import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { requirePermission, resolveCafeId, handleApiError, ApiError, resolveReadScope } from "@/lib/api";
 import { periodFinancials, salesByStaff, refundsByActor } from "@/lib/reporting";
+import {recognizedSales,contributionTotals,contributionItems} from '@/lib/sales-recognition';
 import { addDays, dateStrInTz, zonedDayStart } from "@/lib/date-range";
+import {resolveReportingSelection} from '@/lib/reporting-hours';
+import {reportEventWhere} from '@/lib/report-window-scope';
+import {signReportOutput} from '@/lib/report-output';
 
 // Daily sales report: totals, payment-method breakdown, per-branch
 // breakdown, and item sales for one calendar day (?date=YYYY-MM-DD).
@@ -11,9 +15,12 @@ export async function GET(request: NextRequest) {
     const session = await requirePermission("reports:read");
     const params = request.nextUrl.searchParams;
     const cafeId = resolveCafeId(session, params.get("cafeId"));
-    const branchId = resolveReadScope(session).branchId ?? params.get("branchId") ?? undefined;
+    const assignedBranch=resolveReadScope(session).branchId;
+    if(assignedBranch&&params.get('branchId')&&params.get('branchId')!==assignedBranch)throw new ApiError(403,'الفرع خارج نطاقك');
+    const branchId = assignedBranch ?? params.get("branchId") ?? undefined;
+    const reporting=await resolveReportingSelection(session,params,{cafeId});
 
-    const date = params.get("date") ?? dateStrInTz(new Date());
+    const date = params.get('businessFrom') ?? params.get("date") ?? dateStrInTz(new Date());
     const parsedDate = new Date(`${date}T00:00:00Z`);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || isNaN(parsedDate.getTime()) || parsedDate.toISOString().slice(0, 10) !== date) {
       throw new ApiError(400, "Invalid date");
@@ -23,10 +30,11 @@ export async function GET(request: NextRequest) {
 
     const branchFilter = branchId ? { branchId } : {};
     const dayWindow = { gte: dayStart, lt: dayEnd };
+    const eventWindow=(field='createdAt',viaOrder=false)=>reporting?reportEventWhere(reporting.windows,field,viaOrder):{[field]:dayWindow};
 
     // Sales, refunds and money movement come from one shared definition so
     // this report and the dashboard cannot drift apart.
-    const scope = { cafeId, branchId, period: dayWindow };
+    const scope = { cafeId, branchId, period: dayWindow,windows:reporting?.windows };
     const [financials, staffSales, refundActors] = await Promise.all([
       periodFinancials(scope),
       salesByStaff(scope),
@@ -34,30 +42,22 @@ export async function GET(request: NextRequest) {
     ]);
 
     const [
-      completed,
       cancelledCount,
       collectionGroups,
       payments,
-      itemSales,
-      branchTotals,
       branches,
       shiftGroups,
       closedAgg,
       cashierGroups,
     ] = await Promise.all([
-        db.order.aggregate({
-          where: { cafeId, ...branchFilter, status: "SERVED", createdAt: dayWindow },
-          _sum: { total: true, subtotal: true, taxAmount: true, discountAmount: true, serviceChargeAmount: true },
-          _count: true,
-        }),
         db.order.count({
-          where: { cafeId, ...branchFilter, status: "CANCELLED", createdAt: dayWindow },
+          where: { cafeId, ...branchFilter, status: "CANCELLED", ...eventWindow() },
         }),
         // Collection state across non-cancelled orders created today.
         db.order.groupBy({
           by: ["paymentStatus"],
           where: {
-            cafeId, ...branchFilter, createdAt: dayWindow,
+            cafeId, ...branchFilter, ...eventWindow(),
             status: { notIn: ["CANCELLED", "REJECTED", "PENDING_WAITER_APPROVAL"] },
           },
           _sum: { total: true, paidAmount: true, remainingAmount: true },
@@ -69,36 +69,22 @@ export async function GET(request: NextRequest) {
             cafeId,
             type: "COLLECTION",
             status: "PAID",
-            createdAt: dayWindow,
+            ...eventWindow('createdAt',true),
             order: { ...branchFilter },
           },
           _sum: { amount: true },
-          _count: true,
-        }),
-        db.orderItem.groupBy({
-          by: ["productName", "variantName"],
-          where: {
-            order: { cafeId, ...branchFilter, status: "SERVED", createdAt: dayWindow },
-          },
-          _sum: { quantity: true, lineTotal: true },
-          orderBy: { _sum: { lineTotal: "desc" } },
-        }),
-        db.order.groupBy({
-          by: ["branchId"],
-          where: { cafeId, ...branchFilter, status: "SERVED", createdAt: dayWindow },
-          _sum: { total: true },
           _count: true,
         }),
         db.branch.findMany({ where: { cafeId, ...(branchId ? { id: branchId } : {}) }, select: { id: true, name: true } }),
         // Shifts opened during the day, grouped by status.
         db.shift.groupBy({
           by: ["status"],
-          where: { cafeId, ...branchFilter, openedAt: dayWindow },
+          where: { cafeId, ...branchFilter, ...eventWindow('openedAt') },
           _count: true,
         }),
         // Cash-difference total across shifts closed during the day.
         db.shift.aggregate({
-          where: { cafeId, ...branchFilter, status: "CLOSED", closedAt: dayWindow },
+          where: { cafeId, ...branchFilter, status: "CLOSED", ...eventWindow('closedAt') },
           _sum: { cashDifference: true },
         }),
         // Sales by cashier (PAID payments).
@@ -108,7 +94,7 @@ export async function GET(request: NextRequest) {
             cafeId,
             type: "COLLECTION",
             status: "PAID",
-            createdAt: dayWindow,
+            ...eventWindow('createdAt',true),
             order: { ...branchFilter },
           },
           _sum: { amount: true },
@@ -123,13 +109,13 @@ export async function GET(request: NextRequest) {
         select: { remainingAmount: true },
       }),
       db.tableSession.findMany({
-        where: { cafeId, ...branchFilter, status: "CLOSED", closedAt: dayWindow },
+        where: { cafeId, ...branchFilter, status: "CLOSED", ...eventWindow('closedAt') },
         select: { startedAt: true, closedAt: true, totalAmount: true },
       }),
       // Payments collected through the tables board today.
       db.payment.aggregate({
         where: {
-          cafeId, type: "COLLECTION", status: "PAID", createdAt: dayWindow,
+          cafeId, type: "COLLECTION", status: "PAID", ...eventWindow('createdAt',true),
           tableSessionId: { not: null }, order: { ...branchFilter },
         },
         _sum: { amount: true },
@@ -139,11 +125,11 @@ export async function GET(request: NextRequest) {
     // ── Purchases (day) ──
     const [purchaseAgg, supplierPayAgg, purchaseUnpaid] = await Promise.all([
       db.purchaseInvoice.aggregate({
-        where: { cafeId, ...branchFilter, status: { not: "CANCELLED" }, invoiceDate: dayWindow },
+        where: { cafeId, ...branchFilter, status: { not: "CANCELLED" }, ...eventWindow('invoiceDate') },
         _sum: { totalAmount: true }, _count: true,
       }),
       db.purchasePayment.aggregate({
-        where: { cafeId, ...branchFilter, paidAt: dayWindow },
+        where: { cafeId, ...branchFilter, ...eventWindow('paidAt') },
         _sum: { amount: true },
       }),
       db.purchaseInvoice.aggregate({
@@ -176,8 +162,9 @@ export async function GET(request: NextRequest) {
 
     const openShifts = shiftGroups.find((s) => s.status === "OPEN")?._count ?? 0;
     const closedShifts = shiftGroups.find((s) => s.status === "CLOSED")?._count ?? 0;
-    const orderCount = completed._count;
-    const revenue = Number(completed._sum.total ?? 0);
+    const recognized=await recognizedSales(scope),recognizedTotals=contributionTotals(recognized);
+    const orderCount = recognizedTotals.orders;
+    const revenue = recognizedTotals.revenue;
 
     // Collection breakdown by payment status.
     const collectRow = (status: string) => collectionGroups.find((g) => g.paymentStatus === status);
@@ -188,15 +175,16 @@ export async function GET(request: NextRequest) {
       .filter((g) => g.paymentStatus === "PENDING_COLLECTION" || g.paymentStatus === "PARTIAL")
       .reduce((s, g) => s + Number(g._sum.remainingAmount ?? 0), 0);
 
-    return NextResponse.json({
+    const result={
       date,
+      reporting,
       totals: {
         orders: orderCount,
         cancelled: cancelledCount,
-        gross: Number(completed._sum.subtotal ?? 0),
-        discounts: Number(completed._sum.discountAmount ?? 0),
-        service: Number(completed._sum.serviceChargeAmount ?? 0),
-        tax: Number(completed._sum.taxAmount ?? 0),
+        gross: recognizedTotals.gross,
+        discounts: recognizedTotals.discounts,
+        service: recognizedTotals.service,
+        tax: recognizedTotals.tax,
         revenue,
         avgOrderValue: orderCount > 0 ? Math.round((revenue / orderCount) * 100) / 100 : 0,
       },
@@ -258,19 +246,10 @@ export async function GET(request: NextRequest) {
         amount: Number(p._sum.amount ?? 0),
         count: p._count,
       })),
-      byBranch: branchTotals.map((b) => ({
-        branchId: b.branchId,
-        branchName: branchName.get(b.branchId) ?? b.branchId,
-        revenue: Number(b._sum.total ?? 0),
-        orders: b._count,
-      })),
-      items: itemSales.map((i) => ({
-        product: i.productName,
-        variant: i.variantName,
-        quantity: i._sum.quantity ?? 0,
-        revenue: Number(i._sum.lineTotal ?? 0),
-      })),
-    });
+      byBranch: [...new Set(recognized.map(r=>r.branchId))].map(branchId=>({branchId,branchName:branchName.get(branchId)??branchId,...contributionTotals(recognized.filter(r=>r.branchId===branchId))})),
+      items: contributionItems(recognized),
+    };
+    return NextResponse.json({...result,outputSnapshot:signReportOutput(session.id,{title:reporting?.mode==='custom'?'تقرير مبيعات مخصص':reporting?.mode==='outside'?'تقرير مبيعات خارج الساعات':'تقرير أيام العمل',reporting:{mode:reporting?.mode,windows:reporting?.windows,branches:reporting?.branches.map(b=>({id:b.id,name:b.name}))},metrics:{totals:result.totals,financials:result.financials,collection:result.collection,shifts:result.shifts,tables:result.tables,purchases:result.purchases},rows:[...result.byBranch.map(row=>({section:'byBranch',...row})),...result.byPaymentMethod.map(row=>({section:'byPaymentMethod',...row})),...result.byCashier.map(row=>({section:'byCashier',...row})),...result.refundsByActor.map(row=>({section:'refundsByActor',...row})),...result.items.map(row=>({section:'items',...row})),...result.salesByStaff.map(row=>({section:'salesByStaff',...row}))],generatedAt:new Date().toISOString()})});
   } catch (error) {
     return handleApiError(error);
   }

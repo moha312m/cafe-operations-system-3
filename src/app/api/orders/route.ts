@@ -1,4 +1,5 @@
 import { decimal, money, sumMoney, validCurrencyInput, type Numeric } from "@/lib/money";
+import {priceAmendment} from '@/lib/order-amendment-math';
 import { queueRefusalAudit } from "@/lib/protected-transaction";
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
@@ -93,6 +94,7 @@ export async function GET(request: NextRequest) {
 }
 
 const createOrderSchema = z.object({
+  invoiceDiscount:z.object({type:z.enum(['NONE','PERCENT','FIXED']),value:z.string().regex(/^\d+(\.\d{1,2})?$/)}).optional(),
   branchId: z.string().optional(),
   cafeId: z.string().optional(),
   type: z.enum(["DINE_IN", "TAKEAWAY", "DELIVERY"]).default("DINE_IN"),
@@ -115,6 +117,7 @@ const createOrderSchema = z.object({
     .array(
       z.object({
         productId: z.string(),
+        discount:z.object({type:z.enum(['NONE','PERCENT','FIXED']),value:z.string().regex(/^\d+(\.\d{1,2})?$/)}).default({type:'NONE',value:'0'}),
         variantId: z.string().nullable().optional(),
         quantity: z.number().int().min(1),
         addOnIds: z.array(z.string()).default([]),
@@ -135,7 +138,7 @@ export async function POST(request: NextRequest) {
     const branchId = resolveBranchId(session, data.branchId);
 
     // Re-check before idempotency replay, using the current effective keys.
-    if (data.discountAmount > 0) {
+    if (data.discountAmount > 0 || (data.invoiceDiscount&&Number(data.invoiceDiscount.value)>0) || data.items.some(i=>Number(i.discount.value)>0)) {
       try { await requireKey("pos.apply_discount"); }
       catch (error) {
         if (error instanceof ApiError && error.status === 403) {
@@ -244,8 +247,20 @@ export async function POST(request: NextRequest) {
           lineTotal,
           notes: item.notes,
           addOns: addOnRows,
+          itemDiscountType:item.discount.type,itemDiscountValue:item.discount.value,itemDiscountAmount:'0.00',invoiceDiscountShare:'0.00',
         };
       });
+
+      if(data.invoiceDiscount&&data.discountAmount>0)throw new ApiError(400,'استخدم تعريف خصم واحد للفاتورة');
+      const invoiceDiscount=data.invoiceDiscount??{type:data.discountAmount>0?'FIXED':'NONE',value:String(data.discountAmount)};
+      let priced;
+      try{priced=priceAmendment(itemRows.map((row,index)=>({id:String(index),unitPrice:row.unitPrice,addOnTotal:sumMoney(row.addOns.map(a=>a.price)),quantity:row.quantity,discount:data.items[index].discount})),invoiceDiscount);}catch(e){throw new ApiError(400,e instanceof Error?e.message:'خصم غير صالح');}
+      const effectiveDiscount=decimal(priced.discountAmount);
+      for(const [index,row] of itemRows.entries()){row.lineTotal=money(priced.lines[index].lineTotal);row.itemDiscountAmount=priced.lines[index].itemDiscount;row.invoiceDiscountShare=priced.lines[index].invoiceShare;}
+      if(effectiveDiscount.gt(0)&&!['CAFE_OWNER','BRANCH_MANAGER'].includes(session.role)){
+        const limit=await tx.salesDiscountLimit.findUnique({where:{userId:session.id}});
+        if(effectiveDiscount.gt(limit?.maxAmount??0)||(!subtotal.isZero()&&effectiveDiscount.times(100).div(subtotal).gt(limit?.maxPercent??0)))throw new ApiError(403,'الخصم يتجاوز حدك؛ احفظ الطلب بدون خصم وبانتظار التحصيل ثم اطلب اعتماد المدير من المبيعات');
+      }
 
       // ── Can the branch actually make this? ──
       //
@@ -264,7 +279,7 @@ export async function POST(request: NextRequest) {
       // authenticated into. Deliberately NOT from the request body: enforcement
       // is a business setting the owner configures, never something a till can
       // ask to relax.
-      if (decimal(data.discountAmount).gt(subtotal)) {
+      if (effectiveDiscount.gt(subtotal)) {
         queueRefusalAudit(tx, { cafeId, userId: session.id, action: "ORDER_DISCOUNT_REFUSED", entity: "Order",
           details: { branchId, reason: "EXCEEDS_SUBTOTAL" } });
         throw new ApiError(400, "Discount cannot exceed the order subtotal");
@@ -342,7 +357,7 @@ export async function POST(request: NextRequest) {
         // Cap check uses the pre-loyalty total (after the manual discount).
         const preFin = await getBranchFinancialSettings(branchId, tx);
         const preCharges = computeCharges({
-          subtotal, discount: data.discountAmount, orderType: data.type, settings: preFin,
+          subtotal, discount: effectiveDiscount, orderType: data.type, settings: preFin,
         });
         const verdict = validateRedemption(
           data.loyaltyPointsToRedeem,
@@ -362,7 +377,7 @@ export async function POST(request: NextRequest) {
       const finSettings = await getBranchFinancialSettings(branchId, tx);
       const charges = computeCharges({
         subtotal,
-        discount: decimal(data.discountAmount).plus(loyaltyDiscount),
+        discount: effectiveDiscount.plus(loyaltyDiscount),
         orderType: data.type,
         settings: finSettings,
       });
@@ -421,6 +436,7 @@ export async function POST(request: NextRequest) {
             deliveryAddress: data.deliveryAddress,
             tableNumber: data.tableNumber,
             notes: data.notes,
+            saleShiftId:shift?.id??null,invoiceDiscountType:invoiceDiscount.type,invoiceDiscountValue:invoiceDiscount.value,
             subtotal: charges.subtotal,
             discountAmount: charges.discountAmount,
             serviceChargeAmount: charges.serviceChargeAmount,
@@ -451,6 +467,7 @@ export async function POST(request: NextRequest) {
                 unitPrice: row.unitPrice,
                 quantity: row.quantity,
                 lineTotal: row.lineTotal,
+                itemDiscountType:row.itemDiscountType,itemDiscountValue:row.itemDiscountValue,itemDiscountAmount:row.itemDiscountAmount,invoiceDiscountShare:row.invoiceDiscountShare,
                 notes: row.notes,
                 addOns: { create: row.addOns },
               })),
@@ -492,9 +509,9 @@ export async function POST(request: NextRequest) {
 
       const { created: order, redemption } = await placeOrder();
 
-      if (data.discountAmount > 0) {
+      if (effectiveDiscount.gt(0)) {
         await auditInTransaction(tx, { cafeId, userId: session.id, action: "ORDER_DISCOUNT_APPLIED", entity: "Order", entityId: order.id,
-          details: { branchId, manualDiscount: money(data.discountAmount).toString(), subtotal: subtotal.toString() } });
+          details: { branchId, manualDiscount: effectiveDiscount.toString(), subtotal: subtotal.toString(),invoiceDiscount,itemDiscounts:itemRows.map(r=>({productId:r.productId,type:r.itemDiscountType,value:r.itemDiscountValue,amount:r.itemDiscountAmount})) } });
       }
       if (shift) await recomputeShiftTotals(shift.id, tx);
 
@@ -579,6 +596,7 @@ export async function POST(request: NextRequest) {
       // Non-blocking: the sale happened. The warning exists so the cashier is
       // never left thinking the shelf had what it did not.
       const freshOrder = await tx.order.findUniqueOrThrow({ where: { id: order.id }, include: orderInclude });
+      await tx.orderTrace.create({data:{cafeId,branchId,orderId:order.id,revision:0,action:'ORDER_CREATED',actorId:session.id,originalCashierId:session.id,shiftId:shift?.id,reason:'إنشاء الفاتورة',details:JSON.parse(JSON.stringify({before:null,after:freshOrder,discounts:{invoice:invoiceDiscount,items:itemRows.map(r=>({productId:r.productId,type:r.itemDiscountType,value:r.itemDiscountValue,amount:r.itemDiscountAmount}))}}))}});
       return NextResponse.json(
         availability.warnings.length > 0
           ? { order: freshOrder, warnings: availability.warnings, inventoryPolicy: enforcementMode }

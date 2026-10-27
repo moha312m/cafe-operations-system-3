@@ -1,10 +1,18 @@
 "use client";
+import { TouchNumberInput } from "@/components/pos/touch-number-input";
+import { TouchSelect } from "@/components/pos/touch-select";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { api, blockersOf, money } from "@/lib/client";
+import { api, ApiRequestError, blockersOf, money } from "@/lib/client";
+import { CloseGuidancePanel, PendingCloseBanner } from "@/components/pos/close-guidance-panel";
+import {
+  clearCloseDraft, countAction, createReadinessLoader, explainBlockers, loadCloseDraft, readinessView, READINESS_UNCHECKED, saveCloseDraft, saveCloseOutcome,
+  shiftPhase, SHIFT_PHASE_LABEL, structuredBlockers,
+  type DraftScope, type GuidanceAccess, type GuidanceBlocker, type GuidanceContext, type ReadinessState,
+} from "@/lib/close-guidance";
 import { t } from "@/lib/i18n";
 import { useApp } from "@/components/app-shell";
 import { OpeningCashPanel } from "@/components/handovers/opening-cash-panel";
@@ -27,6 +35,7 @@ export type Shift = {
   branchId: string;
   shiftNumber: number;
   custodyGateReason?: string | null;
+  pendingHandover?: { id: string; status: string; stockCountSessionId: string | null; outgoingUser: { name: string }; outgoingShift: { shiftNumber: number } } | null;
   openingCashReceipt?: { status: string } | null;
   openedAt: string;
   openingCashAmount: string;
@@ -75,7 +84,7 @@ export function ShiftControls({
   // consumers that only need a boolean (POS) can ignore it.
   onActiveChange: (hasActiveShift: boolean, shift?: Shift | null) => void;
 }) {
-  const { canKey, user } = useApp();
+  const { canKey, can, features, cafe, user } = useApp();
   const router = useRouter();
   const [handoverEnabled, setHandoverEnabled] = useState(false);
   const [handoverTarget, setHandoverTarget] = useState<"" | "SHIFT_TO_SHIFT" | "BRANCH_CUSTODY">("");
@@ -114,6 +123,30 @@ export function ShiftControls({
   // Open orders at the branch, read when the dialog opens — so the closer
   // learns what will stop (or travel with) the handover before counting.
   const [openOrders, setOpenOrders] = useState<{ total: number; refs: string[]; carry: boolean } | null>(null);
+  // Guidance (read-only readiness from the server + the structured findings of a refused close) and the user's own preserved close-form values.
+  // One state value for the readiness read (unchecked / loading / failed / checked): "no blockers" can only come from a fresh successful check.
+  const [readinessState, setReadinessState] = useState<ReadinessState>(READINESS_UNCHECKED);
+  const [refusal, setRefusal] = useState<GuidanceBlocker[]>([]);
+  const [configError, setConfigError] = useState<{ code: string } | null>(null);
+  const [draftRestored, setDraftRestored] = useState(false);
+  const [noticeItems, setNoticeItems] = useState<{ name: string; unit: string }[]>([]);
+  const [bannerRefresh, setBannerRefresh] = useState(0);
+  // What this account can OPEN (not what it may do there) — every guidance action is gated on the destination it points at.
+  const access: GuidanceAccess = {
+    settingsConfig: canKey("stock_count.configure") && can("branches:manage"),
+    orders: can("orders:read"),
+    approvals: canKey("qr_orders.view") && features?.qrMenuEnabled === true,
+    purchases: canKey("purchases.view") && features?.purchasesEnabled === true,
+    counts: canKey("stock_count.view") && features?.inventoryEnabled === true,
+    approveCorrections: canKey("stock_count.approve_correction"),
+    handovers: canKey("handover.view") && features?.inventoryEnabled === true,
+  };
+  const guidanceCtx: GuidanceContext = { branchId, access };
+  // Browser-tab storage is shared by everyone who uses this tab: drafts and notes are scoped to café + user + branch (+ shift).
+  const cafeId = cafe?.id ?? "";
+  const shiftId = shift?.id ?? "";
+  const draftScope = useMemo<DraftScope>(() => ({ cafeId, userId: user.id, branchId, shiftId }), [cafeId, user.id, branchId, shiftId]);
+  const tabStorage = () => (typeof window === "undefined" ? null : window.sessionStorage);
 
   const setActive = useCallback(
     (s: Shift | null) => {
@@ -186,6 +219,23 @@ export function ShiftControls({
     }
   }
 
+  // Read-only: the server's own findings about what would stop a close. It never submits or simulates a close.
+  // The loader is per branch; its sequence guard means only the newest request may publish, and a superseded/cancelled one publishes nothing.
+  const readinessLoader = useMemo(
+    () => (branchId ? createReadinessLoader(() => api<unknown>(`/api/branches/${branchId}/close-readiness`), setReadinessState) : null),
+    [branchId],
+  );
+  useEffect(() => () => { readinessLoader?.cancel(); }, [readinessLoader]);
+  const loadReadiness = useCallback(async () => { await readinessLoader?.load(); }, [readinessLoader]);
+
+  // The user's own close-form values survive leaving the screen (e.g. to fix a setting) and are re-applied when the dialog is reopened.
+  // Never anything derived from expected figures, and the server state is re-read at the same moment.
+  useEffect(() => {
+    if (!closeDialog || !shift) return;
+    saveCloseDraft(tabStorage(), draftScope,
+      { actualCash, notes, varianceReason, actualCard, cardReason, actualWallet, walletReason, handoverTarget, leftInDrawer, toTreasury }, Date.now());
+  }, [closeDialog, shift, draftScope, actualCash, notes, varianceReason, actualCard, cardReason, actualWallet, walletReason, handoverTarget, leftInDrawer, toTreasury]);
+
   async function openCloseDialog() {
     try {
       const opening = await api<{ settings: { overnightCashEnabled: boolean } }>('/api/branches/'+branchId+'/opening-settings');
@@ -195,6 +245,7 @@ export function ShiftControls({
         `/api/branches/${branchId}/handover-config`
       );
       setHandoverEnabled(config.enabled && config.configError?.code !== "CYCLE_POLICY_UNSUPPORTED");
+      setConfigError(config.enabled ? config.configError : null); // kept so the guidance still has a cause if the readiness read is unavailable
       setHandoverTarget("");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t.shifts.handoverConfigFailure);
@@ -224,6 +275,18 @@ export function ShiftControls({
     )
       .then((r) => setOpenOrders({ total: r.open.total, refs: r.open.refs, carry: r.carryOpenOrdersOnHandover }))
       .catch(() => setOpenOrders(null));
+    // Fresh server findings every time the dialog opens (a returning user must not see yesterday's answer), and the user's own preserved entries.
+    setRefusal([]);
+    void loadReadiness();
+    const restored = shift ? loadCloseDraft(tabStorage(), draftScope, Date.now()) : null;
+    setDraftRestored(restored !== null);
+    if (restored) {
+      setActualCash(restored.actualCash); setNotes(restored.notes); setVarianceReason(restored.varianceReason);
+      setActualCard(restored.actualCard); setCardReason(restored.cardReason); setActualWallet(restored.actualWallet); setWalletReason(restored.walletReason);
+      setLeftInDrawer(restored.leftInDrawer); setToTreasury(restored.toTreasury);
+      // The handover target is restored only if the dialog still offers it (BRANCH_CUSTODY needs the exception grant).
+      setHandoverTarget(restored.handoverTarget === "BRANCH_CUSTODY" && !canKey("handover.exception") ? "" : restored.handoverTarget);
+    }
     setCloseDialog(true);
   }
 
@@ -273,12 +336,18 @@ export function ShiftControls({
             ? `${t.shifts.surplus} ${money(diff, currency)}`
             : `${t.shifts.shortage} ${money(-diff, currency)}`;
       setCloseDialog(false);
+      // The close really happened: the preserved entries have served their purpose.
+      clearCloseDraft(tabStorage(), draftScope);
+      setDraftRestored(false); setRefusal([]);
 
       // Settled is not discharged. When the server says a handover is still
       // required, the cash reconciliation is reported as what it is — one
       // stage of two — and the notice below carries the rest. Announcing
       // "locked" here would be the lie this stage exists to remove.
       if (res.handover?.required) {
+        setNoticeItems((readinessState.status === "checked" ? readinessState.data.requiredItems : []).map((i) => ({ name: i.name, unit: i.unit })));
+        if (res.handover.handoverId) saveCloseOutcome(tabStorage(), { cafeId, userId: user.id, branchId }, { handoverId: res.handover.handoverId, shiftNumber: shift.shiftNumber, savedAt: Date.now() });
+        setBannerRefresh((n) => n + 1);
         setHandoverNotice(res.handover);
         toast.warning(`${t.shifts.settledNotDischarged} · ${msg}`);
       } else {
@@ -309,6 +378,8 @@ export function ShiftControls({
       // A refusal that named its obstacles keeps them. The dialog stays open
       // so the list appears beside the button that was refused.
       setBlockers(blockersOf(e));
+      setRefusal(e instanceof ApiRequestError ? structuredBlockers(e.payload) : []);
+      void loadReadiness(); // recheck the server's current state beside the refusal
       toast.error(e instanceof Error ? e.message : "فشل قفل الشيفت");
     } finally {
       setBusy(false);
@@ -317,6 +388,28 @@ export function ShiftControls({
 
   // Fixed-height placeholder while the first fetch resolves — keeps the
   // layout from collapsing/jumping when data arrives.
+  // Server findings only. A refused close wins over the earlier readiness read; the config error from the ordinary config read is the fallback
+  // cause when the readiness read itself is unavailable. Readiness findings render at the top of the dialog; a REFUSAL renders beside the
+  // confirm button that was refused, where the person who pressed it is looking.
+  const guidance = (() => {
+    const view = readinessView(readinessState, guidanceCtx, configError);
+    const source: "refusal" | "readiness" = refusal.length > 0 ? "refusal" : "readiness";
+    // A refusal's own list wins over the readiness read; its destinations are resolved from the latest successful readiness records (server-verified),
+    // and fall back to a labelled list link when none are available.
+    const records = readinessState.status === "checked" ? readinessState.data.records : null;
+    return {
+      show: handoverEnabled || refusal.length > 0 || readinessState.status === "failed" || !!configError,
+      source,
+      props: {
+        view: refusal.length > 0 ? { ...view, status: "blockers" as const, items: explainBlockers(refusal, { ...guidanceCtx, records }) } : view,
+        source,
+        rechecking: readinessState.status === "loading",
+        restored: draftRestored,
+        onRecheck: () => { setRefusal([]); void loadReadiness(); },
+      },
+    };
+  })();
+
   if (loading) {
     return (
       <div className="h-[52px] animate-pulse rounded-xl border border-dashed bg-muted/30" />
@@ -355,13 +448,18 @@ export function ShiftControls({
           <span className="text-sm font-medium text-muted-foreground">
             🔒 {t.shifts.mustOpen}
           </span>
-          <Button size="sm" className="ms-auto" onClick={() => setOpenDialog(true)}>
+          {!pendingShift && <Button size="sm" className="ms-auto" onClick={() => setOpenDialog(true)}>
             {t.shifts.open}
-          </Button>
+          </Button>}
         </div>
       )}
 
-      {pendingShift && <p className="rounded-lg border p-3 text-sm">شيفت #{pendingShift.shiftNumber} مفتوح وينتظر إجراءات الاستلام. <Link className="text-primary underline" href="/handovers">استكمل استلام الخامات والمكان</Link></p>}
+      {pendingShift && <section className="space-y-2 rounded-lg border p-3 text-sm" aria-label="إجراءات استلام الشيفت">
+        <p className="font-medium">شيفت #{pendingShift.shiftNumber} مفتوح لكنه غير جاهز للبيع.</p>
+        {pendingShift.pendingHandover ? <p>شيفت #{pendingShift.pendingHandover.outgoingShift.shiftNumber} مقفول ماليًا، وتسليم المخزون لم يكتمل. {["DRAFT", "REJECTED"].includes(pendingShift.pendingHandover.status) ? `المطلوب من المُسلّم ${pendingShift.pendingHandover.outgoingUser.name}: ${pendingShift.pendingHandover.stockCountSessionId ? "استكمال الجرد ومراجعته ثم تسليم العهدة" : "فتح جرد التسليم وتسجيل الكميات الفعلية"}.` : "المطلوب من مستلم العهدة: مراجعة الأصناف وتأكيد الاستلام بصلاحية الاستلام."}</p> : <p>{pendingShift.custodyGateReason === "AWAITING_OPENING_VERIFICATION" ? "المطلوب التحقق الافتتاحي من المخزون المستلم بعهدة الفرع." : "استكمل إجراءات العهدة والنقدية أو فحص المكان حسب المهمة المعروضة. إذا لم يظهر تسليم محدد، راجع المسؤول؛ لن نختار سجلًا بشكل تخميني."}</p>}
+        <Link className="inline-flex rounded-lg border px-3 py-2 text-primary underline" href={`/handovers?branchId=${encodeURIComponent(branchId)}${pendingShift.pendingHandover ? `&handoverId=${encodeURIComponent(pendingShift.pendingHandover.id)}` : ""}`}>متابعة التسليم</Link>
+      </section>}
+      <PendingCloseBanner branchId={branchId} refreshKey={bannerRefresh} />
       {!shift && <OpeningCashPanel branchId={branchId} onAccepted={load}/>}
       {shift && <CarriedOrdersStrip branchId={branchId} currency={currency} />}
 
@@ -374,14 +472,14 @@ export function ShiftControls({
           <div className="space-y-2">
             <Label>{t.shifts.openingCash}</Label>
             <p className="text-xs text-muted-foreground">لو فيه كاش متروك من شيفت الليل، رصيد الافتتاح هيتثبت بعد عدّه وتأكيد استلامه.</p>
-            <Input
+            <TouchNumberInput
               type="number"
               min="0"
               step="0.01"
               dir="ltr"
               placeholder="0.00"
               value={openingCash}
-              onChange={(e) => setOpeningCash(e.target.value)}
+              onValueChange={touchValue => setOpeningCash(touchValue)}
             />
           </div>
           <DialogFooter>
@@ -424,6 +522,7 @@ export function ShiftControls({
               </p>
             </div>
           )}
+          {guidance.show && guidance.source === "readiness" && <CloseGuidancePanel {...guidance.props} />}
           {shift && (
             <div className="space-y-3">
               {canKey("shifts.view_reports") && <dl className="space-y-1.5 rounded-lg border bg-muted/30 p-3 text-sm">
@@ -448,18 +547,18 @@ export function ShiftControls({
 
               <div className="space-y-2">
                 <Label>{t.shifts.actualCashInDrawer}</Label>
-                <Input
+                <TouchNumberInput
                   type="number"
                   min="0"
                   step="0.01"
                   dir="ltr"
                   placeholder="0.00"
                   value={actualCash}
-                  onChange={(e) => setActualCash(e.target.value)}
+                  onValueChange={touchValue => setActualCash(touchValue)}
                 />
               </div>
 
-              {overnightEnabled && handoverTarget === 'BRANCH_CUSTODY' && <div className="space-y-3 rounded-lg border p-3"><p className="text-sm font-medium">توزيع الكاش المعدود عند نهاية الليل</p><Label>المبلغ المتروك في الدرج للشيفت القادم</Label><Input aria-label="كاش متروك في الدرج" type="number" min="0" step="0.01" value={leftInDrawer} onChange={e=>setLeftInDrawer(e.target.value)} placeholder="اكتب المبلغ، الصفر مسموح"/><Label>المبلغ المحوّل للخزنة</Label><Input aria-label="كاش محول للخزنة" type="number" min="0" step="0.01" value={toTreasury} onChange={e=>setToTreasury(e.target.value)} placeholder="اكتب المبلغ، الصفر مسموح"/><p className="text-xs text-muted-foreground">المبلغين لازم يساووا إجمالي الكاش اللي عديته. التحويل للخزنة لا يُسجل كمصروف أو بيع جديد.</p></div>}
+              {overnightEnabled && handoverTarget === 'BRANCH_CUSTODY' && <div className="space-y-3 rounded-lg border p-3"><p className="text-sm font-medium">توزيع الكاش المعدود عند نهاية الليل</p><Label>المبلغ المتروك في الدرج للشيفت القادم</Label><TouchNumberInput aria-label="كاش متروك في الدرج" type="number" min="0" step="0.01" value={leftInDrawer} onValueChange={touchValue => setLeftInDrawer(touchValue)} placeholder="اكتب المبلغ، الصفر مسموح"/><Label>المبلغ المحوّل للخزنة</Label><TouchNumberInput aria-label="كاش محول للخزنة" type="number" min="0" step="0.01" value={toTreasury} onValueChange={touchValue => setToTreasury(touchValue)} placeholder="اكتب المبلغ، الصفر مسموح"/><p className="text-xs text-muted-foreground">المبلغين لازم يساووا إجمالي الكاش اللي عديته. التحويل للخزنة لا يُسجل كمصروف أو بيع جديد.</p></div>}
               {/* No live variance: the count has to be the cashier's own
                   reading of the drawer, not a number nudged until the banner
                   turns green. The result appears once the server has stored
@@ -513,13 +612,15 @@ export function ShiftControls({
                   {(shift.cardSettlementRequired || Number(shift.totalCardSales ?? 0) !== 0) && (
                     <div className="space-y-2">
                       <Label>{t.shifts.actualCardSettled}</Label>
-                      <Input
+                      <TouchNumberInput
                         type="number"
                         step="0.01"
                         dir="ltr"
                         placeholder="0.00"
                         value={actualCard}
-                        onChange={(e) => setActualCard(e.target.value)}
+                        signed
+                        aria-label={t.shifts.actualCardSettled}
+                        onValueChange={touchValue => setActualCard(touchValue)}
                       />
                       {/* Offered unconditionally and never pre-filled, the
                           same treatment the cash reason gets: if it is left
@@ -540,13 +641,15 @@ export function ShiftControls({
                   {(shift.walletSettlementRequired || Number(shift.totalWalletSales ?? 0) !== 0) && (
                     <div className="space-y-2">
                       <Label>{t.shifts.actualWalletSettled}</Label>
-                      <Input
+                      <TouchNumberInput
                         type="number"
                         step="0.01"
                         dir="ltr"
                         placeholder="0.00"
                         value={actualWallet}
-                        onChange={(e) => setActualWallet(e.target.value)}
+                        signed
+                        aria-label={t.shifts.actualWalletSettled}
+                        onValueChange={touchValue => setActualWallet(touchValue)}
                       />
                       <Label className="text-xs font-normal text-muted-foreground">
                         {t.shifts.walletVarianceReason}
@@ -564,16 +667,17 @@ export function ShiftControls({
               {handoverEnabled && (
                 <div className="space-y-2">
                   <Label htmlFor="shift-handover-target">{t.shifts.closeHandoverTarget}</Label>
-                  <select
+                  <TouchSelect
                     id="shift-handover-target"
+                    aria-label={t.shifts.closeHandoverTarget}
                     value={handoverTarget}
-                    onChange={(event) => setHandoverTarget(event.target.value as typeof handoverTarget)}
+                    onValueChange={(value) => setHandoverTarget(value as typeof handoverTarget)}
                     className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm"
                   >
                     <option value="">{t.shifts.chooseHandoverTarget}</option>
                     <option value="SHIFT_TO_SHIFT">{t.shifts.handoverToNextShift}</option>
                     {canKey("handover.exception") && <option value="BRANCH_CUSTODY">{t.shifts.handoverToBranch}</option>}
-                  </select>
+                  </TouchSelect>
                   <p className="text-xs text-muted-foreground">{t.shifts.handoverTargetHint}</p>
                 </div>
               )}
@@ -587,8 +691,8 @@ export function ShiftControls({
               </div>
             </div>
           )}
-          {blockers.length > 0 && (
-            // The server's list, rendered as the server sent it. A close that
+          {blockers.length > 0 && refusal.length === 0 && (
+            // The server's list, rendered as the server sent it (plain-string refusals only; structured ones are explained above). A close that
             // is refused for four reasons and names one teaches the closer to
             // fix things one at a time and distrust the answer.
             <div
@@ -605,6 +709,7 @@ export function ShiftControls({
               </ul>
             </div>
           )}
+          {guidance.show && guidance.source === "refusal" && <CloseGuidancePanel {...guidance.props} />}
           <DialogFooter>
             <Button
               className="w-full"
@@ -642,7 +747,15 @@ export function ShiftControls({
             <DialogTitle>{t.shifts.settledNotDischarged}</DialogTitle>
           </DialogHeader>
           <div className="space-y-3 text-sm">
+            <p data-testid="handover-phase" className="font-medium">{SHIFT_PHASE_LABEL[shiftPhase("AWAITING_HANDOVER")!].label}</p>
             <p className="text-muted-foreground">{t.shifts.handoverStillOwed}</p>
+            <p className="text-xs text-muted-foreground">{SHIFT_PHASE_LABEL.AWAITING_HANDOVER.detail}</p>
+            {noticeItems.length > 0 && (
+              <div data-testid="handover-required-items" className="rounded-lg border bg-muted/20 p-3">
+                <p className="mb-1 font-medium">أصناف مطلوب جردها</p>
+                <ul className="list-inside list-disc">{noticeItems.map((i) => <li key={`${i.name}|${i.unit}`}>{i.name} ({i.unit})</li>)}</ul>
+              </div>
+            )}
             <dl className="space-y-1.5 rounded-lg border bg-muted/30 p-3">
               {handoverNotice?.target && (
                 <div className="flex justify-between gap-3">
@@ -671,9 +784,19 @@ export function ShiftControls({
             <Button variant="outline" onClick={() => setHandoverNotice(null)}>
               {t.common.close}
             </Button>
-            <Link href="/handovers" className={buttonVariants()}>
-              {t.shifts.goToHandovers}
-            </Link>
+            {(() => {
+              // The exact handover the server just created — never a generic list. A fresh handover has no count yet, so the honest label is
+              // "ابدأ الجرد" for the custodian who may count; anyone else just follows the handover.
+              const action = handoverNotice?.handoverId
+                ? countAction(branchId, handoverNotice.handoverId, { status: "DRAFT", count: null }, canKey("handover.submit"))
+                : null;
+              if (!canKey("handover.view")) return <p data-testid="handover-notice-no-access" className="text-xs">حسابك لا يملك صلاحية عرض التسليم؛ اطلب من المدير أو المالك متابعته.</p>;
+              return (
+                <Link href={action?.href ?? `/handovers?branchId=${encodeURIComponent(branchId)}`} className={buttonVariants()} data-testid="handover-notice-action">
+                  {action?.label ?? t.shifts.goToHandovers}
+                </Link>
+              );
+            })()}
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -79,7 +79,7 @@ export default async function ReceiptPage({
   searchParams,
 }: {
   params: Promise<{ paymentId: string }>;
-  searchParams: Promise<{ print?: string; reprint?: string; scope?: string }>;
+  searchParams: Promise<{ print?: string; reprint?: string; scope?: string; embedded?: string }>;
 }) {
   const [{ paymentId }, sp] = await Promise.all([params, searchParams]);
   const session = await getSession();
@@ -266,7 +266,7 @@ export default async function ReceiptPage({
   const row = { display: "flex", justifyContent: "space-between", gap: 8 } as const;
 
   return (
-    <main dir="rtl" style={{ background: "#f4f4f5", minHeight: "100dvh", padding: "16px 8px", fontFamily: "var(--font-cairo), sans-serif" }}>
+    <main data-receipt-ready="true" dir="rtl" style={{ background: "#f4f4f5", minHeight: "100dvh", padding: "16px 8px", fontFamily: "var(--font-cairo), sans-serif" }}>
       {/* Print CSS: 80mm paper, hide screen chrome. */}
       <style>{`
         @media print {
@@ -285,7 +285,7 @@ export default async function ReceiptPage({
         @page { size: 80mm auto; margin: 2mm; }
       `}</style>
 
-      <PrintActions autoPrint={sp.print === "1"} />
+      {sp.embedded !== "1" && <PrintActions autoPrint={sp.print === "1"} />}
 
       <div
         className="receipt"

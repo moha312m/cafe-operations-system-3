@@ -1,23 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import Link from "next/link";
-import { ReasonCodeSelect } from "@/components/stock-counts/reason-code-select";
+import { useRouter } from "next/navigation";
+import { StockCountDetail } from "@/components/stock-counts/stock-count-detail";
+import { DetailFrame, ConfirmHandoverAction } from "./detail-frame";
+import { HandoverOverview, type Overview } from "./handover-overview";
+import { ReceiptLine } from "./receipt-line";
 import { api } from "@/lib/client";
 import { useApp } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import {
   Table,
   TableBody,
@@ -51,6 +44,8 @@ type HandoverLine = {
 };
 
 type HandoverView = {
+  overview: Overview;
+  workflow: { branchName: string; acknowledgements: { stockCountLineId: string; decision: string }[]; incomingShift: { id: string; shiftNumber: number; cashierId: string; cashier: { name: string } } | null; incomingAmbiguous: boolean };
   financialSummary?:{outgoingName:string;incomingName:string|null;shiftId:string;shiftNumber:number;cashVariance:string|null;cashReason:string|null;tenders:Array<{method:string;varianceAmount:string|null;reasonNote:string|null}>;cashReceiptVariance:string|null;cashVerifiedAt:string|null};
   handoverId: string;
   status: HandoverStatus;
@@ -79,35 +74,45 @@ export function HandoverDetail({
   handoverId,
   onClose,
   onChanged,
+  embedded = false,
+  expectedBranchId,
+  reviewSessionId,
 }: {
+  embedded?: boolean;
+  expectedBranchId?: string;
+  reviewSessionId?: string | null;
   handoverId: string | null;
   onClose: () => void;
   onChanged: () => void;
 }) {
   const { canKey, user } = useApp();
+  const router = useRouter();
+  const inFlight = useRef(false);
+  const [confirmSubmit, setConfirmSubmit] = useState(false);
   const [view, setView] = useState<HandoverView | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [ackLine, setAckLine] = useState<HandoverLine | null>(null);
-  const [spotCount, setSpotCount] = useState("");
-  const [disputeReasonCodeId, setDisputeReasonCodeId] = useState("");
-  const [disputeNote, setDisputeNote] = useState("");
+  const [search, setSearch] = useState("");
 
   const load = useCallback(async () => {
     if (!handoverId) return;
-    setLoading(true);
+    setError("");
+    if (!embedded) setLoading(true);
     try {
       const { handover } = await api<{ handover: HandoverView }>(
         `/api/handovers/${handoverId}`
       );
+      if (expectedBranchId && handover.branchId !== expectedBranchId) throw new Error("التسليم لا يخص الفرع المحدد — ارجع للقائمة واختر الفرع الصحيح");
       setView(handover);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "تعذّر فتح التسليم");
+      const message = e instanceof Error ? e.message : "تعذّر فتح التسليم";
+      setError(message);
       setView(null);
     } finally {
       setLoading(false);
     }
-  }, [handoverId]);
+  }, [handoverId, embedded, expectedBranchId]);
 
   useEffect(() => {
     load();
@@ -118,8 +123,9 @@ export function HandoverDetail({
     onChanged();
   }, [load, onChanged]);
 
-  async function acknowledge() {
-    if (!view || !ackLine) return;
+  async function acknowledge(ackLine: HandoverLine, spotCount: string, disputeReasonCodeId: string, disputeNote: string) {
+    if (!view || inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
     try {
       const res = await api<{
@@ -141,19 +147,20 @@ export function HandoverDetail({
       toast.success(
         res.decision === "DISPUTED" ? "اتسجل اعتراض على السطر" : "اتسجل استلام السطر"
       );
-      setAckLine(null);
       // The first acknowledgement changes what the server will disclose, so
       // the whole view is re-read rather than patched.
       await after();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "تعذّر تسجيل الاستلام");
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   }
 
   async function outgoing(action: "start_count" | "submit") {
-    if (!view) return;
+    if (!view || inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
     try {
       await api("/api/handovers", {
@@ -165,22 +172,29 @@ export function HandoverDetail({
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "تعذّر تنفيذ الإجراء");
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   }
 
   return (
     <>
-      <Dialog open={handoverId !== null} onOpenChange={(o) => !o && !busy && onClose()}>
-        <DialogContent className="max-h-[88vh] max-w-4xl overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>تفاصيل التسليم</DialogTitle>
-          </DialogHeader>
+      <DetailFrame embedded={embedded} open={handoverId !== null} busy={busy} title="تسليم الشيفت" onClose={onClose}>
 
           {loading && <p className="text-sm text-muted-foreground">جاري التحميل…</p>}
+          {error && <p role="alert" className="rounded-lg border p-3 text-sm">{error}. إذا كان التسليم مسودة لشخص آخر، يراجع المسؤول الجرد بصلاحيته الحالية، ثم يعود المُسلّم لتسليم العهدة للمراجعة. لم نغير أي حالة.</p>}
+          {!view && reviewSessionId && canKey("stock_count.confirm") && canKey("stock_count.view") && <StockCountDetail key={reviewSessionId} embedded expectedBranchId={expectedBranchId} sessionId={reviewSessionId} onClose={onClose} onChanged={onChanged} />}
 
           {!loading && view && (
-            <div className="space-y-4 text-sm">
+            <div className="min-w-0 space-y-4 text-sm">
+              <section className="space-y-3 rounded-lg bg-muted/30 p-3" aria-label="تقدم التسليم">
+                <p className="font-medium">{view.workflow.branchName} · تسليم شيفت #{view.financialSummary?.shiftNumber} — {view.overview.financiallyClosedAt ? "الإقفال المالي مكتمل" : "الإقفال المالي غير مسجل"}، حالة العهدة: {HANDOVER_STATUS_LABEL[view.status]}</p>
+                <p>المُسلّم: {view.overview.signatures.outgoingName}. المستلم المنتظر: {view.workflow.incomingShift?.cashier.name ?? "غير محدد"}{view.workflow.incomingShift && ` — شيفت #${view.workflow.incomingShift.shiftNumber}`}. جميع الأقسام هنا؛ أكمل المتطلبات غير المنجزة دون الانتقال إلى معالج خطوات.</p>
+                {view.workflow.incomingAmbiguous && <p role="alert">يوجد أكثر من شيفت مستلم؛ يلزم تحديد المستلم وفق الإجراء القائم قبل القبول. لن نختار نيابة عنك.</p>}
+                {!canKey("stock_count.confirm") && <p>اعتماد الجرد يحتاج مسؤولًا بصلاحية تأكيد الجرد؛ لا يمنحك عرض الصفحة هذه الصلاحية.</p>}
+                <p className="text-muted-foreground">الكميات الفعلية لا تُملأ تلقائيًا. المتوقع والفروق يظهران عند نقطة الإفصاح المسموحة فقط؛ لن نُظهر هدف الجرد الأعمى قبلها.</p>
+                <Button size="sm" variant="outline" disabled={busy} onClick={() => void after()}>تحديث الحالة</Button>
+              </section>
               <div className="flex flex-wrap items-center gap-2">
                 <Badge>{HANDOVER_STATUS_LABEL[view.status] ?? view.status}</Badge>
                 {view.target && (
@@ -200,48 +214,45 @@ export function HandoverDetail({
 
               {canKey("handover.submit") && view.outgoingUserId === user.id && ["DRAFT", "REJECTED"].includes(view.status) && (
                 <div className="flex flex-wrap gap-2">
-                  <Button
+                  {(!view.count || view.status === "REJECTED") && <Button
                     size="sm"
                     variant="outline"
                     disabled={busy}
                     onClick={() => outgoing("start_count")}
                     data-testid="handover-start-count"
                   >
-                    فتح جرد التسليم
-                  </Button>
+                    {view.status === "REJECTED" ? "فتح جرد إعادة التسليم" : "فتح جرد التسليم"}
+                  </Button>}
                   <Button
                     size="sm"
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() => outgoing("submit")}
+                    variant="default"
+                    disabled={busy || view.status !== "DRAFT" || view.count?.status !== "CONFIRMED"}
+                    onClick={() => setConfirmSubmit(true)}
                     data-testid="handover-submit"
                   >
-                    تسليم العهدة
+                    تأكيد تقديم عهدة الشيفت
                   </Button>
                 </div>
               )}
 
-              {view.financialSummary && <section className="rounded-lg border p-3 space-y-2">
-                <h3 className="font-medium">فروق شيفت التسليم — {view.financialSummary.outgoingName} · #{view.financialSummary.shiftNumber}</h3>
-                <p>فرق الكاش: {view.financialSummary.cashVariance??"غير مسجل"} · {view.financialSummary.cashReason??"بدون سبب مسجل"}</p>
-                {view.financialSummary.tenders.map(t=><p key={t.method}>{t.method==="CARD"?"فيزا":t.method==="WALLET"?"محفظة":t.method}: {t.varianceAmount??"غير مسجل"} · {t.reasonNote??"بدون سبب مسجل"}</p>)}
-                {view.financialSummary.cashVerifiedAt&&<p>فرق النقدية عند الاستلام: {view.financialSummary.cashReceiptVariance??"غير متاح"} · المستلم: {view.financialSummary.incomingName}</p>}
-                {canKey("variance.view")&&<Link className="text-primary underline" href={"/reports/employee-variances?handoverId="+view.handoverId}>كشف فروق الشيفت والخامات والمسؤولية</Link>}
-              </section>}
+              <HandoverOverview overview={view.overview} />
               {view.requiredItems.length > 0 && (
                 <div className="rounded-lg border bg-muted/20 p-3">
                   <p className="mb-1 font-medium">أصناف مطلوب جردها</p>
                   <p className="text-muted-foreground">
-                    {view.requiredItems.map((i) => i.itemNameSnapshot).join(" · ")}
+                    {view.requiredItems.map((i) => `${i.itemNameSnapshot} (${i.unitSnapshot})`).join(" · ")}
                   </p>
                 </div>
               )}
 
+              {view.status === "REJECTED" && <p role="status">الجرد السابق أُعيد للمُسلّم. افتح جرد إعادة التسليم؛ سيُحفظ الجرد القديم وسجل الاعتراض ولن نعيد استخدامه كدليل مقبول.</p>}
+              {view.count && view.status === "DRAFT" && canKey("stock_count.view") && <StockCountDetail key={view.count.sessionId} embedded expectedBranchId={view.branchId} sessionId={view.count.sessionId} onClose={onClose} onChanged={after} />}
+              <label className="block">بحث عن صنف<input className="mt-1 h-9 w-full rounded-lg border px-3" aria-label="بحث أصناف الاستلام" value={search} onChange={e => setSearch(e.target.value)} /></label>
               {view.count === null ? (
                 <p className="rounded-lg border border-dashed p-4 text-center text-muted-foreground">
                   مفيش جرد مربوط بالتسليم ده
                 </p>
-              ) : (
+              ) : !["DRAFT", "REJECTED"].includes(view.status) ? (
                 <div className="overflow-x-auto rounded-xl border">
                   <Table>
                     <TableHeader>
@@ -254,7 +265,7 @@ export function HandoverDetail({
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {view.count.lines.map((line) => (
+                      {view.count.lines.filter(line => line.inventoryItem.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())).map((line) => (
                         <TableRow key={line.id} data-testid="handover-line-row">
                           <TableCell className="font-medium">
                             {line.inventoryItem.name}
@@ -267,21 +278,9 @@ export function HandoverDetail({
                             {view.acknowledged ? (line.varianceQuantity ?? "—") : "مخفي"}
                           </TableCell>
                           <TableCell className="text-end">
-                            {canKey("handover.accept") && ["OUTGOING_SUBMITTED", "INCOMING_REVIEW"].includes(view.status) && view.outgoingUserId !== user.id && (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                disabled={busy}
-                                onClick={() => {
-                                  setSpotCount("");
-                                  setDisputeReasonCodeId("");
-                                  setDisputeNote("");
-                                  setAckLine(line);
-                                }}
-                                data-testid="handover-acknowledge-line"
-                              >
-                                استلام السطر
-                              </Button>
+                            {view.workflow.acknowledgements.filter(ack => ack.stockCountLineId === line.id).map(ack => <span key={ack.stockCountLineId}>{ack.decision === "DISPUTED" ? "معترض عليه — اطلب إعادة الجرد" : "تم استلام السطر"}</span>)}
+                            {canKey("handover.accept") && ["OUTGOING_SUBMITTED", "INCOMING_REVIEW"].includes(view.status) && (view.outgoingUserId !== user.id || user.role === "CAFE_OWNER") && !view.workflow.acknowledgements.some(ack => ack.stockCountLineId === line.id) && (
+                              <ReceiptLine name={line.inventoryItem.name} busy={busy} onConfirm={(q,r,n) => acknowledge(line,q,r,n)} />
                             )}
                           </TableCell>
                         </TableRow>
@@ -289,54 +288,22 @@ export function HandoverDetail({
                     </TableBody>
                   </Table>
                 </div>
-              )}
-
-              {view.count && <Link className="text-primary underline" href={`/stock-counts?sessionId=${view.count.sessionId}`}>فتح الجرد وتسجيل الكميات</Link>}
-              {(["OUTGOING_SUBMITTED", "INCOMING_REVIEW"] as string[]).includes(view.status) && <HandoverActionBar handoverId={view.handoverId} onDone={() => { onChanged(); onClose(); }} />}
+              ) : null}
+              {(["OUTGOING_SUBMITTED", "INCOMING_REVIEW"] as string[]).includes(view.status) && <HandoverActionBar key={view.handoverId} handoverId={view.handoverId} allowReceive={(view.outgoingUserId !== user.id || user.role === "CAFE_OWNER") && !view.workflow.incomingAmbiguous && view.target === "SHIFT_TO_SHIFT"} onDone={async () => {
+                try {
+                  if (canKey("shifts.view_current")) await api(`/api/shifts/active?branchId=${encodeURIComponent(view.branchId)}`);
+                } catch {
+                  toast.warning("تم حفظ الإجراء؛ تعذّر تحديث الشيفت الآن. حدّث نقطة البيع للتحقق من جاهزيته.");
+                } finally {
+                  await after(); router.refresh();
+                }
+              }} />}
             </div>
           )}
-        </DialogContent>
-      </Dialog>
+      </DetailFrame>
+      <ConfirmHandoverAction title="تسليم العهدة للمراجعة والاستلام" open={confirmSubmit} busy={busy} onCancel={() => setConfirmSubmit(false)} onConfirm={() => {setConfirmSubmit(false); void outgoing("submit");}} />
 
-      <Dialog open={ackLine !== null} onOpenChange={(o) => !o && !busy && setAckLine(null)}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>استلام سطر</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-3 text-sm">
-            <p className="text-muted-foreground">{ackLine?.inventoryItem.name}</p>
-            <div className="space-y-2">
-              <Label>عدّك أنت (سيبها فاضية لو وقّعت من غير عد)</Label>
-              <Input
-                inputMode="decimal"
-                value={spotCount}
-                onChange={(e) => setSpotCount(e.target.value)}
-              />
-            </div>
-            <div className="space-y-2">
-              <ReasonCodeSelect domain="HANDOVER" value={disputeReasonCodeId} onChange={setDisputeReasonCodeId} label="سبب الاعتراض عند وجود فرق" optional />
-            </div>
-            <div className="space-y-2">
-              <Label>ملاحظة</Label>
-              <Textarea
-                rows={2}
-                value={disputeNote}
-                onChange={(e) => setDisputeNote(e.target.value)}
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button
-              className="w-full"
-              disabled={busy}
-              onClick={acknowledge}
-              data-testid="handover-acknowledge-confirm"
-            >
-              تسجيل الاستلام
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+
     </>
   );
 }

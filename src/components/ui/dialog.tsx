@@ -43,13 +43,20 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
-  scrollable = false,
+  scrollable = true,
   ...props
 }: DialogPrimitive.Popup.Props & {
   showCloseButton?: boolean
-  /** Keep the close control outside the scrolling body of long dialogs. */
+  /** Viewport-safe by default; custom sheets/navigation manage their own scrolling. */
   scrollable?: boolean
 }) {
+  // Only lift direct footer children: never move actions out of a nested form.
+  const items = React.Children.toArray(children)
+  const footer = scrollable
+    ? items.find((item) => React.isValidElement(item) && item.type === DialogFooter)
+    : undefined
+  const body = footer ? items.filter((item) => item !== footer) : children
+
   return (
     <DialogPortal>
       <DialogOverlay />
@@ -66,23 +73,38 @@ function DialogContent({
         {...props}
       >
         {scrollable ? (
-          <div data-slot="dialog-scroll-area" className="grid min-h-0 gap-4 overflow-y-auto overscroll-contain p-4 pt-0 [overflow-wrap:anywhere]">
-            {children}
+          <div
+            data-slot="dialog-scroll-area"
+            className="grid min-h-0 min-w-0 gap-4 overflow-y-auto overscroll-contain p-4 pt-0 [overflow-wrap:anywhere]"
+            onFocusCapture={(event) => {
+              // Native textarea focus may reveal only the caret, leaving the
+              // rest of the field clipped beneath the fixed action region.
+              const target = event.target
+              requestAnimationFrame(() => {
+                if (target instanceof HTMLElement && target.isConnected) {
+                  target.scrollIntoView({ block: "nearest", inline: "nearest" })
+                }
+              })
+            }}
+          >
+            {body}
           </div>
         ) : children}
+        {footer && <div data-slot="dialog-actions" className="shrink-0 px-4 pb-4 pt-4">{footer}</div>}
         {showCloseButton && (
           <DialogPrimitive.Close
             data-slot="dialog-close"
             render={
               <Button
                 variant="ghost"
-                className="absolute top-2 end-2"
+                className="cashier-dialog-close absolute top-2 end-2"
                 size="icon-sm"
               />
             }
           >
             <XIcon
             />
+            <span className="cashier-dialog-back hidden">رجوع</span>
             <span className="sr-only">Close</span>
           </DialogPrimitive.Close>
         )}

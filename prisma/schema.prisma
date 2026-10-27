@@ -84,6 +84,8 @@ enum PaymentStatus {
 }
 
 enum OwnerAction {
+  AMEND_ORDER_REFUND
+  AMEND_ORDER_VOID
   CANCEL_ORDER
   VOID_ORDER_ITEM
   REFUND_ORDER
@@ -383,6 +385,8 @@ model CafeSettings {
   /// paid) is flagged to the owner and branch manager as forgotten. 0 turns
   /// the alert off. Informational only â€” it never changes an order.
   staleOrderAlertHours Int @default(2)
+  /// Minute-precision reminder. NULL retains legacy hours multiplied by 60.
+  staleOrderAlertMinutes Int?
 
   // Count configuration. The DEFAULTs are what a NEW cafÃ© gets; the
   // migration pins every EXISTING cafÃ© to NO_SHIFT_COUNT, so no shop is
@@ -422,6 +426,7 @@ model CafeSettings {
 }
 
 model Branch {
+  reportingVersions BranchReportingVersion[]
   openingSettings BranchOpeningSettings?
   cashStorages CashStorage[]
   openingCashReceipts OpeningCashReceipt[]
@@ -488,6 +493,21 @@ placeAssets PlaceAsset[]
   placeReceipts ShiftPlaceReceipt[]
   placeIncidents PlaceIncident[]
   placePhotos PlacePhoto[]
+}
+
+// Append-only reporting configuration. An absent version preserves calendar-day reporting.
+model BranchReportingVersion {
+  id String @id @default(cuid())
+  branchId String
+  effectiveDate String
+  startTime String
+  endTime String
+  timezone String
+  is24Hours Boolean
+  createdById String
+  createdAt DateTime @default(now())
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  @@unique([branchId, effectiveDate])
 }
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Table sessions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -1038,6 +1058,12 @@ model RecipeItem {
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Orders â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 model Order {
+  revision Int @default(0)
+  activeAmendmentId String?
+  saleShiftId String?
+  invoiceDiscountType String?
+  invoiceDiscountValue Decimal? @db.Decimal(12,2)
+  revisions OrderRevision[]
   id                  String      @id @default(cuid())
   cafeId              String
   branchId            String
@@ -1156,6 +1182,10 @@ model Order {
 // Item rows snapshot name & price at sale time so menu edits never
 // rewrite history.
 model OrderItem {
+  itemDiscountType String @default("NONE")
+  itemDiscountValue Decimal @default(0) @db.Decimal(12,2)
+  itemDiscountAmount Decimal @default(0) @db.Decimal(12,2)
+  invoiceDiscountShare Decimal @default(0) @db.Decimal(12,2)
   id            String        @id @default(cuid())
   orderId       String
   productId     String?
@@ -1200,6 +1230,8 @@ model OrderItemAddOn {
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Payments â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 model Payment {
+  amendmentId String?
+  amendmentLegKey String? @unique
   id                  String        @id @default(cuid())
   cafeId              String
   branchId            String? // Ø§Ù„ÙØ±Ø¹ â€” Ù…Ø´ØªÙ‚ Ù…Ù† Ø§Ù„Ø£ÙˆØ±Ø¯Ø± (nullable Ù„Ù„ØµÙÙˆÙ Ø§Ù„Ù‚Ø¯ÙŠÙ…Ø©)
@@ -1248,6 +1280,123 @@ model Payment {
   @@index([status])
   @@index([tableSessionId])
   @@index([reversalOfPaymentId])
+}
+
+model OrderRevision {
+  id String @id @default(cuid())
+  orderId String
+  order Order @relation(fields:[orderId], references:[id], onDelete:Restrict)
+  number Int
+  amendmentId String @unique
+  cafeId String
+  branchId String
+  actorId String
+  approverId String?
+  originalCashierId String?
+  originalShiftId String?
+  postingShiftId String?
+  reason String
+  before Json
+  after Json
+  oldTotal Decimal @db.Decimal(12,2)
+  newTotal Decimal @db.Decimal(12,2)
+  discountDelta Decimal @db.Decimal(12,2)
+  recognizedDelta Decimal @db.Decimal(12,2)
+  createdAt DateTime @default(now())
+  @@unique([orderId,number])
+  @@index([cafeId,branchId,createdAt])
+}
+
+model OrderAmendment {
+  kitchenStatus String?
+  stockPlan Json?
+  id String @id @default(cuid())
+  cafeId String
+  branchId String
+  orderId String
+  requesterId String
+  requestKey String
+  requestHash String
+  baseRevision Int
+  fingerprint String
+  before Json
+  proposed Json
+  reason String
+  status String @default("READY")
+  approvalRequired Boolean @default(false)
+  ownerApprovalRequired Boolean @default(false)
+  approverId String?
+  approvalSettingsVersion Int?
+  ownerRequestId String?
+  ownerVoidRequestId String?
+  originalShiftId String?
+  originalShiftClosed Boolean @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([cafeId,requesterId,requestKey])
+  @@index([cafeId,branchId,orderId,createdAt])
+}
+
+model AmendmentSettlement {
+  id String @id @default(cuid())
+  amendmentId String
+  cafeId String
+  branchId String
+  actorId String
+  shiftId String
+  requestKey String
+  direction String
+  amount Decimal @db.Decimal(12,2)
+  legs Json
+  status String @default("PENDING")
+  evidence Json?
+  failureReason String?
+  createdAt DateTime @default(now())
+  observedAt DateTime?
+  @@unique([amendmentId,requestKey])
+  @@index([amendmentId,status])
+}
+
+model SalesDiscountLimit {
+  userId String @id
+  cafeId String
+  maxPercent Decimal @default(0) @db.Decimal(5,2)
+  maxAmount Decimal @default(0) @db.Decimal(12,2)
+  updatedById String
+  updatedAt DateTime @updatedAt
+  @@index([cafeId])
+}
+
+model AmendmentTenderReference {
+  id String @id @default(cuid())
+  cafeId String
+  branchId String
+  attemptId String
+  method String
+  reference String @db.VarChar(200)
+  actorId String
+  createdAt DateTime @default(now())
+  @@unique([cafeId,method,reference])
+  @@index([attemptId])
+}
+
+model OrderTrace {
+  id String @id @default(cuid())
+  cafeId String
+  branchId String
+  orderId String
+  amendmentId String?
+  revision Int
+  action String
+  actorId String
+  originalCashierId String?
+  approverId String?
+  shiftId String?
+  reason String
+  details Json
+  createdAt DateTime @default(now())
+  @@index([cafeId,branchId,createdAt])
+  @@index([orderId,createdAt])
 }
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Shifts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -3259,6 +3408,7 @@ model OwnerActionSettings {
 }
 
 model OwnerActionRequest {
+  targetAmendmentId String?
   id String @id @default(cuid())
   cafeId String
   branchId String

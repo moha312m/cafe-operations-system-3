@@ -1,7 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { requirePermission, resolveCafeId, handleApiError, ApiError, resolveReadScope } from "@/lib/api";
-import { DEFAULT_STALE_ORDER_ALERT_HOURS, openOrdersSummary } from "@/lib/open-orders";
+import { openOrdersSummary } from "@/lib/open-orders";
+import { resolveStaleOrderAlertMinutes } from "@/lib/stale-order-alert";
 
 // GET /api/orders/open-summary?branchId= — what is still open at the branch,
 // and which orders have been sitting long enough to count as forgotten.
@@ -24,13 +25,14 @@ export async function GET(request: NextRequest) {
 
     const settings = await db.cafeSettings.findUnique({
       where: { cafeId },
-      select: { staleOrderAlertHours: true, carryOpenOrdersOnHandover: true },
+      select: { staleOrderAlertHours: true, staleOrderAlertMinutes: true, carryOpenOrdersOnHandover: true },
     });
-    const staleHours = settings?.staleOrderAlertHours ?? DEFAULT_STALE_ORDER_ALERT_HOURS;
-    const summary = await openOrdersSummary({ cafeId, branchId, staleHours });
+    const staleMinutes = resolveStaleOrderAlertMinutes(settings);
+    const summary = await openOrdersSummary({ cafeId, branchId, staleMinutes });
 
     return NextResponse.json({
-      staleHours,
+      staleMinutes,
+      staleHours: staleMinutes / 60,
       carryOpenOrdersOnHandover: settings?.carryOpenOrdersOnHandover ?? false,
       ...summary,
     });

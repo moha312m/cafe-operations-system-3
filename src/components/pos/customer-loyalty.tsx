@@ -1,4 +1,5 @@
 "use client";
+import { TouchNumberInput } from "@/components/pos/touch-number-input";
 
 import { useEffect, useRef, useState } from "react";
 import { Input } from "@/components/ui/input";
@@ -260,10 +261,10 @@ export function CustomerLoyalty({
               </div>
               <div className="space-y-1.5">
                 <Label>عدد النقاط المستخدمة (الأقصى {cap})</Label>
-                <Input
+                <TouchNumberInput
                   type="number" dir="ltr" min={0} max={cap}
                   value={pointsInput}
-                  onChange={(e) => { setPointsInput(e.target.value); setModalError(null); }}
+                  onValueChange={touchValue => { setPointsInput(touchValue); setModalError(null); }}
                 />
               </div>
               <div className="space-y-1 text-xs">
