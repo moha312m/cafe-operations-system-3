@@ -48,7 +48,7 @@ function actionsFor(o: { status: OrderStatus; paymentStatus: PaymentStatus; paid
 export async function openOrdersSummary(args: {
   cafeId: string;
   branchId: string | null;
-  staleHours: number;
+  staleMinutes: number;
   now?: Date;
 }) {
   const now = args.now ?? new Date();
@@ -72,8 +72,8 @@ export async function openOrdersSummary(args: {
 
   let stale: StaleOrder[] = [];
   let staleCount = 0;
-  if (args.staleHours > 0) {
-    const cutoff = new Date(now.getTime() - args.staleHours * 3_600_000);
+  if (args.staleMinutes > 0) {
+    const cutoff = new Date(now.getTime() - args.staleMinutes * 60_000);
     const staleWhere: Prisma.OrderWhereInput = {
       ...scope,
       OR: [

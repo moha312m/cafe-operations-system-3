@@ -1,5 +1,6 @@
 import { decimal, money, sumMoney, moneyMin, type Decimal, type Numeric, validCurrencyInput } from "@/lib/money";
 import { NextResponse, type NextRequest } from "next/server";
+import {allocateOrderPayable} from '@/lib/order-amendment-math';
 import { z } from "zod";
 import { requireKey, handleApiError, ApiError, resolveReadScope } from "@/lib/api";
 import { auditInTransaction } from "@/lib/audit";
@@ -170,13 +171,15 @@ export async function POST(request: NextRequest, { params }: Params) {
         for (const sel of data.items) {
           const entry = itemMap.get(sel.orderItemId);
           if (!entry) throw new ApiError(400, "في صنف مش موجود في الجلسة");
+          if(entry.order.revision>0&&entry.order.items.some(i=>i.itemPayments.length))throw new ApiError(409,'الفاتورة المعدلة بها توزيعات أصناف تاريخية؛ استخدم التحصيل الكامل أو الجزئي بالمبلغ لحفظ تاريخها');
           const paidQty = entry.item.itemPayments.reduce((s, p) => s + p.quantityPaid, 0);
           const remainingQty = entry.item.quantity - paidQty;
           if (sel.quantity > remainingQty) {
             throw new ApiError(400, `الكمية المطلوبة أكبر من المتبقي لـ ${entry.item.productName}`);
           }
           // Unit share includes add-ons (lineTotal already includes them).
-          const cumulativeShare = money(decimal(entry.item.lineTotal).times(paidQty + sel.quantity).div(entry.item.quantity));
+          const payable=allocateOrderPayable(entry.order.total,entry.order.items).find(s=>s.id===entry.item.id)!.amount;
+          const cumulativeShare = money(decimal(payable).times(paidQty + sel.quantity).div(entry.item.quantity));
           const amount = money(cumulativeShare.minus(sumMoney(entry.item.itemPayments.map(p => p.amountPaid))));
           const list = byOrder.get(entry.order.id) ?? [];
           list.push({ orderItemId: sel.orderItemId, quantity: sel.quantity, amount });

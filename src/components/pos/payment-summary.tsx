@@ -1,9 +1,10 @@
 "use client";
+import { useId } from "react";
+import { TouchNumberInput } from "@/components/pos/touch-number-input";
 
 import { money } from "@/lib/client";
 import { t } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
 import type { CollectionMode, PaymentMethod, SplitMethod } from "./types";
@@ -31,9 +32,11 @@ const COLLECTION: { value: CollectionMode; label: string; icon: string }[] = [
 export type MixedAmounts = { CASH: string; CARD: string; WALLET: string };
 
 export function PaymentSummary({
+  checkoutOnly = false,
   currency,
   subtotal,
   discountInput,
+  discountError = null,
   discountAmount,
   loyaltyPoints = 0,
   loyaltyDiscount = 0,
@@ -55,9 +58,12 @@ export function PaymentSummary({
   onMixedChange,
   onPlaceOrder,
 }: {
+  checkoutOnly?: boolean;
   currency: string;
   subtotal: number;
   discountInput: string;
+  /** Set only when the invoice discount itself is the cause of the error; line-level errors leave it null. */
+  discountError?: string | null;
   discountAmount: number;
   loyaltyPoints?: number;
   loyaltyDiscount?: number;
@@ -79,8 +85,10 @@ export function PaymentSummary({
   onMixedChange: (field: SplitMethod, value: string) => void;
   onPlaceOrder: () => void;
 }) {
+  const validationId = useId();
   const { canKey } = useApp();
   const canDiscount = canKey("pos.apply_discount");
+  const discountInvalid = canDiscount && !!discountError;
   const mixedSum =
     (Number(mixed.CASH) || 0) + (Number(mixed.CARD) || 0) + (Number(mixed.WALLET) || 0);
   const collectNow = collectionMode === "NOW";
@@ -89,7 +97,17 @@ export function PaymentSummary({
 
   const paid = partial ? Math.min(Math.max(Number(paidInput) || 0, 0), total) : collectNow ? total : 0;
   const remaining = Math.max(total - paid, 0);
-  const partialInvalid = partial && (paid <= 0 || paid > total + 0.001);
+  const partialInvalid = partial && (!Number.isFinite(Number(paidInput)) || Number(paidInput) <= 0 || Number(paidInput) > total + 0.001);
+
+  if (checkoutOnly) return <div className="space-y-2" data-testid="cashier-checkout">
+    <div className="flex items-center justify-between gap-2 text-lg font-bold"><span>{t.finance.finalTotal}</span><span>{money(total,currency)}</span></div>
+    <Button className="min-h-14 w-full text-base" disabled={placeDisabled || submitting || mixedMismatch || partialInvalid} onClick={onPlaceOrder}>
+      {submitting ? t.pos.placing : collectNow ? `${t.pos.charge} ${money(total,currency)}` : partial ? `${t.collection.collectPayment} ${money(paid,currency)}` : `${t.pos.placeOrder} · ${money(total,currency)}`}
+    </Button>
+    {placeDisabled && disabledReason && <p className="text-sm text-muted-foreground">{disabledReason}</p>}
+    {mixedMismatch && <p role="alert" className="text-sm text-destructive">مبلغ الدفع لا يساوي إجمالي الطلب</p>}
+    {partialInvalid && <p role="alert" className="text-sm text-destructive">أدخل مبلغًا أكبر من صفر ولا يتجاوز الإجمالي.</p>}
+  </div>;
 
   return (
     <div className="space-y-3">
@@ -101,6 +119,7 @@ export function PaymentSummary({
             <button
               key={c.value}
               type="button"
+              aria-pressed={collectionMode === c.value}
               onClick={() => onCollectionModeChange(c.value)}
               className={cn(
                 "flex flex-col items-center gap-0.5 rounded-lg border py-2 text-xs font-medium transition-colors",
@@ -123,6 +142,7 @@ export function PaymentSummary({
             <button
               key={m.value}
               type="button"
+              aria-pressed={method === m.value}
               onClick={() => onMethodChange(m.value)}
               className={cn(
                 "flex items-center justify-center gap-1 rounded-lg border py-1.5 text-xs font-medium transition-colors",
@@ -142,11 +162,14 @@ export function PaymentSummary({
       {partial && (
         <div className="flex items-center justify-between gap-2 rounded-lg border bg-muted/30 p-2">
           <span className="text-xs text-muted-foreground">{t.collection.collectAmount}</span>
-          <Input
+          <TouchNumberInput
+            aria-label={t.collection.collectAmount}
+            aria-invalid={partialInvalid}
+            aria-describedby={partialInvalid ? `${validationId}-partial` : undefined}
             type="number" min="0" step="0.01" placeholder="0.00" dir="ltr"
-            className="h-7 w-28 text-end text-sm"
+            className="min-h-7 w-28 text-end text-sm"
             value={paidInput}
-            onChange={(e) => onPaidChange(e.target.value)}
+            onValueChange={touchValue => onPaidChange(touchValue)}
           />
         </div>
       )}
@@ -157,11 +180,14 @@ export function PaymentSummary({
           {SPLIT_FIELDS.map((f) => (
             <div key={f.key} className="flex items-center justify-between gap-2">
               <span className="text-xs text-muted-foreground">{f.label}</span>
-              <Input
+              <TouchNumberInput
+                aria-label={f.label}
+                aria-invalid={mixedMismatch}
+                aria-describedby={mixedMismatch ? `${validationId}-mixed` : undefined}
                 type="number" min="0" step="0.01" placeholder="0.00" dir="ltr"
-                className="h-7 w-28 text-end text-sm"
+                className="min-h-7 w-28 text-end text-sm"
                 value={mixed[f.key]}
-                onChange={(e) => onMixedChange(f.key, e.target.value)}
+                onValueChange={touchValue => onMixedChange(f.key, touchValue)}
               />
             </div>
           ))}
@@ -180,13 +206,15 @@ export function PaymentSummary({
         </div>
         <div className="flex items-center justify-between gap-2">
           <span className="text-muted-foreground">{t.pos.discount}</span>
-          <Input
+          <TouchNumberInput
             type="number" min="0" step="0.01" placeholder="0.00" dir="ltr"
-            className="h-7 w-24 text-end text-sm"
+            className="min-h-7 w-24 text-end text-sm"
             value={discountInput}
             disabled={!canDiscount}
             aria-label={t.pos.discount}
-            onChange={(e) => onDiscountChange(e.target.value)}
+            aria-invalid={discountInvalid}
+            aria-describedby={discountInvalid ? `${validationId}-discount` : undefined}
+            onValueChange={touchValue => onDiscountChange(touchValue)}
           />
         </div>
         {discountAmount > 0 && (
@@ -234,24 +262,17 @@ export function PaymentSummary({
         )}
       </div>
 
-      <Button
-        size="lg"
-        className="h-12 w-full text-base font-semibold"
-        disabled={placeDisabled || submitting || mixedMismatch || partialInvalid}
-        onClick={onPlaceOrder}
-      >
-        {submitting
-          ? t.pos.placing
-          : collectNow
-            ? `${t.pos.charge} ${money(total, currency)}`
-            : partial
-              ? `${t.collection.collectPayment} ${money(paid, currency)}`
-              : `${t.pos.placeOrder} · ${money(total, currency)}`}
-      </Button>
+
       {mixedMismatch && (
-        <p className="text-center text-xs text-destructive">مبلغ الدفع لا يساوي إجمالي الطلب</p>
+        <p id={`${validationId}-mixed`} className="text-center text-xs text-destructive">مبلغ الدفع لا يساوي إجمالي الطلب</p>
       )}
-      {placeDisabled && disabledReason && (
+      {partialInvalid && (
+        <p id={`${validationId}-partial`} className="text-center text-xs text-destructive">أدخل مبلغًا أكبر من صفر ولا يتجاوز الإجمالي.</p>
+      )}
+      {discountInvalid && (
+        <p id={`${validationId}-discount`} className="text-center text-xs text-destructive">{discountError}</p>
+      )}
+      {placeDisabled && disabledReason && !(discountInvalid && disabledReason === discountError) && (
         <p className="text-center text-xs text-muted-foreground">{disabledReason}</p>
       )}
     </div>

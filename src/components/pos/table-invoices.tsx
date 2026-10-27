@@ -1,9 +1,11 @@
 "use client";
+import { TouchNumberInput } from "@/components/pos/touch-number-input";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { api, money } from "@/lib/client";
 import { useApp } from "@/components/app-shell";
+import { PaymentReceiptPreview } from "@/components/receipts/payment-receipt-preview";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -138,15 +140,17 @@ export function TableInvoices({
 
   async function refresh() { await load(); onChanged?.(); }
 
+  const paymentInFlight = useRef(false);
   async function submitCollect() {
-    if (!collect) return;
+    if (!collect || paymentInFlight.current) return;
     const amt = Number(amount) || 0;
+    paymentInFlight.current = true;
     setBusy(true);
     try {
       let paymentId = "";
       let scope: "order" | "table" = "order";
       if (collect.kind === "invoice") {
-        if (amt <= 0 || amt > collect.remaining + 0.001) { setBusy(false); return toast.error("مبلغ غير صحيح"); }
+        if (amt <= 0 || amt > collect.remaining + 0.001) { paymentInFlight.current=false; setBusy(false); return toast.error("مبلغ غير صحيح"); }
         const r = await api<{ payments: { id: string }[] }>("/api/payments", {
           method: "POST", body: { orderId: collect.orderId, amount: amt, method: payMethod },
         });
@@ -155,7 +159,7 @@ export function TableInvoices({
         const mode = collect.kind === "table-full" ? "FULL" : "PARTIAL";
         const body: Record<string, unknown> = { mode, method: payMethod };
         if (mode === "PARTIAL") body.amount = amt;
-        if (mode === "PARTIAL" && (amt <= 0 || amt > collect.remaining + 0.001)) { setBusy(false); return toast.error("مبلغ غير صحيح"); }
+        if (mode === "PARTIAL" && (amt <= 0 || amt > collect.remaining + 0.001)) { paymentInFlight.current=false; setBusy(false); return toast.error("مبلغ غير صحيح"); }
         // Loyalty redemption against the table account (server re-validates).
         if (tiPointsNum > 0 && tiCustomer) {
           body.loyaltyPointsToRedeem = tiPointsNum;
@@ -172,6 +176,7 @@ export function TableInvoices({
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "فشل التحصيل");
     } finally {
+      paymentInFlight.current = false;
       setBusy(false);
     }
   }
@@ -287,58 +292,13 @@ export function TableInvoices({
         </div>
       )}
 
-      {/* Post-payment receipt actions */}
-      <Dialog open={receipt !== null} onOpenChange={(o) => !o && setReceipt(null)}>
-        <DialogContent className="max-w-xs">
-          <DialogHeader>
-            <DialogTitle>تم تحصيل الدفع بنجاح ✅</DialogTitle>
-          </DialogHeader>
-          <div className="grid gap-2">
-            {receipt?.paymentId ? (
-              <>
-                <Button
-                  className="h-11 w-full"
-                  onClick={() => {
-                    // Table payments default to the unified bill; explicit
-                    // invoice collections force the single-order receipt.
-                    const scopeQs = receipt.scope === "table" ? "&scope=table" : "&scope=order";
-                    window.open(`/receipts/payment/${receipt.paymentId}?print=1${scopeQs}`, "_blank");
-                  }}
-                >
-                  🖨️ طباعة الريسيت
-                </Button>
-                <Button
-                  variant="outline"
-                  className="h-11 w-full"
-                  onClick={() => {
-                    const scopeQs = receipt.scope === "table" ? "?scope=table" : "?scope=order";
-                    window.open(`/receipts/payment/${receipt.paymentId}${scopeQs}`, "_blank");
-                  }}
-                >
-                  عرض الريسيت
-                </Button>
-              </>
-            ) : (
-              <p className="text-xs text-muted-foreground">
-                تم سداد الحساب بخصم النقاط بالكامل — لا توجد دفعة نقدية لطباعتها.
-              </p>
-            )}
-            {summary && summary.remainingAmount > 0.001 && (
-              <Button
-                variant="outline"
-                className="h-10 w-full text-sm"
-                onClick={() => setReceipt(null)}
-              >
-                تحصيل دفعة أخرى
-              </Button>
-            )}
-            <Button variant="ghost" className="h-10 w-full text-muted-foreground" onClick={() => setReceipt(null)}>
-              إغلاق
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
+      {/* Post-payment preview, shared with new-order and later collection. */}
+      {receipt && <PaymentReceiptPreview
+        paymentId={receipt.paymentId}
+        scope={receipt.scope}
+        onClose={() => setReceipt(null)}
+        extraActions={summary && summary.remainingAmount > 0.001 ? <Button variant="outline" onClick={() => setReceipt(null)}>تحصيل دفعة أخرى</Button> : undefined}
+      />}
       {/* Collect dialog */}
       <Dialog open={collect !== null} onOpenChange={(o) => !o && !busy && setCollect(null)}>
         <DialogContent className="max-w-xs">
@@ -377,11 +337,11 @@ export function TableInvoices({
                       </p>
                       {tiLoyalty?.enabled && tiCustomer.loyaltyPointsBalance >= (tiLoyalty?.minPointsToRedeem ?? 0) ? (
                         <>
-                          <Input
+                          <TouchNumberInput
                             type="number" dir="ltr" className="h-9"
                             placeholder={`عدد النقاط المستخدمة (أقل عدد ${tiLoyalty.minPointsToRedeem})`}
                             value={tiPoints}
-                            onChange={(e) => setTiPoints(e.target.value)}
+                            onValueChange={touchValue => setTiPoints(touchValue)}
                           />
                           {tiPointsNum > 0 && (
                             <p className="text-[11px] text-amber-700 dark:text-amber-400">
@@ -399,7 +359,7 @@ export function TableInvoices({
 
               <div className="space-y-1.5">
                 <Label>مبلغ التحصيل</Label>
-                <Input type="number" min="0" step="0.01" dir="ltr" value={amount} onChange={(e) => setAmount(e.target.value)}
+                <TouchNumberInput type="number" min="0" step="0.01" dir="ltr" value={amount} onValueChange={touchValue => setAmount(touchValue)}
                   disabled={collect.kind === "table-full"} />
               </div>
               <div className="space-y-1.5">

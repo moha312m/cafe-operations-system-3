@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { requirePermission, requireKey, handleApiError, ApiError } from "@/lib/api";
 import { auditInTransaction } from "@/lib/audit";
 import { DEFAULT_STALE_ORDER_ALERT_HOURS, MAX_STALE_ORDER_ALERT_HOURS } from "@/lib/open-orders";
+import { MAX_STALE_ORDER_ALERT_MINUTES, resolveStaleOrderAlertMinutes } from "@/lib/stale-order-alert";
 
 // What a handover close does with orders still open in the branch, and when
 // an order sitting unserved or unpaid is flagged as forgotten.
@@ -23,11 +24,12 @@ export async function GET() {
     const cafeId = cafeIdOf(session);
     const settings = await db.cafeSettings.findUnique({
       where: { cafeId },
-      select: { carryOpenOrdersOnHandover: true, staleOrderAlertHours: true },
+      select: { carryOpenOrdersOnHandover: true, staleOrderAlertHours: true, staleOrderAlertMinutes: true },
     });
     return NextResponse.json({
       carryOpenOrdersOnHandover: settings?.carryOpenOrdersOnHandover ?? false,
       staleOrderAlertHours: settings?.staleOrderAlertHours ?? DEFAULT_STALE_ORDER_ALERT_HOURS,
+      staleOrderAlertMinutes: resolveStaleOrderAlertMinutes(settings),
     });
   } catch (error) {
     return handleApiError(error);
@@ -37,6 +39,12 @@ export async function GET() {
 const patchSchema = z
   .object({
     carryOpenOrdersOnHandover: z.boolean({ message: "القيمة لازم تكون تشغيل أو إيقاف" }).optional(),
+    staleOrderAlertMinutes: z
+      .number({ message: "عدد الدقائق لازم يكون رقم" })
+      .int("عدد الدقائق لازم يكون رقم صحيح")
+      .min(0, `عدد الدقائق من 0 لـ ${MAX_STALE_ORDER_ALERT_MINUTES}`)
+      .max(MAX_STALE_ORDER_ALERT_MINUTES, `عدد الدقائق من 0 لـ ${MAX_STALE_ORDER_ALERT_MINUTES}`)
+      .optional(),
     staleOrderAlertHours: z
       .number({ message: "عدد الساعات لازم يكون رقم" })
       .int("عدد الساعات لازم يكون رقم صحيح")
@@ -45,7 +53,10 @@ const patchSchema = z
       .optional(),
   })
   .strict()
-  .refine((v) => v.carryOpenOrdersOnHandover !== undefined || v.staleOrderAlertHours !== undefined, {
+  .refine((v) => v.staleOrderAlertMinutes === undefined || v.staleOrderAlertHours === undefined, {
+    message: "ابعت وقت التنبيه بالدقائق أو بالساعات، مش الاتنين",
+  })
+  .refine((v) => v.carryOpenOrdersOnHandover !== undefined || v.staleOrderAlertHours !== undefined || v.staleOrderAlertMinutes !== undefined, {
     message: "مفيش تغيير متبعت",
   });
 
@@ -53,16 +64,18 @@ export async function PATCH(request: NextRequest) {
   try {
     const session = await requireKey("settings.edit");
     const cafeId = cafeIdOf(session);
-    const { carryOpenOrdersOnHandover, staleOrderAlertHours } = patchSchema.parse(await request.json());
+    const { carryOpenOrdersOnHandover, staleOrderAlertHours, staleOrderAlertMinutes } = patchSchema.parse(await request.json());
+    const minutes = staleOrderAlertMinutes ?? (staleOrderAlertHours !== undefined ? staleOrderAlertHours * 60 : undefined);
 
     const updated = await db.$transaction(async (tx) => {
       const prev = await tx.cafeSettings.findUnique({
         where: { cafeId },
-        select: { carryOpenOrdersOnHandover: true, staleOrderAlertHours: true },
+        select: { carryOpenOrdersOnHandover: true, staleOrderAlertHours: true, staleOrderAlertMinutes: true },
       });
       const data = {
         ...(carryOpenOrdersOnHandover !== undefined ? { carryOpenOrdersOnHandover } : {}),
         ...(staleOrderAlertHours !== undefined ? { staleOrderAlertHours } : {}),
+        ...(minutes !== undefined ? { staleOrderAlertMinutes: minutes } : {}),
       };
       const next = await tx.cafeSettings.upsert({
         where: { cafeId },
@@ -99,12 +112,20 @@ export async function PATCH(request: NextRequest) {
           },
         });
       }
+      if (staleOrderAlertMinutes !== undefined) {
+        await auditInTransaction(tx, {
+          cafeId, userId: session.id, action: "STALE_ORDER_ALERT_MINUTES_CHANGED",
+          entity: "CafeSettings", entityId: next.id,
+          details: { byName: session.name, scope: "CAFE", unit: "MINUTES", oldValue: resolveStaleOrderAlertMinutes(prev), newValue: resolveStaleOrderAlertMinutes(next) },
+        });
+      }
       return next;
     });
 
     return NextResponse.json({
       carryOpenOrdersOnHandover: updated.carryOpenOrdersOnHandover,
       staleOrderAlertHours: updated.staleOrderAlertHours,
+      staleOrderAlertMinutes: resolveStaleOrderAlertMinutes(updated),
     });
   } catch (error) {
     return handleApiError(error);

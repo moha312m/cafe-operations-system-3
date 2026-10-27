@@ -25,9 +25,9 @@ export function ProductCard({
       disabled={disabled}
       onClick={() => onSelect(product)}
       className={cn(
-        "group flex flex-col overflow-hidden rounded-xl border bg-card text-start shadow-sm transition-all",
+        "group flex min-h-44 flex-col overflow-hidden rounded-xl border bg-card text-start shadow-sm transition-all",
         disabled
-          ? "cursor-not-allowed opacity-45"
+          ? "cursor-not-allowed bg-muted/40"
           : "hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md active:translate-y-0 active:scale-[0.98] active:shadow-sm"
       )}
     >
@@ -36,7 +36,7 @@ export function ProductCard({
         {categoryIcon(product.category.name)}
       </div>
       <div className="flex flex-1 flex-col gap-0.5 p-3">
-        <p className="text-sm font-semibold leading-tight">{product.name}</p>
+        <p className="text-base font-semibold leading-snug [overflow-wrap:anywhere]">{product.name}</p>
         {product.sku && <p className="text-xs text-muted-foreground" dir="ltr">SKU {product.sku}</p>}
         <p className="text-xs text-muted-foreground">{product.category.name}</p>
         <p className="mt-auto pt-1.5 text-sm font-bold tabular-nums">
@@ -48,7 +48,7 @@ export function ProductCard({
           )}
         </p>
         {disabled && (
-          <p className="text-xs font-medium text-destructive">{t.pos.unavailable}</p>
+          <p className="text-sm font-medium text-destructive">{t.pos.unavailable} — {!product.isActive ? "الصنف موقوف" : "غير متاح للبيع حاليًا"}</p>
         )}
       </div>
     </button>

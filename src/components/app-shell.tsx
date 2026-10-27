@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import type { CafeFeatures } from "@/lib/cafe-settings";
 import { LowStockBanner } from "@/components/low-stock-banner";
 import { StaleOrdersBanner } from "@/components/stale-orders-banner";
+import { CashierTouchViewport } from "@/components/pos/cashier-touch-viewport";
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 
 export type AppContextValue = {
@@ -59,6 +60,8 @@ const NAV: NavItem[] = [
   // Table setup is no longer a prominent daily page — it's reached from a
   // small "إدارة أرقام الترابيزات" button on /tables (owner/manager only).
   { href: "/orders", label: t.nav.orders, icon: "🔔", permission: "orders:read" },
+  { href: "/sales", label: "المبيعات", icon: "📈", permission: "orders:read", key: "sales.view" },
+  { href: "/tracing", label: "التتبّع", icon: "🔎", permission: "audit:read", key: "audit.view" },
   // Approvals shows when waiter approval is on OR QR orders route to a waiter.
   { href: "/approvals", label: t.nav.approvals, icon: "📱", permission: "orders:approve", key: "qr_orders.view", feature: (f) => f.qrMenuEnabled },
   { href: "/menu", label: t.nav.menu, icon: "📖", permission: "menu:manage" },
@@ -101,6 +104,7 @@ export function AppShell({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
+  const cashierTouch = ["/pos", "/orders", "/sales", "/tracing", "/tables", "/current-shift", "/receipts", "/reports"].some(route => pathname === route || pathname.startsWith(route + "/"));
   const router = useRouter();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   useEffect(() => {
@@ -248,6 +252,7 @@ export function AppShell({
 
   return (
     <AppContext.Provider value={{ user, cafe, branchName, can, canKey, permKeys, features }}>
+      <CashierTouchViewport active={cashierTouch} />
       <div className="flex min-h-screen w-full flex-col bg-workspace md:flex-row">
         <aside className="sticky top-0 hidden h-dvh w-60 shrink-0 flex-col bg-sidebar text-sidebar-foreground md:flex">
           {sidebarContent}

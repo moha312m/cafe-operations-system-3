@@ -57,12 +57,14 @@ export async function lockShifts(tx: Prisma.TransactionClient, ids: string[]) {
   if (rows.length !== sorted.length) throw new ApiError(404, "الشيفت مش موجود في نطاقك");
   remember(tx, "Shift", sorted, rows.map(r => r.id), 1);
 }
-export async function lockOrders(tx: Prisma.TransactionClient, ids: string[]) {
+export async function lockOrders(tx: Prisma.TransactionClient, ids: string[], amendmentId?: string) {
   const sorted = newLocks(tx, "Order", ids, 2);
   if (!sorted.length) return;
   const rows = await tx.$queryRaw<{ id: string }[]>`SELECT o."id" FROM "Order" o WHERE o."id" IN (${Prisma.join(sorted)}) AND ${scopedLockPredicate(tx, "o")} ORDER BY o."id" FOR UPDATE OF o`;
   if (rows.length !== sorted.length) throw new ApiError(404, "الطلب مش موجود في نطاقك");
   remember(tx, "Order", sorted, rows.map(r => r.id), 2);
+  const reserved = await tx.order.findFirst({where:{id:{in:sorted},activeAmendmentId:{not:null},...(amendmentId ? {NOT:{activeAmendmentId:amendmentId}} : {})},select:{id:true}});
+  if (reserved) throw new ApiError(409,'الطلب محجوز لتسوية تعديل — راجع المبيعات قبل أي حركة أخرى');
 }
 export async function lockOrderPayments(tx: Prisma.TransactionClient, ids: string[]) {
   const sorted = newLocks(tx, "Payment", ids, 3);

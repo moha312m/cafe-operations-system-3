@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { useApp } from "@/components/app-shell";
 
 type ActionRequest = {
-  id: string; action: "CANCEL_ORDER" | "VOID_ORDER_ITEM" | "REFUND_ORDER" | "REFUND_PAYMENT";
+  id: string; action: "CANCEL_ORDER" | "VOID_ORDER_ITEM" | "REFUND_ORDER" | "REFUND_PAYMENT" | "AMEND_ORDER_REFUND" | "AMEND_ORDER_VOID";
   status: string; mode: string; reason: string; amount: number | string; createdAt: string;
   requester: { id: string; name: string }; owner: { id: string; name: string };
   decider: { id: string; name: string } | null; executor: { id: string; name: string } | null;
@@ -19,6 +19,7 @@ type ActionRequest = {
 const actionNames: Record<ActionRequest["action"], string> = {
   CANCEL_ORDER: "إلغاء طلب", VOID_ORDER_ITEM: "حذف صنف من طلب",
   REFUND_ORDER: "استرداد طلب", REFUND_PAYMENT: "استرداد دفعة",
+  AMEND_ORDER_REFUND:'مرتجع فرق تعديل فاتورة',AMEND_ORDER_VOID:'إزالة أصناف ضمن تعديل فاتورة',
 };
 const statusNames: Record<string, string> = {
   PENDING: "بانتظار الاعتماد", APPROVED: "معتمد وينتظر التنفيذ", EXECUTED: "تم التنفيذ",
@@ -74,7 +75,7 @@ export function OwnerActionQueue() {
             <Input className="max-w-40" type="password" inputMode="numeric" autoComplete="off" placeholder="باسكود المالك" value={passcodes[request.id] ?? ""} onChange={(event) => setPasscodes((current) => ({ ...current, [request.id]: event.target.value }))} />
             <Button size="sm" variant="outline" disabled={!!busy || !(passcodes[request.id] ?? "")} onClick={() => run(request, "PASSCODE")}>اعتماد بالباسكود</Button>
           </>}
-          {request.status === "APPROVED" && user.id === request.requester.id && <Button size="sm" disabled={!!busy} onClick={() => run(request, "EXECUTE")}>تنفيذ الإجراء</Button>}
+          {request.action.startsWith('AMEND_ORDER_')?<a className="text-sm underline" href={'/sales?q='+encodeURIComponent(request.targetOrderId??'')}>المعاينة والتسوية في المبيعات</a>:request.status === "APPROVED" && user.id === request.requester.id && <Button size="sm" disabled={!!busy} onClick={() => run(request, "EXECUTE")}>تنفيذ الإجراء</Button>}
         </div>
       </CardContent>
     </Card>)}</div>

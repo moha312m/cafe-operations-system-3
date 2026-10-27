@@ -1,9 +1,10 @@
 "use client";
+import {KitchenAmendmentTickets} from '@/components/sales/kitchen-amendment-tickets';
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { api, money } from "@/lib/client";
+import { api, money, ApiRequestError } from "@/lib/client";
 import { collectOrderPages, type OrderPage } from "@/lib/order-pages-client";
 import { t, formatTime } from "@/lib/i18n";
 import { isOrderFullyPaid } from "@/lib/order-payments";
@@ -224,6 +225,32 @@ export default function KitchenPage() {
     }
   }, [user.branchId]);
 
+  // The same recovery /orders offers when serving is refused because the branch's stock custody has no responsible shift:
+  // resume the caller's own open shift (POST /api/shifts {resumeOnly}) or, mid-handover, go to the handover page. Nothing is retried automatically.
+  async function resumeShiftForCustody(branchId: string) {
+    try {
+      const result = await api<{ shift: { custodyGateReason: string | null } }>("/api/shifts", {
+        method: "POST",
+        body: { resumeOnly: true, ...(user.role === "CAFE_OWNER" || user.role === "SUPER_ADMIN" ? { branchId } : {}) },
+      });
+      if (result.shift.custodyGateReason) throw new Error("الشيفت في انتظار التسليم أو التحقق الافتتاحي — أكمل الإجراءات من صفحة التسليم والاستلام");
+      toast.success("تم استئناف الشيفت وربط العهدة — جرّب تسليم الطلب تاني");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "فشل استئناف الشيفت");
+    }
+  }
+  function showCustodyRecovery(e: unknown, branchId: string): boolean {
+    if (!(e instanceof ApiRequestError) || !e.payload || typeof e.payload !== "object" || !("code" in e.payload) || e.payload.code !== "STOCK_CUSTODY_REQUIRED") return false;
+    const handover = "recovery" in e.payload && e.payload.recovery === "HANDOVER";
+    toast.error(e.message, {
+      duration: 15_000,
+      action: handover
+        ? { label: "التسليم والاستلام", onClick: () => router.push("/handovers") }
+        : { label: "استئناف الشيفت", onClick: () => void resumeShiftForCustody(branchId) },
+    });
+    return true;
+  }
+
   async function advance(order: KitchenOrder, next: string) {
     setBusy(true);
     try {
@@ -240,7 +267,7 @@ export default function KitchenPage() {
       setDetail(null);
       await load();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "فشل تحديث الحالة");
+      if (!showCustodyRecovery(e, order.branch.id)) toast.error(e instanceof Error ? e.message : "فشل تحديث الحالة");
     } finally {
       setBusy(false);
     }
@@ -271,17 +298,20 @@ export default function KitchenPage() {
     if (list.length === 0) return;
     setBusy(true);
     const failed: string[] = [];
+    let custodyError: { error: unknown; branchId: string } | null = null;
     let served = 0;
     for (const order of list) {
       try {
         await api(`/api/orders/${order.id}/status`, { method: "PATCH", body: { status: "SERVED" } });
         served += 1;
       } catch (e) {
+        if (e instanceof ApiRequestError && e.payload && typeof e.payload === "object" && "code" in e.payload && e.payload.code === "STOCK_CUSTODY_REQUIRED") custodyError ??= { error: e, branchId: order.branch.id };
         failed.push(`#${order.orderNumber}: ${e instanceof Error ? e.message : "فشل"}`);
       }
     }
     if (served > 0) toast.success(`${label}: اتقدم ${served} طلب ✅`);
     if (failed.length > 0) toast.error(`متقدمش ${failed.length}: ${failed.join(" · ")}`, { duration: 10_000 });
+    if (custodyError) showCustodyRecovery(custodyError.error, custodyError.branchId);
     setDetail(null);
     await load();
     setBusy(false);
@@ -292,6 +322,7 @@ export default function KitchenPage() {
   return (
     <FeatureGate feature="kitchenScreenEnabled">
     <div className="space-y-4">
+      <KitchenAmendmentTickets/>
       {loadError && <p role="alert" className="text-sm text-destructive">تعذر تحديث المطبخ؛ البيانات المعروضة قديمة: {loadError}</p>}
       {/* ── Header & filters ─────────────────────────────────── */}
       <div className="flex flex-wrap items-center gap-3">

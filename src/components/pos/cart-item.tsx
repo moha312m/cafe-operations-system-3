@@ -5,6 +5,7 @@ import { money } from "@/lib/client";
 import { t } from "@/lib/i18n";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { TouchNumberInput } from "./touch-number-input";
 import type { CartLine } from "./types";
 
 export function CartItem({
@@ -32,7 +33,7 @@ export function CartItem({
     <div className="rounded-lg border bg-card p-2.5">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <p className="truncate text-sm font-semibold">
+          <p className="text-base font-semibold [overflow-wrap:anywhere]">
             {line.product.name}
             {line.variant && (
               <span className="font-normal text-muted-foreground">
@@ -41,7 +42,7 @@ export function CartItem({
             )}
           </p>
           {line.addOns.length > 0 && (
-            <p className="truncate text-xs text-muted-foreground">
+            <p className="text-sm text-muted-foreground [overflow-wrap:anywhere]">
               + {line.addOns.map((a) => a.name).join(", ")}
             </p>
           )}
@@ -54,32 +55,35 @@ export function CartItem({
         </p>
       </div>
 
-      <div className="mt-2 flex items-center gap-1.5">
+      <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button
           variant="outline"
           size="sm"
-          className="size-8 p-0 text-base"
-          aria-label="Decrease quantity"
+          className="min-h-14 min-w-14 p-0 text-xl"
+          aria-label={`تقليل كمية ${line.product.name}`}
+          disabled={line.quantity <= 1}
           onClick={() => onQuantityChange(line.key, -1)}
         >
           −
         </Button>
-        <span className="w-7 text-center text-sm font-semibold tabular-nums">
-          {line.quantity}
-        </span>
+        <TouchNumberInput aria-label={`كمية ${line.product.name}`} className="w-36" value={line.quantity} min={1} step={1} integer required
+          onValueChange={value => {const quantity=Number(value);if(Number.isSafeInteger(quantity)&&quantity>=1)onQuantityChange(line.key,quantity-line.quantity);}} />
         <Button
           variant="outline"
           size="sm"
-          className="size-8 p-0 text-base"
-          aria-label="Increase quantity"
+          className="min-h-14 min-w-14 p-0 text-xl"
+          aria-label={`زيادة كمية ${line.product.name}`}
           onClick={() => onQuantityChange(line.key, 1)}
         >
           +
         </Button>
+      </div>
+      {line.quantity <= 1 && <p className="mt-1 text-xs text-muted-foreground">أقل كمية 1 — استخدم حذف لإزالة الصنف.</p>}
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-3 border-t pt-2">
         <Button
           variant="ghost"
           size="sm"
-          className="ms-auto h-8 px-2 text-xs text-muted-foreground"
+          className="px-3 text-sm text-muted-foreground"
           onClick={() => {
             setNoteDraft(line.note);
             setEditingNote(true);
@@ -90,7 +94,7 @@ export function CartItem({
         <Button
           variant="ghost"
           size="sm"
-          className="h-8 px-2 text-xs text-destructive"
+          className="px-3 text-sm text-destructive"
           aria-label={t.common.remove}
           onClick={() => onRemove(line.key)}
         >

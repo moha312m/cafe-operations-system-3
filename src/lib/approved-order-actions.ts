@@ -22,6 +22,7 @@ async function claimApprovedAction(tx: Prisma.TransactionClient, args: ClaimArgs
   protectedContext(tx).trace.push({ entity: "OwnerActionRequest", ids: locked.map(row => row.id), mode: "FOR UPDATE" });
   const request = await tx.ownerActionRequest.findFirst({ where: { id: args.requestId, cafeId: args.actor.cafeId! } });
   if (!request || request.requesterId !== args.actor.id) throw new ApiError(404, "Owner action request not found");
+  if (request.action === 'AMEND_ORDER_REFUND' || request.action === 'AMEND_ORDER_VOID') throw new ApiError(409,'Use the amendment settlement workflow for this approval');
   if (request.action !== (args.action ?? request.action)) throw new ApiError(409, "Approved action does not match this operation");
 
   if (request.status === "EXECUTED") {
@@ -89,6 +90,7 @@ async function voidOrderItemInTransaction(
     },
   });
   if (!order || !["CONFIRMED", "PREPARING", "READY"].includes(order.status)) throw new ApiError(409, "This order can no longer have an item voided");
+  if(order.revision>0||order.invoiceDiscountType||order.items.some(i=>i.itemDiscountAmount?.gt(0)))throw new ApiError(409,'استخدم تعديل الأصناف في المبيعات لحفظ المراجعة وتوزيع الخصومات الصحيح');
   if (order.paymentStatus === "PAID" || order.paymentStatus === "PARTIAL" || order.paymentStatus === "REFUNDED" || decimal(order.paidAmount).gt(0)) {
     throw new ApiError(409, "Paid or refunded orders cannot have individual items voided");
   }

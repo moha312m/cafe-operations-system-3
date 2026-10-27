@@ -25,6 +25,26 @@
 // `paymentStatus = PAID` as a sale.
 
 import { db } from "@/lib/db";
+import {reportEventWhere,type EventWindow} from './report-window-scope';
+export function financialEventWhere(scope:FinancialScope,field='createdAt',viaOrder=false){return scope.windows?reportEventWhere(scope.windows,field,viaOrder):{[field]:scope.period};}
+
+// Live order totals describe the latest bill. Recognition retains the original
+// period and posts amendments in their own period. Refund rows are subtracted
+// separately, so recognizedDelta already compensates for amendment refunds.
+async function revisionRecognition(scope: FinancialScope) {
+  const base=await db.orderRevision.findMany({where:{order:salesWhere(scope),before:{path:['status'],equals:'SERVED'}},select:{oldTotal:true,newTotal:true,order:{select:{source:true,createdById:true,approvedById:true}}}});
+  const current=await db.orderRevision.findMany({where:{cafeId:scope.cafeId,...(scope.branchId?{branchId:scope.branchId}:{}),...financialEventWhere(scope)},select:{recognizedDelta:true,order:{select:{source:true,createdById:true,approvedById:true}}}});
+  return [...base.map(r=>({order:r.order,amount:Number(r.oldTotal)-Number(r.newTotal)})),...current.map(r=>({order:r.order,amount:Number(r.recognizedDelta)})),...await preServiceRefundBasis(scope)];
+}
+
+// Refunds made while a paid order was still preparing must remain in its first
+// gross recognition; otherwise the revised price AND refund are deducted twice.
+export async function preServiceRefundBasis(scope:FinancialScope){
+ const revisions=await db.orderRevision.findMany({where:{order:salesWhere(scope),NOT:{before:{path:['status'],equals:'SERVED'}}},select:{amendmentId:true,orderId:true,order:{select:{source:true,createdById:true,approvedById:true}}}});
+ if(!revisions.length)return [];
+ const payments=await db.payment.findMany({where:{amendmentId:{in:revisions.map(r=>r.amendmentId)},type:'REFUND',status:'PAID'},select:{amendmentId:true,amount:true}});
+ return revisions.map(r=>({orderId:r.orderId,order:r.order,amount:payments.filter(p=>p.amendmentId===r.amendmentId).reduce((sum,p)=>sum+Number(p.amount),0)}));
+}
 
 /** Canonical sale recognition. Sales exist only in this state. */
 export const SALE_STATUS = "SERVED" as const;
@@ -36,6 +56,7 @@ export type FinancialScope = {
   /** Undefined means every branch the caller is allowed to see. */
   branchId?: string;
   period: Period;
+  windows?:EventWindow[];
 };
 
 export type Financials = {
@@ -60,7 +81,7 @@ export function salesWhere(scope: FinancialScope) {
     cafeId: scope.cafeId,
     ...(scope.branchId ? { branchId: scope.branchId } : {}),
     status: SALE_STATUS,
-    createdAt: scope.period,
+    ...financialEventWhere(scope),
   };
 }
 
@@ -73,7 +94,7 @@ export function movementWhere(scope: FinancialScope) {
   return {
     cafeId: scope.cafeId,
     ...(scope.branchId ? { order: { branchId: scope.branchId } } : {}),
-    createdAt: scope.period,
+    ...financialEventWhere(scope,'createdAt',true),
   };
 }
 
@@ -110,7 +131,8 @@ export async function periodFinancials(scope: FinancialScope): Promise<Financial
 
   const collections = r2(collectedBy.CASH + collectedBy.CARD + collectedBy.WALLET + collectedBy.MIXED);
   const refunds = r2(refundedBy.CASH + refundedBy.CARD + refundedBy.WALLET + refundedBy.MIXED);
-  const grossSales = r2(Number(sales._sum.total ?? 0));
+  const recognition=await revisionRecognition(scope);
+  const grossSales = r2(Number(sales._sum.total ?? 0)+recognition.reduce((sum,r)=>sum+r.amount,0));
 
   return {
     grossSales,
@@ -183,6 +205,10 @@ export async function salesByStaff(scope: FinancialScope): Promise<StaffSales[]>
 
   for (const row of byCreator) add(row.createdById!, Number(row._sum.total ?? 0), row._count);
   for (const row of byApprover) add(row.approvedById!, Number(row._sum.total ?? 0), row._count);
+  for (const row of await revisionRecognition(scope)) {
+    const seller=row.order.source==='QR_MENU'?row.order.approvedById:row.order.createdById;
+    if(seller)add(seller,row.amount,0);
+  }
 
   for (const row of refundRows) {
     const o = row.order;

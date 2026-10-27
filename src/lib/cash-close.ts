@@ -403,6 +403,9 @@ export async function closeShiftWithSettlement(
     if (!candidate) throw new ApiError(404, "الشيفت مش موجود");
     const periods = await tx.custodyPeriod.findMany({ where: { cafeId: candidate.cafeId, branchId: candidate.branchId, status: "OPEN" }, select: { responsibleShiftId: true } });
     await lockShifts(tx, [args.shiftId, ...periods.map(p => p.responsibleShiftId).filter((id): id is string => !!id)]);
+    if(await tx.amendmentSettlement.findFirst({where:{shiftId:args.shiftId,status:{in:['PENDING','UNKNOWN','OBSERVED']}},select:{id:true}}))throw new ApiError(409,'راجع تسويات تعديل الفواتير المعلقة قبل قفل الشيفت');
+    const reserved=await tx.$queryRaw<{id:string}[]>`SELECT s."id" FROM "AmendmentSettlement" s JOIN "OrderAmendment" a ON a."id"=s."amendmentId" WHERE a."originalShiftId"=${args.shiftId} AND s."status" IN ('PENDING','UNKNOWN','OBSERVED') LIMIT 1`;
+    if(reserved.length)throw new ApiError(409,'فاتورة من هذا الشيفت لديها تسوية تعديل معلقة');
     await lockBranchAllocator(tx, candidate.branchId);
     // Active serving/carry targets and orders contributing to this locked drawer.
     const orders = await tx.order.findMany({ where: { cafeId: candidate.cafeId, branchId: candidate.branchId, OR: [

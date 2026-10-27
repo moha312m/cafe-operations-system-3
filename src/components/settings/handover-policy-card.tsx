@@ -14,17 +14,17 @@ import { Input } from "@/components/ui/input";
 export function HandoverPolicyCard() {
   const [saved, setSaved] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
-  const [savedHours, setSavedHours] = useState<number | null>(null);
-  const [hoursInput, setHoursInput] = useState("");
+  const [savedMinutes, setSavedMinutes] = useState<number | null>(null);
+  const [minutesInput, setMinutesInput] = useState("");
 
   useEffect(() => {
     let cancelled = false;
-    api<{ carryOpenOrdersOnHandover: boolean; staleOrderAlertHours: number }>("/api/cafe/handover-policy")
+    api<{ carryOpenOrdersOnHandover: boolean; staleOrderAlertMinutes: number }>("/api/cafe/handover-policy")
       .then((r) => {
         if (cancelled) return;
         setSaved(r.carryOpenOrdersOnHandover);
-        setSavedHours(r.staleOrderAlertHours);
-        setHoursInput(String(r.staleOrderAlertHours));
+        setSavedMinutes(r.staleOrderAlertMinutes);
+        setMinutesInput(String(r.staleOrderAlertMinutes));
       })
       .catch((e: unknown) => {
         if (!cancelled) toast.error(e instanceof Error ? e.message : "فشل تحميل إعداد تسليم الشيفت");
@@ -52,20 +52,20 @@ export function HandoverPolicyCard() {
     }
   }
 
-  const hoursValue = Number(hoursInput);
-  const hoursValid = hoursInput.trim() !== "" && Number.isInteger(hoursValue) && hoursValue >= 0 && hoursValue <= 48;
+  const minutesValue = Number(minutesInput);
+  const minutesValid = minutesInput.trim() !== "" && Number.isInteger(minutesValue) && minutesValue >= 0 && minutesValue <= 2880;
 
-  async function saveHours() {
-    if (!hoursValid || hoursValue === savedHours) return;
+  async function saveMinutes() {
+    if (!minutesValid || minutesValue === savedMinutes) return;
     setBusy(true);
     try {
-      const r = await api<{ staleOrderAlertHours: number }>("/api/cafe/handover-policy", {
+      const r = await api<{ staleOrderAlertMinutes: number }>("/api/cafe/handover-policy", {
         method: "PATCH",
-        body: { staleOrderAlertHours: hoursValue },
+        body: { staleOrderAlertMinutes: minutesValue },
       });
-      setSavedHours(r.staleOrderAlertHours);
-      setHoursInput(String(r.staleOrderAlertHours));
-      toast.success(r.staleOrderAlertHours === 0 ? "تم إيقاف تنبيه الأوردرات المنسية" : "تم حفظ وقت تنبيه الأوردرات المنسية");
+      setSavedMinutes(r.staleOrderAlertMinutes);
+      setMinutesInput(String(r.staleOrderAlertMinutes));
+      toast.success(r.staleOrderAlertMinutes === 0 ? "تم إيقاف تنبيه الأوردرات المنسية" : "تم حفظ وقت تنبيه الأوردرات المنسية");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "فشل حفظ الإعداد");
     } finally {
@@ -129,7 +129,7 @@ export function HandoverPolicyCard() {
         <div className="space-y-2 border-t pt-4">
           <p className="text-sm font-semibold">⏰ تنبيه الأوردرات المنسية</p>
           <p className="text-xs text-muted-foreground">
-            أي أوردر فضل من غير ما يتقدم، أو اتقدم ومتحصّلش، أكتر من عدد الساعات دي هيظهر لك وللمدير
+            أي أوردر فضل من غير ما يتقدم، أو اتقدم ومتحصّلش، أكتر من عدد الدقائق دي هيظهر لك وللمدير
             في شريط فوق الصفحة، ومعاه زرار «اتقدم» أو «اتلغى» أو «حصّل». اكتب 0 لإيقاف التنبيه.
           </p>
           <div className="flex items-center gap-2">
@@ -137,25 +137,25 @@ export function HandoverPolicyCard() {
               type="number"
               dir="ltr"
               min={0}
-              max={48}
+              max={2880}
               step={1}
               className="w-24"
-              aria-label="ساعات تنبيه الأوردرات المنسية"
-              value={hoursInput}
-              disabled={busy || savedHours === null}
-              onChange={(e) => setHoursInput(e.target.value)}
+              aria-label="دقائق تنبيه الأوردرات المنسية"
+              value={minutesInput}
+              disabled={busy || savedMinutes === null}
+              onChange={(e) => setMinutesInput(e.target.value)}
             />
-            <span className="text-sm text-muted-foreground">ساعة</span>
+            <span className="text-sm text-muted-foreground">دقيقة</span>
             <Button
               variant="outline"
-              onClick={saveHours}
-              disabled={busy || !hoursValid || hoursValue === savedHours}
+              onClick={saveMinutes}
+              disabled={busy || !minutesValid || minutesValue === savedMinutes}
             >
               حفظ
             </Button>
           </div>
-          {!hoursValid && hoursInput.trim() !== "" && (
-            <p className="text-xs text-red-600">عدد الساعات لازم يكون رقم صحيح من 0 لـ 48</p>
+          {!minutesValid && minutesInput.trim() !== "" && (
+            <p className="text-xs text-red-600">عدد الدقائق لازم يكون رقم صحيح من 0 لـ 2880</p>
           )}
         </div>
       </CardContent>

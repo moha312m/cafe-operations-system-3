@@ -129,6 +129,7 @@ export async function recomputeShiftTotals(
     select: {
       amount: true, method: true, type: true, status: true, orderId: true,
       reversalOfPaymentId: true,
+      amendmentId: true,
     },
   });
 
@@ -154,7 +155,7 @@ export async function recomputeShiftTotals(
       if (p.method === "CASH") cash = cash.plus(amt);
       else if (p.method === "CARD") card = card.plus(amt);
       else if (p.method === "WALLET") wallet = wallet.plus(amt);
-      paidOrderIds.add(p.orderId);
+      if (!p.amendmentId) paidOrderIds.add(p.orderId);
     } else if (p.status === "REFUNDED") {
       // Legacy shape: a collection reversed in period before refunds became
       // their own transaction. It never entered `cash` above, so it must not
@@ -168,10 +169,11 @@ export async function recomputeShiftTotals(
   const orders = paidOrderIds.size
     ? await client.order.findMany({
         where: { id: { in: [...paidOrderIds] } },
-        select: { discountAmount: true },
+        select: { discountAmount: true, revisions: { orderBy: {number:'asc'}, take:1, select:{before:true} } },
       })
     : [];
-  const discounts = sumMoney(orders.map(o => o.discountAmount));
+  const revisionDiscounts = await client.orderRevision.findMany({where:{postingShiftId:shiftId},select:{discountDelta:true}});
+  const discounts = sumMoney([...orders.map(o => o.revisions.length ? String((o.revisions[0].before as {discountAmount:string}).discountAmount) : o.discountAmount),...revisionDiscounts.map(r=>r.discountDelta)]);
 
   // `cash` is already net of refunds posted to this shift — a REFUND row
   // subtracts once, above. Subtracting `refunds` here as well would remove the

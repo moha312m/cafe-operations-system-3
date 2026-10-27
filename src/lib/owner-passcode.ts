@@ -102,8 +102,8 @@ export async function authorizeOwnerActionByPasscode(args: {
     ]);
     if (!credential || !request || !settings || request.ownerId !== preliminary.ownerId) throw new ApiError(404, "Owner action request not found");
     if (request.status !== "PENDING") return "NOT_PENDING";
-    const isRefund = request.action === "REFUND_ORDER" || request.action === "REFUND_PAYMENT";
-    const requiredMode = isRefund ? "refundMode" : request.action === "VOID_ORDER_ITEM" ? "itemVoidMode" : "cancelMode";
+    const isRefund = request.action === "REFUND_ORDER" || request.action === "REFUND_PAYMENT" || request.action === 'AMEND_ORDER_REFUND';
+    const requiredMode = isRefund ? "refundMode" : request.action === "VOID_ORDER_ITEM" || request.action === 'AMEND_ORDER_VOID' ? "itemVoidMode" : "cancelMode";
     const mode = await tx.ownerActionSettings.findUnique({
       where: { cafeId: actor.cafeId! }, select: { refundMode: true, cancelMode: true, itemVoidMode: true },
     });
@@ -136,7 +136,7 @@ export async function authorizeOwnerActionByPasscode(args: {
       await auditInTransaction(tx, { cafeId: request.cafeId, userId: actor.id, action: "OWNER_ACTION_EXPIRED", entity: "OwnerActionRequest", entityId: request.id });
       return "EXPIRED";
     }
-    const target = await targetFor(tx, { actor, action: request.action, orderId: request.targetOrderId ?? undefined, orderItemId: request.targetOrderItemId ?? undefined, paymentId: request.targetPaymentId ?? undefined });
+    const target = await targetFor(tx, { actor, action: request.action, amendmentId: request.targetAmendmentId ?? undefined, orderId: request.targetOrderId ?? undefined, orderItemId: request.targetOrderItemId ?? undefined, paymentId: request.targetPaymentId ?? undefined });
     if (target.cafeId !== request.cafeId || target.branchId !== request.branchId || fingerprint(target.snapshot) !== request.targetFingerprint) {
       await tx.ownerActionRequest.update({ where: { id: request.id }, data: { status: "STALE", decidedAt: now } });
       await tx.ownerActionEvent.create({ data: { cafeId: request.cafeId, requestId: request.id, actorId: actor.id, event: "STALE", note: "Action target changed" } });

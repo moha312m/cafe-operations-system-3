@@ -1,4 +1,4 @@
-// Cafe Ops â€” multi-tenant SaaS schema.
+// Cafe Ops — multi-tenant SaaS schema.
 // Tenancy model: shared database, every tenant-owned row carries `cafeId`.
 // SUPER_ADMIN users have cafeId = null; everyone else is scoped to a cafe
 // (and optionally pinned to a single branch via branchId).
@@ -12,7 +12,7 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Enums â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────── Enums ───────────────────────────────
 
 enum Role {
   SUPER_ADMIN // platform operator, cross-tenant
@@ -40,7 +40,7 @@ enum OrderType {
 
 enum OrderStatus {
   PENDING_WAITER_APPROVAL // QR menu order waiting for a waiter to review
-  CONFIRMED // accepted â€” visible to kitchen/barista
+  CONFIRMED // accepted — visible to kitchen/barista
   PREPARING // kitchen/barista working on it
   READY // ready for pickup / serving
   SERVED // delivered to customer & paid
@@ -61,8 +61,8 @@ enum KitchenStatus {
 enum PaymentMethod {
   CASH
   CARD
-  WALLET // Ù…Ø­ÙØ¸Ø© Ø¥Ù„ÙƒØªØ±ÙˆÙ†ÙŠØ© (ÙƒØ§Ù† MOBILE_WALLET)
-  MIXED // Ø¯ÙØ¹ Ù…Ù‚Ø³Ù‘Ù… â€” Ø¨ÙŠØªØ³Ø¬Ù‘Ù„ ÙƒØ£ÙƒØªØ± Ù…Ù† Payment
+  WALLET // محفظة إلكترونية (كان MOBILE_WALLET)
+  MIXED // دفع مقسّم — بيتسجّل كأكتر من Payment
 }
 
 // What a payment row MEANS, kept separate from where it is in its lifecycle
@@ -75,15 +75,17 @@ enum PaymentType {
 }
 
 enum PaymentStatus {
-  UNPAID // ØºÙŠØ± Ù…Ø¯ÙÙˆØ¹
-  PENDING_COLLECTION // ÙÙŠ Ø§Ù†ØªØ¸Ø§Ø± Ø§Ù„ØªØ­ØµÙŠÙ„
-  PARTIAL // Ù…Ø¯ÙÙˆØ¹ Ø¬Ø²Ø¦ÙŠÙ‹Ø§
-  PAID // Ù…Ø¯ÙÙˆØ¹
-  REFUNDED // Ù…Ø±ØªØ¬Ø¹
-  CANCELLED // Ù…Ù„ØºÙŠ
+  UNPAID // غير مدفوع
+  PENDING_COLLECTION // في انتظار التحصيل
+  PARTIAL // مدفوع جزئيًا
+  PAID // مدفوع
+  REFUNDED // مرتجع
+  CANCELLED // ملغي
 }
 
 enum OwnerAction {
+  AMEND_ORDER_REFUND
+  AMEND_ORDER_VOID
   CANCEL_ORDER
   VOID_ORDER_ITEM
   REFUND_ORDER
@@ -111,11 +113,11 @@ enum OwnerActionApprovalMethod {
 }
 
 enum ServiceChargeType {
-  PERCENTAGE // Ù†Ø³Ø¨Ø©
-  FIXED // Ù…Ø¨Ù„Øº Ø«Ø§Ø¨Øª
+  PERCENTAGE // نسبة
+  FIXED // مبلغ ثابت
 }
 
-// Ø¬Ù„Ø³Ø© Ø§Ù„ØªØ±Ø§Ø¨ÙŠØ²Ø© â€” opens automatically with the first dine-in order for a
+// جلسة الترابيزة — opens automatically with the first dine-in order for a
 // table and gathers every order/payment until staff closes it.
 enum TableSessionStatus {
   OPEN
@@ -172,14 +174,14 @@ enum ShiftCustodyGate {
 // How a cafe operates end-to-end. Drives sensible defaults for the
 // feature flags + QR routing; the individual flags still win.
 enum CafeWorkflowMode {
-  FULL_SERVICE // ÙƒØ§ÙÙŠÙ‡ ÙƒØ§Ù…Ù„
-  SMALL_CAFE // ÙƒØ§ÙÙŠÙ‡ ØµØºÙŠØ±
-  TAKEAWAY_ONLY // ØªÙŠÙƒ Ø£ÙˆØ§ÙŠ ÙÙ‚Ø·
-  RESTAURANT // Ù…Ø·Ø¹Ù…
+  FULL_SERVICE // كافيه كامل
+  SMALL_CAFE // كافيه صغير
+  TAKEAWAY_ONLY // تيك أواي فقط
+  RESTAURANT // مطعم
 }
 
 // Whether an order may be handed to the customer before it is paid.
-// Set per order type, by the owner â€” never chosen per order by staff.
+// Set per order type, by the owner — never chosen per order by staff.
 enum ServingPaymentPolicy {
   ALLOW_BEFORE_PAYMENT // serve/hand over now, collect later
   REQUIRE_PAYMENT_FIRST // must be settled before SERVED
@@ -187,31 +189,31 @@ enum ServingPaymentPolicy {
 
 // Where a QR-menu order goes the moment the customer submits it.
 enum QrOrderRoutingMode {
-  WAITER_APPROVAL // ÙŠØ°Ù‡Ø¨ Ù„Ù…ÙˆØ§ÙÙ‚Ø© Ø§Ù„ÙˆÙŠØªØ± (PENDING_WAITER_APPROVAL)
-  CASHIER_DIRECT // ÙŠØ°Ù‡Ø¨ Ù„Ù„ÙƒØ§Ø´ÙŠØ± Ù…Ø¨Ø§Ø´Ø±Ø© (CONFIRMED)
-  KITCHEN_DIRECT // ÙŠØ°Ù‡Ø¨ Ù„Ù„Ø¨Ø§Ø± Ù…Ø¨Ø§Ø´Ø±Ø© (CONFIRMED)
-  AUTO_CONFIRMED // ÙŠØªØ£ÙƒØ¯ ØªÙ„Ù‚Ø§Ø¦ÙŠÙ‹Ø§ (CONFIRMED)
+  WAITER_APPROVAL // يذهب لموافقة الويتر (PENDING_WAITER_APPROVAL)
+  CASHIER_DIRECT // يذهب للكاشير مباشرة (CONFIRMED)
+  KITCHEN_DIRECT // يذهب للبار مباشرة (CONFIRMED)
+  AUTO_CONFIRMED // يتأكد تلقائيًا (CONFIRMED)
 }
 
-// Branch-level QR approval routing â€” who confirms a public-menu order
+// Branch-level QR approval routing — who confirms a public-menu order
 // before it enters preparation. Richer than the cafe-level QrOrderRoutingMode.
 enum QrApprovalMode {
-  AUTO_CONFIRM // ØªØ£ÙƒÙŠØ¯ ØªÙ„Ù‚Ø§Ø¦ÙŠ
-  ROLE_BASED // Ø­Ø³Ø¨ Ø§Ù„Ø¯ÙˆØ± (targetRole)
-  SPECIFIC_USER // Ù…ÙˆØ¸Ù Ù…Ø¹ÙŠÙ† (targetUserId)
-  ANY_AUTHORIZED_USER // Ø£ÙŠ Ù…ÙˆØ¸Ù Ø¹Ù†Ø¯Ù‡ ØµÙ„Ø§Ø­ÙŠØ© Ø§Ù„ØªØ£ÙƒÙŠØ¯
-  CASHIER_DIRECT // Ø§Ù„ÙƒØ§Ø´ÙŠØ± Ù…Ø¨Ø§Ø´Ø±Ø©
-  WAITER_APPROVAL // Ù…ÙˆØ§ÙÙ‚Ø© Ø§Ù„ÙˆÙŠØªØ±
-  MANAGER_APPROVAL // Ù…ÙˆØ§ÙÙ‚Ø© Ø§Ù„Ù…Ø¯ÙŠØ±
-  KITCHEN_DIRECT // Ø§Ù„Ø¨Ø§Ø± Ù…Ø¨Ø§Ø´Ø±Ø©
+  AUTO_CONFIRM // تأكيد تلقائي
+  ROLE_BASED // حسب الدور (targetRole)
+  SPECIFIC_USER // موظف معين (targetUserId)
+  ANY_AUTHORIZED_USER // أي موظف عنده صلاحية التأكيد
+  CASHIER_DIRECT // الكاشير مباشرة
+  WAITER_APPROVAL // موافقة الويتر
+  MANAGER_APPROVAL // موافقة المدير
+  KITCHEN_DIRECT // البار مباشرة
 }
 
 // Per-order approval lifecycle (independent of OrderStatus).
 enum ApprovalStatus {
-  NOT_REQUIRED // Ù„Ø§ ÙŠØ­ØªØ§Ø¬ ØªØ£ÙƒÙŠØ¯
-  PENDING_APPROVAL // ÙÙŠ Ø§Ù†ØªØ¸Ø§Ø± Ø§Ù„ØªØ£ÙƒÙŠØ¯
-  APPROVED // ØªÙ… Ø§Ù„ØªØ£ÙƒÙŠØ¯
-  REJECTED // Ù…Ø±ÙÙˆØ¶
+  NOT_REQUIRED // لا يحتاج تأكيد
+  PENDING_APPROVAL // في انتظار التأكيد
+  APPROVED // تم التأكيد
+  REJECTED // مرفوض
 }
 
 // SaaS subscription state for a cafe tenant. Independent of `isActive`,
@@ -219,13 +221,13 @@ enum ApprovalStatus {
 // cafe. TRIAL/ACTIVE keep the cafe usable; EXPIRED/SUSPENDED are shown in
 // the super-admin panel and can be extended into hard enforcement later.
 enum SubscriptionStatus {
-  TRIAL // ÙØªØ±Ø© ØªØ¬Ø±ÙŠØ¨ÙŠØ©
-  ACTIVE // Ø§Ø´ØªØ±Ø§Ùƒ Ù†Ø´Ø·
-  EXPIRED // Ø§Ø´ØªØ±Ø§Ùƒ Ù…Ù†ØªÙ‡ÙŠ
-  SUSPENDED // Ø§Ø´ØªØ±Ø§Ùƒ Ù…ÙˆÙ‚ÙˆÙ
+  TRIAL // فترة تجريبية
+  ACTIVE // اشتراك نشط
+  EXPIRED // اشتراك منتهي
+  SUSPENDED // اشتراك موقوف
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Tenancy core â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────── Tenancy core ────────────────────────────
 
 model Cafe {
   branchOpeningSettings BranchOpeningSettings[]
@@ -240,7 +242,7 @@ model Cafe {
   currency           String  @default("USD")
   taxRate            Decimal @default(0) @db.Decimal(5, 2) // percent, e.g. 14.00
   isActive           Boolean @default(true) // false = suspended by the platform owner
-  /// DEPRECATED â€” superseded by CafeSettings.inventoryEnforcementMode, which
+  /// DEPRECATED — superseded by CafeSettings.inventoryEnforcementMode, which
   /// is the authoritative policy. Kept only so the migration that replaced it
   /// is non-destructive; nothing in src/ reads it (POLICY-005 pins that by
   /// scanning the source tree). Dropping it is a separate approved migration.
@@ -250,8 +252,8 @@ model Cafe {
   suspendedAt     DateTime?
   suspendedReason String?
 
-  // SaaS subscription (placeholder billing â€” DB-ready, UI-visible).
-  planName              String             @default("ØªØ¬Ø±ÙŠØ¨ÙŠ")
+  // SaaS subscription (placeholder billing — DB-ready, UI-visible).
+  planName              String             @default("تجريبي")
   subscriptionStatus    SubscriptionStatus @default(TRIAL)
   subscriptionStartedAt DateTime?
   subscriptionEndsAt    DateTime?
@@ -309,7 +311,7 @@ placeAssets PlaceAsset[]
 // Per-cafe module flags + workflow, controlled ONLY by SUPER_ADMIN.
 // One row per cafe (created with defaults on demand). Cafe owners/staff
 // can use enabled features but can never flip a flag themselves.
-/// How hard the cafÃ© enforces inventory and recipe completeness at the till.
+/// How hard the café enforces inventory and recipe completeness at the till.
 ///
 /// A boolean answered only "may stock go below zero". Three behaviours are
 /// needed, and the distinction the boolean could not express is the one that
@@ -320,7 +322,7 @@ enum InventoryEnforcementMode {
   /// Refuse anything we cannot make: shortages and unreadable recipes alike.
   STRICT
   /// A KNOWN quantity shortage is the owner's call and may go negative. The
-  /// recipe must still be readable â€” negative stock is permission to go below
+  /// recipe must still be readable — negative stock is permission to go below
   /// a number, not permission to sell an unknown draw on the shelf.
   ALLOW_NEGATIVE_STOCK
   /// Sell regardless, and be honest about it: what resolves is still deducted,
@@ -352,29 +354,29 @@ model CafeSettings {
   purchasesEnabled        Boolean @default(true)
 
   // Payment & serving policy, per order type. The column defaults are what a
-  // NEW cafÃ© gets; existing cafÃ©s are pinned to REQUIRE_PAYMENT_FIRST by the
+  // NEW café gets; existing cafés are pinned to REQUIRE_PAYMENT_FIRST by the
   // migration so this feature cannot silently switch anyone to pay-later.
   // DELIVERY is deliberately not configurable yet and stays payment-first.
   dineInServingPolicy   ServingPaymentPolicy @default(ALLOW_BEFORE_PAYMENT)
   takeawayServingPolicy ServingPaymentPolicy @default(REQUIRE_PAYMENT_FIRST)
 
-  /// Inventory & recipe enforcement. The DEFAULT is what a NEW cafÃ© gets;
-  /// the migration maps every EXISTING cafÃ© from the old
+  /// Inventory & recipe enforcement. The DEFAULT is what a NEW café gets;
+  /// the migration maps every EXISTING café from the old
   /// `Cafe.allowNegativeStock` boolean (false -> STRICT, true ->
-  /// ALLOW_NEGATIVE_STOCK), so no cafÃ©'s behaviour changes and none is
+  /// ALLOW_NEGATIVE_STOCK), so no café's behaviour changes and none is
   /// silently promoted to OVERRIDE_ALL.
   inventoryEnforcementMode InventoryEnforcementMode @default(STRICT)
 
   /// Early low-stock warning: an ingredient is "low" once its balance falls to
   /// this percent of its most recent delivery (PURCHASE / TRANSFER_IN), or to
   /// its own minimumStock, whichever is higher. 0 turns the percent rule off.
-  /// Informational only â€” it never blocks a sale.
+  /// Informational only — it never blocks a sale.
   lowStockAlertPercent Int @default(20)
 
   /// Owner's choice for a handover close that finds orders still open in the
   /// branch. false (default): the close is refused until they are served or
-  /// cancelled. true: they pass to the incoming shift â€” it serves them and
-  /// collects whatever is unpaid â€” and orders already being made (PREPARING /
+  /// cancelled. true: they pass to the incoming shift — it serves them and
+  /// collects whatever is unpaid — and orders already being made (PREPARING /
   /// READY) have their recipe deducted against the OUTGOING custody before the
   /// shelf is frozen, so the handover count is not short by drinks already
   /// poured. Every carried order is recorded in HandoverCarriedOrder.
@@ -382,11 +384,13 @@ model CafeSettings {
 
   /// Hours after which an order still not served (or served but not fully
   /// paid) is flagged to the owner and branch manager as forgotten. 0 turns
-  /// the alert off. Informational only â€” it never changes an order.
+  /// the alert off. Informational only — it never changes an order.
   staleOrderAlertHours Int @default(2)
+  /// Minute-precision reminder. NULL retains legacy hours multiplied by 60.
+  staleOrderAlertMinutes Int?
 
-  // Count configuration. The DEFAULTs are what a NEW cafÃ© gets; the
-  // migration pins every EXISTING cafÃ© to NO_SHIFT_COUNT, so no shop is
+  // Count configuration. The DEFAULTs are what a NEW café gets; the
+  // migration pins every EXISTING café to NO_SHIFT_COUNT, so no shop is
   // silently signed up for handover counting it never agreed to.
   stockCountPolicy          StockCountPolicy          @default(HYBRID)
   handoverCountType         StockCountType            @default(CRITICAL)
@@ -396,7 +400,7 @@ model CafeSettings {
   periodicFullCountWeekday  Int?
 
   // Variance and recount policy. Permissive by default and explicitly
-  // backfilled for existing cafÃ©s: whether a discrepancy stops a handover is
+  // backfilled for existing cafés: whether a discrepancy stops a handover is
   // the owner's decision, and no shop should wake up signed into blocking it
   // never agreed to. `varianceHardBlockAmount` NULL under blocking means
   // "anything we can actually price", which is different from zero.
@@ -425,6 +429,7 @@ model CafeSettings {
 model Branch {
   stockBindings ProductStockBinding[] @relation("FinishedBindingBranch")
   inventorySaleIdentityItems InventoryItem[] @relation("InventorySaleIdentityBranch")
+  reportingVersions BranchReportingVersion[]
   openingSettings BranchOpeningSettings?
   cashStorages CashStorage[]
   openingCashReceipts OpeningCashReceipt[]
@@ -442,7 +447,7 @@ model Branch {
   menuSlug          String? // latin slug for the public URL
   publicMenuEnabled Boolean @default(true)
 
-  // Serving policy overrides. NULL means "inherit the cafÃ© setting", which is
+  // Serving policy overrides. NULL means "inherit the café setting", which is
   // why these are nullable rather than a separate settings row: a branch that
   // has never been configured is indistinguishable from one that inherits.
   dineInServingPolicyOverride   ServingPaymentPolicy?
@@ -451,7 +456,7 @@ model Branch {
   // Count configuration overrides. NULL means inherit, for the same reason
   // the serving overrides above are nullable: a branch that has never been
   // configured must stay distinguishable from one deliberately set to the
-  // same value as its cafÃ©.
+  // same value as its café.
   stockCountPolicyOverride          StockCountPolicy?
   handoverCountTypeOverride         StockCountType?
   periodicCountTypeOverride         StockCountType?
@@ -495,7 +500,22 @@ placeAssets PlaceAsset[]
   @@unique([id, cafeId], map: "Branch_sale_identity_key")
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Table sessions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Append-only reporting configuration. An absent version preserves calendar-day reporting.
+model BranchReportingVersion {
+  id String @id @default(cuid())
+  branchId String
+  effectiveDate String
+  startTime String
+  endTime String
+  timezone String
+  is24Hours Boolean
+  createdById String
+  createdAt DateTime @default(now())
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  @@unique([branchId, effectiveDate])
+}
+
+// ─────────────────────────── Table sessions ──────────────────────────
 // One open session per (branch, tableNumber). Totals are denormalised
 // from the attached orders/payments and recomputed on every change.
 model TableSession {
@@ -555,7 +575,7 @@ model QrOrderApprovalSettings {
   @@index([cafeId])
 }
 
-// Ø¥Ø¹Ø¯Ø§Ø¯ Ø§Ù„ØªØ±Ø§Ø¨ÙŠØ²Ø§Øª â€” the branch's configured tables (distinct from the live
+// إعداد الترابيزات — the branch's configured tables (distinct from the live
 // TableSession). Drives the POS table selector and QR links. A session may
 // outlive its table config (archived tables keep their session history).
 model CafeTable {
@@ -564,7 +584,7 @@ model CafeTable {
   branchId    String
   tableNumber String
   displayName String?
-  area        String? // Ø§Ù„Ù…Ù†Ø·Ù‚Ø© (Ø¯Ø§Ø®Ù„ÙŠØŒ ØªØ±Ø§Ø³â€¦)
+  area        String? // المنطقة (داخلي، تراس…)
   seatsCount  Int?
   isActive    Boolean   @default(true)
   sortOrder   Int       @default(0)
@@ -736,7 +756,7 @@ branchPlaceSettings BranchOpeningSettings[] @relation("BranchPlaceInspector")
   orderItemsVoided OrderItem[] @relation("OrderItemVoidedBy")
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Custom cafe roles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ───────────────────────── Custom cafe roles ─────────────────────────
 // Cafe-level permission groups (like ERP roles). A role belongs to exactly
 // one cafe and holds a set of allowed permission keys. System-default roles
 // are seeded per cafe (isSystemDefault) and can be duplicated/edited.
@@ -809,7 +829,7 @@ model SessionRevocation {
   @@index([userId])
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Menu â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────── Menu ────────────────────────────────
 
 model MenuCategory {
   id                 String   @id @default(cuid())
@@ -836,8 +856,8 @@ model Product {
   categoryId  String
   name        String
   description String?
-  basePrice   Decimal  @db.Decimal(10, 2) // Ø³Ø¹Ø± Ø§Ù„Ø¨ÙŠØ¹ â€” the default sale price (EGP)
-  costPrice   Decimal? @db.Decimal(10, 2) // ØªÙƒÙ„ÙØ© Ø§Ù„Ù…Ù†ØªØ¬ â€” for future profit reports
+  basePrice   Decimal  @db.Decimal(10, 2) // سعر البيع — the default sale price (EGP)
+  costPrice   Decimal? @db.Decimal(10, 2) // تكلفة المنتج — for future profit reports
   imageUrl    String?
   isActive    Boolean  @default(true) // master switch: hidden everywhere when off
   createdAt   DateTime @default(now())
@@ -846,7 +866,7 @@ model Product {
   // Visibility & availability controls
   showInCustomerMenu Boolean @default(true) // appears on the public QR menu
   showInPOS          Boolean @default(true) // appears on the cashier/waiter POS
-  isAvailable        Boolean @default(true) // orderable; shown as "ØºÙŠØ± Ù…ØªØ§Ø­" when off
+  isAvailable        Boolean @default(true) // orderable; shown as "غير متاح" when off
   sortOrder          Int     @default(0)
 
   cafe         Cafe                 @relation(fields: [cafeId], references: [id], onDelete: Cascade)
@@ -904,7 +924,7 @@ model HistoricalSaleLine {
   @@index([cafeId, sku])
 }
 
-// A variant is a size/kind choice (ØµØºÙŠØ± / ÙˆØ³Ø· / ÙƒØ¨ÙŠØ±) with its own
+// A variant is a size/kind choice (صغير / وسط / كبير) with its own
 // absolute price. When a product has variants, the variant price is
 // the unit price; otherwise basePrice applies.
 model ProductVariant {
@@ -912,8 +932,8 @@ model ProductVariant {
   id        String  @id @default(cuid())
   productId String
   name      String
-  price     Decimal @db.Decimal(10, 2) // Ø³Ø¹Ø± Ø§Ù„Ø­Ø¬Ù… (absolute, not a delta)
-  isActive  Boolean @default(true) // Ù…ØªØ§Ø­
+  price     Decimal @db.Decimal(10, 2) // سعر الحجم (absolute, not a delta)
+  isActive  Boolean @default(true) // متاح
   sortOrder Int     @default(0)
 
   product    Product     @relation(fields: [productId], references: [id], onDelete: Cascade)
@@ -925,8 +945,8 @@ model ProductVariant {
   @@unique([id, productId], map: "ProductVariant_sale_identity_key")
 }
 
-// Ø³Ø¹Ø± Ù…Ø®ØªÙ„Ù Ø­Ø³Ø¨ Ø§Ù„ÙØ±Ø¹ â€” optional base-price override per branch. For
-// variant products, the difference (override âˆ’ basePrice) shifts every
+// سعر مختلف حسب الفرع — optional base-price override per branch. For
+// variant products, the difference (override − basePrice) shifts every
 // variant price so one override rules the whole product in that branch.
 model ProductBranchPrice {
   id        String  @id @default(cuid())
@@ -968,10 +988,10 @@ model ProductAddOn {
   @@id([productId, addOnId])
 }
 
-// ÙˆØµÙØ© Ø§Ù„Ù…Ù†ØªØ¬ â€” one row per ingredient used to make one unit of the
+// وصفة المنتج — one row per ingredient used to make one unit of the
 // product. quantity is expressed in `unit` (which may differ from the
 // inventory item's storage unit; conversion happens in the costing lib).
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Recipes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────── Recipes ─────────────────────────────────
 // A recipe is scoped to exactly ONE of: a product (its default), a specific
 // product variant, or an add-on. Which one is set decides what it governs.
 //
@@ -996,14 +1016,14 @@ model Recipe {
   // statement is recorded rather than assumed.
   appliesToAllVariants Boolean @default(false)
 
-  // An explicit decision that this item consumes nothing trackable â€” never
+  // An explicit decision that this item consumes nothing trackable — never
   // inferred from an absent recipe.
   notApplicable       Boolean @default(false)
   notApplicableReason String?
 
   // Operational confirmation: a real person saying this is the recipe the
-  // cafÃ© actually uses. Stored as the acting user, not a job title, so a
-  // one-person cafÃ© and a large one both work.
+  // café actually uses. Stored as the acting user, not a job title, so a
+  // one-person café and a large one both work.
   verifiedById        String?
   verifiedAt          DateTime?
   // What the recipe looked like when it was confirmed. A material edit
@@ -1048,10 +1068,16 @@ model RecipeItem {
   @@index([inventoryItemId])
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Orders â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────────── Orders ──────────────────────────────
 
 model Order {
   finishedStockItems OrderItem[] @relation("FinishedSnapshotOrder")
+  revision Int @default(0)
+  activeAmendmentId String?
+  saleShiftId String?
+  invoiceDiscountType String?
+  invoiceDiscountValue Decimal? @db.Decimal(12,2)
+  revisions OrderRevision[]
   id                  String      @id @default(cuid())
   cafeId              String
   branchId            String
@@ -1105,8 +1131,8 @@ model Order {
 
   // The inventory policy this order was ACCEPTED under, snapshotted at
   // creation from CafeSettings and never read from the request. An order's
-  // inventory lifecycle spans two moments â€” availability at the till, and the
-  // locked deduction at SERVED â€” and the cafÃ©'s setting can change between
+  // inventory lifecycle spans two moments — availability at the till, and the
+  // locked deduction at SERVED — and the café's setting can change between
   // them. The order carries its own answer so it behaves the same way at both
   // ends, for the same reason taxRateSnapshot exists above: a settings edit
   // governs new orders, never one that already exists.
@@ -1121,10 +1147,10 @@ model Order {
   servedStockCustodyPeriodId String?
   servedShiftId              String?
 
-  // Ø¬Ù„Ø³Ø© Ø§Ù„ØªØ±Ø§Ø¨ÙŠØ²Ø© â€” dine-in orders attach to their table's open session.
+  // جلسة الترابيزة — dine-in orders attach to their table's open session.
   tableSessionId String?
 
-  // Ø§Ù„Ø¹Ù…ÙŠÙ„ ÙˆØ¨Ø±Ù†Ø§Ù…Ø¬ Ø§Ù„ÙˆÙ„Ø§Ø¡ â€” linked by phone at order time.
+  // العميل وبرنامج الولاء — linked by phone at order time.
   customerId             String?
   loyaltyPointsEarned    Int       @default(0)
   loyaltyPointsRedeemed  Int       @default(0)
@@ -1188,6 +1214,10 @@ model OrderItem {
   finishedStockItem InventoryItem? @relation("FinishedSnapshotInventory", fields: [finishedStockItemId, finishedStockCafeId, finishedStockBranchId, finishedStockUnit], references: [id, cafeId, branchId, unit], onDelete: Restrict, onUpdate: Restrict, map: "OrderItem_finished_inventory_fkey")
   finishedStockTransaction InventoryTransaction? @relation("FinishedUsageLedger", fields: [finishedStockTransactionId, finishedStockCafeId, finishedStockBranchId, finishedStockItemId, orderId], references: [id, cafeId, branchId, inventoryItemId, orderId], onDelete: Restrict, onUpdate: Restrict, map: "OrderItem_finished_usage_fkey")
   finishedGoodsReturns FinishedGoodsReturn[] @relation("FinishedReturnLine")
+  itemDiscountType String @default("NONE")
+  itemDiscountValue Decimal @default(0) @db.Decimal(12,2)
+  itemDiscountAmount Decimal @default(0) @db.Decimal(12,2)
+  invoiceDiscountShare Decimal @default(0) @db.Decimal(12,2)
   id            String        @id @default(cuid())
   orderId       String
   productId     String?
@@ -1234,15 +1264,17 @@ model OrderItemAddOn {
   @@index([orderItemId])
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Payments â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ────────────────────────────── Payments ─────────────────────────────
 
 model Payment {
+  amendmentId String?
+  amendmentLegKey String? @unique
   id                  String        @id @default(cuid())
   cafeId              String
-  branchId            String? // Ø§Ù„ÙØ±Ø¹ â€” Ù…Ø´ØªÙ‚ Ù…Ù† Ø§Ù„Ø£ÙˆØ±Ø¯Ø± (nullable Ù„Ù„ØµÙÙˆÙ Ø§Ù„Ù‚Ø¯ÙŠÙ…Ø©)
+  branchId            String? // الفرع — مشتق من الأوردر (nullable للصفوف القديمة)
   orderId             String
-  shiftId             String? // Ø´ÙŠÙØª Ø§Ù„ÙƒØ§Ø´ÙŠØ± â€” Ø¨ÙŠØªØ±Ø¨Ø· Ù„Ø·Ù„Ø¨Ø§Øª Ø§Ù„Ù€ POS
-  cashierId           String? // Ø§Ù„ÙƒØ§Ø´ÙŠØ± Ø§Ù„Ù„ÙŠ Ø­ØµÙ‘Ù„ â€” = receivedById Ù„Ø·Ù„Ø¨Ø§Øª Ø§Ù„Ù€ POS
+  shiftId             String? // شيفت الكاشير — بيتربط لطلبات الـ POS
+  cashierId           String? // الكاشير اللي حصّل — = receivedById لطلبات الـ POS
   // Always a positive magnitude. Direction comes from `type`, never the sign.
   amount              Decimal       @db.Decimal(10, 2)
   method              PaymentMethod
@@ -1251,9 +1283,9 @@ model Payment {
   // Why the money was returned. Required by the API on a REFUND row.
   refundReason        String?
   receivedById        String
-  // Ø¬Ù„Ø³Ø© Ø§Ù„ØªØ±Ø§Ø¨ÙŠØ²Ø© Ø§Ù„Ù„ÙŠ Ø§ØªØ­ØµÙ„Øª ÙÙŠÙ‡Ø§ Ø§Ù„Ø¯ÙØ¹Ø© (Ù„ØªÙ‚Ø§Ø±ÙŠØ± Ø§Ù„ØªØ±Ø§Ø¨ÙŠØ²Ø§Øª)
+  // جلسة الترابيزة اللي اتحصلت فيها الدفعة (لتقارير الترابيزات)
   tableSessionId      String?
-  note                String? // Ù…Ù„Ø§Ø­Ø¸Ø© Ø§Ù„ØªØ­ØµÙŠÙ„ (Ø§Ø³Ù… Ø§Ù„Ø´Ø®ØµØŒ Ø³Ø¨Ø¨ Ø§Ù„Ø¯ÙØ¹Ø© Ø§Ù„Ø¬Ø²Ø¦ÙŠØ©â€¦)
+  note                String? // ملاحظة التحصيل (اسم الشخص، سبب الدفعة الجزئية…)
   // Set on a reversal row that offsets an earlier payment whose shift was
   // already closed. The original row stays untouched in its own (closed)
   // period; the reversal carries the cash impact in the period where the
@@ -1287,9 +1319,126 @@ model Payment {
   @@index([reversalOfPaymentId])
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Shifts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// ÙˆØ±Ø¯ÙŠØ© Ø§Ù„ÙƒØ§Ø´ÙŠØ±: Ø¨ØªØªÙØªØ­ Ù‚Ø¨Ù„ ØªØ³Ø¬ÙŠÙ„ Ø§Ù„Ø·Ù„Ø¨Ø§Øª ÙˆØ¨ØªØªÙ‚ÙÙ„ Ø¢Ø®Ø± Ø§Ù„ÙŠÙˆÙ… Ø¨ØªØ³ÙˆÙŠØ© Ø§Ù„ÙƒØ§Ø´.
-// ÙƒÙ„ Ø§Ù„Ù…Ø¨Ø§Ù„Øº EGPØŒ ÙˆØ§Ù„Ø£Ø±Ù‚Ø§Ù… Ø§Ù„ØªØ¬Ù…ÙŠØ¹ÙŠØ© Ø¨ØªØªØ­Ø¯Ù‘Ø« Ù…Ø¹ ÙƒÙ„ Ø¯ÙØ¹/Ù…Ø±ØªØ¬Ø¹.
+model OrderRevision {
+  id String @id @default(cuid())
+  orderId String
+  order Order @relation(fields:[orderId], references:[id], onDelete:Restrict)
+  number Int
+  amendmentId String @unique
+  cafeId String
+  branchId String
+  actorId String
+  approverId String?
+  originalCashierId String?
+  originalShiftId String?
+  postingShiftId String?
+  reason String
+  before Json
+  after Json
+  oldTotal Decimal @db.Decimal(12,2)
+  newTotal Decimal @db.Decimal(12,2)
+  discountDelta Decimal @db.Decimal(12,2)
+  recognizedDelta Decimal @db.Decimal(12,2)
+  createdAt DateTime @default(now())
+  @@unique([orderId,number])
+  @@index([cafeId,branchId,createdAt])
+}
+
+model OrderAmendment {
+  kitchenStatus String?
+  stockPlan Json?
+  id String @id @default(cuid())
+  cafeId String
+  branchId String
+  orderId String
+  requesterId String
+  requestKey String
+  requestHash String
+  baseRevision Int
+  fingerprint String
+  before Json
+  proposed Json
+  reason String
+  status String @default("READY")
+  approvalRequired Boolean @default(false)
+  ownerApprovalRequired Boolean @default(false)
+  approverId String?
+  approvalSettingsVersion Int?
+  ownerRequestId String?
+  ownerVoidRequestId String?
+  originalShiftId String?
+  originalShiftClosed Boolean @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([cafeId,requesterId,requestKey])
+  @@index([cafeId,branchId,orderId,createdAt])
+}
+
+model AmendmentSettlement {
+  id String @id @default(cuid())
+  amendmentId String
+  cafeId String
+  branchId String
+  actorId String
+  shiftId String
+  requestKey String
+  direction String
+  amount Decimal @db.Decimal(12,2)
+  legs Json
+  status String @default("PENDING")
+  evidence Json?
+  failureReason String?
+  createdAt DateTime @default(now())
+  observedAt DateTime?
+  @@unique([amendmentId,requestKey])
+  @@index([amendmentId,status])
+}
+
+model SalesDiscountLimit {
+  userId String @id
+  cafeId String
+  maxPercent Decimal @default(0) @db.Decimal(5,2)
+  maxAmount Decimal @default(0) @db.Decimal(12,2)
+  updatedById String
+  updatedAt DateTime @updatedAt
+  @@index([cafeId])
+}
+
+model AmendmentTenderReference {
+  id String @id @default(cuid())
+  cafeId String
+  branchId String
+  attemptId String
+  method String
+  reference String @db.VarChar(200)
+  actorId String
+  createdAt DateTime @default(now())
+  @@unique([cafeId,method,reference])
+  @@index([attemptId])
+}
+
+model OrderTrace {
+  id String @id @default(cuid())
+  cafeId String
+  branchId String
+  orderId String
+  amendmentId String?
+  revision Int
+  action String
+  actorId String
+  originalCashierId String?
+  approverId String?
+  shiftId String?
+  reason String
+  details Json
+  createdAt DateTime @default(now())
+  @@index([cafeId,branchId,createdAt])
+  @@index([orderId,createdAt])
+}
+
+// ─────────────────────────────── Shifts ──────────────────────────────
+// وردية الكاشير: بتتفتح قبل تسجيل الطلبات وبتتقفل آخر اليوم بتسوية الكاش.
+// كل المبالغ EGP، والأرقام التجميعية بتتحدّث مع كل دفع/مرتجع.
 
 model Shift {
   cashStorage CashStorage?
@@ -1299,10 +1448,10 @@ model Shift {
   cafeId             String
   branchId           String
   cashierId          String
-  shiftNumber        Int // ØªØ³Ù„Ø³Ù„ÙŠ Ù„ÙƒÙ„ ÙØ±Ø¹
+  shiftNumber        Int // تسلسلي لكل فرع
   openedAt           DateTime  @default(now())
   closedAt           DateTime?
-  /// Who accepted the count and discharged the custodian â€” NOT necessarily
+  /// Who accepted the count and discharged the custodian — NOT necessarily
   /// `cashierId`, who is the person that HELD the drawer. A manager closing
   /// somebody else's shift is an ordinary and supervised act, and collapsing
   /// the two would attribute their acceptance to the cashier being checked.
@@ -1316,7 +1465,7 @@ model Shift {
 
   // Cash reconciliation, extending the columns above rather than replacing
   // them: the close path already writes this row, and these four say what it
-  // could not. All nullable â€” a shift closed before this existed truthfully
+  // could not. All nullable — a shift closed before this existed truthfully
   // has no verdict, and backfilling a default would invent a reconciliation
   // nobody performed. `cashVarianceCaseId` ships with VarianceCase itself.
   cashWithinTolerance Boolean?
@@ -1384,17 +1533,17 @@ model Shift {
 placeReceipt ShiftPlaceReceipt?
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Inventory â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ───────────────────────────── Inventory ─────────────────────────────
 // Minimal stock tracking so the INVENTORY_MANAGER role has a surface;
 // recipe-level depletion is post-MVP.
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Custody â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ────────────────────────────── Custody ──────────────────────────────
 // Who is answerable for what, and for how long.
 //
 // CASH and STOCK are separate scopes because they are separately held: the
 // ordinary case is the cashier holding the drawer while the barista holds the
 // store room. A single BOTH scope could not express that, and neither could a
-// custody column on Shift â€” it could only ever name one. So a shift links to
+// custody column on Shift — it could only ever name one. So a shift links to
 // custody through ShiftCustody, and may hold one of each scope at once.
 //
 // Shift is deliberately untouched: `cashierId` still governs the existing POS
@@ -1406,7 +1555,7 @@ enum CustodyScope {
 
 enum CustodyRole {
   PRIMARY // principally answerable
-  SHARED // alongside, per spec Â§22
+  SHARED // alongside, per spec §22
 }
 
 enum CustodyStatus {
@@ -1436,7 +1585,7 @@ model CustodyPeriod {
   startedAt DateTime  @default(now())
   endedAt   DateTime?
 
-  /// CASH scope only â€” a stock custody has no drawer.
+  /// CASH scope only — a stock custody has no drawer.
   openingCashAmount Decimal? @db.Decimal(10, 2)
   closingCashAmount Decimal? @db.Decimal(10, 2)
 
@@ -1508,15 +1657,15 @@ model ShiftCustody {
   @@index([custodyPeriodId])
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Count configuration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────── Count configuration ─────────────────────────
 // Owner business configuration for physical counting. CYCLE is a POLICY a
-// cafÃ© may express, but deliberately NOT a startable TYPE: no cycle engine
+// café may express, but deliberately NOT a startable TYPE: no cycle engine
 // exists, so the resolver refuses it rather than running a FULL count and
 // calling it a cycle.
 enum StockCountPolicy {
   CRITICAL // count the critical list at every shift handover
   FULL // count everything at every handover
-  CYCLE // intent only â€” not startable, see StockCountType
+  CYCLE // intent only — not startable, see StockCountType
   HYBRID // critical at handover, full periodically
   NO_SHIFT_COUNT // no counting tied to the shift boundary
 }
@@ -1581,7 +1730,7 @@ enum ReasonDomain {
 //
 // Consumers (count lines, corrections, tender reconciliation, handover
 // rejections and opening exceptions) add their own back-relations in the
-// migrations that create them â€” a relation cannot be declared to a model
+// migrations that create them — a relation cannot be declared to a model
 // that does not exist yet.
 model ReasonCode {
   id        String       @id @default(cuid())
@@ -1606,7 +1755,7 @@ model ReasonCode {
   @@index([cafeId, domain])
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Stock count sessions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ──────────────────────── Stock count sessions ───────────────────────
 // A physical count is its own session, not an ADJUSTMENT. Reporting has to
 // tell a physical recount from a manager's tweak, and it cannot if both are
 // recorded the same way.
@@ -1636,7 +1785,7 @@ model StockCountSession {
   status StockCountStatus @default(DRAFT)
   mode   StockCountMode   @default(BLIND)
 
-  /// "ALL_ELIGIBLE" | "CRITICAL_ONLY" â€” how scope was derived, recorded so a
+  /// "ALL_ELIGIBLE" | "CRITICAL_ONLY" — how scope was derived, recorded so a
   /// count can be audited without re-deriving it from today's configuration.
   scopeDerivation String
 
@@ -1686,7 +1835,7 @@ model StockCountSession {
   @@index([openingBranchCustodyPeriodId])
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Count lines â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ───────────────────────────── Count lines ───────────────────────────
 enum CountLineDisposition {
   PENDING
   COUNTED
@@ -1704,7 +1853,7 @@ enum TheoreticalConfidence {
 }
 
 /// One counted shelf. Keeps the original evidence, the working figure, and
-/// the ledger version the expectation was captured at â€” three things that
+/// the ledger version the expectation was captured at — three things that
 /// must never collapse into fewer columns.
 model StockCountLine {
   id              String        @id @default(cuid())
@@ -1771,7 +1920,7 @@ model StockCountLine {
   @@index([disposition])
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Tolerance, recounts and corrections â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ────────────────── Tolerance, recounts and corrections ──────────────
 enum ToleranceScope {
   CAFE
   BRANCH
@@ -1846,7 +1995,7 @@ model StockCountRecount {
 }
 
 /// Somebody altering a recorded observation. Requires a reason code and a
-/// second signature â€” it defaults to PENDING_APPROVAL rather than taking
+/// second signature — it defaults to PENDING_APPROVAL rather than taking
 /// effect on write.
 model StockCountCorrection {
   id                 String  @id @default(cuid())
@@ -1876,7 +2025,7 @@ model StockCountCorrection {
   @@index([status])
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Tender reconciliation (T16) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────── Tender reconciliation (T16) ─────────────────────
 // Cash keeps one home, and the other channels get their own.
 //
 // An earlier revision gave CASH a row here alongside `Shift.actualCashAmount`,
@@ -1884,13 +2033,13 @@ model StockCountCorrection {
 // existing, tested close path to a second opinion. The split below follows
 // how the money actually arrives instead: CASH is counted in a drawer at the
 // end of a shift and lives on `Shift`, which gains the tolerance applied, a
-// reason code and a note â€” while `actualCashAmount` and `cashDifference` stay
+// reason code and a note — while `actualCashAmount` and `cashDifference` stay
 // exactly as they were. CARD and WALLET settle through a processor on the
 // processor's schedule, which is a different record with its own lifecycle.
 //
 // MIXED is excluded for a third reason again: it is not a channel at all. It
 // marks an order paid across more than one method, and each part is already a
-// Payment row under its real method â€” reconciling MIXED would count the same
+// Payment row under its real method — reconciling MIXED would count the same
 // money twice under a label no processor ever settles.
 //
 // The exclusion is a CHECK constraint in the migration, not a convention,
@@ -1903,7 +2052,7 @@ enum TenderReconStatus {
 }
 
 /// One electronic settlement channel on one shift: CARD or WALLET only.
-/// Cash is reconciled on Shift â€” see `TenderReconciliation_no_cash_check`.
+/// Cash is reconciled on Shift — see `TenderReconciliation_no_cash_check`.
 model TenderReconciliation {
   id       String        @id @default(cuid())
   cafeId   String
@@ -1950,18 +2099,18 @@ model TenderReconciliation {
   @@index([shiftId])
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Variance (T18) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ────────────────────────── Variance (T18) ───────────────────────────
 // Point a case at what caused it, with keys the database can check.
 //
 // One investigation domain, four kinds of evidence behind it. The tempting
-// shape for that is a `sourceType` string beside a `sourceId` string â€” and it
+// shape for that is a `sourceType` string beside a `sourceId` string — and it
 // cannot be constrained. Nothing would stop an id matching no row, or a type
 // disagreeing with the id next to it, and the database could refuse neither.
 //
 // So the sources are separate, explicitly-typed columns with real foreign
 // keys, and a CHECK counts them: exactly one arm applies. CASH is the fourth
-// arm and has no column of its own, because its evidence is the shift close â€”
-// the source of truth T16 settled â€” reached through `shiftId`. A cash source
+// arm and has no column of its own, because its evidence is the shift close —
+// the source of truth T16 settled — reached through `shiftId`. A cash source
 // column here would have been the second cash record all over again.
 //
 // Every source column is @unique, so one counted line, one settlement or one
@@ -1975,7 +2124,7 @@ enum VarianceCaseType {
 }
 
 /// WHO a stock difference may be pinned on, decided once from the evidence
-/// and stored â€” never re-inferred at read time.
+/// and stored — never re-inferred at read time.
 ///
 /// `NOT_APPLICABLE` is the absence of the question, not a negative answer to
 /// it: CASH, TENDER and OPENING_EXCEPTION cases carry it, and so does a stock
@@ -2042,7 +2191,7 @@ model VarianceCase {
   acceptedHandoverId String?
 
   /// Investigation outcome ONLY. No payroll effect in this milestone, and
-  /// never a side effect of a difference being found â€” responsibility
+  /// never a side effect of a difference being found — responsibility
   /// follows custody and evidence, not attendance.
   assignedResponsibilityUserId String?
 
@@ -2063,7 +2212,7 @@ model VarianceCase {
 
   /// Restrict throughout: a case exists because something happened, and
   /// deleting the evidence while keeping the case would turn an
-  /// investigation into an assertion. On custody it is load-bearing â€” a
+  /// investigation into an assertion. On custody it is load-bearing — a
   /// period with cases attached cannot be deleted, so previous-period
   /// responsibility cannot be erased.
   custodyPeriod        CustodyPeriod?        @relation(fields: [custodyPeriodId], references: [id], onDelete: Restrict)
@@ -2093,8 +2242,8 @@ model VarianceCase {
 
 /// The boundaries a PERIOD_UNRESOLVED difference actually crossed.
 ///
-/// A period variance IS evidenced by a count line â€” the closing boundary that
-/// found the gap â€” so it stays a STOCK `VarianceCase` and Requirement 20
+/// A period variance IS evidenced by a count line — the closing boundary that
+/// found the gap — so it stays a STOCK `VarianceCase` and Requirement 20
 /// holds. What differs is that it names no custody, and this row says why:
 /// between the last verified observation and this one there were boundaries
 /// nobody stood in front of, or the stock changed hands.
@@ -2110,14 +2259,14 @@ model StockVarianceSpan {
   inventoryItemId String
 
   /// The last VERIFIED boundary before the gap. NULL means there has never
-  /// been one â€” which is not the same statement as a boundary of zero.
+  /// been one — which is not the same statement as a boundary of zero.
   fromBoundaryId     String?
   fromVerifiedAt     DateTime?
   /// The closing evidence that found the difference, in exactly one arm.
   ///
   /// A handover's closing evidence is a `HandoverStockBoundary`. A branch
-  /// opening verification has no boundary at all â€” the gap is found by the
-  /// accepted opening count itself â€” and inventing a boundary row so the
+  /// opening verification has no boundary at all — the gap is found by the
+  /// accepted opening count itself — and inventing a boundary row so the
   /// column could stay NOT NULL would put a handover's artifact on a record
   /// no handover produced. So the arm is typed rather than polymorphic: the
   /// database CHECK requires exactly one of the two to be present, and a
@@ -2178,14 +2327,14 @@ model StockCountRebase {
   lineId          String @unique
   inventoryItemId String
 
-  /// The figure acted on â€” `effectiveCountedQuantity` at rebase time, which
+  /// The figure acted on — `effectiveCountedQuantity` at rebase time, which
   /// is the approved correction whenever one supersedes the original count.
   countedQuantity       Decimal @db.Decimal(12, 3)
   /// `currentStock` immediately before, read under the item lock.
   stockBefore           Decimal @db.Decimal(12, 3)
   /// Movements above the line's `itemVersion`, replayed so nothing is lost.
   /// A sale made while the count was in progress was excluded from the
-  /// expected figure â€” correctly, the counter never saw it â€” but it did
+  /// expected figure — correctly, the counter never saw it — but it did
   /// leave the shelf, so it must still reduce the rebased balance.
   replayedDelta         Decimal @db.Decimal(12, 3)
   replayedMovementCount Int
@@ -2208,27 +2357,27 @@ model StockCountRebase {
   ledgerTransaction InventoryTransaction @relation(fields: [ledgerTransactionId], references: [id], onDelete: Restrict)
   rebasedBy         User                 @relation(fields: [rebasedById], references: [id])
 
-  /// Idempotency (Â§2.4): one confirmed count rebases one item exactly once,
+  /// Idempotency (§2.4): one confirmed count rebases one item exactly once,
   /// and a retry collides instead of applying a second delta to a balance.
   @@unique([sessionId, inventoryItemId])
   @@index([sessionId])
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Handover (T17) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ────────────────────────── Handover (T17) ───────────────────────────
 // A handover has two sides, and the incoming one inspects stock as well as
 // cash.
 //
 // An earlier revision verified only cash on the incoming side, which made a
 // stock handover one-sided in practice: the incoming custodian signed for a
 // store room they had never looked at, and there was nowhere to record that
-// they had not. HandoverStockAcknowledgement is that record â€” per line,
+// they had not. HandoverStockAcknowledgement is that record — per line,
 // blind, and its own row rather than a column on the count it inspects.
 //
 // Four custody columns, not one and not two. Custody is scope-separated
 // (CASH and STOCK are separately held), and a handover has two sides:
-// outgoing Ã— incoming Ã— cash Ã— stock is four. Collapsing any pair would make
+// outgoing × incoming × cash × stock is four. Collapsing any pair would make
 // a cash-only or stock-only handover inexpressible, and those are the
-// ordinary cases â€” the cashier hands over the drawer while the barista keeps
+// ordinary cases — the cashier hands over the drawer while the barista keeps
 // the store room.
 //
 // The two sides are two sets of columns for the same reason they are two
@@ -2303,7 +2452,7 @@ model HandoverSession {
   rejectedAt  DateTime?
   completedAt DateTime?
 
-  /// Required once the status says somebody refused â€” see the CHECK in the
+  /// Required once the status says somebody refused — see the CHECK in the
   /// migration. A refusal with no stated reason is not one anyone can act on.
   rejectionReasonCodeId String?
   rejectionNote         String?
@@ -2364,7 +2513,7 @@ model HandoverSession {
 }
 
 /// An order still open when a shift closed into a handover, passed to the
-/// incoming shift because the cafÃ© enabled `carryOpenOrdersOnHandover`.
+/// incoming shift because the café enabled `carryOpenOrdersOnHandover`.
 /// The row is the evidence of who was answerable for what at that instant:
 /// the order's state and its unpaid balance, and whether its recipe was
 /// deducted at the handover (against the OUTGOING custody) or left to be
@@ -2428,10 +2577,10 @@ model DeferredStockDeduction {
   @@index([branchId, appliedAt])
 }
 
-/// The cafÃ©'s WhatsApp Business Cloud API connection, used to send the owner
-/// a report when a shift closes. One per cafÃ©. The access token is stored
+/// The café's WhatsApp Business Cloud API connection, used to send the owner
+/// a report when a shift closes. One per café. The access token is stored
 /// only as AES-256-GCM ciphertext (`src/lib/secret-box.ts`) and is never
-/// returned by any API â€” the settings screen only learns whether one is set.
+/// returned by any API — the settings screen only learns whether one is set.
 model WhatsAppIntegration {
   id                String   @id @default(cuid())
   cafeId            String   @unique
@@ -2498,14 +2647,14 @@ model HandoverRequiredItem {
 /// ACTIVE, non-archived inventory item, whether or not it was counted.
 ///
 /// A StockCountLine only exists for an item that was in scope, so under
-/// SELECTED most of the shelf has no line at all â€” and reading "no line" as
+/// SELECTED most of the shelf has no line at all — and reading "no line" as
 /// "no variance" is the silent zero this table exists to prevent. The
 /// boundary is the artifact rather than the count.
 ///
 /// There is deliberately NO variance column and nobody is named: an
 /// unverified row carries the book figure and must have nowhere to record a
 /// difference it cannot know. `quantity` and `itemVersion` always describe
-/// the same instant â€” a counted figure paired with a later ledger cursor
+/// the same instant — a counted figure paired with a later ledger cursor
 /// would be a boundary that looks like evidence and is not.
 model HandoverStockBoundary {
   id               String         @id @default(cuid())
@@ -2569,7 +2718,7 @@ model HandoverStockAcknowledgement {
   /// and finding nothing.
   incomingCountedQuantity Decimal? @db.Decimal(12, 3)
   /// effectiveCountedQuantity plus any ledger movement above the line's
-  /// itemVersion â€” what was actually being handed over, not what was counted
+  /// itemVersion — what was actually being handed over, not what was counted
   /// some time earlier.
   handedOverQuantity      Decimal  @db.Decimal(12, 3)
   varianceQuantity        Decimal? @db.Decimal(12, 3)
@@ -2610,7 +2759,7 @@ model OpeningException {
   actualAmount   Decimal? @db.Decimal(10, 2)
   varianceAmount Decimal? @db.Decimal(10, 2)
 
-  /// Non-nullable, per spec Â§17. An exception is somebody overriding what the
+  /// Non-nullable, per spec §17. An exception is somebody overriding what the
   /// records say; a stated reason is the minimum of what that costs.
   reasonCodeId   String
   note           String?
@@ -2638,29 +2787,29 @@ model OpeningException {
 }
 
 enum InventoryUnit {
-  GRAM // Ø¬Ø±Ø§Ù…
-  KG // ÙƒÙŠÙ„Ùˆ
-  ML // Ù…Ù„
-  LITER // Ù„ØªØ±
-  PIECE // Ù‚Ø·Ø¹Ø©
-  BOX // Ø¹Ù„Ø¨Ø©
-  BAG // ÙƒÙŠØ³
+  GRAM // جرام
+  KG // كيلو
+  ML // مل
+  LITER // لتر
+  PIECE // قطعة
+  BOX // علبة
+  BAG // كيس
 }
 
 enum InventoryTransactionType {
-  PURCHASE // Ø´Ø±Ø§Ø¡ / Ø¥Ø¶Ø§ÙØ© Ù…Ø®Ø²ÙˆÙ† (+)
-  USAGE // Ø§Ø³ØªØ®Ø¯Ø§Ù… (âˆ’)
-  WASTE // Ù‡Ø§Ù„Ùƒ (âˆ’)
-  ADJUSTMENT // ØªØ³ÙˆÙŠØ© (Â±)
-  TRANSFER_IN // ØªØ­ÙˆÙŠÙ„ Ø¯Ø§Ø®Ù„ (+)
-  TRANSFER_OUT // ØªØ­ÙˆÙŠÙ„ Ø®Ø§Ø±Ø¬ (âˆ’)
-  RETURN // Ù…Ø±ØªØ¬Ø¹ (+)
+  PURCHASE // شراء / إضافة مخزون (+)
+  USAGE // استخدام (−)
+  WASTE // هالك (−)
+  ADJUSTMENT // تسوية (±)
+  TRANSFER_IN // تحويل داخل (+)
+  TRANSFER_OUT // تحويل خارج (−)
+  RETURN // مرتجع (+)
   // A physical count became the operational baseline. Deliberately NOT
   // ADJUSTMENT: a count records evidence and an adjustment records a
   // correction, and reporting must tell a manager's tweak from a recount.
   // Signed by the caller, because a count can find more than expected as
   // easily as less.
-  COUNT_REBASE // Ø¥Ø¹Ø§Ø¯Ø© Ø¶Ø¨Ø· Ø¨Ø¹Ø¯ Ø§Ù„Ø¬Ø±Ø¯ (Â±)
+  COUNT_REBASE // إعادة ضبط بعد الجرد (±)
 }
 
 // Raw materials / ingredients tracked per branch. currentStock is the
@@ -2673,7 +2822,7 @@ model InventoryItem {
   cafeId       String
   branchId     String
   name         String
-  category     String? // Ø§Ù„ØªØµÙ†ÙŠÙ (free text: Ù‚Ù‡ÙˆØ©ØŒ Ø£Ù„Ø¨Ø§Ù†ØŒ Ù…Ø³ØªÙ‡Ù„ÙƒØ§Øªâ€¦)
+  category     String? // التصنيف (free text: قهوة، ألبان، مستهلكات…)
   unit         InventoryUnit @default(PIECE)
   currentStock Decimal       @default(0) @db.Decimal(12, 3)
   minimumStock Decimal       @default(0) @db.Decimal(12, 3)
@@ -2686,7 +2835,7 @@ model InventoryItem {
   updatedAt    DateTime      @updatedAt
 
   /// Owner-chosen: does this ingredient go into the short handover count?
-  /// Opt-in, per item, never backfilled true â€” a cafÃ© must not acquire a
+  /// Opt-in, per item, never backfilled true — a café must not acquire a
   /// critical list it did not select.
   isCritical Boolean @default(false)
 
@@ -2768,24 +2917,24 @@ model InventoryTransaction {
   @@unique([id, cafeId, branchId, inventoryItemId, orderId], map: "InventoryTransaction_sale_identity_key")
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Purchases â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ─────────────────────────── Purchases ───────────────────────────────
 enum PurchaseInvoiceStatus {
-  DRAFT // Ù…Ø³ÙˆØ¯Ø© â€” editable, no stock impact yet
-  CONFIRMED // Ù…Ø¤ÙƒØ¯Ø© â€” quantities added to inventory
-  CANCELLED // Ù…Ù„ØºÙŠØ©
+  DRAFT // مسودة — editable, no stock impact yet
+  CONFIRMED // مؤكدة — quantities added to inventory
+  CANCELLED // ملغية
 }
 
 enum PurchasePaymentStatus {
-  UNPAID // ØºÙŠØ± Ù…Ø¯ÙÙˆØ¹Ø©
-  PARTIAL // Ù…Ø¯ÙÙˆØ¹Ø© Ø¬Ø²Ø¦ÙŠÙ‹Ø§
-  PAID // Ù…Ø¯ÙÙˆØ¹Ø© Ø¨Ø§Ù„ÙƒØ§Ù…Ù„
+  UNPAID // غير مدفوعة
+  PARTIAL // مدفوعة جزئيًا
+  PAID // مدفوعة بالكامل
 }
 
 enum PurchasePaymentMethod {
   CASH
   CARD
   WALLET
-  BANK_TRANSFER // ØªØ­ÙˆÙŠÙ„ Ø¨Ù†ÙƒÙŠ
+  BANK_TRANSFER // تحويل بنكي
 }
 
 // Raw-material suppliers (cafe-scoped).
@@ -2808,7 +2957,7 @@ model Supplier {
   @@index([cafeId, isActive])
 }
 
-// A purchase invoice: draft â†’ confirmed (adds stock) with supplier payment
+// A purchase invoice: draft → confirmed (adds stock) with supplier payment
 // tracking. Totals are denormalised from items/payments.
 model PurchaseInvoice {
   id            String                @id @default(cuid())
@@ -2818,7 +2967,7 @@ model PurchaseInvoice {
   invoiceNumber String // human-friendly, per branch (auto or manual)
   invoiceDate   DateTime              @default(now())
   status        PurchaseInvoiceStatus @default(DRAFT)
-  confirmedAt   DateTime? // set once stock is added â€” guards double-add
+  confirmedAt   DateTime? // set once stock is added — guards double-add
   cancelledAt   DateTime?
 
   subtotalAmount  Decimal @default(0) @db.Decimal(12, 2)
@@ -2895,7 +3044,7 @@ model PurchasePayment {
   @@index([cafeId, paidAt])
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Audit log â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ───────────────────────────── Audit log ─────────────────────────────
 
 model AuditLog {
   id        String   @id @default(cuid())
@@ -2913,7 +3062,7 @@ model AuditLog {
   @@index([cafeId, createdAt])
 }
 
-// â”€â”€ Ø§Ù„Ø¹Ù…Ù„Ø§Ø¡ ÙˆØ¨Ø±Ù†Ø§Ù…Ø¬ Ø§Ù„ÙˆÙ„Ø§Ø¡ â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ── العملاء وبرنامج الولاء ─────────────────────────────────────────
 
 enum LoyaltyTransactionType {
   EARN
@@ -2925,7 +3074,7 @@ enum LoyaltyTransactionType {
 }
 
 // Customer profile keyed by normalized phone, scoped per cafe (the same
-// phone in another cafe is a separate customer â€” no cross-tenant sharing).
+// phone in another cafe is a separate customer — no cross-tenant sharing).
 model Customer {
   id              String    @id @default(cuid())
   cafeId          String
@@ -3308,6 +3457,7 @@ model OwnerActionSettings {
 }
 
 model OwnerActionRequest {
+  targetAmendmentId String?
   id String @id @default(cuid())
   cafeId String
   branchId String
