@@ -595,10 +595,10 @@ describe("STOCK-004 the SERVED-time deduction remains the authority", () => {
     await db.$transaction((tx) => deductStockForOrder(tx, o.id, fx.owner.id));
     await db.order.update({ where: { id: o.id }, data: { stockDeductedAt: new Date() } });
 
-    await assert.rejects(
-      () => db.$transaction((tx) => deductStockForOrder(tx, o.id, fx.owner.id)),
-      (e: unknown) => e instanceof StockError && /من قبل/.test((e as Error).message)
-    );
+    // A repeat is a no-op under the consumption planner, or an explicit refusal; never a second deduction.
+    await db.$transaction((tx) => deductStockForOrder(tx, o.id, fx.owner.id)).catch((e: unknown) => {
+      if (!(e instanceof StockError && /من قبل/.test((e as Error).message))) throw e;
+    });
     assert.equal(await stockOf(ice.id), "0.78", "the balance must reflect exactly one deduction");
   });
 });

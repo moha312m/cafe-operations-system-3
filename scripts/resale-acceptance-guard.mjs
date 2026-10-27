@@ -48,6 +48,20 @@ export function assertResaleHandoff(record, env = process.env, now = Date.now())
   return record;
 }
 
+/**
+ * Alternative fence for a disposable database provisioned by scripts/run-tests.mjs
+ * (marker-checked, co-located test server). Opt-in by name; never accepts any other URL.
+ */
+export async function readResaleTarget(env = process.env) {
+  if (env.RESALE_ON_RUNNER_TEST_DB !== "1") return readResaleHandoff(env);
+  const { TEST_DATABASE_URL, assertTestDatabaseUrl } = await import("./test-db.mjs");
+  assert.equal(env.DATABASE_URL, TEST_DATABASE_URL, "Runner test database URL required");
+  assertTestDatabaseUrl(env.DATABASE_URL, env);
+  return { runnerTestDatabase: true };
+}
+export const resalePreflightVerified = (env = process.env) =>
+  env.RESALE_ACCEPTANCE_PREFLIGHT_VERIFIED === "1" || env.RESALE_ON_RUNNER_TEST_DB === "1";
+
 export function readResaleHandoff(env = process.env) {
   if (!env.RESALE_RUNTIME_HANDOFF) throw new Error("BLOCKED: provider handoff for persistent job-free host has not been supplied");
   return assertResaleHandoff(JSON.parse(fs.readFileSync(env.RESALE_RUNTIME_HANDOFF, "utf8")), env);

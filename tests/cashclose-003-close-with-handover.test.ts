@@ -16,7 +16,7 @@
 
 import { after, before, beforeEach, describe, test } from "node:test";
 import assert from "node:assert/strict";
-import { db, tag, teardownTaggedCafe } from "./helpers/db";
+import { db, tag, teardownTaggedCafe, purgeOrderTracesFor } from "./helpers/db";
 import { countCafe, countItem, type CountCafe } from "./helpers/count";
 import { requireServer } from "./helpers/http";
 
@@ -155,7 +155,7 @@ async function resetBranch() {
   await db.stockCountSession.deleteMany({ where: { branchId: fx.branchId } });
   await db.inventoryTransaction.deleteMany({ where: { branchId: fx.branchId } });
   await db.payment.deleteMany({ where: { order: { branchId: fx.branchId } } });
-  await db.order.deleteMany({ where: { branchId: fx.branchId } });
+  await purgeOrderTracesFor({ branchId: fx.branchId }); await db.order.deleteMany({ where: { branchId: fx.branchId } });
   await db.shift.updateMany({
     where: { branchId: fx.branchId },
     data: { cashVarianceCaseId: null },

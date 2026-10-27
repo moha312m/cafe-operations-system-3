@@ -10,11 +10,10 @@ import {recognizedSales,contributionTotals,contributionItems} from '../src/lib/s
 import {recomputeShiftTotals} from '../src/lib/shifts';
 import {periodFinancials} from '../src/lib/reporting';
 import type {SessionUser} from '../src/lib/auth';
+import {assertIntegrationDatabase} from './helpers/integration-guard';
 
 async function guard(){
- assert.equal(process.env.DATABASE_URL,'postgresql://postgres@127.0.0.1:5434/cafe_ops_test_sales_20261024a?schema=public');
- const [id]=await db.$queryRawUnsafe<{name:string;host:string;port:number;system:string}[]>(`SELECT current_database() name,host(inet_server_addr()) host,inet_server_port() port,(SELECT system_identifier::text FROM pg_control_system()) system`);
- assert.deepEqual(id,{name:'cafe_ops_test_sales_20261024a',host:'127.0.0.1',port:5434,system:'7693368256609479860'});
+ await assertIntegrationDatabase(db);
 }
 test.before(guard);test.after(()=>db.$disconnect());
 async function fixture(paid='100',method:'CASH'|'CARD'='CASH'){

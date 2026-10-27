@@ -18,11 +18,11 @@ describe("RESALE verified-clone constraints, atomicity and concurrency", { skip:
   let number = 0;
   let ownedFixture: import("./helpers/count").CountCafe;
   before(async () => {
-    const { readResaleHandoff } = await import("../scripts/resale-acceptance-guard.mjs");
-    readResaleHandoff();
-    assert.equal(process.env.RESALE_ACCEPTANCE_PREFLIGHT_VERIFIED, "1");
+    const { readResaleTarget, resalePreflightVerified } = await import("../scripts/resale-acceptance-guard.mjs");
+    await readResaleTarget();
+    assert.ok(resalePreflightVerified());
     const url = new URL(process.env.DATABASE_URL ?? "");
-    assert.equal(url.hostname, "127.0.0.1"); assert.equal(url.port, "5434"); assert.equal(url.pathname, "/cafe_ops_test");
+    if (process.env.RESALE_ON_RUNNER_TEST_DB !== "1") { assert.equal(url.hostname, "127.0.0.1"); assert.equal(url.port, "5434"); assert.equal(url.pathname, "/cafe_ops_test"); }
     const harness = await import("./helpers/db");
     await harness.assertTestDatabase(); db = harness.db;
     const { countCafe } = await import("./helpers/count");

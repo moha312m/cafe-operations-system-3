@@ -46,6 +46,9 @@ test("actor with create permission but no discount permission is rejected withou
 });
 test("explicit grant works, exact totals and sensitive audit persist, retry creates one order",async()=>{
   await override(fx.waiter.id,true);
+  // Merged policy: staff also need a per-user discount limit (Sales lineage). The grant alone is refused.
+  assert.equal((await sale(fx.waiter.email)).status,403,"grant without a configured limit");
+  await db.salesDiscountLimit.upsert({where:{userId:fx.waiter.id},create:{userId:fx.waiter.id,cafeId:fx.cafeId,maxPercent:20,maxAmount:20,updatedById:fx.owner.id},update:{maxPercent:20,maxAmount:20}});
   const key=crypto.randomUUID();
   const first=await sale(fx.waiter.email,{},key);
   assert.equal(first.status,201,JSON.stringify(first.body));

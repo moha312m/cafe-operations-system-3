@@ -305,7 +305,8 @@ async function carryOpenOrders(
   const madeOrders = orders.filter(order => MADE_STATUSES.has(order.status) && !order.stockDeductedAt);
   try { await lockStockForOrders(tx, madeOrders.map(order => order.id), { boundary: "CARRY_RECIPES" }); }
   catch (error) {
-    if (error instanceof StockError) throw new ApiError(409, `مش قادر أرحّل الطلبات ${madeOrders.map(order => "#" + order.orderNumber).join("، ")} للشيفت اللي جاي: ${error.message}`);
+    // Planning refusals (e.g. a recipe ingredient missing in this branch) are as explanatory as a shortage.
+    if (error instanceof StockError || (error instanceof ApiError && error.status < 500)) throw new ApiError(409, `مش قادر أرحّل الطلبات ${madeOrders.map(order => "#" + order.orderNumber).join("، ")} للشيفت اللي جاي: ${error.message}`);
     throw error;
   }
   const carried: CarriedOrderSummary[] = [];

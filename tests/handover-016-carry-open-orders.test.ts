@@ -17,7 +17,7 @@
 import { after, before, beforeEach, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
-import { db, teardownTaggedCafe } from "./helpers/db";
+import { db, teardownTaggedCafe, purgeOrderTracesFor } from "./helpers/db";
 import { countCafe, countItem, type CountCafe } from "./helpers/count";
 import { as, requireServer } from "./helpers/http";
 
@@ -41,7 +41,7 @@ async function resetBranch() {
   await db.handoverSession.deleteMany({ where: { branchId: fx.branchId } });
   await db.stockCountSession.deleteMany({ where: { branchId: fx.branchId } });
   await db.inventoryTransaction.deleteMany({ where: { branchId: fx.branchId } });
-  await db.order.deleteMany({ where: { branchId: fx.branchId } });
+  await purgeOrderTracesFor({ branchId: fx.branchId }); await db.order.deleteMany({ where: { branchId: fx.branchId } });
   await db.shift.updateMany({ where: { branchId: fx.branchId }, data: { cashVarianceCaseId: null } });
   await db.varianceCase.deleteMany({ where: { branchId: fx.branchId } });
   await db.tenderReconciliation.deleteMany({ where: { branchId: fx.branchId } });

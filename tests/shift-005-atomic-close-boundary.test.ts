@@ -16,7 +16,7 @@
 import { after, before, beforeEach, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { db, tag, teardownTaggedCafe } from "./helpers/db";
+import { db, tag, teardownTaggedCafe, purgeOrderTracesFor } from "./helpers/db";
 import { countCafe, countItem, type CountCafe } from "./helpers/count";
 import { as, requireServer } from "./helpers/http";
 
@@ -107,7 +107,7 @@ async function resetBranch() {
   await db.handoverSession.deleteMany({ where: { branchId: fx.branchId } });
   await db.stockCountSession.deleteMany({ where: { branchId: fx.branchId } });
   await db.inventoryTransaction.deleteMany({ where: { branchId: fx.branchId } });
-  await db.order.deleteMany({ where: { branchId: fx.branchId } });
+  await purgeOrderTracesFor({ branchId: fx.branchId }); await db.order.deleteMany({ where: { branchId: fx.branchId } });
   await db.shift.updateMany({
     where: { branchId: fx.branchId },
     data: { cashVarianceCaseId: null },
@@ -785,7 +785,7 @@ describe("SHIFT-005 — the atomic close boundary", () => {
     await assert.rejects(close, statusIs(409));
 
     // 4. with the blocker cleared the close commits its handover and freeze
-    await db.order.deleteMany({ where: { branchId: fx.branchId } });
+    await purgeOrderTracesFor({ branchId: fx.branchId }); await db.order.deleteMany({ where: { branchId: fx.branchId } });
     const result = await closeService({
       shiftId: shift.id,
       actualCash: 100,

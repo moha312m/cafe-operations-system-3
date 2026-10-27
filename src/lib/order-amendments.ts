@@ -43,6 +43,7 @@ async function readOrder(tx:Prisma.TransactionClient,id:string,actor:SessionUser
 function originalLine(item:SavedOrder['items'][number]):Line{return {id:item.id,productId:item.productId,variantId:item.variantId,productName:item.productName,variantName:item.variantName,unitPrice:item.unitPrice.toFixed(2),addOnTotal:money(sumMoney(item.addOns.map(a=>a.price))).toFixed(2),quantity:item.quantity,discount:{type:item.itemDiscountType,value:item.itemDiscountValue.toFixed(2)},notes:item.notes,addOns:item.addOns.map(a=>({addOnId:a.addOnId,addOnName:a.addOnName,price:a.price.toFixed(2)}))};}
 export function savedInvoiceDiscount(order:SavedOrder){return {type:order.invoiceDiscountType??(decimal(order.discountAmount).gt(0)?'FIXED':'NONE'),value:(order.invoiceDiscountValue??order.discountAmount).toFixed(2)};}
 export function receiptSnapshot(order:SavedOrder){return json({...order,items:order.items.filter(i=>!i.voidedAt),invoiceDiscount:savedInvoiceDiscount(order)});}
+const FINISHED_AMENDMENT_REFUSED='تعديل كمية منتج جاهز أو إضافته غير متاح في مراجعة الفاتورة؛ استخدم الإلغاء/المرتجع الحالي أو سجّل فاتورة جديدة';
 async function proposal(tx:Prisma.TransactionClient,order:SavedOrder,input:AmendmentInput,keys:Set<string>):Promise<Proposed>{
  if((order.taxAmount.gt(0)&&order.taxRateSnapshot===null)||(order.serviceChargeAmount.gt(0)&&order.serviceRateSnapshot===null))throw new ApiError(409,'الفاتورة التاريخية لا تحتوي لقطة كافية لقواعد الضريبة أو الخدمة؛ استخدم مسار الإلغاء/المرتجع');
  if(order.revision!==input.baseRevision)throw new ApiError(409,'الطلب اتعدل — حدّث الصفحة');
@@ -57,6 +58,8 @@ async function proposal(tx:Prisma.TransactionClient,order:SavedOrder,input:Amend
   const saved=existing.find(i=>i.id===row.id);
   if(saved){
    if(row.productId||row.variantId||row.addOnIds)throw new ApiError(400,'لا يمكن تبديل هوية الصنف المحفوظ');
+   // Accepted finished-goods stock is immutable per line (DB trigger); refuse here, before approval or settlement.
+   if(saved.stockModeSnapshot==='FINISHED_GOOD'&&row.quantity!==saved.quantity)throw new ApiError(409,FINISHED_AMENDMENT_REFUSED);
    if(row.quantity===0)continue;
    const base=originalLine(saved);
    if(row.unitPrice!==undefined&&!money(row.unitPrice).eq(saved.unitPrice))requiredPermissions.add('sales.override_price');
@@ -66,6 +69,7 @@ async function proposal(tx:Prisma.TransactionClient,order:SavedOrder,input:Amend
    if(!row.id.startsWith('new-')||!row.productId||row.quantity<1)throw new ApiError(400,'صنف جديد غير صالح');
    const p=await tx.product.findFirst({where:{id:row.productId,cafeId:order.cafeId,isActive:true,isAvailable:true},include:{variants:true,branchPrices:{where:{branchId:order.branchId}},addOns:{include:{addOn:true}}}});
    if(!p)throw new ApiError(400,'المنتج غير متاح');
+   if(p.stockMode==='FINISHED_GOOD')throw new ApiError(409,FINISHED_AMENDMENT_REFUSED);
    const variant=row.variantId?p.variants.find(v=>v.id===row.variantId&&v.isActive):null;
    if((row.variantId&&!variant)||(!row.variantId&&p.variants.some(v=>v.isActive)))throw new ApiError(400,'اختر حجمًا متاحًا');
    const addIds=row.addOnIds??[];if(new Set(addIds).size!==addIds.length)throw new ApiError(400,'إضافة مكررة');

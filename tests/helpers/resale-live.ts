@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { db, assertTestDatabase } from "./db";
 import { countCafe, type CountCafe } from "./count";
 import { as, requireServer } from "./http";
-import { readResaleHandoff } from "../../scripts/resale-acceptance-guard.mjs";
+import { readResaleTarget, resalePreflightVerified } from "../../scripts/resale-acceptance-guard.mjs";
 import { ensureCustodyForShift } from "@/lib/custody";
 import { protectedTransaction } from "@/lib/protected-transaction";
 import { applyStockMutation } from "@/lib/ledger";
@@ -18,8 +18,8 @@ export const post = (email: string, endpoint: string, body: unknown, key = rando
 export function ok(response: { status: number; text: string }) { assert.ok(response.status >= 200 && response.status < 300, response.text); }
 
 export async function newResaleCafe(label: string) {
-  readResaleHandoff();
-  assert.equal(process.env.RESALE_ACCEPTANCE_PREFLIGHT_VERIFIED, "1", "Use the clone-only preflight runner");
+  await readResaleTarget();
+  assert.ok(resalePreflightVerified(), "Use the clone-only preflight runner");
   assert.ok(process.env.RESALE_ACCEPTANCE_JOURNAL_DIR, "Scoped ownership journal required before creating fixtures");
   await assertTestDatabase(); await requireServer();
   const fx = await countCafe("RESALE-" + label);

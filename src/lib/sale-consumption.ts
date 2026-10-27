@@ -34,7 +34,8 @@ export async function finishedBinding(tx: Tx, scope: { cafeId: string; branchId:
   const settings = await tx.cafeSettings.findUnique({ where: { cafeId: scope.cafeId } });
   if (settings?.finishedGoodsSalesEnabled !== true || settings.inventoryEnabled !== true) throw new ApiError(409, "بيع المنتجات الجاهزة غير مفعل");
   const binding = await tx.productStockBinding.findFirst({
-    where: { ...scope, productId, variantId },
+    // Callers pass wider objects (the cart, the whole order); only the scope keys belong in the filter.
+    where: { cafeId: scope.cafeId, branchId: scope.branchId, productId, variantId },
     include: { product: true, variant: true, branch: true, inventoryItem: true },
   });
   if (!binding || binding.product.cafeId !== scope.cafeId || !binding.product.isActive || !binding.product.isAvailable ||

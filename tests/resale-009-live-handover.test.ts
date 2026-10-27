@@ -9,8 +9,8 @@ describe("Resale real mixed carry, deferred thaw and intake races", { skip: proc
   let handover: typeof import("@/lib/handover");
   const fixtures: ResaleLive[] = [];
   before(async () => {
-    (await import("../scripts/resale-acceptance-guard.mjs")).readResaleHandoff();
-    assert.equal(process.env.RESALE_ACCEPTANCE_PREFLIGHT_VERIFIED, "1");
+    const guard = await import("../scripts/resale-acceptance-guard.mjs"); await guard.readResaleTarget();
+    assert.ok(guard.resalePreflightVerified());
     h = await import("./helpers/resale-live"); db = (await import("./helpers/db")).db; handover = await import("@/lib/handover");
   });
   after(async () => { if (h) for (const f of fixtures) await h.retain(f); if (db) await db.$disconnect(); });

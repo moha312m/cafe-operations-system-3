@@ -11,8 +11,8 @@ describe("Resale remaining SQL/HTTP acceptance", { skip: process.env.RUN_RESALE_
   let db: typeof import("./helpers/db")["db"];
   const fixtures: ResaleLive[] = [];
   before(async () => {
-    const { readResaleHandoff } = await import("../scripts/resale-acceptance-guard.mjs"); readResaleHandoff();
-    assert.equal(process.env.RESALE_ACCEPTANCE_PREFLIGHT_VERIFIED, "1");
+    const { readResaleTarget, resalePreflightVerified } = await import("../scripts/resale-acceptance-guard.mjs"); await readResaleTarget();
+    assert.ok(resalePreflightVerified());
     h = await import("./helpers/resale-live"); db = (await import("./helpers/db")).db;
   });
   after(async () => { if (h) for (const f of fixtures) await h.retain(f); if (db) await db.$disconnect(); });

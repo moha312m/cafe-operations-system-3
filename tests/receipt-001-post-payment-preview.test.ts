@@ -32,6 +32,8 @@ function host(relative: string, name: string, props: Record<string, any> = {}) {
   };
   const hooks = {
     useState: state,
+    // The POS page labels fields with useId (cashier touch work); a stable per-slot id suffices here.
+    useId: () => { const i = cursor++; slots[i] ??= { value: `:r${i}:` }; return slots[i].value; },
     useRef: (value: any) => { const i = cursor++; slots[i] ??= { value: { current: value } }; return slots[i].value; },
     useMemo: memo, useCallback: (fn: any, deps: unknown[]) => memo(() => fn, deps),
     useEffect: (fn: () => any, deps: unknown[]) => {

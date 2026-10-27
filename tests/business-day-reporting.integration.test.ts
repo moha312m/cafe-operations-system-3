@@ -10,12 +10,10 @@ import {recognizedSales,contributionTotals} from '../src/lib/sales-recognition';
 import {listSales} from '../src/lib/sales-query';
 import {reportOutputFiles,signReportOutput,verifyReportOutput} from '../src/lib/report-output';
 import {zonedDateTime} from '../src/lib/date-range';
+import {assertIntegrationDatabase} from './helpers/integration-guard';
 const hours={startTime:'08:00',endTime:'02:00',timezone:'Africa/Cairo',is24Hours:false,effectiveDate:'2026-10-24',acknowledgeGap:true},now=new Date('2026-10-23T09:00Z');
 test.before(async()=>{
- assert.equal(process.env.DATABASE_URL,'postgresql://postgres@127.0.0.1:5434/cafe_ops_test_sales_20261024a?schema=public');
- const [id]=await db.$queryRawUnsafe(`SELECT current_database() name,host(inet_server_addr()) host,inet_server_port() port,(SELECT system_identifier::text FROM pg_control_system()) system,(SELECT oid::text FROM pg_database WHERE datname=current_database()) oid`) as unknown[];
- assert.deepEqual(id,{name:'cafe_ops_test_sales_20261024a',host:'127.0.0.1',port:5434,system:'7693368256609479860',oid:'81948'});
- assert.deepEqual(await db.$queryRawUnsafe('SELECT id,note FROM "_disposable_test_database"'),[{id:1,note:'Synthetic Sales amendment tests only. No owner business rows.'}]);
+ await assertIntegrationDatabase(db);
 });test.after(()=>db.$disconnect());
 async function fixture(){const tag=crypto.randomUUID();const cafe=await db.cafe.create({data:{name:'Business reporting synthetic '+tag,slug:'report-'+tag}});await db.cafeSettings.create({data:{cafeId:cafe.id,advancedReportsEnabled:true}});const a=await db.branch.create({data:{cafeId:cafe.id,name:'A Cairo'}}),b=await db.branch.create({data:{cafeId:cafe.id,name:'B Dubai'}});const owner=await db.user.create({data:{cafeId:cafe.id,email:tag+'@example.invalid',passwordHash:'NO_LOGIN',name:'Synthetic owner',role:'CAFE_OWNER'}});const actor={...owner} as SessionUser;return {cafe,a,b,actor};}
 async function sale(f:Awaited<ReturnType<typeof fixture>>,branchId:string,local:string,amount=100){return db.order.create({data:{cafeId:f.cafe.id,branchId,orderNumber:crypto.randomInt(100,2140000000),type:'TAKEAWAY',status:'SERVED',subtotal:amount,total:amount,paidAmount:0,remainingAmount:amount,paymentStatus:'UNPAID',createdById:f.actor.id,createdAt:zonedDateTime(local,'Africa/Cairo').at,items:{create:{productName:'Synthetic tea',quantity:1,unitPrice:amount,lineTotal:amount}}}});}

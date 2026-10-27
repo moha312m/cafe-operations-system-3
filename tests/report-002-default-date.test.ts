@@ -14,6 +14,11 @@ const compiled = ts.transpileModule(readFileSync(pageUrl, "utf8"), { compilerOpt
   module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true,
 } }).outputText;
 const pageModule = { exports: {} as { default: ComponentType } };
+// Child components (reporting controls, touch select) import AppShell themselves through the real
+// require; give them the same stub as the page via the module cache.
+const appShellStub = { useApp: () => ({ cafe: null, user: { id: "u1", name: "Test User", role: "BRANCH_MANAGER", cafeId: "c1", branchId: "b1" }, canKey: () => false }) };
+const appShellPath = require.resolve(fileURLToPath(new URL("../src/components/app-shell.tsx", import.meta.url)));
+require.cache[appShellPath] = { id: appShellPath, filename: appShellPath, loaded: true, exports: appShellStub } as unknown as NodeJS.Module;
 new Function("require", "module", "exports", compiled)((name: string) => {
   if (name === "@/components/app-shell") return { useApp: () => ({
     // AppShell guarantees a non-null SessionUser; the page reads user.role.

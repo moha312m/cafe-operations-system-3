@@ -66,7 +66,11 @@ async function branchReport(email: string, branchId?: string) {
 test("manager daily breakdown cannot expose other branches through an overridden filter", async () => {
   await db.order.create({ data: { cafeId: fx.cafeId, branchId: fx.otherBranchId,
     orderNumber: 90002, status: "SERVED", subtotal: 777, total: 777 } });
-  const report = await branchReport(fx.manager.email, fx.otherBranchId);
+  // The overridden filter is refused outright (no data), rather than silently clamped.
+  const refused = await as(fx.manager.email, `/api/reports/daily?date=${dateStrInTz(new Date())}&branchId=${fx.otherBranchId}`);
+  assert.equal(refused.status, 403, refused.text);
+  assert.ok(!refused.text.includes("777"), "no figure from the other branch");
+  const report = await branchReport(fx.manager.email);
   assert.equal(report.financials.grossSales, 120);
   assert.deepEqual(report.byBranch.map(b => b.branchId), [fx.branchId]);
   assert.equal(report.byBranch[0].revenue, 120);

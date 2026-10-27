@@ -12,7 +12,7 @@
 import { after, before, beforeEach, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { db, teardownTaggedCafe } from "./helpers/db";
+import { db, teardownTaggedCafe, purgeOrderTracesFor } from "./helpers/db";
 import { countCafe, type CountCafe } from "./helpers/count";
 import { as, requireServer } from "./helpers/http";
 
@@ -86,7 +86,7 @@ after(async () => {
 });
 
 beforeEach(async () => {
-  await db.order.deleteMany({ where: { cafeId: fx.cafeId } });
+  await purgeOrderTracesFor({ cafeId: fx.cafeId }); await db.order.deleteMany({ where: { cafeId: fx.cafeId } });
   await db.customer.deleteMany({ where: { cafeId: fx.cafeId } });
 });
 

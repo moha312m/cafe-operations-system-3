@@ -12,7 +12,7 @@
 // Every record created here is tagged "PH1-…" so remediation data is
 // distinguishable from audit data and can be removed independently.
 
-import { PrismaClient, type Role } from "@prisma/client";
+import { PrismaClient, type Prisma, type Role } from "@prisma/client";
 import type { SessionUser } from "@/lib/auth";
 import {
   assertTestDatabaseUrl,
@@ -45,6 +45,24 @@ let markerCheck: Promise<unknown> | null = null;
 export function assertTestDatabase(): Promise<unknown> {
   markerCheck ??= assertTestDatabaseMarker(db);
   return markerCheck;
+}
+
+/**
+ * Fixture resets delete orders, but every API-created order also writes an
+ * append-only OrderTrace row (immutability trigger + ON DELETE RESTRICT), so
+ * the order delete is refused. In the disposable database only, remove the
+ * traces of exactly the orders about to be deleted, with the trigger disabled
+ * inside this one transaction. Product code never deletes orders.
+ */
+export async function purgeOrderTracesFor(where: Prisma.OrderWhereInput) {
+  await assertTestDatabase();
+  const ids = (await db.order.findMany({ where, select: { id: true } })).map((o) => o.id);
+  if (ids.length === 0) return;
+  await db.$transaction([
+    db.$executeRawUnsafe(`ALTER TABLE "OrderTrace" DISABLE TRIGGER "OrderTrace_immutable"`),
+    db.$executeRaw`DELETE FROM "OrderTrace" WHERE "orderId" = ANY(${ids})`,
+    db.$executeRawUnsafe(`ALTER TABLE "OrderTrace" ENABLE TRIGGER "OrderTrace_immutable"`),
+  ]);
 }
 
 export const TAG_PREFIX = "PH1";
@@ -235,7 +253,7 @@ export async function cleanup(marker: string) {
   if (ids.length) {
     await db.ownerActionRequest.deleteMany({ where: { targetOrderId: { in: ids } } });
     await db.inventoryTransaction.deleteMany({ where: { orderId: { in: ids } } });
-    await db.order.deleteMany({ where: { id: { in: ids } } });
+    await purgeOrderTracesFor({ id: { in: ids } }); await db.order.deleteMany({ where: { id: { in: ids } } });
   }
 }
 
@@ -495,24 +513,36 @@ export async function purgeCafe(cafeId: string): Promise<void> {
   let pending = scoped.map((r) => r.table_name).filter((n) => SAFE_IDENTIFIER.test(n));
   let lastFailure: unknown;
 
-  while (pending.length > 0) {
-    const blocked: string[] = [];
-    for (const table of pending) {
-      try {
-        await db.$executeRawUnsafe(`DELETE FROM "${table}" WHERE "cafeId" = $1`, cafeId);
-      } catch (e) {
-        lastFailure = e;
-        blocked.push(table);
-      }
-    }
-    if (blocked.length === pending.length) break; // no progress — stop retrying
-    pending = blocked;
-  }
-
+  // Append-only evidence tables (OrderTrace, revisions, reporting versions) refuse DELETE
+  // through *_immutable triggers. This café is already proven disposable above, so lift
+  // only those triggers for the purge and always put them back.
+  const immutable = (await db.$queryRaw<{ tbl: string; tg: string }[]>`
+    SELECT c.relname AS tbl, t.tgname AS tg FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
+     WHERE NOT t.tgisinternal AND t.tgname LIKE '%immutable%' AND c.relname = ANY(${pending})
+  `).filter((r) => SAFE_IDENTIFIER.test(r.tbl) && SAFE_IDENTIFIER.test(r.tg));
   try {
-    await db.$executeRawUnsafe(`DELETE FROM "Cafe" WHERE "id" = $1`, cafeId);
-  } catch (e) {
-    lastFailure = e;
+    for (const r of immutable) await db.$executeRawUnsafe(`ALTER TABLE "${r.tbl}" DISABLE TRIGGER "${r.tg}"`);
+    while (pending.length > 0) {
+      const blocked: string[] = [];
+      for (const table of pending) {
+        try {
+          await db.$executeRawUnsafe(`DELETE FROM "${table}" WHERE "cafeId" = $1`, cafeId);
+        } catch (e) {
+          lastFailure = e;
+          blocked.push(table);
+        }
+      }
+      if (blocked.length === pending.length) break; // no progress — stop retrying
+      pending = blocked;
+    }
+
+    try {
+      await db.$executeRawUnsafe(`DELETE FROM "Cafe" WHERE "id" = $1`, cafeId);
+    } catch (e) {
+      lastFailure = e;
+    }
+  } finally {
+    for (const r of immutable) await db.$executeRawUnsafe(`ALTER TABLE "${r.tbl}" ENABLE TRIGGER "${r.tg}"`);
   }
 
   const survivors = await db.cafe.count({ where: { id: cafeId } });

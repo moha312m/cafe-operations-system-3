@@ -24,8 +24,7 @@ import { collectOrderPayment } from "@/lib/payments";
 import { refundOrder } from "@/lib/refunds";
 import { collectedAmount } from "@/lib/order-payments";
 import {
-  db, fixture, sessionFor, cleanup, cleanupShift, clearOpenShifts, openShift, makeOrder,
-} from "./helpers/db";
+  db, fixture, sessionFor, cleanup, cleanupShift, clearOpenShifts, openShift, makeOrder, purgeOrderTracesFor } from "./helpers/db";
 import { requireServer, login, as } from "./helpers/http";
 
 const MARKER = "PH15-POS002";
@@ -50,7 +49,7 @@ async function purge(orderId: string) {
   await db.ownerActionRequest.deleteMany({ where: { targetOrderId: orderId } });
   await db.payment.deleteMany({ where: { orderId } });
   await db.orderItem.deleteMany({ where: { orderId } });
-  await db.order.deleteMany({ where: { id: orderId } });
+  await purgeOrderTracesFor({ id: orderId }); await db.order.deleteMany({ where: { id: orderId } });
 }
 
 const cancel = (email: string, orderId: string) =>

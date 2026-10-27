@@ -25,6 +25,7 @@ export async function stockItemIdsForOrders(tx: Tx, orderIds: string[], options:
   return [...new Set(plans.flatMap(p => p.plan.demands.map(d => d.inventoryItemId)))].sort();
 }
 export async function lockStockForOrders(tx: Tx, orderIds: string[], options: Options = {}) {
+  if (orderIds.length === 0) return; // nothing made, nothing to lock (e.g. only CONFIRMED orders carried)
   const plans = await Promise.all(orderIds.map(id => prepareStockForOrder(tx, id, options)));
   await acquireInventorySharedLocks(tx, [...new Set(plans.map(p => p.plan.branchId))]);
   const ids = [...new Set(plans.flatMap(p => p.plan.demands.map(d => d.inventoryItemId)))].sort();
