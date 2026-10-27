@@ -189,6 +189,7 @@ export async function POST(request: NextRequest, { params }: Params) {
         paymentStatus: o.paymentStatus,
         remaining: o.remaining,
         stockDeductedAtHandover: o.stockDeductedAtHandover,
+        recipesAlreadyProcessed: o.recipesAlreadyProcessed, finishedStockPending: o.finishedStockPending,
       })),
     });
   } catch (error) {

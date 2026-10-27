@@ -397,6 +397,7 @@ const COUNT_SESSION_DETAIL = {
   status: true,
   mode: true,
   scopeDerivation: true,
+  accountabilityContext: true,
   startedAt: true,
   submittedAt: true,
   confirmedAt: true,

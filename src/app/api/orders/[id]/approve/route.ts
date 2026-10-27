@@ -1,3 +1,4 @@
+import { finalizeOrderConsumption } from "@/lib/sale-consumption";
 import { protectedTransaction } from "@/lib/protected-transaction";
 import { NextResponse, type NextRequest } from "next/server";
 import { handleApiError, ApiError, requireActiveSession, resolveReadScope } from "@/lib/api";
@@ -6,7 +7,7 @@ import { recomputeSessionTotals } from "@/lib/table-sessions";
 import { resolvePermissions } from "@/lib/perms/effective";
 import { canApproveOrder } from "@/lib/qr-approval";
 
-import { lockOrders, lockOrderPayments } from "@/lib/transaction-locks";
+import { lockOrders, lockOrderPayments, lockTableSessions } from "@/lib/transaction-locks";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -31,6 +32,8 @@ export async function POST(_request: NextRequest, { params }: Params) {
         throw new ApiError(403, "ليس لديك صلاحية لتأكيد هذا الطلب");
       }
 
+      if (order.tableSessionId) await lockTableSessions(tx, [order.tableSessionId]);
+      await finalizeOrderConsumption(tx, id, new Date());
       const updated = await tx.order.update({
         where: { id },
         data: {

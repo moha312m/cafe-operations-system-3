@@ -1,7 +1,9 @@
+import { provisionalConsumption, validateProvisionalFinishedSales } from "@/lib/sale-consumption";
 import { decimal, money, sumMoney, moneyMax, type Decimal } from "@/lib/money";
 import { protectedTransaction } from "@/lib/protected-transaction";
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
+import { Prisma, type ProductStockMode } from "@prisma/client";
 import { db } from "@/lib/db";
 import { requirePermission, handleApiError, ApiError, requireActiveSession, resolveReadScope } from "@/lib/api";
 import { auditInTransaction } from "@/lib/audit";
@@ -116,10 +118,11 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       }
 
       // ── New lines: priced from the current menu (branch-aware) ──
-      type NewRow = { productId: string; variantId: string | null; productName: string; variantName: string | null; unitPrice: Decimal; quantity: number; lineTotal: Decimal; notes: string | null; addOns: { addOnId: string; addOnName: string; price: Decimal }[] };
+      type NewRow = { productId: string; stockModeSnapshot: ProductStockMode; variantId: string | null; productName: string; variantName: string | null; unitPrice: Decimal; quantity: number; lineTotal: Decimal; notes: string | null; addOns: { addOnId: string; addOnName: string; price: Decimal }[] };
       const newRows: NewRow[] = [];
       if (data.newItems && data.newItems.length > 0) {
-        const ids = [...new Set(data.newItems.map((i) => i.productId))];
+        const ids = [...new Set(data.newItems.map((i) => i.productId))].sort();
+        await tx.$queryRaw`SELECT "id" FROM "Product" WHERE "cafeId"=${order.cafeId} AND "id" IN (${Prisma.join(ids)}) ORDER BY "id" FOR SHARE`;
         const products = await tx.product.findMany({
           where: { id: { in: ids }, cafeId: order.cafeId, isActive: true },
           include: { variants: true, addOns: { include: { addOn: true } }, branchPrices: { where: { branchId } } },
@@ -153,10 +156,11 @@ export async function PATCH(request: NextRequest, { params }: Params) {
           const addOnsTotal = sumMoney(addOnRows.map(a => a.price));
           const lineTotal = money(unit.plus(addOnsTotal).times(it.quantity));
           subtotal = money(subtotal.plus(lineTotal));
-          newRows.push({ productId: product.id, variantId: it.variantId ?? null, productName: product.name, variantName, unitPrice: unit, quantity: it.quantity, lineTotal, notes: it.notes ?? null, addOns: addOnRows });
+          newRows.push({ productId: product.id, stockModeSnapshot: product.stockMode, variantId: it.variantId ?? null, productName: product.name, variantName, unitPrice: unit, quantity: it.quantity, lineTotal, notes: it.notes ?? null, addOns: addOnRows });
         }
       }
 
+      await validateProvisionalFinishedSales(tx, { cafeId: order.cafeId, branchId }, newRows);
       const remainingCount = order.items.length - removals.length + newRows.length;
       if (remainingCount === 0) {
         throw new ApiError(400, "لازم يفضل صنف واحد على الأقل — لو عايز تلغي الطلب ارفضه");
@@ -187,6 +191,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       for (const row of newRows) {
         await tx.orderItem.create({
           data: {
+            ...provisionalConsumption({ id: row.productId, stockMode: row.stockModeSnapshot }, row.variantId),
             orderId: id, productId: row.productId, variantId: row.variantId,
             productName: row.productName, variantName: row.variantName,
             unitPrice: row.unitPrice, quantity: row.quantity, lineTotal: row.lineTotal, notes: row.notes,

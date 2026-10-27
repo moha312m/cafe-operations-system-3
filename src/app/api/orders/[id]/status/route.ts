@@ -1,3 +1,4 @@
+import { hasPendingConsumption } from "@/lib/sale-consumption";
 import { protectedTransaction, queueRefusalAudit, protectedContext } from "@/lib/protected-transaction";
 import { acquireInventorySharedLocks, activeFreezeFor } from "@/lib/inventory-freeze";
 import { recordDeferredDeduction } from "@/lib/deferred-deduction";
@@ -42,7 +43,7 @@ const TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
 const bodySchema = z.object({
   status: z.enum(["PREPARING", "READY", "SERVED", "CANCELLED"]),
   reason: z.string().trim().max(500).optional(),
-});
+}).strict();
 
 export async function PATCH(request: NextRequest, { params }: Params) {
   try {
@@ -175,13 +176,11 @@ export async function PATCH(request: NextRequest, { params }: Params) {
             // An order carried across a handover while it was being made had
             // its recipe deducted then, against the outgoing custody. Serving it
             // records who served it and moves no stock a second time.
-            const preDeducted = lockedOrder.stockDeductedAt !== null;
+            const preDeducted = !await hasPendingConsumption(tx, id);
             // While a handover count holds the shelf frozen nothing may move, so
             // the order is served and its recipe deducted when the freeze lifts.
             const freeze = preDeducted ? null : await activeFreezeFor(tx, lockedOrder.branchId);
-            const servedTimeline = preDeducted || freeze
-              ? { servedAt: now, completedAt: now }
-              : { servedAt: now, completedAt: now, stockDeductedAt: now };
+            const servedTimeline = { servedAt: now, completedAt: now };
             if (freeze) {
               await recordDeferredDeduction(tx, {
                 cafeId: lockedOrder.cafeId,

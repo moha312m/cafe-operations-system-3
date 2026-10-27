@@ -50,8 +50,12 @@ type Category = {
 };
 type AddOn = { id: string; name: string; price: string; isActive: boolean };
 type Branch = { id: string; name: string };
-type VariantRow = { name: string; price: string; isAvailable: boolean };
+type StockBinding = { branchId: string; variantId: string | null; inventoryItemId: string };
+type BindingStock = { id: string; name: string; branchId: string };
+type VariantRow = { id?: string; name: string; price: string; isAvailable: boolean };
 type Product = {
+  stockMode: "RECIPE" | "FINISHED_GOOD";
+  stockBindings: StockBinding[];
   id: string;
   sku: string | null;
   name: string;
@@ -70,7 +74,7 @@ type Product = {
   branchPrices: { branchId: string; price: string }[];
   // Attached only when the caller has cost:read.
   hasRecipe?: boolean;
-  costStatus?: "AVAILABLE" | "RECIPE_INCOMPLETE" | "NOT_APPLICABLE" | "MULTIPLE_CONFIGURATIONS";
+  costStatus?: "AVAILABLE" | "RECIPE_INCOMPLETE" | "NOT_APPLICABLE" | "MISSING_COST" | "MULTIPLE_CONFIGURATIONS";
   cost?: number | null;
   profit?: number | null;
   margin?: number | null;
@@ -78,6 +82,8 @@ type Product = {
 };
 
 type ProductForm = {
+  stockMode: "RECIPE" | "FINISHED_GOOD";
+  stockBindings: StockBinding[];
   id: string | null;
   name: string;
   description: string;
@@ -105,6 +111,7 @@ type CategoryForm = {
 
 const emptyProductForm = (categoryId = ""): ProductForm => ({
   id: null,
+  stockMode: "RECIPE", stockBindings: [],
   name: "",
   description: "",
   categoryId,
@@ -135,6 +142,7 @@ export default function MenuPage() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [addOns, setAddOns] = useState<AddOn[]>([]);
+  const [bindingStock, setBindingStock] = useState<BindingStock[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [busy, setBusy] = useState(false);
 
@@ -163,12 +171,13 @@ export default function MenuPage() {
     try {
       const [c, p, a, b] = await Promise.all([
         api<{ categories: Category[] }>("/api/categories"),
-        api<{ products: Product[] }>("/api/products"),
+        api<{ products: Product[]; bindingStockItems: BindingStock[] }>("/api/products"),
         api<{ addOns: AddOn[] }>("/api/addons"),
         api<{ branches: Branch[] }>("/api/branches"),
       ]);
       setCategories(c.categories);
       setProducts(p.products);
+      setBindingStock(p.bindingStockItems ?? []);
       setAddOns(a.addOns);
       setBranches(b.branches);
     } catch (e) {
@@ -215,6 +224,8 @@ export default function MenuPage() {
   async function saveProduct() {
     if (!productForm) return;
     const body: Record<string, unknown> = {
+      stockMode: productForm.stockMode,
+      stockBindings: productForm.stockBindings.filter(b => b.inventoryItemId && (!b.variantId || productForm.variants.some(v => v.id === b.variantId))),
       name: productForm.name,
       description: productForm.description || undefined,
       categoryId: productForm.categoryId,
@@ -228,7 +239,8 @@ export default function MenuPage() {
       variants: productForm.variants
         .filter((v) => v.name.trim() !== "" && v.price !== "")
         .map((v, i) => ({
-          name: v.name,
+          id: v.id,
+        name: v.name,
           price: Number(v.price),
           isAvailable: v.isAvailable,
           sortOrder: i,
@@ -259,6 +271,7 @@ export default function MenuPage() {
   function editProduct(p: Product) {
     setProductForm({
       id: p.id,
+      stockMode: p.stockMode ?? "RECIPE", stockBindings: p.stockBindings ?? [],
       name: p.name,
       description: p.description ?? "",
       categoryId: p.category.id,
@@ -893,6 +906,24 @@ export default function MenuPage() {
                 />
               </div>
 
+              <div className="space-y-2 rounded border p-3">
+                <Label>طريقة استهلاك المخزون</Label>
+                <select aria-label="طريقة استهلاك المخزون" className="w-full rounded border p-2" value={productForm.stockMode} onChange={e => setProductForm({ ...productForm, stockMode: e.target.value as ProductForm["stockMode"] })}>
+                  <option value="RECIPE">وصفة وتحضير</option><option value="FINISHED_GOOD">منتج جاهز — قطعة لكل وحدة مباعة</option>
+                </select>
+                {productForm.stockMode === "FINISHED_GOOD" && <>
+                  <p className="text-sm text-muted-foreground">اختار مخزون الفرع والحجم بالضبط. البيع محتاج تفعيل المنتجات الجاهزة من إعدادات المنشأة. الإضافات تستهلك وصفاتها.</p>
+                  {productForm.variants.some(v => !v.id) && <p className="text-sm">احفظ الأحجام الجديدة أولاً، ثم افتح المنتج لربطها بالمخزون.</p>}
+                  {branches.flatMap(branch => (productForm.variants.length ? productForm.variants.filter(v => v.id).map(v => ({ id: v.id!, name: v.name })) : [{ id: null, name: "المنتج الأساسي" }]).map(variant => {
+                    const binding = productForm.stockBindings.find(b => b.branchId === branch.id && b.variantId === variant.id);
+                    return <label key={branch.id + (variant.id ?? "base")} className="block text-sm">{branch.name} / {variant.name}
+                      <select aria-label={branch.name + " / " + variant.name} className="w-full rounded border p-2" value={binding?.inventoryItemId ?? ""} onChange={e => setProductForm({ ...productForm, stockBindings: [...productForm.stockBindings.filter(b => !(b.branchId === branch.id && b.variantId === variant.id)), ...(e.target.value ? [{ branchId: branch.id, variantId: variant.id, inventoryItemId: e.target.value }] : [])] })}>
+                        <option value="">غير مربوط — لا يمكن بيعه</option>{bindingStock.filter(i => i.branchId === branch.id).map(i => <option key={i.id} value={i.id}>{i.name} (قطعة)</option>)}
+                      </select>
+                    </label>;
+                  }))}
+                </>}
+              </div>
               {/* Visibility */}
               <div className="flex flex-wrap gap-4">
                 {(

@@ -46,10 +46,11 @@ function scopeBranch(
 export async function GET(request: NextRequest) {
   try {
     const session = await requirePermission("inventory:read");
-    await requireFeature(session, "inventoryEnabled");
     const params = request.nextUrl.searchParams;
     const cafeId = resolveCafeId(session, params.get("cafeId"));
     const branchId = scopeBranch(session, params.get("branchId"));
+    const hasFinishedHistory = await db.orderItem.count({ where: { stockModeSnapshot: "FINISHED_GOOD", stockAcceptedAt: { not: null }, order: { cafeId, ...(branchId ? { branchId } : {}) } } }) > 0;
+    if (!hasFinishedHistory) await requireFeature(session, "inventoryEnabled");
 
     const where: Prisma.InventoryItemWhereInput = {
       cafeId,
@@ -87,6 +88,7 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       items: filtered,
+      hasFinishedHistory,
       summary: { totalItems, lowCount, outCount, totalValue },
     });
   } catch (error) {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/client";
 import { useApp } from "@/components/app-shell";
@@ -34,6 +34,8 @@ import {
   type CountType,
 } from "./stock-count-labels";
 
+import { DetailFrame, ConfirmHandoverAction } from "@/components/handovers/detail-frame";
+
 type SessionDetail = {
   id: string;
   branchId: string;
@@ -41,6 +43,7 @@ type SessionDetail = {
   status: CountStatus;
   mode: "BLIND" | "OPEN";
   scopeDerivation: string;
+  accountabilityContext: string;
   startedAt: string | null;
   submittedAt: string | null;
   confirmedAt: string | null;
@@ -50,7 +53,7 @@ type SessionDetail = {
 };
 
 type PendingAction = {
-  kind: "recount" | "accept-variance" | "correction";
+  kind: "recount" | "accept-variance" | "correction" | "reason";
   line: CountLine;
 };
 
@@ -58,12 +61,17 @@ export function StockCountDetail({
   sessionId,
   onClose,
   onChanged,
+  embedded = false,
+  expectedBranchId,
 }: {
+  embedded?: boolean;
+  expectedBranchId?: string;
   sessionId: string | null;
   onClose: () => void;
   onChanged: () => void;
 }) {
   const { canKey } = useApp();
+  const [search, setSearch] = useState("");
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -71,14 +79,17 @@ export function StockCountDetail({
   const [quantity, setQuantity] = useState("");
   const [reasonCodeId, setReasonCodeId] = useState("");
   const [note, setNote] = useState("");
+  const inFlight = useRef(false);
+  const [confirmation, setConfirmation] = useState<"submit" | "confirm" | null>(null);
 
   const load = useCallback(async () => {
     if (!sessionId) return;
-    setLoading(true);
+    if (!embedded) setLoading(true);
     try {
       const { session } = await api<{ session: SessionDetail }>(
         `/api/stock-counts/${sessionId}`
       );
+      if (expectedBranchId && session.branchId !== expectedBranchId) throw new Error("الجرد لا يخص الفرع المحدد — حدّث الحالة");
       setDetail(session);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "تعذّر فتح الجرد");
@@ -86,7 +97,7 @@ export function StockCountDetail({
     } finally {
       setLoading(false);
     }
-  }, [sessionId]);
+  }, [sessionId, embedded, expectedBranchId]);
 
   useEffect(() => {
     load();
@@ -103,6 +114,8 @@ export function StockCountDetail({
 
   async function capture(lineId: string, value: number) {
     if (!detail) return;
+    if (inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
     try {
       await api(`/api/stock-counts/${detail.id}/lines/${lineId}`, {
@@ -114,12 +127,15 @@ export function StockCountDetail({
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "تعذّر تسجيل الكمية");
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   }
 
   async function submit() {
     if (!detail) return;
+    if (inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
     try {
       const res = await api<{ status: string; within: number; outside: number }>(
@@ -131,12 +147,15 @@ export function StockCountDetail({
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "تعذّر تسليم الجرد");
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   }
 
   async function confirm() {
     if (!detail) return;
+    if (inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
     try {
       const res = await api<{ alreadyConfirmed: boolean; varianceCaseIds: string[] }>(
@@ -152,6 +171,7 @@ export function StockCountDetail({
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "تعذّر تأكيد الجرد");
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   }
@@ -165,10 +185,15 @@ export function StockCountDetail({
 
   async function runPending() {
     if (!detail || !pending) return;
+    if (inFlight.current) return;
+    inFlight.current = true;
     const base = `/api/stock-counts/${detail.id}/lines/${pending.line.id}`;
     setBusy(true);
     try {
-      if (pending.kind === "recount") {
+      if (pending.kind === "reason") {
+        await api(`${base}/variance-reason`, { method: "POST", body: { reasonCodeId: reasonCodeId.trim(), note: note.trim() || undefined } });
+        toast.success("اتسجل سبب الفرق دون تغيير العد أو حالته");
+      } else if (pending.kind === "recount") {
         await api(`${base}/recount`, {
           method: "POST",
           body: { countedQuantity: Number(quantity) },
@@ -198,6 +223,7 @@ export function StockCountDetail({
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "تعذّر تنفيذ الإجراء");
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   }
@@ -207,11 +233,7 @@ export function StockCountDetail({
 
   return (
     <>
-      <Dialog open={sessionId !== null} onOpenChange={(o) => !o && !busy && onClose()}>
-        <DialogContent className="max-h-[88vh] max-w-4xl overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>تفاصيل الجرد</DialogTitle>
-          </DialogHeader>
+      <DetailFrame embedded={embedded} hideBack={embedded} open={sessionId !== null} busy={busy} title="العد ومراجعة الجرد" onClose={onClose}>
 
           {loading && <p className="text-sm text-muted-foreground">جاري التحميل…</p>}
 
@@ -229,13 +251,13 @@ export function StockCountDetail({
                     جرد أعمى — المتوقع مخفي عنك
                   </Badge>
                 )}
-                <div className="ms-auto flex gap-2">
+                <div className="ms-auto flex flex-wrap gap-2">
                   {OPEN_FOR_CAPTURE.includes(detail.status) && canKey("stock_count.submit") && (
                     <Button
                       size="sm"
                       variant="outline"
                       disabled={busy}
-                      onClick={submit}
+                      onClick={() => setConfirmation("submit")}
                       data-testid="count-submit"
                     >
                       تسليم الجرد
@@ -245,7 +267,7 @@ export function StockCountDetail({
                     <Button
                       size="sm"
                       disabled={busy}
-                      onClick={confirm}
+                      onClick={() => setConfirmation("confirm")}
                       data-testid="count-confirm"
                     >
                       تأكيد الجرد
@@ -254,6 +276,8 @@ export function StockCountDetail({
                 </div>
               </div>
 
+              <label className="block">بحث الأصناف<Input aria-label="بحث أصناف الجرد" value={search} onChange={e => setSearch(e.target.value)} /></label>
+              <p>المسجل: {detail.lines.filter(line => line.countedQuantity !== null).length} / {detail.lines.length} صنف. الفراغ ليس صفرًا؛ لا يتم تسليم كمية غير مدخلة.</p>
               <div className="overflow-x-auto rounded-xl border">
                 <Table>
                   <TableHeader>
@@ -268,12 +292,13 @@ export function StockCountDetail({
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {detail.lines.map((line) => (
+                    {detail.lines.filter(line => line.inventoryItem.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())).map((line) => (
                       <CountLineRow
                         key={line.id}
                         line={line}
                         sessionStatus={detail.status}
                         blind={detail.blind}
+                        handover={detail.accountabilityContext === "HANDOVER"}
                         can={canKey}
                         busy={busy}
                         onCapture={capture}
@@ -285,8 +310,8 @@ export function StockCountDetail({
               </div>
             </div>
           )}
-        </DialogContent>
-      </Dialog>
+      </DetailFrame>
+      <ConfirmHandoverAction title={confirmation === "submit" ? "تسليم الجرد للمراجعة" : "اعتماد الجرد"} open={confirmation !== null} busy={busy} onCancel={() => setConfirmation(null)} onConfirm={() => { const action = confirmation; setConfirmation(null); if (action === "submit") void submit(); else if (action === "confirm") void confirm(); }} />
 
       {/* Line actions use the active reasons configured for this cafe. */}
       <Dialog open={pending !== null} onOpenChange={(o) => !o && !busy && setPending(null)}>
@@ -297,7 +322,7 @@ export function StockCountDetail({
                 ? "إعادة عد"
                 : pending?.kind === "accept-variance"
                   ? "اعتماد الفرق"
-                  : "طلب تصحيح"}
+                  : pending?.kind === "reason" ? "تسجيل سبب فرق التسليم" : "طلب تصحيح"}
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-3 text-sm">

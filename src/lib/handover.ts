@@ -1,3 +1,4 @@
+import { applyPendingFinishedGoodsReturns } from "@/lib/finished-goods-returns";
 // A handover exists because a shift closed into one.
 //
 // ── WHY THERE IS NO `startHandover` ──
@@ -1241,6 +1242,7 @@ const DISCLOSED_HANDOVER_LINE_SELECT = {
 } satisfies Prisma.StockCountLineSelect;
 
 export type IncomingHandoverView = {
+  segregatedReturns: { id: string; quantity: number; inventoryItemId: string }[];
   handoverId: string;
   status: HandoverStatus;
   branchId: string;
@@ -1285,7 +1287,7 @@ const REVIEWABLE_HANDOVER_STATUSES: readonly HandoverStatus[] = [
 export async function incomingHandoverView(
   handoverId: string,
   viewerId: string,
-  scope: { cafeId: string; viewerBranchId: string | null; allowOutgoingDraft?: boolean }
+  scope: { cafeId: string; viewerBranchId: string | null; allowOutgoingDraft?: boolean; allowCompletedRead?: boolean }
 ): Promise<IncomingHandoverView> {
   const handover = await db.handoverSession.findUnique({
     where: { id: handoverId },
@@ -1321,7 +1323,8 @@ export async function incomingHandoverView(
   }
   const outgoingDraft = scope.allowOutgoingDraft === true && handover.outgoingUserId === viewerId
     && (handover.status === "DRAFT" || handover.status === "REJECTED");
-  if (!REVIEWABLE_HANDOVER_STATUSES.includes(handover.status) && !outgoingDraft) {
+  if (!REVIEWABLE_HANDOVER_STATUSES.includes(handover.status) && !outgoingDraft
+    && !(scope.allowCompletedRead === true && handover.status === "COMPLETED")) {
     throw new ApiError(409, "التسليم مش في مرحلة مراجعة");
   }
 
@@ -1363,6 +1366,7 @@ export async function incomingHandoverView(
         : bound.lines;
 
   return {
+    segregatedReturns: await db.finishedGoodsReturn.findMany({ where: { cafeId: handover.cafeId, branchId: handover.branchId, deferredHandoverId: handover.id, appliedAt: null }, select: { id: true, quantity: true, inventoryItemId: true } }),
     handoverId: handover.id,
     status: handover.status,
     branchId: handover.branchId,
@@ -2243,6 +2247,16 @@ async function buildReplayResult(
  * caller's to state and the service's to enforce.
  */
 /** Prepare only the existing acceptance's referenced financial row set. */
+class HandoverConsumptionChanged extends Error {}
+async function protectedHandoverTransaction<T>(work: (tx: Prisma.TransactionClient) => Promise<T>, scope: { cafeId?: string; branchId?: string } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try { return await protectedTransaction(work, scope); }
+    catch (error) {
+      if (!(error instanceof HandoverConsumptionChanged)) throw error;
+      if (attempt >= 2) throw new ApiError(409, "مرتجعات التسليم اتغيرت؛ جرّب الاستلام تاني بنفس المفتاح");
+    }
+  }
+}
 async function prepareHandoverFinancialLocks(tx: Prisma.TransactionClient, args: {
   handoverId: string; cafeId: string; viewerBranchId: string | null; incomingShiftId?: string | null;
 }, actorId: string) {
@@ -2273,7 +2287,9 @@ async function prepareHandoverFinancialLocks(tx: Prisma.TransactionClient, args:
   const shifts = [handover.outgoingShiftId, ...incoming.map(row => row.id), ...periods.map(row => row.responsibleShiftId).filter((id): id is string => !!id)];
   await lockShifts(tx, shifts);
   const pending = await tx.deferredStockDeduction.findMany({ where: { handoverId: handover.id, appliedAt: null, ...context.scope }, select: { orderId: true } });
-  await lockOrders(tx, pending.map(row => row.orderId)); await lockOrderPayments(tx, pending.map(row => row.orderId));
+  const returns = await tx.finishedGoodsReturn.findMany({ where: { deferredHandoverId: handover.id, appliedAt: null, ...context.scope }, select: { orderId: true } });
+  const orderIds = [...new Set([...pending, ...returns].map(row => row.orderId))].sort();
+  await lockOrders(tx, orderIds); await lockOrderPayments(tx, orderIds);
   return assignment;
 }
 
@@ -2289,12 +2305,15 @@ async function prepareHandoverInventoryLocks(tx: Prisma.TransactionClient, hando
   if (session.length !== 1) throw new ApiError(409, NO_BOUND_COUNT);
   context.trace.push({ entity: "StockCountSession", ids: session.map(row => row.id), mode: "FOR UPDATE" });
   await acquireInventoryExclusiveLock(tx, handover.branchId, { tryOnly: true });
+  const currentDeferred = await tx.deferredStockDeduction.findMany({ where: { handoverId: handover.id, appliedAt: null, ...context.scope }, select: { orderId: true } });
+  const currentReturns = await tx.finishedGoodsReturn.findMany({ where: { deferredHandoverId: handover.id, appliedAt: null, ...context.scope }, select: { orderId: true, inventoryItemId: true } });
+  if ([...currentDeferred, ...currentReturns].some(row => !context.held.get("Order")?.has(row.orderId))) throw new HandoverConsumptionChanged();
   const [boundary, lines, deferredIds] = await Promise.all([
     tx.inventoryItem.findMany({ where: { ...context.scope, isActive: true, archivedAt: null }, select: { id: true } }),
     tx.stockCountLine.findMany({ where: { sessionId }, select: { inventoryItemId: true } }),
-    stockItemIdsForOrders(tx, pending.filter(row => !row.order.stockDeductedAt).map(row => row.orderId), { forceAllowNegative: true }),
+    stockItemIdsForOrders(tx, currentDeferred.map(row => row.orderId), { boundary: "DEFERRED", forceAllowNegative: true }),
   ]);
-  const ids = [...new Set([...boundary.map(row => row.id), ...lines.map(row => row.inventoryItemId), ...deferredIds])].sort();
+  const ids = [...new Set([...boundary.map(row => row.id), ...lines.map(row => row.inventoryItemId), ...deferredIds, ...currentReturns.map(row => row.inventoryItemId)])].sort();
   for (const id of ids) await lockItemForUpdate(tx, id, { nowait: true }).catch(error => { if (isDatabaseContention(error)) throw new ApiError(409, "المخزون مشغول بعملية تانية — جرّب الاستلام تاني"); throw error; });
 }
 
@@ -2317,7 +2336,7 @@ export async function acceptHandover(args: {
    */
   __afterStep?: AcceptanceCheckpoint;
 }): Promise<AcceptResult> {
-  return protectedTransaction(async (tx) => {
+  return protectedHandoverTransaction(async (tx) => {
     // Assignment changes and newly acquired responsibility share User first.
     // Refresh scope before taking Handover, preserving that lock order.
     const scope = await prepareHandoverFinancialLocks(tx, args, args.incomingUserId);
@@ -2457,7 +2476,7 @@ export async function overrideAcceptHandover(args: {
   const note = args.note?.trim() ?? "";
   if (note.length === 0) throw new ApiError(400, EXCEPTION_NOTE_REQUIRED);
 
-  return protectedTransaction(async (tx) => {
+  return protectedHandoverTransaction(async (tx) => {
     await prepareHandoverFinancialLocks(tx, args, args.managerId);
     // 1. The row lock, first, exactly as the ordinary accept takes it.
     if (!(await lockHandover(tx, args.handoverId))) {
@@ -2890,6 +2909,7 @@ async function runAcceptance(
   // Orders served while the shelf was frozen come off it now, against the
   // custody step 10 just opened for the incoming shift.
   await applyDeferredDeductions(tx, { handoverId: handover.id, actorId: args.incomingUserId });
+  await applyPendingFinishedGoodsReturns(tx, { handoverId: handover.id, actorId: args.incomingUserId });
   // The last seam, and the one that closes the rollback matrix: everything
   // this acceptance writes now exists, the freeze release included. A failure
   // here — the connection dying between the last write and the commit — must
@@ -3437,7 +3457,7 @@ export async function acceptToBranchCustody(args: {
     throw new ApiError(400, BRANCH_OMISSION_REASON_REQUIRED);
   }
 
-  return protectedTransaction(async (tx) => {
+  return protectedHandoverTransaction(async (tx) => {
     await prepareHandoverFinancialLocks(tx, args, args.managerId);
     // 1. The row lock, first, so everything read below is the state written
     //    to — and so a concurrent shift-open blocks on it (see R-A1).
@@ -3722,6 +3742,7 @@ async function runBranchAcceptance(
   // Orders served while the shelf was frozen come off it now, against the
   // branch custody step 12 just opened.
   await applyDeferredDeductions(tx, { handoverId: handover.id, actorId: args.managerId });
+  await applyPendingFinishedGoodsReturns(tx, { handoverId: handover.id, actorId: args.managerId });
   await checkpoint(17);
 
   const result: BranchCustodyAcceptResult = {

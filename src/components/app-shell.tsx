@@ -67,7 +67,8 @@ const NAV: NavItem[] = [
   { href: "/recipe-review", label: "دقة الوصفات", icon: "🧪", permission: "cost:read" },
   { href: "/branches", label: t.nav.branches, icon: "🏬", permission: "branches:manage", feature: (f) => f.branchManagementEnabled },
   { href: "/staff", label: t.nav.staff, icon: "👥", permission: "users:manage", feature: (f) => f.staffManagementEnabled },
-  { href: "/inventory", label: t.nav.inventory, icon: "📦", permission: "inventory:read", feature: (f) => f.inventoryEnabled },
+  // Historical finished orders/returns remain reachable after new inventory use is disabled.
+  { href: "/inventory", label: t.nav.inventory, icon: "📦", permission: "inventory:read" },
   { href: "/purchases", label: "المشتريات", icon: "🛒", permission: "inventory:read", key: "purchases.view", feature: (f) => f.purchasesEnabled },
   { href: "/suppliers", label: "الموردين", icon: "🚚", permission: "inventory:read", key: "suppliers.view", feature: (f) => f.purchasesEnabled },
   { href: "/customers", label: "العملاء", icon: "💳", permission: "orders:read", key: "customers.view" },
@@ -258,7 +259,7 @@ export function AppShell({
             </DialogTrigger>
             <p className="min-w-0 truncate text-sm font-semibold text-sidebar-accent-foreground">{cafe?.name ?? t.appName}</p>
           </div>
-          <DialogContent className="flex h-[calc(100dvh-2rem)] max-w-xs flex-col gap-0 overflow-hidden bg-sidebar p-0 pt-10 text-sidebar-foreground">
+          <DialogContent scrollable={false} className="flex h-[calc(100dvh-2rem)] max-w-xs flex-col gap-0 overflow-hidden bg-sidebar p-0 pt-10 text-sidebar-foreground">
             <DialogTitle className="sr-only">التنقل الرئيسي</DialogTitle>
             {sidebarContent}
           </DialogContent>

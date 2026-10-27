@@ -262,6 +262,8 @@ export type CarriedOrderSummary = {
   paymentStatus: PaymentStatus;
   remaining: number;
   stockDeductedAtHandover: boolean;
+  recipesAlreadyProcessed: boolean;
+  finishedStockPending: boolean;
   deducted: { name: string; quantity: number }[];
 };
 
@@ -295,12 +297,13 @@ async function carryOpenOrders(
     select: {
       id: true, orderNumber: true, status: true, paymentStatus: true,
       total: true, paidAmount: true, stockDeductedAt: true,
+      items: { where: { voidedAt: null }, select: { stockModeSnapshot: true, stockAcceptedAt: true, finishedStockDeductedAt: true } },
     },
     orderBy: { orderNumber: "asc" },
   });
 
   const madeOrders = orders.filter(order => MADE_STATUSES.has(order.status) && !order.stockDeductedAt);
-  try { await lockStockForOrders(tx, madeOrders.map(order => order.id)); }
+  try { await lockStockForOrders(tx, madeOrders.map(order => order.id), { boundary: "CARRY_RECIPES" }); }
   catch (error) {
     if (error instanceof StockError) throw new ApiError(409, `مش قادر أرحّل الطلبات ${madeOrders.map(order => "#" + order.orderNumber).join("، ")} للشيفت اللي جاي: ${error.message}`);
     throw error;
@@ -311,7 +314,7 @@ async function carryOpenOrders(
     let stockDeductedAtHandover = false;
     if (MADE_STATUSES.has(order.status) && !order.stockDeductedAt) {
       try {
-        const result = await deductStockForOrder(tx, order.id, args.actorId);
+        const result = await deductStockForOrder(tx, order.id, args.actorId, undefined, { boundary: "CARRY_RECIPES" });
         deducted = result.deducted;
       } catch (e) {
         if (e instanceof StockError) {
@@ -320,7 +323,7 @@ async function carryOpenOrders(
         throw e;
       }
       await tx.order.update({ where: { id: order.id }, data: { stockDeductedAt: args.at } });
-      stockDeductedAtHandover = true;
+      stockDeductedAtHandover = deducted.length > 0;
     }
     carried.push({
       orderId: order.id,
@@ -329,6 +332,8 @@ async function carryOpenOrders(
       paymentStatus: order.paymentStatus,
       remaining: moneyMax(money(decimal(order.total).minus(order.paidAmount)), 0).toNumber(),
       stockDeductedAtHandover,
+      recipesAlreadyProcessed: !!order.stockDeductedAt || MADE_STATUSES.has(order.status),
+      finishedStockPending: order.items.some(i => i.stockModeSnapshot === "FINISHED_GOOD" && !!i.stockAcceptedAt && !i.finishedStockDeductedAt),
       deducted,
     });
   }

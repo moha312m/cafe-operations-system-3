@@ -40,7 +40,8 @@ export async function GET(request: NextRequest) {
         order: {
           select: {
             id: true, orderNumber: true, status: true, paymentStatus: true, type: true,
-            tableNumber: true, customerName: true, total: true, paidAmount: true,
+            tableNumber: true, customerName: true, total: true, paidAmount: true, stockDeductedAt: true,
+            items: { where: { voidedAt: null }, select: { stockModeSnapshot: true, stockAcceptedAt: true, finishedStockDeductedAt: true } },
           },
         },
       },
@@ -60,6 +61,7 @@ export async function GET(request: NextRequest) {
       remaining: Math.max(0, Math.round((Number(r.order.total) - Number(r.order.paidAmount)) * 100) / 100),
       statusAtHandover: r.statusAtHandover,
       stockDeductedAtHandover: r.stockDeductedAtHandover,
+      recipesAlreadyProcessed: !!r.order.stockDeductedAt, finishedStockPending: r.order.items.some(i => i.stockModeSnapshot === "FINISHED_GOOD" && !!i.stockAcceptedAt && !i.finishedStockDeductedAt),
       carriedAt: r.createdAt,
       fromShiftNumber: r.shift.shiftNumber,
       fromCashier: r.shift.cashier.name,

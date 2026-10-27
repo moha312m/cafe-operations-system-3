@@ -1,3 +1,4 @@
+import { provisionalConsumption, finalizeOrderConsumption } from "@/lib/sale-consumption";
 import { decimal, money, sumMoney, validCurrencyInput, type Numeric } from "@/lib/money";
 import { queueRefusalAudit } from "@/lib/protected-transaction";
 import { NextResponse, type NextRequest } from "next/server";
@@ -235,6 +236,7 @@ export async function POST(request: NextRequest) {
         subtotal = money(subtotal.plus(lineTotal));
 
         return {
+          ...provisionalConsumption(product, item.variantId ?? null),
           productId: product.id,
           variantId: item.variantId ?? null,
           productName: product.name,
@@ -444,6 +446,7 @@ export async function POST(request: NextRequest) {
             createdById: session.id,
             items: {
               create: itemRows.map((row) => ({
+                stockModeSnapshot: row.stockModeSnapshot, stockProductIdSnapshot: row.stockProductIdSnapshot, stockVariantIdSnapshot: row.stockVariantIdSnapshot,
                 productId: row.productId,
                 variantId: row.variantId,
                 productName: row.productName,
@@ -507,6 +510,8 @@ export async function POST(request: NextRequest) {
         },
         session.id, tx
       );
+
+      await finalizeOrderConsumption(tx, order.id, new Date());
 
       // Loyalty side effects: ledger the redemption, bump customer stats,
       // then award earn-points (no-ops unless the order is already eligible).

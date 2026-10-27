@@ -1,3 +1,4 @@
+import { hasPendingConsumption } from "@/lib/sale-consumption";
 import type { Prisma } from "@prisma/client";
 import { ApiError } from "@/lib/api";
 import { auditInTransaction } from "@/lib/audit";
@@ -80,10 +81,10 @@ export async function applyDeferredDeductions(
     if (!attribution.custodyPeriodId) {
       throw new ApiError(409, "مفيش عهدة مخزون مفتوحة في الفرع تتخصم منها الأوردرات اللي اتقدمت أثناء التسليم");
     }
-    const deduction = row.order.stockDeductedAt
+    const deduction = !await hasPendingConsumption(tx, row.orderId)
       ? null
-      : await deductStockForOrder(tx, row.orderId, args.actorId, attribution, { forceAllowNegative: true });
-    if (deduction) {
+      : await deductStockForOrder(tx, row.orderId, args.actorId, attribution, { boundary: "DEFERRED", forceAllowNegative: true });
+    if (deduction && !row.order.stockDeductedAt) {
       await tx.order.update({ where: { id: row.orderId }, data: { stockDeductedAt: appliedAt } });
     }
     await tx.deferredStockDeduction.update({

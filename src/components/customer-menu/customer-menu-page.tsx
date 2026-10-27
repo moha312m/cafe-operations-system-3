@@ -363,7 +363,7 @@ export function CustomerMenuPage({
 
       {/* ── Cart & checkout bottom sheet ───────────────────────── */}
       <Dialog open={cartOpen} onOpenChange={setCartOpen}>
-        <DialogContent className={SHEET}>
+        <DialogContent scrollable={false} className={SHEET}>
           <DialogHeader className="shrink-0 border-b px-4 py-3">
             <DialogTitle>السلة</DialogTitle>
           </DialogHeader>
@@ -451,7 +451,7 @@ export function CustomerMenuPage({
         open={configuring !== null}
         onOpenChange={(o) => !o && setConfiguring(null)}
       >
-        <DialogContent className={SHEET}>
+        <DialogContent scrollable={false} className={SHEET}>
           <DialogHeader className="shrink-0 border-b px-4 py-3">
             <DialogTitle>{configuring?.name}</DialogTitle>
           </DialogHeader>

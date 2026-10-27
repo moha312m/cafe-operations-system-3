@@ -330,6 +330,7 @@ enum InventoryEnforcementMode {
 }
 
 model CafeSettings {
+  finishedGoodsSalesEnabled Boolean @default(false)
   id     String @id @default(cuid())
   cafeId String @unique
 
@@ -422,6 +423,8 @@ model CafeSettings {
 }
 
 model Branch {
+  stockBindings ProductStockBinding[] @relation("FinishedBindingBranch")
+  inventorySaleIdentityItems InventoryItem[] @relation("InventorySaleIdentityBranch")
   openingSettings BranchOpeningSettings?
   cashStorages CashStorage[]
   openingCashReceipts OpeningCashReceipt[]
@@ -488,6 +491,8 @@ placeAssets PlaceAsset[]
   placeReceipts ShiftPlaceReceipt[]
   placeIncidents PlaceIncident[]
   placePhotos PlacePhoto[]
+
+  @@unique([id, cafeId], map: "Branch_sale_identity_key")
 }
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Table sessions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -631,6 +636,7 @@ model BranchFinancialSettings {
 }
 
 model User {
+  finishedGoodsReturns FinishedGoodsReturn[] @relation("FinishedReturnActor")
   branchOpeningSettingsUpdated BranchOpeningSettings[]
   cashStoragesDeclared CashStorage[]
   cashStorageMovements CashStorageMovement[]
@@ -822,6 +828,8 @@ model MenuCategory {
 }
 
 model Product {
+  stockMode ProductStockMode @default(RECIPE)
+  stockBindings ProductStockBinding[] @relation("FinishedBindingProduct")
   id          String   @id @default(cuid())
   cafeId      String
   sku         String?
@@ -856,6 +864,8 @@ model Product {
   @@index([cafeId, showInCustomerMenu])
   @@index([cafeId, showInPOS])
   @@index([cafeId, sortOrder])
+
+  @@unique([id, cafeId], map: "Product_sale_identity_key")
 }
 
 // A source sales export is historical evidence, not a POS order. Keeping it
@@ -898,6 +908,7 @@ model HistoricalSaleLine {
 // absolute price. When a product has variants, the variant price is
 // the unit price; otherwise basePrice applies.
 model ProductVariant {
+  stockBindings ProductStockBinding[] @relation("FinishedBindingVariant")
   id        String  @id @default(cuid())
   productId String
   name      String
@@ -910,6 +921,8 @@ model ProductVariant {
   recipes    Recipe[]
 
   @@index([productId])
+
+  @@unique([id, productId], map: "ProductVariant_sale_identity_key")
 }
 
 // Ø³Ø¹Ø± Ù…Ø®ØªÙ„Ù Ø­Ø³Ø¨ Ø§Ù„ÙØ±Ø¹ â€” optional base-price override per branch. For
@@ -1038,6 +1051,7 @@ model RecipeItem {
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Orders â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 model Order {
+  finishedStockItems OrderItem[] @relation("FinishedSnapshotOrder")
   id                  String      @id @default(cuid())
   cafeId              String
   branchId            String
@@ -1151,11 +1165,29 @@ model Order {
   @@index([servedById])
   @@index([servedStockCustodyPeriodId])
   @@index([servedShiftId])
+
+  @@unique([id, cafeId, branchId], map: "Order_sale_identity_key")
 }
 
 // Item rows snapshot name & price at sale time so menu edits never
 // rewrite history.
 model OrderItem {
+  // Nullable legacy; nonnull provisional mode until stockAcceptedAt is set.
+  stockModeSnapshot ProductStockMode?
+  stockAcceptedAt DateTime?
+  stockProductIdSnapshot String?
+  stockVariantIdSnapshot String?
+  finishedStockCafeId String?
+  finishedStockBranchId String?
+  finishedStockItemId String?
+  finishedStockUnit InventoryUnit?
+  finishedStockQuantity Int?
+  finishedStockDeductedAt DateTime?
+  finishedStockTransactionId String?
+  finishedStockOrder Order? @relation("FinishedSnapshotOrder", fields: [orderId, finishedStockCafeId, finishedStockBranchId], references: [id, cafeId, branchId], onDelete: Restrict, onUpdate: Restrict, map: "OrderItem_finished_order_fkey")
+  finishedStockItem InventoryItem? @relation("FinishedSnapshotInventory", fields: [finishedStockItemId, finishedStockCafeId, finishedStockBranchId, finishedStockUnit], references: [id, cafeId, branchId, unit], onDelete: Restrict, onUpdate: Restrict, map: "OrderItem_finished_inventory_fkey")
+  finishedStockTransaction InventoryTransaction? @relation("FinishedUsageLedger", fields: [finishedStockTransactionId, finishedStockCafeId, finishedStockBranchId, finishedStockItemId, orderId], references: [id, cafeId, branchId, inventoryItemId, orderId], onDelete: Restrict, onUpdate: Restrict, map: "OrderItem_finished_usage_fkey")
+  finishedGoodsReturns FinishedGoodsReturn[] @relation("FinishedReturnLine")
   id            String        @id @default(cuid())
   orderId       String
   productId     String?
@@ -1182,6 +1214,11 @@ model OrderItem {
   ownerActionRequests OwnerActionRequest[]
 
   @@index([orderId])
+
+  @@unique([id, orderId, finishedStockCafeId, finishedStockBranchId, finishedStockItemId, finishedStockUnit], map: "OrderItem_finished_identity_key")
+  @@index([orderId, stockModeSnapshot, finishedStockDeductedAt], map: "OrderItem_finished_pending_idx")
+  @@index([finishedStockItemId], map: "OrderItem_finished_inventory_idx")
+  @@index([finishedStockTransactionId], map: "OrderItem_finished_transaction_idx")
 }
 
 model OrderItemAddOn {
@@ -2497,6 +2534,7 @@ model HandoverStockBoundary {
 /// The partial one-active-per-branch index is defined manually in M16 because
 /// Prisma cannot express a partial index predicate.
 model InventoryFreeze {
+  finishedGoodsReturns FinishedGoodsReturn[] @relation("FinishedReturnFreeze")
   id           String    @id @default(cuid())
   cafeId       String
   branchId     String
@@ -2516,6 +2554,8 @@ model InventoryFreeze {
   @@index([branchId, startedAt])
   @@index([startedById])
   @@index([releasedById])
+
+  @@unique([id, handoverId, cafeId, branchId], map: "InventoryFreeze_sale_identity_key")
 }
 
 /// The incoming side inspects stock, line by line, blind.
@@ -2626,6 +2666,9 @@ enum InventoryTransactionType {
 // Raw materials / ingredients tracked per branch. currentStock is the
 // running balance kept in sync with the InventoryTransaction ledger.
 model InventoryItem {
+  saleIdentityBranch Branch @relation("InventorySaleIdentityBranch", fields: [branchId, cafeId], references: [id, cafeId], onDelete: Cascade, onUpdate: Restrict, map: "InventoryItem_sale_branch_fkey")
+  stockBindings ProductStockBinding[] @relation("FinishedBindingInventory")
+  finishedStockLines OrderItem[] @relation("FinishedSnapshotInventory")
   id           String        @id @default(cuid())
   cafeId       String
   branchId     String
@@ -2671,11 +2714,15 @@ model InventoryItem {
   @@index([currentStock])
   @@index([minimumStock])
   @@index([branchId, isCritical, archivedAt])
+
+  @@unique([id, cafeId, branchId, unit], map: "InventoryItem_sale_identity_key")
 }
 
 // Immutable ledger of every stock change. currentStock on the item is
 // derived from these rows (delta applied on create).
 model InventoryTransaction {
+  finishedStockLines OrderItem[] @relation("FinishedUsageLedger")
+  finishedGoodsReturns FinishedGoodsReturn[] @relation("FinishedReturnLedger")
   id              String                   @id @default(cuid())
   cafeId          String
   branchId        String
@@ -2717,6 +2764,8 @@ model InventoryTransaction {
   @@index([orderId])
   @@index([custodyPeriodId, type])
   @@index([shiftId])
+
+  @@unique([id, cafeId, branchId, inventoryItemId, orderId], map: "InventoryTransaction_sale_identity_key")
 }
 
 // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ Purchases â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -3352,4 +3401,59 @@ model OwnerPasscodeAttempt {
   request OwnerActionRequest? @relation(fields: [requestId], references: [id], onDelete: SetNull)
   passcode OwnerPasscode @relation(fields: [passcodeId], references: [id], onDelete: Cascade)
   @@index([cafeId, ownerId, requesterId, createdAt])
+}
+
+// OWNER-UAT-RESALE-001 proposed additive models.
+enum ProductStockMode {
+  RECIPE
+  FINISHED_GOOD
+}
+model ProductStockBinding {
+  id String @id @default(cuid())
+  cafeId String
+  branchId String
+  productId String
+  variantId String?
+  inventoryItemId String
+  unit InventoryUnit @default(PIECE)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  product Product @relation("FinishedBindingProduct", fields: [productId, cafeId], references: [id, cafeId], onDelete: Cascade, onUpdate: Restrict, map: "ProductStockBinding_product_fkey")
+  variant ProductVariant? @relation("FinishedBindingVariant", fields: [variantId, productId], references: [id, productId], onDelete: Cascade, onUpdate: Restrict, map: "ProductStockBinding_variant_fkey")
+  branch Branch @relation("FinishedBindingBranch", fields: [branchId, cafeId], references: [id, cafeId], onDelete: Restrict, onUpdate: Restrict, map: "ProductStockBinding_branch_fkey")
+  inventoryItem InventoryItem @relation("FinishedBindingInventory", fields: [inventoryItemId, cafeId, branchId, unit], references: [id, cafeId, branchId, unit], onDelete: Restrict, onUpdate: Restrict, map: "ProductStockBinding_inventory_fkey")
+  // Exact null/non-null configuration uniqueness is enforced in SQL.
+  @@index([inventoryItemId], map: "ProductStockBinding_inventory_idx")
+  @@index([variantId, productId], map: "ProductStockBinding_variant_idx")
+  @@index([branchId, cafeId], map: "ProductStockBinding_branch_idx")
+}
+model FinishedGoodsReturn {
+  id String @id @default(cuid())
+  cafeId String
+  branchId String
+  orderId String
+  orderItemId String
+  inventoryItemId String
+  unit InventoryUnit @default(PIECE)
+  quantity Int
+  reason String
+  createdById String
+  idempotencyScope String
+  idempotencyKey String
+  requestHash String
+  receivedAt DateTime @default(now())
+  appliedAt DateTime?
+  inventoryTransactionId String?
+  deferredFreezeId String?
+  deferredHandoverId String?
+  line OrderItem @relation("FinishedReturnLine", fields: [orderItemId, orderId, cafeId, branchId, inventoryItemId, unit], references: [id, orderId, finishedStockCafeId, finishedStockBranchId, finishedStockItemId, finishedStockUnit], onDelete: Restrict, onUpdate: Restrict, map: "FinishedGoodsReturn_line_fkey")
+  actor User @relation("FinishedReturnActor", fields: [createdById], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "FinishedGoodsReturn_actor_fkey")
+  inventoryTransaction InventoryTransaction? @relation("FinishedReturnLedger", fields: [inventoryTransactionId, cafeId, branchId, inventoryItemId, orderId], references: [id, cafeId, branchId, inventoryItemId, orderId], onDelete: Restrict, onUpdate: Restrict, map: "FinishedGoodsReturn_ledger_fkey")
+  freeze InventoryFreeze? @relation("FinishedReturnFreeze", fields: [deferredFreezeId, deferredHandoverId, cafeId, branchId], references: [id, handoverId, cafeId, branchId], onDelete: Restrict, onUpdate: Restrict, map: "FinishedGoodsReturn_freeze_fkey")
+  @@unique([idempotencyScope, idempotencyKey], map: "FinishedGoodsReturn_request_key")
+  // One receipt per RETURN movement is a SQL-only nonnull partial unique.
+  @@index([orderItemId], map: "FinishedGoodsReturn_line_idx")
+  @@index([branchId, appliedAt], map: "FinishedGoodsReturn_branch_pending_idx")
+  @@index([deferredHandoverId, appliedAt], map: "FinishedGoodsReturn_handover_pending_idx")
+  @@index([inventoryTransactionId], map: "FinishedGoodsReturn_ledger_idx")
 }

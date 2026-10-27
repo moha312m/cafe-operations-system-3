@@ -1,3 +1,4 @@
+import { stockBindingsSchema, saveProductStockBindings } from "@/lib/product-stock-bindings";
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
@@ -9,6 +10,7 @@ import { validCurrencyInput } from "@/lib/money";
 type Params = { params: Promise<{ id: string }> };
 
 const productInclude = {
+  stockBindings: true,
   category: { select: { id: true, name: true } },
   variants: {
     orderBy: [{ sortOrder: "asc" as const }, { price: "asc" as const }],
@@ -27,6 +29,8 @@ async function findOwnedProduct(id: string, session: { role: string; cafeId: str
 }
 
 const updateProductSchema = z.object({
+  stockMode: z.enum(["RECIPE", "FINISHED_GOOD"]).optional(),
+  stockBindings: stockBindingsSchema.optional(),
   name: z.string().min(1).optional(),
   description: z.string().nullable().optional(),
   categoryId: z.string().optional(),
@@ -42,6 +46,7 @@ const updateProductSchema = z.object({
   variants: z
     .array(
       z.object({
+        id: z.string().optional(),
         name: z.string().min(1),
         price: z.number().min(0).refine(validCurrencyInput, "Invalid currency amount"),
         isAvailable: z.boolean().default(true),
@@ -93,9 +98,18 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     }
 
     const product = await db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "Product" WHERE "id"=${id} FOR UPDATE`;
       if (data.variants) {
-        await tx.productVariant.deleteMany({ where: { productId: id } });
+        const ids = data.variants.flatMap(v => v.id ? [v.id] : []);
+        if (new Set(ids).size !== ids.length || await tx.productVariant.count({ where: { id: { in: ids }, productId: id } }) !== ids.length) throw new ApiError(400, "حجم خارج المنتج أو مكرر");
+        await tx.productVariant.deleteMany({ where: { productId: id, id: { notIn: ids } } });
+        for (const [i,v] of data.variants.entries()) {
+          const values = { name: v.name, price: v.price, isActive: v.isAvailable, sortOrder: v.sortOrder || i };
+          if (v.id) await tx.productVariant.update({ where: { id: v.id }, data: values });
+          else await tx.productVariant.create({ data: { ...values, productId: id } });
+        }
       }
+      if (data.stockBindings) await saveProductStockBindings(tx, id, existing.cafeId, data.stockBindings, session.branchId);
       if (data.addOnIds) {
         await tx.productAddOn.deleteMany({ where: { productId: id } });
       }
@@ -105,6 +119,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       return tx.product.update({
         where: { id },
         data: {
+          stockMode: data.stockMode,
           name: data.name,
           description: data.description,
           categoryId: data.categoryId,
@@ -116,18 +131,6 @@ export async function PATCH(request: NextRequest, { params }: Params) {
           showInPOS: data.showInPOS,
           isAvailable: data.isAvailable,
           sortOrder: data.sortOrder,
-          ...(data.variants
-            ? {
-                variants: {
-                  create: data.variants.map((v, i) => ({
-                    name: v.name,
-                    price: v.price,
-                    isActive: v.isAvailable,
-                    sortOrder: v.sortOrder || i,
-                  })),
-                },
-              }
-            : {}),
           ...(data.addOnIds
             ? { addOns: { create: data.addOnIds.map((addOnId) => ({ addOnId })) } }
             : {}),
@@ -135,7 +138,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
             ? { branchPrices: { create: data.branchPrices } }
             : {}),
         },
-        include: productInclude,
+        include: { ...productInclude, stockBindings: { where: session.branchId ? { branchId: session.branchId } : {} } },
       });
     });
 

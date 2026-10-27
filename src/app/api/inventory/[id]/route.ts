@@ -1,6 +1,9 @@
+import { protectedTransaction } from "@/lib/protected-transaction";
+import { acquireInventorySharedLocks } from "@/lib/inventory-freeze";
+import { lockItemForUpdate } from "@/lib/ledger";
+import { assertFinishedStockEditable } from "@/lib/finished-stock-history";
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
 import { requirePermission, handleApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { publicInventoryItem } from "@/lib/public-shape";
@@ -48,7 +51,12 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       update.archivedAt = null;
     }
 
-    const updated = await db.inventoryItem.update({ where: { id }, data: update });
+    const updated = await protectedTransaction(async tx => {
+      await acquireInventorySharedLocks(tx, [item.branchId]);
+      const locked = await lockItemForUpdate(tx, id);
+      await assertFinishedStockEditable(tx, id, { retire: data.archived === true || data.isActive === false, changingUnit: data.unit !== undefined && data.unit !== locked.unit });
+      return tx.inventoryItem.update({ where: { id }, data: update });
+    }, { cafeId: item.cafeId, branchId: item.branchId });
 
     await audit({
       cafeId: item.cafeId,
@@ -72,10 +80,12 @@ export async function DELETE(_request: NextRequest, { params }: Params) {
     const { id } = await params;
     const item = await findScopedItem(id, session);
 
-    await db.inventoryItem.update({
-      where: { id },
-      data: { archivedAt: new Date(), isActive: false },
-    });
+    await protectedTransaction(async tx => {
+      await acquireInventorySharedLocks(tx, [item.branchId]);
+      await lockItemForUpdate(tx, id);
+      await assertFinishedStockEditable(tx, id, { retire: true });
+      await tx.inventoryItem.update({ where: { id }, data: { archivedAt: new Date(), isActive: false } });
+    }, { cafeId: item.cafeId, branchId: item.branchId });
 
     await audit({
       cafeId: item.cafeId,

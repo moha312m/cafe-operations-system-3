@@ -1,7 +1,9 @@
+import { provisionalConsumption, finalizeOrderConsumption, validateProvisionalFinishedSales } from "@/lib/sale-consumption";
 import { lockBranchAllocator } from "@/lib/transaction-locks";
 import { decimal, money, sumMoney } from "@/lib/money";
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
+import { Prisma } from "@prisma/client";
 import { handleApiError, ApiError } from "@/lib/api";
 import { auditInTransaction } from "@/lib/audit";
 import { unitPriceExact as computeUnitPrice } from "@/lib/pricing";
@@ -110,7 +112,8 @@ export async function POST(request: NextRequest, { params }: Params) {
         }, tx);
       }
 
-      const productIds = [...new Set(data.items.map((i) => i.productId))];
+      const productIds = [...new Set(data.items.map((i) => i.productId))].sort();
+      await tx.$queryRaw`SELECT "id" FROM "Product" WHERE "cafeId"=${cafeId} AND "id" IN (${Prisma.join(productIds)}) ORDER BY "id" FOR SHARE`;
       const products = await tx.product.findMany({
         // Customers can only order what's published AND available.
         where: {
@@ -174,6 +177,7 @@ export async function POST(request: NextRequest, { params }: Params) {
         subtotal = money(subtotal.plus(lineTotal));
 
         return {
+          ...provisionalConsumption(product, item.variantId ?? null),
           productId: product.id,
           variantId: item.variantId ?? null,
           productName: product.name,
@@ -195,6 +199,7 @@ export async function POST(request: NextRequest, { params }: Params) {
       // with the café's settings. Read from the café, never from the customer's
       // request: `qrOrderSchema` has no such field, and this endpoint is public.
       const enforcementMode = await getInventoryEnforcementMode(cafeId, tx);
+      await validateProvisionalFinishedSales(tx, { cafeId, branchId }, itemRows);
 
       // Tax/service come from the branch's configurable settings, snapshotted.
       const finSettings = await getBranchFinancialSettings(branchId, tx);
@@ -244,6 +249,7 @@ export async function POST(request: NextRequest, { params }: Params) {
             createdById: null, // placed by the customer, no user account
             items: {
               create: itemRows.map((row) => ({
+                stockModeSnapshot: row.stockModeSnapshot, stockProductIdSnapshot: row.stockProductIdSnapshot, stockVariantIdSnapshot: row.stockVariantIdSnapshot,
                 productId: row.productId,
                 variantId: row.variantId,
                 productName: row.productName,
@@ -272,6 +278,8 @@ export async function POST(request: NextRequest, { params }: Params) {
         },
         null, tx
       );
+
+      if (orderStatus !== "PENDING_WAITER_APPROVAL") await finalizeOrderConsumption(tx, order.id, new Date());
 
       // Loyalty: link stats + (if eligible now) award. With the default
       // earnOnPaidOrdersOnly=true the award happens later, when the cashier

@@ -1,3 +1,4 @@
+import { stockBindingsSchema, saveProductStockBindings } from "@/lib/product-stock-bindings";
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
@@ -14,6 +15,7 @@ import { hasPermission } from "@/lib/permissions";
 import { configurationFinancials } from "@/lib/recipes";
 
 const productInclude = {
+  stockBindings: true,
   category: { select: { id: true, name: true } },
   variants: {
     orderBy: [{ sortOrder: "asc" as const }, { price: "asc" as const }],
@@ -36,11 +38,12 @@ export async function GET(request: NextRequest) {
 
     const products = await db.product.findMany({
       where: { cafeId },
-      include: productInclude,
+      include: { ...productInclude, stockBindings: { where: session.branchId ? { branchId: session.branchId } : {} } },
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
     });
 
-    if (!showCost) return NextResponse.json({ products });
+    const bindingStockItems = await db.inventoryItem.findMany({ where: { cafeId, ...(session.branchId ? { branchId: session.branchId } : {}), unit: "PIECE", isActive: true, archivedAt: null }, select: { id: true, name: true, branchId: true } });
+    if (!showCost) return NextResponse.json({ products, bindingStockItems });
 
     // A product row is not a sellable configuration when it has sizes. Do
     // not collapse different size recipes into one invented product margin;
@@ -53,14 +56,14 @@ export async function GET(request: NextRequest) {
         };
       }
       const financials = await configurationFinancials({
-        productId: p.id, variantId: null, sellingPrice: Number(p.basePrice),
+        productId: p.id, variantId: null, sellingPrice: Number(p.basePrice), branchId: session.branchId,
       });
       return {
         ...p, hasRecipe: financials.costStatus === "AVAILABLE", ...financials,
       };
     }));
 
-    return NextResponse.json({ products: enriched, costVisible: true });
+    return NextResponse.json({ products: enriched, bindingStockItems, costVisible: true });
   } catch (error) {
     return handleApiError(error);
   }
@@ -74,6 +77,8 @@ const variantSchema = z.object({
 });
 
 const createProductSchema = z.object({
+  stockMode: z.enum(["RECIPE", "FINISHED_GOOD"]).optional(),
+  stockBindings: stockBindingsSchema.optional(),
   name: z.string().min(1),
   description: z.string().optional(),
   categoryId: z.string(),
@@ -121,10 +126,12 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const product = await db.product.create({
+    const product = await db.$transaction(async (tx) => {
+      const created = await tx.product.create({
       data: {
         cafeId,
         categoryId: data.categoryId,
+        stockMode: data.stockMode,
         name: data.name,
         description: data.description,
         basePrice: data.basePrice,
@@ -146,6 +153,9 @@ export async function POST(request: NextRequest) {
         branchPrices: { create: data.branchPrices },
       },
       include: productInclude,
+    });
+      if (data.stockBindings) await saveProductStockBindings(tx, created.id, cafeId, data.stockBindings, session.branchId);
+      return tx.product.findUniqueOrThrow({ where: { id: created.id }, include: productInclude });
     });
 
     await audit({

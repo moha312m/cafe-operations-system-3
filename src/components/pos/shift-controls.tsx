@@ -27,6 +27,7 @@ export type Shift = {
   branchId: string;
   shiftNumber: number;
   custodyGateReason?: string | null;
+  pendingHandover?: { id: string; status: string; stockCountSessionId: string | null; outgoingUser: { name: string }; outgoingShift: { shiftNumber: number } } | null;
   openingCashReceipt?: { status: string } | null;
   openedAt: string;
   openingCashAmount: string;
@@ -355,13 +356,17 @@ export function ShiftControls({
           <span className="text-sm font-medium text-muted-foreground">
             🔒 {t.shifts.mustOpen}
           </span>
-          <Button size="sm" className="ms-auto" onClick={() => setOpenDialog(true)}>
+          {!pendingShift && <Button size="sm" className="ms-auto" onClick={() => setOpenDialog(true)}>
             {t.shifts.open}
-          </Button>
+          </Button>}
         </div>
       )}
 
-      {pendingShift && <p className="rounded-lg border p-3 text-sm">شيفت #{pendingShift.shiftNumber} مفتوح وينتظر إجراءات الاستلام. <Link className="text-primary underline" href="/handovers">استكمل استلام الخامات والمكان</Link></p>}
+      {pendingShift && <section className="space-y-2 rounded-lg border p-3 text-sm" aria-label="إجراءات استلام الشيفت">
+        <p className="font-medium">شيفت #{pendingShift.shiftNumber} مفتوح لكنه غير جاهز للبيع.</p>
+        {pendingShift.pendingHandover ? <p>شيفت #{pendingShift.pendingHandover.outgoingShift.shiftNumber} مقفول ماليًا، وتسليم المخزون لم يكتمل. {["DRAFT", "REJECTED"].includes(pendingShift.pendingHandover.status) ? `المطلوب من المُسلّم ${pendingShift.pendingHandover.outgoingUser.name}: ${pendingShift.pendingHandover.stockCountSessionId ? "استكمال الجرد ومراجعته ثم تسليم العهدة" : "فتح جرد التسليم وتسجيل الكميات الفعلية"}.` : "المطلوب من مستلم العهدة: مراجعة الأصناف وتأكيد الاستلام بصلاحية الاستلام."}</p> : <p>{pendingShift.custodyGateReason === "AWAITING_OPENING_VERIFICATION" ? "المطلوب التحقق الافتتاحي من المخزون المستلم بعهدة الفرع." : "استكمل إجراءات العهدة والنقدية أو فحص المكان حسب المهمة المعروضة. إذا لم يظهر تسليم محدد، راجع المسؤول؛ لن نختار سجلًا بشكل تخميني."}</p>}
+        <Link className="inline-flex rounded-lg border px-3 py-2 text-primary underline" href={`/handovers?branchId=${encodeURIComponent(branchId)}${pendingShift.pendingHandover ? `&handoverId=${encodeURIComponent(pendingShift.pendingHandover.id)}` : ""}`}>متابعة التسليم</Link>
+      </section>}
       {!shift && <OpeningCashPanel branchId={branchId} onAccepted={load}/>}
       {shift && <CarriedOrdersStrip branchId={branchId} currency={currency} />}
 
@@ -671,7 +676,7 @@ export function ShiftControls({
             <Button variant="outline" onClick={() => setHandoverNotice(null)}>
               {t.common.close}
             </Button>
-            <Link href="/handovers" className={buttonVariants()}>
+            <Link href={`/handovers?branchId=${encodeURIComponent(branchId)}${handoverNotice?.handoverId ? `&handoverId=${encodeURIComponent(handoverNotice.handoverId)}` : ""}`} className={buttonVariants()}>
               {t.shifts.goToHandovers}
             </Link>
           </DialogFooter>
