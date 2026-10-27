@@ -104,7 +104,7 @@ export function StaleOrdersBanner({
     <div
       role="alert"
       data-testid="stale-orders-banner"
-      className="mb-6 rounded-xl border-2 border-orange-300 bg-orange-50 p-4 text-sm text-orange-950 dark:border-orange-900 dark:bg-orange-950/40 dark:text-orange-100"
+      className="mb-6 rounded-xl border-2 border-orange-300 bg-orange-50 p-4 text-sm text-orange-950 dark:border-orange-900 dark:bg-orange-950/40 dark:text-orange-100 [@media(max-height:760px)]:mb-3 [@media(max-height:760px)]:p-2.5 [@media(max-height:760px)]:text-xs"
     >
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <span className="font-semibold">

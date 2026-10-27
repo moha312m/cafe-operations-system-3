@@ -56,7 +56,9 @@ export function LowStockBanner({ pathname, showBranch }: { pathname: string; sho
     <div
       role="alert"
       className={cn(
-        "mb-6 rounded-xl border-2 p-4 text-sm",
+        // On a short screen the banner shrinks to one summary line (the item
+        // list stays one click away on the inventory page).
+        "mb-6 rounded-xl border-2 p-4 text-sm [@media(max-height:760px)]:mb-3 [@media(max-height:760px)]:p-2.5 [@media(max-height:760px)]:text-xs",
         urgent
           ? "border-red-300 bg-red-50 text-red-900 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200"
           : "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-200"
@@ -81,7 +83,7 @@ export function LowStockBanner({ pathname, showBranch }: { pathname: string; sho
           إخفاء
         </button>
       </div>
-      <ul className="mt-2 space-y-0.5 text-xs">
+      <ul className="mt-2 space-y-0.5 text-xs [@media(max-height:760px)]:hidden">
         {alerts.items.map((i) => (
           <li key={i.id}>
             <span className="font-medium">{i.name}</span>
