@@ -1,13 +1,22 @@
 {
   "cafe": {
     "name": "",
+    "slug": "",
     "currency": "",
-    "taxRate": null
+    "taxRate": null,
+    "inventoryEnforcementMode": ""
   },
   "branch": {
     "name": "",
-    "timezone": "",
-    "businessDayStart": ""
+    "address": "",
+    "phone": "",
+    "reportingHours": {
+      "effectiveDate": "",
+      "startTime": "",
+      "endTime": "",
+      "timezone": "",
+      "is24Hours": null
+    }
   },
   "owner": {
     "name": "",
@@ -26,45 +35,8 @@
       "discountLimitValue": null
     }
   ],
-  "menu": [
-    {
-      "externalKey": "",
-      "name": "",
-      "category": "",
-      "stockMode": "",
-      "basePrice": null,
-      "variants": [],
-      "addOnKeys": []
-    }
-  ],
-  "addOns": [
-    {
-      "externalKey": "",
-      "name": "",
-      "price": null
-    }
-  ],
-  "recipes": [
-    {
-      "scope": "",
-      "productKey": "",
-      "variantKey": "",
-      "addOnKey": "",
-      "ingredients": [
-        {
-          "inventoryKey": "",
-          "branch": "",
-          "quantity": null,
-          "unit": "",
-          "wastePercentage": null
-        }
-      ],
-      "verifiedBy": ""
-    }
-  ],
   "inventory": [
     {
-      "externalKey": "",
       "name": "",
       "branch": "",
       "unit": "",
@@ -72,6 +44,51 @@
       "countedOpeningQuantity": null,
       "countedBy": "",
       "countedAt": ""
+    }
+  ],
+  "menu": [
+    {
+      "category": "",
+      "productName": "",
+      "price": null,
+      "costPrice": null,
+      "isAvailable": null,
+      "showInPOS": null,
+      "showInCustomerMenu": null,
+      "sortOrder": null,
+      "variants": [
+        {
+          "variantName": "",
+          "variantPrice": null
+        }
+      ],
+      "addOns": [
+        {
+          "addonName": "",
+          "addonPrice": null
+        }
+      ]
+    }
+  ],
+  "recipes": [
+    {
+      "scope": "",
+      "productName": "",
+      "variantName": "",
+      "addOnName": "",
+      "appliesToAllVariants": null,
+      "notApplicable": null,
+      "notApplicableReason": "",
+      "ingredients": [
+        {
+          "ingredientName": "",
+          "ingredientBranchName": "",
+          "quantity": null,
+          "unit": "",
+          "wastePercentage": null
+        }
+      ],
+      "verifiedBy": ""
     }
   ],
   "suppliers": [
@@ -90,7 +107,7 @@
   },
   "handover": {
     "mode": "",
-    "selectedInventoryKeys": [],
+    "selectedInventoryNames": [],
     "schedule": "",
     "responsibleRoles": []
   },

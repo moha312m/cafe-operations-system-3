@@ -28,6 +28,9 @@ Uploaded place photos/receipt images are written to `PLACE_MEDIA_ROOT` (default 
 Railway's container filesystem is replaced on every deploy, so if these uploads are used in the pilot,
 attach a Railway volume (e.g. mounted at `/data`) and set `PLACE_MEDIA_ROOT=/data/place-media`; include
 that volume in backups. Without a volume, uploaded files are lost at the next deploy (database rows remain).
+Only the place-photo feature writes there: photos are optional attachments to place assets/observations, and the
+`PlacePhoto`/`ShiftPlaceReceipt` tables are created by this release's migrations. Until a volume and
+`PLACE_MEDIA_ROOT` are configured, do not upload place photos in a hosted environment.
 
 Do not set `ALLOW_DEMO_SEED`, test flags, `TEST_*`, local database URLs, or AI/WhatsApp keys unless the
 owner has approved that integration for that environment. Never run `prisma/seed.ts` on production
@@ -40,8 +43,10 @@ owner has approved that integration for that environment. Never run `prisma/seed
 2. Settings → Deploy → **Healthcheck path**: `/api/health` (200 = app up and database reachable,
    503 = database unreachable; returns no business data).
 3. Deploy the reviewed commit (staging: this branch; production: `main` after approval and merge).
-4. Verify: `/api/health` 200 and separately confirm the deployed commit in Railway (health does not expose a revision); login page 200; an authorized user can open the
-   dashboard; `npx prisma migrate status` reports no pending/failed migrations.
+4. Verify: `/api/health` 200 and compare its `commit` field (first 12 characters of `RAILWAY_GIT_COMMIT_SHA`,
+   `null` when Railway does not set it) with the expected commit, then confirm the deployment in Railway itself
+   (the unauthenticated health body is a convenience check, not proof of identity); login page 200; an authorized
+   user can open the dashboard; `npx prisma migrate status` reports no pending/failed migrations.
 
 ## 4. Migrations in this release
 
@@ -50,6 +55,23 @@ deploy, read its `_prisma_migrations` table and compare with `prisma/migrations/
 - Every migration already applied in production must exist here with the same name.
 - Pending ones are applied in name order by `migrate deploy`.
 - If production holds a migration not present here, STOP: do not deploy.
+- Compare checksums as well as names. Prisma records the SHA-256 of the migration file bytes it read when it applied
+  the migration. Production applied from a Linux checkout of the committed (LF) files, so build the reference from the
+  committed blobs, e.g. `git show <commit>:prisma/migrations/<name>/migration.sql | sha256sum`. A Windows working tree
+  with `core.autocrlf=true` holds CRLF copies whose hashes differ for all but one of the 84 migrations, and local test
+  databases migrated from such a tree record those CRLF hashes; neither is a valid reference for production.
+- Expectation to confirm, not a fact: the commit last reported as deployed (`main`) contains 57 migrations, none
+  modified here, and this release adds 27. Production's real state comes only from its `_prisma_migrations` table.
+- A migration that fails during `prisma migrate deploy` leaves a failed record and later runs refuse to continue
+  (P3009) until a reviewed recovery is done; do not run `prisma migrate resolve` without the owner's approval and a
+  verified backup. Static review of the 27 new migrations found no INSERT/UPDATE/DELETE, no dropped tables or
+  columns and no column type changes (they add tables, columns, indexes, constraints, enum values and triggers, and
+  drop and re-create two constraints). Assuming production's schema equals the last deployed `main`, the only constraint
+  validated against rows production already holds is `InventoryItem_sale_branch_fkey` (every inventory item's
+  `branchId`/`cafeId` must match its branch); check that with a read-only query before any approved cutover. This is
+  a static review, not a rehearsal on a copy of production data.
+- Local acceptance used PostgreSQL 17.10; the Railway database was reported as a `postgres-ssl:18` image. A hosted
+  rehearsal must use the same major version as production, and local results are not a PostgreSQL 18 certification.
 
 `20261011210000_finished_goods_sales` sorts before the seven 2026-10-24/25 migrations. A database that
 already has the 2026-10-24/25 migrations but not this one (the R7/R9 local clone lineage) receives it out
