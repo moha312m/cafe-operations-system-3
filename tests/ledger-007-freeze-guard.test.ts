@@ -1,13 +1,15 @@
 import { after, before, beforeEach, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { PrismaClient } from "@prisma/client";
-import { db, fixture, tag, type Fixture } from "./helpers/db";
-import { as, login, requireServer } from "./helpers/http";
+import { db, tag, teardownTaggedCafe } from "./helpers/db";
+import { countCafe, type CountCafe } from "./helpers/count";
+import { as, requireServer } from "./helpers/http";
 import { applyStockMutation, ledgerDeltaAbove } from "@/lib/ledger";
 
 const MARKER = tag("LEDGER007");
-const OWNER = "owner@demo.com";
-let fx: Fixture;
+let OWNER: string;
+let fx: CountCafe;
+let ownedOpenShiftId: string | undefined;
 let ownerId: string;
 let secondBranchId: string;
 let sourceHandoverId: string;
@@ -38,6 +40,8 @@ async function makeHandover(branchId: string, n: number) {
     data: {
       cafeId: fx.cafeId, branchId, cashierId: ownerId,
       shiftNumber: Math.max(920000 + n, (latest?.shiftNumber ?? 0) + 1),
+      // A completed handover is historical, even while an operating drawer is open.
+      status: "CLOSED", closedAt: new Date(),
       openingCashAmount: 0, expectedCashAmount: 0,
     },
   });
@@ -60,6 +64,7 @@ async function freeze(branchId: string, handoverId: string) {
 }
 
 async function clearFreezes() {
+  if (!fx) return;
   await db.$executeRawUnsafe('DELETE FROM "InventoryFreeze" WHERE "cafeId" = $1', fx.cafeId);
   await db.auditLog.deleteMany({
     where: { cafeId: fx.cafeId, action: { in: ["INVENTORY_FROZEN", "INVENTORY_FREEZE_RELEASED"] } },
@@ -67,28 +72,36 @@ async function clearFreezes() {
 }
 
 before(async () => {
-  fx = await fixture();
-  ownerId = (await db.user.findUniqueOrThrow({ where: { email: OWNER } })).id;
-  secondBranchId = (await db.branch.findFirstOrThrow({
-    where: { cafeId: fx.cafeId, id: { not: fx.branchId } }, orderBy: { createdAt: "asc" },
-  })).id;
+  await requireServer();
+  fx = await countCafe("LEDGER007");
+  OWNER = fx.owner.email;
+  ownerId = fx.owner.id;
+  secondBranchId = fx.otherBranchId;
+  // A completed handover fixture must coexist with a valid operating drawer.
+  // This drawer belongs to this suite; never close an inherited owner's shift.
+  const open = await db.shift.create({
+    data: {
+      cafeId: fx.cafeId, branchId: fx.branchId, cashierId: ownerId,
+      shiftNumber: 1, status: "OPEN", openingCashAmount: 0, expectedCashAmount: 0,
+      notes: MARKER + " owned operating drawer",
+    },
+  });
+  ownedOpenShiftId = open.id;
   sourceHandoverId = await makeHandover(fx.branchId, 1);
   destinationHandoverId = await makeHandover(secondBranchId, 2);
-  await requireServer();
-  await login(OWNER, "owner1234");
 });
 
 beforeEach(clearFreezes);
 
 after(async () => {
-  await clearFreezes();
-  if (itemIds.length) {
-    await db.inventoryTransaction.deleteMany({ where: { inventoryItemId: { in: itemIds } } });
-    await db.inventoryItem.deleteMany({ where: { id: { in: itemIds } } });
+  try {
+    if (ownedOpenShiftId) {
+      const open = await db.shift.findUniqueOrThrow({ where: { id: ownedOpenShiftId } });
+      assert.equal(open.status, "OPEN", "the owned operating drawer must remain untouched");
+    }
+  } finally {
+    await teardownTaggedCafe(fx?.cafeId, [], { disconnect: true });
   }
-  await db.handoverSession.deleteMany({ where: { id: { in: handoverIds } } });
-  await db.shift.deleteMany({ where: { id: { in: shiftIds } } });
-  await db.$disconnect();
 });
 
 describe("LEDGER-007 centralized freeze guard", () => {

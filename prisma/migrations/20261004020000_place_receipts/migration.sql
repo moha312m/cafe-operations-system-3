@@ -1,0 +1,50 @@
+ALTER TABLE "BranchOpeningSettings" ADD COLUMN "placeInspectorId" TEXT;
+
+CREATE TYPE "PlaceReceiptStatus" AS ENUM ('PENDING','ACCEPTED','OVERRIDDEN');
+CREATE TYPE "PlaceObservationSide" AS ENUM ('OUTGOING','INCOMING');
+CREATE TYPE "PlaceCondition" AS ENUM ('OK','NOTE','FAULT','NOT_CHECKED');
+CREATE TYPE "PlaceIncidentStatus" AS ENUM ('OPEN','RESOLVED');
+
+CREATE TABLE "PlaceAsset" ("id" TEXT NOT NULL,"cafeId" TEXT NOT NULL,"branchId" TEXT NOT NULL,"name" TEXT NOT NULL,"area" TEXT,"isActive" BOOLEAN NOT NULL DEFAULT true,"createdById" TEXT NOT NULL,"createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,"updatedAt" TIMESTAMP(3) NOT NULL,CONSTRAINT "PlaceAsset_pkey" PRIMARY KEY ("id"));
+CREATE TABLE "PlaceCheckPoint" ("id" TEXT NOT NULL,"assetId" TEXT NOT NULL,"label" TEXT NOT NULL,"required" BOOLEAN NOT NULL DEFAULT true,"critical" BOOLEAN NOT NULL DEFAULT false,"sortOrder" INTEGER NOT NULL DEFAULT 0,"createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,CONSTRAINT "PlaceCheckPoint_pkey" PRIMARY KEY ("id"));
+CREATE TABLE "ShiftPlaceReceipt" ("id" TEXT NOT NULL,"cafeId" TEXT NOT NULL,"branchId" TEXT NOT NULL,"incomingShiftId" TEXT NOT NULL,"assignedUserId" TEXT NOT NULL,"createdById" TEXT NOT NULL,"snapshot" JSONB NOT NULL,"status" "PlaceReceiptStatus" NOT NULL DEFAULT 'PENDING',"acceptedById" TEXT,"acceptedAt" TIMESTAMP(3),"overriddenById" TEXT,"overrideReason" TEXT,"createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,CONSTRAINT "ShiftPlaceReceipt_pkey" PRIMARY KEY ("id"));
+CREATE TABLE "PlaceObservation" ("id" TEXT NOT NULL,"receiptId" TEXT NOT NULL,"assetId" TEXT NOT NULL,"checkpointId" TEXT NOT NULL,"side" "PlaceObservationSide" NOT NULL,"condition" "PlaceCondition" NOT NULL,"note" TEXT,"actorId" TEXT NOT NULL,"createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,CONSTRAINT "PlaceObservation_pkey" PRIMARY KEY ("id"));
+CREATE TABLE "PlaceReceiptEvent" ("id" TEXT NOT NULL,"receiptId" TEXT NOT NULL,"actorId" TEXT NOT NULL,"action" TEXT NOT NULL,"idempotencyKey" TEXT,"note" TEXT,"createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,CONSTRAINT "PlaceReceiptEvent_pkey" PRIMARY KEY ("id"));
+CREATE TABLE "PlaceIncident" ("id" TEXT NOT NULL,"cafeId" TEXT NOT NULL,"branchId" TEXT NOT NULL,"receiptId" TEXT NOT NULL,"observationId" TEXT NOT NULL,"assetId" TEXT NOT NULL,"status" "PlaceIncidentStatus" NOT NULL DEFAULT 'OPEN',"reportedById" TEXT NOT NULL,"resolvedById" TEXT,"repairNote" TEXT,"createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,"resolvedAt" TIMESTAMP(3),CONSTRAINT "PlaceIncident_pkey" PRIMARY KEY ("id"));
+
+CREATE UNIQUE INDEX "ShiftPlaceReceipt_incomingShiftId_key" ON "ShiftPlaceReceipt"("incomingShiftId");
+CREATE UNIQUE INDEX "PlaceIncident_observationId_key" ON "PlaceIncident"("observationId");
+CREATE UNIQUE INDEX "PlaceReceiptEvent_receiptId_idempotencyKey_key" ON "PlaceReceiptEvent"("receiptId","idempotencyKey");
+CREATE INDEX "PlaceAsset_cafeId_branchId_isActive_idx" ON "PlaceAsset"("cafeId","branchId","isActive");
+CREATE INDEX "PlaceCheckPoint_assetId_sortOrder_idx" ON "PlaceCheckPoint"("assetId","sortOrder");
+CREATE INDEX "ShiftPlaceReceipt_cafeId_branchId_status_createdAt_idx" ON "ShiftPlaceReceipt"("cafeId","branchId","status","createdAt");
+CREATE INDEX "PlaceObservation_receiptId_side_createdAt_idx" ON "PlaceObservation"("receiptId","side","createdAt");
+CREATE INDEX "PlaceObservation_assetId_idx" ON "PlaceObservation"("assetId");
+CREATE INDEX "PlaceReceiptEvent_receiptId_createdAt_idx" ON "PlaceReceiptEvent"("receiptId","createdAt");
+CREATE INDEX "PlaceIncident_cafeId_branchId_status_createdAt_idx" ON "PlaceIncident"("cafeId","branchId","status","createdAt");
+
+ALTER TABLE "BranchOpeningSettings" ADD CONSTRAINT "BranchOpeningSettings_placeInspectorId_fkey" FOREIGN KEY ("placeInspectorId") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "PlaceAsset" ADD CONSTRAINT "PlaceAsset_cafeId_fkey" FOREIGN KEY ("cafeId") REFERENCES "Cafe"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "PlaceAsset" ADD CONSTRAINT "PlaceAsset_branchId_fkey" FOREIGN KEY ("branchId") REFERENCES "Branch"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "PlaceAsset" ADD CONSTRAINT "PlaceAsset_createdById_fkey" FOREIGN KEY ("createdById") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "PlaceCheckPoint" ADD CONSTRAINT "PlaceCheckPoint_assetId_fkey" FOREIGN KEY ("assetId") REFERENCES "PlaceAsset"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "ShiftPlaceReceipt" ADD CONSTRAINT "ShiftPlaceReceipt_cafeId_fkey" FOREIGN KEY ("cafeId") REFERENCES "Cafe"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "ShiftPlaceReceipt" ADD CONSTRAINT "ShiftPlaceReceipt_branchId_fkey" FOREIGN KEY ("branchId") REFERENCES "Branch"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "ShiftPlaceReceipt" ADD CONSTRAINT "ShiftPlaceReceipt_incomingShiftId_fkey" FOREIGN KEY ("incomingShiftId") REFERENCES "Shift"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "ShiftPlaceReceipt" ADD CONSTRAINT "ShiftPlaceReceipt_assignedUserId_fkey" FOREIGN KEY ("assignedUserId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "ShiftPlaceReceipt" ADD CONSTRAINT "ShiftPlaceReceipt_createdById_fkey" FOREIGN KEY ("createdById") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "ShiftPlaceReceipt" ADD CONSTRAINT "ShiftPlaceReceipt_acceptedById_fkey" FOREIGN KEY ("acceptedById") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "ShiftPlaceReceipt" ADD CONSTRAINT "ShiftPlaceReceipt_overriddenById_fkey" FOREIGN KEY ("overriddenById") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+ALTER TABLE "PlaceObservation" ADD CONSTRAINT "PlaceObservation_receiptId_fkey" FOREIGN KEY ("receiptId") REFERENCES "ShiftPlaceReceipt"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "PlaceObservation" ADD CONSTRAINT "PlaceObservation_assetId_fkey" FOREIGN KEY ("assetId") REFERENCES "PlaceAsset"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "PlaceObservation" ADD CONSTRAINT "PlaceObservation_checkpointId_fkey" FOREIGN KEY ("checkpointId") REFERENCES "PlaceCheckPoint"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "PlaceObservation" ADD CONSTRAINT "PlaceObservation_actorId_fkey" FOREIGN KEY ("actorId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "PlaceReceiptEvent" ADD CONSTRAINT "PlaceReceiptEvent_receiptId_fkey" FOREIGN KEY ("receiptId") REFERENCES "ShiftPlaceReceipt"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "PlaceReceiptEvent" ADD CONSTRAINT "PlaceReceiptEvent_actorId_fkey" FOREIGN KEY ("actorId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "PlaceIncident" ADD CONSTRAINT "PlaceIncident_cafeId_fkey" FOREIGN KEY ("cafeId") REFERENCES "Cafe"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "PlaceIncident" ADD CONSTRAINT "PlaceIncident_branchId_fkey" FOREIGN KEY ("branchId") REFERENCES "Branch"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "PlaceIncident" ADD CONSTRAINT "PlaceIncident_receiptId_fkey" FOREIGN KEY ("receiptId") REFERENCES "ShiftPlaceReceipt"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE "PlaceIncident" ADD CONSTRAINT "PlaceIncident_observationId_fkey" FOREIGN KEY ("observationId") REFERENCES "PlaceObservation"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "PlaceIncident" ADD CONSTRAINT "PlaceIncident_assetId_fkey" FOREIGN KEY ("assetId") REFERENCES "PlaceAsset"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "PlaceIncident" ADD CONSTRAINT "PlaceIncident_reportedById_fkey" FOREIGN KEY ("reportedById") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "PlaceIncident" ADD CONSTRAINT "PlaceIncident_resolvedById_fkey" FOREIGN KEY ("resolvedById") REFERENCES "User"("id") ON DELETE SET NULL ON UPDATE CASCADE;

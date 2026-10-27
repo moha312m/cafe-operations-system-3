@@ -1,5 +1,18 @@
 import { db } from "@/lib/db";
 import type { Prisma } from "@prisma/client";
+import { Decimal } from "@/lib/money";
+
+function auditJson(value: unknown): Prisma.InputJsonValue | undefined {
+  if (value === undefined) return undefined;
+  const present = (item: unknown): unknown => {
+    if (Decimal.isDecimal(item)) return item.toNumber();
+    if (item instanceof Date) return item.toISOString();
+    if (Array.isArray(item)) return item.map(present);
+    if (item && typeof item === "object") return Object.fromEntries(Object.entries(item).map(([key, val]) => [key, present(val)]));
+    return item;
+  };
+  return JSON.parse(JSON.stringify(present(value))) as Prisma.InputJsonValue;
+}
 
 // Fire-and-forget audit trail. Failures are logged but never block the
 // action being audited.
@@ -14,7 +27,7 @@ export async function audit(entry: {
   action: string; // "order.create", "auth.login", ...
   entity: string;
   entityId?: string | null;
-  details?: Prisma.InputJsonValue;
+  details?: unknown;
 }) {
   try {
     await db.auditLog.create({
@@ -24,7 +37,7 @@ export async function audit(entry: {
         action: entry.action,
         entity: entry.entity,
         entityId: entry.entityId ?? null,
-        details: entry.details,
+        details: auditJson(entry.details),
       },
     });
   } catch (e) {
@@ -55,7 +68,7 @@ export async function auditInTransaction(
     action: string;
     entity: string;
     entityId?: string | null;
-    details?: Prisma.InputJsonValue;
+    details?: unknown;
   }
 ) {
   await tx.auditLog.create({
@@ -65,7 +78,7 @@ export async function auditInTransaction(
       action: entry.action,
       entity: entry.entity,
       entityId: entry.entityId ?? null,
-      details: entry.details,
+      details: auditJson(entry.details),
     },
   });
 }

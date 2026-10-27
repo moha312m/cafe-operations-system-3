@@ -2,7 +2,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
+import Link from "next/link";
 import { api, money } from "@/lib/client";
+import { dateStrInTz } from "@/lib/date-range";
 import { useApp } from "@/components/app-shell";
 import { Input } from "@/components/ui/input";
 import {
@@ -74,7 +76,7 @@ type Report = {
   items: { product: string; variant: string | null; quantity: number; revenue: number }[];
 };
 
-const METHOD_LABELS: Record<string, string> = {
+const METHOD_LABELS: Record<string, string> = {
   CASH: "كاش",
   CARD: "فيزا",
   WALLET: "محفظة",
@@ -82,9 +84,9 @@ const METHOD_LABELS: Record<string, string> = {
 };
 
 export default function ReportsPage() {
-  const { cafe } = useApp();
+  const { cafe, canKey, user } = useApp();
   const currency = cafe?.currency ?? "USD";
-  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(() => dateStrInTz(new Date()));
   const [report, setReport] = useState<Report | null>(null);
 
   const load = useCallback(async () => {
@@ -96,11 +98,18 @@ export default function ReportsPage() {
   }, [date]);
 
   useEffect(() => {
-    load();
+    const timer = window.setTimeout(() => load(), 0);
+    return () => clearTimeout(timer);
   }, [load]);
 
   return (
     <div className="max-w-4xl space-y-4">
+      {(user.role === "CAFE_OWNER" || user.role === "SUPER_ADMIN") && canKey("finance.view_revenue") && (
+        <><Link className="inline-block text-primary underline" href="/reports/historical-sales">المبيعات التاريخية المستوردة من Next Cup خلال السنة</Link><br/></>
+      )}
+      <Link className="inline-block text-primary underline" href="/reports/opening-receipts">تقرير استلام الكاش والخامات والمكان — المطابق والمؤجل والفروق</Link><br/>
+      <Link className="inline-block text-primary underline" href="/reports/employee-variances">تقرير فروق الموظفين — كاش وفيزا ومحفظة وخامات</Link>
+      <br/><Link className="inline-block text-primary underline" href="/reports/employee-actions">تقرير مسؤولية الموظفين عن الإلغاء والاسترداد</Link>
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">تقرير قفلة اليوم</h1>
         <Input

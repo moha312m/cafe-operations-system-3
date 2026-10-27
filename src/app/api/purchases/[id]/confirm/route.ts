@@ -41,6 +41,13 @@ export async function POST(_request: NextRequest, { params }: Params) {
     const stockAdds = await db.$transaction(async (tx) => {
       const adds: { itemId: string; qty: number; newStock: number; newCost: number }[] = [];
       await acquireInventorySharedLocks(tx, [inv.branchId]);
+      // Claim under the invoice row lock before touching stock. A concurrent
+      // confirmation rechecks this predicate after the first transaction ends.
+      const claimed = await tx.purchaseInvoice.updateMany({
+        where: { id, status: "DRAFT", confirmedAt: null },
+        data: { status: "CONFIRMED", confirmedAt: now },
+      });
+      if (claimed.count !== 1) throw new ApiError(400, "الفاتورة لم تعد مسودة متاحة للتأكيد");
       for (const line of inv.items) {
         // The locked read replaces a plain findUnique: the balance this
         // arithmetic is based on must be the one nothing else can move
@@ -75,10 +82,6 @@ export async function POST(_request: NextRequest, { params }: Params) {
         });
       }
 
-      await tx.purchaseInvoice.update({
-        where: { id },
-        data: { status: "CONFIRMED", confirmedAt: now },
-      });
       return adds;
     });
 

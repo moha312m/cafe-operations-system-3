@@ -30,6 +30,7 @@
 
 import { test, after, before, describe } from "node:test";
 import assert from "node:assert/strict";
+import { isFinancialLiabilityTable } from "./helpers/financial-liability-tables";
 import { db, tag, teardownTaggedCafe } from "./helpers/db";
 
 const MARKER = tag("VAR001");
@@ -552,13 +553,15 @@ describe("VAR-001 variance case schema", () => {
     assert.equal(c.status, "OPEN", "and nothing was decided");
 
     // No payroll surface exists for this milestone to have touched.
-    const payrollish = await db.$queryRaw<{ table_name: string }[]>`
+    const tables = await db.$queryRaw<{ table_name: string }[]>`
       SELECT table_name FROM information_schema.tables
-       WHERE table_schema = current_schema()
-         AND (table_name ILIKE '%payroll%' OR table_name ILIKE '%salary%'
-              OR table_name ILIKE '%deduction%' OR table_name ILIKE '%liability%')
+       WHERE table_schema = 'public'
+       ORDER BY table_name
     `;
-    assert.deepEqual(payrollish, [], "no payroll table exists, so none was written to");
+    assert.deepEqual(
+      tables.filter(({ table_name }) => isFinancialLiabilityTable(table_name)), [],
+      "no payroll table exists, so none was written to"
+    );
   });
 
   test("the resolution columns start empty and record who closed it", async () => {

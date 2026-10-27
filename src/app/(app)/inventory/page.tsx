@@ -52,6 +52,7 @@ type InvItem = {
   branchId: string;
   branch: { id: string; name: string };
   status: "ok" | "low" | "out";
+  alertThreshold: number;
   stockValue: number;
 };
 type Summary = { totalItems: number; lowCount: number; outCount: number; totalValue: number };
@@ -401,7 +402,12 @@ export default function InventoryPage() {
               <TableCell className="text-sm text-muted-foreground">{i.category ?? "—"}</TableCell>
               <TableCell className="font-semibold tabular-nums">{Number(i.currentStock)}</TableCell>
               <TableCell className="text-sm">{UNIT_LABEL[i.unit]}</TableCell>
-              <TableCell className="tabular-nums">{Number(i.minimumStock)}</TableCell>
+              <TableCell className="tabular-nums">
+                {Number(i.minimumStock)}
+                {i.alertThreshold > Number(i.minimumStock) && (
+                  <span className="block text-xs text-muted-foreground">التنبيه عند {i.alertThreshold}</span>
+                )}
+              </TableCell>
               <TableCell className="tabular-nums">{money(i.costPerUnit, currency)}</TableCell>
               <TableCell className="tabular-nums">{money(i.stockValue, currency)}</TableCell>
               <TableCell>

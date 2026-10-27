@@ -3,6 +3,8 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { requirePermission, handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
+import { requireCatalogPriceAuthority } from "@/lib/price-authorization";
+import { validCurrencyInput } from "@/lib/money";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -28,7 +30,7 @@ const updateProductSchema = z.object({
   name: z.string().min(1).optional(),
   description: z.string().nullable().optional(),
   categoryId: z.string().optional(),
-  basePrice: z.number().min(0).optional(),
+  basePrice: z.number().min(0).refine(validCurrencyInput, "Invalid currency amount").optional(),
   costPrice: z.number().min(0).nullable().optional(),
   imageUrl: z.string().url().nullable().optional().or(z.literal("")),
   isActive: z.boolean().optional(),
@@ -41,7 +43,7 @@ const updateProductSchema = z.object({
     .array(
       z.object({
         name: z.string().min(1),
-        price: z.number().min(0),
+        price: z.number().min(0).refine(validCurrencyInput, "Invalid currency amount"),
         isAvailable: z.boolean().default(true),
         sortOrder: z.number().int().default(0),
       })
@@ -49,7 +51,7 @@ const updateProductSchema = z.object({
     .optional(),
   addOnIds: z.array(z.string()).optional(),
   branchPrices: z
-    .array(z.object({ branchId: z.string(), price: z.number().min(0) }))
+    .array(z.object({ branchId: z.string(), price: z.number().min(0).refine(validCurrencyInput, "Invalid currency amount") }))
     .optional(),
 });
 
@@ -60,6 +62,9 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     const existing = await findOwnedProduct(id, session);
 
     const data = updateProductSchema.parse(await request.json());
+    if (data.basePrice !== undefined || data.variants !== undefined || data.branchPrices !== undefined) {
+      await requireCatalogPriceAuthority(session, existing.cafeId);
+    }
 
     if (data.categoryId) {
       const category = await db.menuCategory.findFirst({
@@ -135,6 +140,10 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     });
 
     // Price changes get their own dedicated audit trail entry.
+    if (data.variants !== undefined || data.branchPrices !== undefined) {
+      await audit({ cafeId: existing.cafeId, userId: session.id, action: "CATALOG_PRICES_CHANGED", entity: "Product", entityId: id,
+        details: { variantsChanged: data.variants !== undefined, branchOverridesChanged: data.branchPrices !== undefined } });
+    }
     const oldPrice = Number(existing.basePrice);
     if (data.basePrice !== undefined && data.basePrice !== oldPrice) {
       await audit({

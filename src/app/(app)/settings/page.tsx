@@ -11,6 +11,11 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ServingPolicyCard } from "@/components/settings/serving-policy-card";
 import { InventoryPolicyCard } from "@/components/settings/inventory-policy-card";
+import { BranchOpeningSettingsCard } from "@/components/settings/branch-opening-settings-card";
+import { PlaceChecklistCard } from "@/components/settings/place-checklist-card";
+import { HandoverPolicyCard } from "@/components/settings/handover-policy-card";
+import { WhatsAppCard } from "@/components/settings/whatsapp-card";
+import { OwnerActionSettingsCard } from "@/components/settings/owner-action-settings-card";
 import { HandoverConfigPanel } from "@/components/settings/handover-config-panel";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -167,7 +172,7 @@ export default function SettingsPage() {
     }
   }, [branchId]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => { const timer = window.setTimeout(() => load(), 0); return () => clearTimeout(timer); }, [load]);
 
   const set = <K extends keyof FinSettings>(k: K, v: FinSettings[K]) =>
     setS((prev) => (prev ? { ...prev, [k]: v } : prev));
@@ -289,9 +294,15 @@ export default function SettingsPage() {
 
           <InventoryPolicyCard />
 
+          {canKey("settings.edit") && <HandoverPolicyCard />}
+          {user.role === "CAFE_OWNER" && canKey("settings.edit") && <BranchOpeningSettingsCard branchId={branchId} />}
+          {user.role === "CAFE_OWNER" && canKey("settings.edit") && <PlaceChecklistCard branchId={branchId} />}
+          {canKey("settings.edit") && <WhatsAppCard />}
+
           {canKey("stock_count.configure") && <HandoverConfigPanel branchId={branchId} />}
 
           <LoyaltySettingsCard />
+          {user.role === "CAFE_OWNER" && canKey("settings.edit") && <OwnerActionSettingsCard />}
         </>
       )}
     </div>

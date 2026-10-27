@@ -46,7 +46,7 @@ type QrResponse = {
 async function scan(marker: string, table: string) {
   const r = await fetch(`${BASE}/api/qr/${fx.branchId}/orders`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() },
     body: JSON.stringify({
       customerName: "عميل اختبار",
       tableNumber: table,

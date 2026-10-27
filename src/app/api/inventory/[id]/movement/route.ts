@@ -7,7 +7,7 @@ import { round2, signedDelta, TXN_AUDIT_ACTION } from "@/lib/inventory";
 import { applyStockMutation } from "@/lib/ledger";
 import { publicInventoryItem } from "@/lib/public-shape";
 import { round3 } from "@/lib/costing";
-import { findScopedItem } from "../route";
+import { findScopedItem } from "@/lib/inventory-scope";
 
 type Params = { params: Promise<{ id: string }> };
 

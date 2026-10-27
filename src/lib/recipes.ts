@@ -109,7 +109,8 @@ function confirmationHolds(r: {
  */
 export async function resolveEffectiveRecipe(
   productId: string,
-  variantId: string | null
+  variantId: string | null,
+  client: Prisma.TransactionClient | typeof db = db
 ): Promise<ResolvedRecipe> {
   const empty = (source: RecipeSource, issues: RecipeIssue[]): ResolvedRecipe => ({
     source, recipeId: null, items: [], issues,
@@ -118,10 +119,10 @@ export async function resolveEffectiveRecipe(
 
   const [variantRecipe, defaultRecipe, variantCount] = await Promise.all([
     variantId
-      ? db.recipe.findFirst({ where: { productId, variantId }, include: withItems })
+      ? client.recipe.findFirst({ where: { productId, variantId }, include: withItems })
       : Promise.resolve(null),
-    db.recipe.findFirst({ where: { productId, variantId: null, addOnId: null }, include: withItems }),
-    db.productVariant.count({ where: { productId } }),
+    client.recipe.findFirst({ where: { productId, variantId: null, addOnId: null }, include: withItems }),
+    client.productVariant.count({ where: { productId } }),
   ]);
 
   const chosen =
@@ -161,8 +162,8 @@ export async function resolveEffectiveRecipe(
 }
 
 /** The recipe attached to an add-on, if one has been configured. */
-export async function resolveAddOnRecipe(addOnId: string): Promise<ResolvedRecipe> {
-  const r = await db.recipe.findFirst({ where: { addOnId }, include: withItems });
+export async function resolveAddOnRecipe(addOnId: string, client: Prisma.TransactionClient | typeof db = db): Promise<ResolvedRecipe> {
+  const r = await client.recipe.findFirst({ where: { addOnId }, include: withItems });
   if (!r) {
     return {
       source: "NONE", recipeId: null, items: [], issues: [RecipeIssue.MISSING_ADDON_RECIPE],
@@ -212,9 +213,9 @@ export async function theoreticalConsumption(args: {
   variantId: string | null;
   addOnIds: string[];
   quantity: number;
-}): Promise<Consumption> {
-  const base = await resolveEffectiveRecipe(args.productId, args.variantId);
-  const addOns = await Promise.all(args.addOnIds.map((id) => resolveAddOnRecipe(id)));
+}, client: Prisma.TransactionClient | typeof db = db): Promise<Consumption> {
+  const base = await resolveEffectiveRecipe(args.productId, args.variantId, client);
+  const addOns = await Promise.all(args.addOnIds.map((id) => resolveAddOnRecipe(id, client)));
 
   const issues = new Set<RecipeIssue>([...base.issues]);
   for (const a of addOns) a.issues.forEach((i) => issues.add(i));

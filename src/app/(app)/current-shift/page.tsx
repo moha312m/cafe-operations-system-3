@@ -12,19 +12,21 @@ import { PageHeader, StatCard } from "@/components/cafe/ui";
 // cards from that — no separate fetch, so there's no refetch/re-render loop
 // and the layout stays stable.
 export default function CurrentShiftPage() {
-  const { cafe, user } = useApp();
+  const { cafe, user, canKey } = useApp();
   const currency = cafe?.currency ?? "EGP";
-  const [branchId, setBranchId] = useState<string>(user.branchId ?? "");
+  const [selectedBranchId, setBranchId] = useState<string>(user.branchId ?? "");
+  const canChooseBranch = user.role === "CAFE_OWNER" && !user.branchId;
+  const branchId = canChooseBranch ? selectedBranchId : (user.branchId ?? "");
   const [shift, setShift] = useState<Shift | null>(null);
   const [loaded, setLoaded] = useState(false);
 
-  // Resolve a branch for non-pinned staff (owners/managers) — runs once.
+  // Only cafe owners may resolve a branch without an employee assignment.
   useEffect(() => {
-    if (user.branchId) return;
+    if (!canChooseBranch) return;
     api<{ branches: { id: string }[] }>("/api/branches")
       .then((r) => r.branches[0] && setBranchId(r.branches[0].id))
       .catch(() => {});
-  }, [user.branchId]);
+  }, [canChooseBranch]);
 
   // Stable callback — never changes identity, so ShiftControls' internal
   // effect runs only when branchId changes (not on every render).
@@ -36,17 +38,16 @@ export default function CurrentShiftPage() {
   const stats = shift
     ? [
         { label: t.shifts.openingCash, value: money(shift.openingCashAmount, currency), icon: "🔓", accent: "slate" as const },
-        { label: t.shifts.totalSales, value: money(shift.totalSales, currency), icon: "💵", accent: "emerald" as const },
-        { label: t.shifts.cashSales, value: money(shift.totalCashSales, currency), icon: "💰", accent: "emerald" as const },
-        { label: t.shifts.cardSales, value: money(shift.totalCardSales, currency), icon: "💳", accent: "blue" as const },
-        { label: t.shifts.walletSales, value: money(shift.totalWalletSales, currency), icon: "📱", accent: "violet" as const },
-        { label: t.shifts.discounts, value: money(shift.totalDiscounts, currency), icon: "🏷️", accent: "amber" as const },
-        { label: t.shifts.refunds, value: money(shift.totalRefunds, currency), icon: "↩️", accent: "red" as const },
-        { label: t.shifts.orderCount, value: String(shift.orderCount), icon: "🧾", accent: "blue" as const },
-        // Expected cash is deliberately absent for the holder of an open
-        // shift — they are the one who will count the drawer (SHIFT-003).
-        // It is served (and shown) again once the count is committed.
-        ...(shift.expectedCashAmount
+        ...(canKey("shifts.view_reports") ? [
+          { label: t.shifts.totalSales, value: money(shift.totalSales ?? 0, currency), icon: "💵", accent: "emerald" as const },
+          { label: t.shifts.cashSales, value: money(shift.totalCashSales ?? 0, currency), icon: "💰", accent: "emerald" as const },
+          { label: t.shifts.cardSales, value: money(shift.totalCardSales ?? 0, currency), icon: "💳", accent: "blue" as const },
+          { label: t.shifts.walletSales, value: money(shift.totalWalletSales ?? 0, currency), icon: "📱", accent: "violet" as const },
+          { label: t.shifts.discounts, value: money(shift.totalDiscounts ?? 0, currency), icon: "🏷️", accent: "amber" as const },
+          { label: t.shifts.refunds, value: money(shift.totalRefunds ?? 0, currency), icon: "↩️", accent: "red" as const },
+          { label: t.shifts.orderCount, value: String(shift.orderCount ?? 0), icon: "🧾", accent: "blue" as const },
+        ] : []),
+        ...(canKey("shifts.view_reports") && shift.expectedCashAmount
           ? [{ label: t.shifts.expectedCash, value: money(shift.expectedCashAmount, currency), icon: "🧮", accent: "emerald" as const }]
           : []),
       ]
@@ -56,7 +57,11 @@ export default function CurrentShiftPage() {
     <div className="mx-auto max-w-5xl">
       <PageHeader title={t.shifts.current} subtitle={t.shifts.details} />
 
-      {branchId ? (
+      {!canChooseBranch && !branchId ? (
+        <p role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900">
+          حسابك غير معيّن على فرع. اطلب من المدير تعيين الفرع قبل فتح الشيفت.
+        </p>
+      ) : branchId ? (
         <ShiftControls
           branchId={branchId}
           currency={currency}
@@ -69,7 +74,7 @@ export default function CurrentShiftPage() {
       {/* Fixed-height grid area — shows skeletons, stats, or the gate hint
           without the container height jumping between states. */}
       <div className="mt-4">
-        {!loaded ? (
+        {!branchId && !canChooseBranch ? null : !loaded ? (
           <StatGrid>
             {Array.from({ length: 9 }).map((_, i) => (
               <div key={i} className="h-[92px] animate-pulse rounded-2xl border border-border bg-card" />

@@ -20,7 +20,7 @@ export type SystemRole = {
 const MANAGER_KEYS = [
   "dashboard.view",
   "pos.view", "pos.create_order", "pos.apply_discount", "pos.collect_payment", "pos.view_payments",
-  "orders.view", "orders.update_status", "orders.cancel",
+  "orders.view", "orders.update_status", "orders.cancel", "orders.request_owner_action",
   "qr_orders.view", "qr_orders.approve", "qr_orders.reject", "qr_orders.edit_before_approval",
   "qr_orders.assign_settings", "settings.edit_qr_approval",
   "kitchen.view", "kitchen.update_status",
@@ -64,7 +64,7 @@ const MANAGER_KEYS = [
 
 const CASHIER_KEYS = [
   "pos.view", "pos.create_order", "pos.collect_payment", "pos.view_payments",
-  "orders.view", "orders.update_status",
+  "orders.view", "orders.update_status", "orders.request_owner_action",
   // Cashiers can confirm QR orders routed to them (assignment-checked).
   "qr_orders.view", "qr_orders.approve", "qr_orders.reject",
   "tables.view", "tables.open", "tables.close",
@@ -87,7 +87,7 @@ const CASHIER_KEYS = [
 
 const WAITER_KEYS = [
   "pos.view", "pos.create_order",
-  "orders.view", "orders.update_status",
+  "orders.view", "orders.update_status", "orders.request_owner_action",
   "qr_orders.view", "qr_orders.approve", "qr_orders.reject", "qr_orders.edit_before_approval",
   "tables.view", "tables.open",
   "menu.view",
@@ -96,7 +96,7 @@ const WAITER_KEYS = [
 
 const BARISTA_KEYS = [
   "kitchen.view", "kitchen.update_status",
-  "orders.view",
+  "orders.view", "orders.request_owner_action",
   "menu.view",
 ];
 

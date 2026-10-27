@@ -59,7 +59,7 @@ import {
   OVERRIDE_SALE_WARNING,
   type InventoryEnforcementMode,
 } from "@/lib/inventory-policy";
-import type { InventoryUnit } from "@prisma/client";
+import type { InventoryUnit, Prisma } from "@prisma/client";
 
 /** One thing the cart is asking the branch to make. */
 export type AvailabilityLine = {
@@ -172,7 +172,7 @@ export async function checkCartAvailability(args: {
   /** The café's persisted policy. Never taken from a request body. */
   mode: InventoryEnforcementMode;
   lines: AvailabilityLine[];
-}): Promise<AvailabilityVerdict> {
+}, client: Prisma.TransactionClient | typeof db = db): Promise<AvailabilityVerdict> {
   const refusals: Refusal[] = [];
   const unresolvedConsumption: UnresolvedConsumption[] = [];
 
@@ -190,7 +190,7 @@ export async function checkCartAvailability(args: {
       variantId: line.variantId,
       addOnIds: line.addOnIds,
       quantity: line.quantity,
-    });
+    }, client);
 
     const blocking = consumption.issues.filter((i) => UNRESOLVABLE.has(i));
     if (blocking.length > 0) {
@@ -235,13 +235,13 @@ export async function checkCartAvailability(args: {
   const demand: Demand[] = [];
 
   if (cafeDemand.size > 0) {
-    const cafeItems = await db.inventoryItem.findMany({
+    const cafeItems = await client.inventoryItem.findMany({
       where: { id: { in: [...cafeDemand.keys()] }, cafeId: args.cafeId },
       select: { id: true, name: true, unit: true },
     });
 
     const branchRows = cafeItems.length
-      ? await db.inventoryItem.findMany({
+      ? await client.inventoryItem.findMany({
           where: {
             cafeId: args.cafeId,
             branchId: args.branchId,

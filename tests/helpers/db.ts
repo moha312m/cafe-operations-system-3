@@ -233,6 +233,7 @@ export async function cleanup(marker: string) {
   });
   const ids = orders.map((o) => o.id);
   if (ids.length) {
+    await db.ownerActionRequest.deleteMany({ where: { targetOrderId: { in: ids } } });
     await db.inventoryTransaction.deleteMany({ where: { orderId: { in: ids } } });
     await db.order.deleteMany({ where: { id: { in: ids } } });
   }

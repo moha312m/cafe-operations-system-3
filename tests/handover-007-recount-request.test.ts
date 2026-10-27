@@ -217,7 +217,9 @@ async function freshHandover(
   const closed = await closeShiftWithSettlement({
     shiftId: shift.id,
     actualCash: 100,
-    actorId: cafe.cashier.id,
+    // Annex-branch shifts need a café-scoped closer: the scoped close now
+    // refuses a cashier whose own branch does not match the shift's branch.
+    actorId: branchId === cafe.branchId ? cafe.cashier.id : cafe.owner.id,
     closedByManager: false,
     handoverTarget: "SHIFT_TO_SHIFT",
     grants: GRANTS_FULL,

@@ -395,3 +395,41 @@ describe("VAR-012 the span records who held it, not who had already left", () =>
     assert.equal(ids.includes(c1), false, "the predecessor is not written to the span either");
   });
 });
+
+test('a verified branch opening is the employee custody baseline for the first shift',async()=>{
+  const itemId=await newItem();
+  const verifiedAt=new Date('2026-09-01T16:00:00Z');
+  const predecessor=await db.custodyPeriod.create({data:{cafeId,branchId,scope:'STOCK',holderType:'BRANCH',status:'TRANSFERRED',acceptedAt:verifiedAt,acceptedById:managerId,endedAt:verifiedAt}});
+  const successor=await db.custodyPeriod.create({data:{cafeId,branchId,scope:'STOCK',holderType:'USER',status:'CLOSED',previousPeriodId:predecessor.id,responsibleShiftId:shiftId,startedAt:verifiedAt,endedAt:T3}});
+  const previous=await handover({acceptedAt:T2,outgoing:c2,incoming:predecessor.id});
+  await boundary({handoverId:previous.id,itemId,verified:true,qty:'12.000'});
+  await db.stockCountSession.create({data:{cafeId,branchId,shiftId,custodyPeriodId:predecessor.id,openingBranchCustodyPeriodId:predecessor.id,accountabilityContext:'BRANCH_OPENING_VERIFICATION',type:'FULL',status:'LOCKED',scopeDerivation:'ALL_ELIGIBLE',initiatedById:managerId,confirmedAt:verifiedAt,lockedAt:verifiedAt,lines:{create:{inventoryItemId:itemId,unit:'KG',expectedQuantity:12,countedQuantity:12,effectiveCountedQuantity:12,itemVersion:BigInt(41),countedAt:verifiedAt,counterId:managerId}}}});
+  const verdict=await resolve(itemId,T3,successor.id);
+  assert.equal(verdict.attribution,'VERIFIED_SHIFT');
+  assert.equal(verdict.custodyPeriodId,successor.id);
+});
+
+
+test('an unobserved branch opening cannot establish employee responsibility',async()=>{
+  const itemId=await newItem();
+  const acceptedAt=new Date('2026-09-01T16:00:00Z');
+  const predecessor=await db.custodyPeriod.create({data:{cafeId,branchId,scope:'STOCK',holderType:'BRANCH',status:'TRANSFERRED',acceptedAt,acceptedById:managerId,endedAt:acceptedAt}});
+  const successor=await db.custodyPeriod.create({data:{cafeId,branchId,scope:'STOCK',holderType:'USER',status:'CLOSED',previousPeriodId:predecessor.id,responsibleShiftId:shiftId,startedAt:acceptedAt,endedAt:T3}});
+  await db.stockCountSession.create({data:{cafeId,branchId,shiftId,custodyPeriodId:predecessor.id,openingBranchCustodyPeriodId:predecessor.id,accountabilityContext:'BRANCH_OPENING_VERIFICATION',type:'FULL',status:'LOCKED',scopeDerivation:'ALL_ELIGIBLE',initiatedById:managerId,confirmedAt:acceptedAt,lockedAt:acceptedAt,lines:{create:{inventoryItemId:itemId,unit:'KG',expectedQuantity:12,countedQuantity:12,effectiveCountedQuantity:12}}}});
+  const verdict=await resolve(itemId,T3,successor.id);
+  assert.equal(verdict.attribution,'PERIOD_UNRESOLVED');
+  assert.equal(verdict.custodyPeriodId,null);
+});
+
+test('a verified branch opening does not excuse an unverified intervening transfer',async()=>{
+  const itemId=await newItem();
+  const acceptedAt=new Date('2026-09-01T16:00:00Z');
+  const predecessor=await db.custodyPeriod.create({data:{cafeId,branchId,scope:'STOCK',holderType:'BRANCH',status:'TRANSFERRED',acceptedAt,acceptedById:managerId,endedAt:acceptedAt}});
+  const successor=await db.custodyPeriod.create({data:{cafeId,branchId,scope:'STOCK',holderType:'USER',status:'CLOSED',previousPeriodId:predecessor.id,responsibleShiftId:shiftId,startedAt:acceptedAt,endedAt:T3}});
+  await db.stockCountSession.create({data:{cafeId,branchId,shiftId,custodyPeriodId:predecessor.id,openingBranchCustodyPeriodId:predecessor.id,accountabilityContext:'BRANCH_OPENING_VERIFICATION',type:'FULL',status:'LOCKED',scopeDerivation:'ALL_ELIGIBLE',initiatedById:managerId,confirmedAt:acceptedAt,lockedAt:acceptedAt,lines:{create:{inventoryItemId:itemId,unit:'KG',expectedQuantity:12,countedQuantity:12,effectiveCountedQuantity:12,itemVersion:BigInt(41),countedAt:acceptedAt,counterId:managerId}}}});
+  const crossed=await handover({acceptedAt:new Date('2026-09-01T18:00:00Z'),outgoing:successor.id,incoming:successor.id});
+  await boundary({handoverId:crossed.id,itemId,verified:false,qty:'12.000'});
+  const verdict=await resolve(itemId,T3,successor.id);
+  assert.equal(verdict.attribution,'PERIOD_UNRESOLVED');
+  assert.equal(verdict.custodyPeriodId,null);
+});

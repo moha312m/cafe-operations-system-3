@@ -53,6 +53,7 @@ type Branch = { id: string; name: string };
 type VariantRow = { name: string; price: string; isAvailable: boolean };
 type Product = {
   id: string;
+  sku: string | null;
   name: string;
   description: string | null;
   basePrice: string;
@@ -126,7 +127,8 @@ type VisibilityFilter = "all" | "visible" | "hidden";
 // ─────────────────────────── Page ───────────────────────────
 
 export default function MenuPage() {
-  const { cafe, can } = useApp();
+  const { cafe, can, canKey } = useApp();
+  const canPrices = canKey("menu.edit_prices");
   const currency = cafe?.currency ?? "EGP";
   const showCost = can("cost:read");
 
@@ -138,6 +140,7 @@ export default function MenuPage() {
 
   // Filters
   const [search, setSearch] = useState("");
+  const [showArchived, setShowArchived] = useState(false);
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [availabilityFilter, setAvailabilityFilter] =
     useState<AvailabilityFilter>("all");
@@ -174,7 +177,8 @@ export default function MenuPage() {
   }, []);
 
   useEffect(() => {
-    load();
+    const timer = window.setTimeout(() => { void load(); }, 0);
+    return () => window.clearTimeout(timer);
   }, [load]);
 
   async function run(action: () => Promise<unknown>, success: string) {
@@ -196,20 +200,21 @@ export default function MenuPage() {
   const visibleProducts = useMemo(() => {
     const term = search.trim().toLowerCase();
     return products.filter((p) => {
+      if (!showArchived && !p.isActive) return false;
       if (categoryFilter !== "all" && p.category.id !== categoryFilter) return false;
       if (availabilityFilter === "available" && !p.isAvailable) return false;
       if (availabilityFilter === "unavailable" && p.isAvailable) return false;
       if (visibilityFilter === "visible" && !p.showInCustomerMenu) return false;
       if (visibilityFilter === "hidden" && p.showInCustomerMenu) return false;
-      if (term && !p.name.toLowerCase().includes(term)) return false;
+      if (term && !p.name.toLowerCase().includes(term) && !(p.sku ?? "").toLowerCase().includes(term)) return false;
       return true;
     });
-  }, [products, search, categoryFilter, availabilityFilter, visibilityFilter]);
+  }, [products, search, categoryFilter, availabilityFilter, visibilityFilter, showArchived]);
 
   // ── Product save ─────────────────────────────────────────────
   async function saveProduct() {
     if (!productForm) return;
-    const body = {
+    const body: Record<string, unknown> = {
       name: productForm.name,
       description: productForm.description || undefined,
       categoryId: productForm.categoryId,
@@ -235,6 +240,12 @@ export default function MenuPage() {
             .map(([branchId, price]) => ({ branchId, price: Number(price) }))
         : [],
     };
+    if (!canPrices) {
+      if (!productForm.id) return;
+      delete body.basePrice;
+      delete body.variants;
+      delete body.branchPrices;
+    }
     const ok = await run(
       () =>
         productForm.id
@@ -284,6 +295,7 @@ export default function MenuPage() {
   }
 
   async function commitQuickPrice(p: Product) {
+    if (!canPrices) return;
     const newPrice = Number(priceDraft);
     setPriceEditId(null);
     if (!priceDraft || isNaN(newPrice) || newPrice < 0 || newPrice === Number(p.basePrice)) {
@@ -423,7 +435,11 @@ export default function MenuPage() {
                   </SelectContent>
                 </Select>
                 <div className="ms-auto flex gap-2">
-                  <Button variant="outline" onClick={() => setImportOpen(true)}>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} />
+                    عرض الأصناف المؤرشفة
+                  </label>
+                  <Button variant="outline" disabled={!canPrices} onClick={() => setImportOpen(true)}>
                     📄 استيراد المنيو من Excel
                   </Button>
                   <Button
@@ -436,7 +452,7 @@ export default function MenuPage() {
                         )
                       )
                     }
-                    disabled={categories.length === 0}
+                    disabled={!canPrices || categories.length === 0}
                   >
                     إضافة منتج جديد
                   </Button>
@@ -462,6 +478,7 @@ export default function MenuPage() {
                     <TableRow key={p.id} className={cn(!p.isActive && "opacity-50")}>
                       <TableCell className="font-medium">
                         {p.name}
+                        {p.sku && <span className="ms-2 text-xs text-muted-foreground" dir="ltr">SKU {p.sku}</span>}
                         {p.branchPrices.length > 0 && (
                           <span className="ms-1 text-xs text-muted-foreground">
                             🏬 سعر حسب الفرع
@@ -493,6 +510,7 @@ export default function MenuPage() {
                             type="button"
                             className="rounded px-1 font-semibold underline decoration-dotted underline-offset-4 hover:bg-accent"
                             title="اضغط لتعديل السعر"
+                            disabled={!canPrices}
                             onClick={() => {
                               setPriceDraft(String(p.basePrice));
                               setPriceEditId(p.id);
@@ -685,6 +703,7 @@ export default function MenuPage() {
             className="flex max-w-md gap-2"
             onSubmit={(e) => {
               e.preventDefault();
+              if (!canPrices) return;
               run(
                 () =>
                   api("/api/addons", {
@@ -716,7 +735,7 @@ export default function MenuPage() {
               onChange={(e) => setAddOnPrice(e.target.value)}
               required
             />
-            <Button type="submit" disabled={busy}>
+            <Button type="submit" disabled={busy || !canPrices}>
               إضافة جديدة
             </Button>
           </form>
@@ -820,6 +839,7 @@ export default function MenuPage() {
                     min="0"
                     dir="ltr"
                     value={productForm.basePrice}
+                    disabled={!canPrices}
                     onChange={(e) =>
                       setProductForm({ ...productForm, basePrice: e.target.value })
                     }
@@ -902,7 +922,7 @@ export default function MenuPage() {
               <Separator />
 
               {/* Variants — absolute prices */}
-              <div className="space-y-2">
+              <fieldset disabled={!canPrices} className="space-y-2">
                 <div className="flex items-center justify-between">
                   <Label>الأحجام (كل حجم بسعره النهائي)</Label>
                   <Button
@@ -979,7 +999,7 @@ export default function MenuPage() {
                     لو في أحجام، سعر الحجم هو اللي بيتحاسب بيه — مش سعر البيع الأساسي.
                   </p>
                 )}
-              </div>
+              </fieldset>
 
               {/* Add-ons */}
               {addOns.length > 0 && (
@@ -1008,7 +1028,7 @@ export default function MenuPage() {
               <Separator />
 
               {/* Branch pricing */}
-              <div className="space-y-2">
+              <fieldset disabled={!canPrices} className="space-y-2">
                 <Label>التسعير حسب الفرع</Label>
                 <div className="flex gap-2">
                   <Button
@@ -1065,7 +1085,7 @@ export default function MenuPage() {
                     )}
                   </div>
                 )}
-              </div>
+              </fieldset>
 
               {/* الوصفة والتكلفة — only for saved products, cost-privileged roles */}
               {showCost && productForm.id && (

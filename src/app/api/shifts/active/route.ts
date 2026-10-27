@@ -1,13 +1,16 @@
-import { NextResponse, type NextRequest } from "next/server";
+﻿import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { requirePermission, resolveBranchId, handleApiError } from "@/lib/api";
 import { getActiveShift, redactBlindCount } from "@/lib/shifts";
+import { resolvePermissions } from "@/lib/perms/effective";
 
 // GET /api/shifts/active — the current cashier's open shift (or null).
 // Drives the POS shift gate & top bar.
 export async function GET(request: NextRequest) {
   try {
     const session = await requirePermission("shifts:operate");
+    const { keys } = await resolvePermissions(session);
+    const canViewReports = keys.has("shifts.view_reports");
     const branchId = resolveBranchId(
       session,
       request.nextUrl.searchParams.get("branchId")
@@ -22,9 +25,13 @@ export async function GET(request: NextRequest) {
       },
         })
       : null;
+    const pendingShift = shift ? null : await db.shift.findFirst({
+      where: { branchId, cashierId: session.id, status: 'OPEN' }, orderBy: { openedAt: 'desc' },
+      include: { cashier: { select: { id: true, name: true } }, branch: { select: { id: true, name: true } }, openingCashReceipt: { select: { status: true } }, placeReceipt: { select: { id: true, status: true, assignedUser: { select: { id: true, name: true } } } } },
+    });
     // SHIFT-003: this is always the requester's own shift, so the
     // reconciliation target is withheld while it is open.
-    return NextResponse.json({ shift: shift ? redactBlindCount(shift, session.id) : null });
+    return NextResponse.json({ shift: shift ? redactBlindCount(shift, canViewReports) : null, pendingShift: pendingShift ? redactBlindCount(pendingShift, canViewReports) : null });
   } catch (error) {
     return handleApiError(error);
   }

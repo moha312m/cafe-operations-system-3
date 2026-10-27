@@ -17,6 +17,7 @@ export type AddOn = {
 
 export type Product = {
   id: string;
+  sku?: string | null;
   name: string;
   description: string | null;
   basePrice: string;

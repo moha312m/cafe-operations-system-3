@@ -478,7 +478,7 @@ describe("CASHCLOSE-003 — money semantics inside the handover close", () => {
     assert.equal(finalization.successorOpened, false);
   });
 
-  test("a legacy NO_SHIFT_COUNT café closes byte-for-byte as T33 with the new columns honest", async () => {
+  test("NO_SHIFT_COUNT preserves settlements and retires the final custody without a stock acceptance", async () => {
     await configure("NO_SHIFT_COUNT");
     const shift = await openOperationalShift(fx.cashier.id);
     await withElectronicSales(shift.id, 250, 0);
@@ -506,7 +506,8 @@ describe("CASHCLOSE-003 — money semantics inside the handover close", () => {
     const cash = await db.custodyPeriod.findUniqueOrThrow({
       where: { id: cashLink.custodyPeriodId },
     });
-    assert.equal(cash.status, "OPEN", "a legacy close touches no custody at all");
+    assert.equal(cash.status, "CLOSED", "the final drawer holder is discharged on financial close");
+    assert.equal(Number(cash.closingCashAmount), 100);
     assert.equal(
       await db.auditLog.count({
         where: { cafeId: fx.cafeId, action: "SHIFT_CLOSED", entityId: shift.id },

@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { api, money } from "@/lib/client";
 import { t, formatWeekday, formatTime } from "@/lib/i18n";
 import { useApp } from "@/components/app-shell";
+import { OwnerDashboard } from "@/components/dashboard/owner-dashboard";
 import { normalizeRangeKey, type RangeKey } from "@/lib/date-range";
 import type { OrderStatus, OrderSource } from "@prisma/client";
 import {
@@ -75,7 +76,7 @@ type DashboardData = {
   pendingCollectionOrders: { id: string; orderNumber: number; total: number; remaining: number; branch: string }[];
   topProducts: { name: string; quantity: number; revenue: number }[];
   leastProducts: { name: string; quantity: number; revenue: number }[];
-  lowStockItems: { name: string; stock: number; min: number; unit: string }[];
+  lowStockItems: { id: string; name: string; stock: number; min: number; unit: string }[];
   branches: { id: string; name: string }[];
   inventory?: { lowStockCount: number; outOfStockCount: number };
   recipes?: {
@@ -129,6 +130,7 @@ export default function DashboardPage() {
 
 function DashboardInner() {
   const { cafe, user, branchName } = useApp();
+  const isOwner = user.role === "CAFE_OWNER";
   const currency = cafe?.currency ?? "EGP";
   const fmt = (v: number) => money(v, currency);
   const router = useRouter();
@@ -245,7 +247,16 @@ function DashboardInner() {
 
   const controls = (
     <>
-      <div className="flex flex-wrap rounded-xl border border-border bg-card p-0.5 text-sm">
+      {isOwner ? (
+        <Select value={activeKey} onValueChange={(value) => { if (value) pickQuickRange(value as RangeKey); }}>
+          <SelectTrigger className="w-40" aria-label="الفترة">
+            <SelectValue>{RANGE_LABEL[activeKey]}</SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            {RANGES.map(range => <SelectItem key={range.key} value={range.key}>{range.label}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      ) : <div className="flex flex-wrap rounded-xl border border-border bg-card p-0.5 text-sm">
         {RANGES.map((r) => (
           <button
             key={r.key}
@@ -257,7 +268,7 @@ function DashboardInner() {
             {r.label}
           </button>
         ))}
-      </div>
+      </div>}
       {!user.branchId && (data?.branches.length ?? 0) > 1 && (
         <Select value={branchId} onValueChange={(v) => setBranchId(v ?? "all")}>
           <SelectTrigger className="w-40">
@@ -359,7 +370,6 @@ function DashboardInner() {
     );
   }
 
-  const isOwner = user.role === "CAFE_OWNER";
   const pm = t.paymentMethods;
   const d = t.dashboard;
 
@@ -375,6 +385,7 @@ function DashboardInner() {
 
       {/* Refreshing dims (no layout jump) while the new period loads. */}
       <div className={refreshing ? "pointer-events-none opacity-60 transition-opacity" : "transition-opacity"}>
+      <OwnerDashboard isOwner={isOwner} data={data} formatMoney={fmt}>
 
       {/* Primary KPI cards */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -613,12 +624,12 @@ function DashboardInner() {
                 <TableHeader><TableRow>
                   <TableHead>الصنف</TableHead>
                   <TableHead className="text-end">المتاح</TableHead>
-                  <TableHead className="text-end">الحد الأدنى</TableHead>
+                  <TableHead className="text-end">حد التنبيه</TableHead>
                   <TableHead>الحالة</TableHead>
                 </TableRow></TableHeader>
                 <TableBody>
                   {data.lowStockItems.map((it) => (
-                    <TableRow key={it.name}>
+                    <TableRow key={it.id}>
                       <TableCell className="font-medium">{it.name}</TableCell>
                       <TableCell className="text-end tabular-nums">{it.stock} {it.unit}</TableCell>
                       <TableCell className="text-end tabular-nums text-muted-foreground">{it.min} {it.unit}</TableCell>
@@ -637,6 +648,7 @@ function DashboardInner() {
           </Panel>
         )}
       </div>
+      </OwnerDashboard>
       </div>{/* end refreshing-dim wrapper */}
     </>
   );

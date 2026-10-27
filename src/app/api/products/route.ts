@@ -8,6 +8,8 @@ import {
   ApiError,
 } from "@/lib/api";
 import { audit } from "@/lib/audit";
+import { requireCatalogPriceAuthority } from "@/lib/price-authorization";
+import { validCurrencyInput } from "@/lib/money";
 import { hasPermission } from "@/lib/permissions";
 import { configurationFinancials } from "@/lib/recipes";
 
@@ -66,7 +68,7 @@ export async function GET(request: NextRequest) {
 
 const variantSchema = z.object({
   name: z.string().min(1),
-  price: z.number().min(0), // absolute سعر الحجم
+  price: z.number().min(0).refine(validCurrencyInput, "Invalid currency amount"), // absolute سعر الحجم
   isAvailable: z.boolean().default(true),
   sortOrder: z.number().int().default(0),
 });
@@ -75,7 +77,7 @@ const createProductSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional(),
   categoryId: z.string(),
-  basePrice: z.number().min(0),
+  basePrice: z.number().min(0).refine(validCurrencyInput, "Invalid currency amount"),
   costPrice: z.number().min(0).nullable().optional(),
   imageUrl: z.string().url().optional().or(z.literal("")),
   showInCustomerMenu: z.boolean().default(true),
@@ -85,7 +87,7 @@ const createProductSchema = z.object({
   variants: z.array(variantSchema).default([]),
   addOnIds: z.array(z.string()).default([]),
   branchPrices: z
-    .array(z.object({ branchId: z.string(), price: z.number().min(0) }))
+    .array(z.object({ branchId: z.string(), price: z.number().min(0).refine(validCurrencyInput, "Invalid currency amount") }))
     .default([]),
   cafeId: z.string().optional(),
 });
@@ -95,6 +97,7 @@ export async function POST(request: NextRequest) {
     const session = await requirePermission("menu:manage");
     const data = createProductSchema.parse(await request.json());
     const cafeId = resolveCafeId(session, data.cafeId);
+    await requireCatalogPriceAuthority(session, cafeId);
 
     // Category, add-ons, and branches must belong to the same tenant.
     const category = await db.menuCategory.findFirst({

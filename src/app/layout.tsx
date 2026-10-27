@@ -32,10 +32,7 @@ export default function RootLayout({
       dir="rtl"
       className={`${cairo.variable} h-full antialiased`}
     >
-      <body
-        className="min-h-full flex flex-col"
-        style={{ fontFamily: "var(--font-cairo), system-ui, sans-serif" }}
-      >
+      <body className="min-h-full flex flex-col font-sans">
         {children}
         <Toaster richColors position="top-center" dir="rtl" />
       </body>

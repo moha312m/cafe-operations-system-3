@@ -29,6 +29,7 @@ import { PrismaClient } from "@prisma/client";
 import { db, tag, teardownTaggedCafe } from "./helpers/db";
 import { countCafe, countItem, COUNT_PASSWORD, type CountCafe } from "./helpers/count";
 import { as, login, requireServer } from "./helpers/http";
+import { observeTransactionSql } from "./helpers/phase2-lock-trace";
 
 const MARKER = tag("HANDOVER008B");
 
@@ -349,6 +350,57 @@ after(async () => {
     ],
     { disconnect: true },
   );
+});
+
+for (const resource of ["gate", "item"] as const) test(`acceptance refuses a busy inventory ${resource} without waiting while holding count evidence`, async () => {
+  const ready = await readyToAccept();
+  let entered!: () => void, release!: () => void;
+  const locked = new Promise<void>(r => entered = r), gate = new Promise<void>(r => release = r);
+  const blocker = observer.$transaction(async tx => {
+    if (resource === "item") await tx.$queryRaw`SELECT "id" FROM "InventoryItem" WHERE "id"=${items.alpha.id} FOR UPDATE`;
+    else { const { acquireInventorySharedLocks } = await import("@/lib/inventory-freeze"); await acquireInventorySharedLocks(tx, [fx.branchId]); }
+    entered(); await gate;
+  }, { timeout: 10_000 });
+  await locked;
+  const started = Date.now();
+  try { await assert.rejects(accept(ready.handoverId, { incomingShiftId: ready.incomingShiftId }), (error: unknown) => (error as {status?:number}).status === 409); assert.ok(Date.now()-started<1000, "immediate refusal breaks count capture's inverse wait"); }
+  finally { release(); await blocker; }
+  assert.notEqual((await db.handoverSession.findUniqueOrThrow({ where: {id:ready.handoverId} })).status, "COMPLETED");
+});
+
+test("acceptance refuses a busy Handover immediately instead of waiting while holding Shift", async () => {
+  const ready = await readyToAccept();
+  let entered!: () => void, release!: () => void;
+  const locked = new Promise<void>(r => entered = r), gate = new Promise<void>(r => release = r);
+  const blocker = observer.$transaction(async tx => { await tx.$queryRaw`SELECT "id" FROM "HandoverSession" WHERE "id"=${ready.handoverId} FOR UPDATE`; entered(); await gate; }, { timeout: 10_000 });
+  await locked;
+  const started = Date.now();
+  try { await assert.rejects(accept(ready.handoverId, { incomingShiftId: ready.incomingShiftId }), (error: unknown) => (error as {status?:number}).status === 409); assert.ok(Date.now()-started<1000, "NOWAIT breaks the stale acceptance / count-start FK cycle"); }
+  finally { release(); await blocker; }
+  assert.notEqual((await db.handoverSession.findUniqueOrThrow({ where: {id:ready.handoverId} })).status, "COMPLETED");
+});
+
+test("invalid DRAFT acceptance refuses before locking a Shift used by count start", async () => {
+  const ready = await readyToAccept();
+  await db.handoverSession.update({ where: { id: ready.handoverId }, data: { status: "DRAFT" } });
+  const { result, sql } = await observeTransactionSql(() => accept(ready.handoverId, { incomingShiftId: ready.incomingShiftId }).then(() => null, (error: unknown) => error));
+  assert.equal((result as { status?: number })?.status, 409);
+  assert.equal(sql.some(q => /FROM "Shift"/.test(q) && /FOR UPDATE/.test(q)), false, "invalid acceptance must not create Shift -> Handover vs count-start's Handover -> Shift FK cycle");
+});
+
+test("acceptance initializes timeouts and locks Shift before handover and inventory", async () => {
+  const ready = await readyToAccept();
+  const { sql, traces } = await observeTransactionSql(() => accept(ready.handoverId, { incomingShiftId: ready.incomingShiftId }));
+  assert.match(sql[0], /SET LOCAL lock_timeout/); assert.match(sql[1], /SET LOCAL statement_timeout/);
+  const shift = sql.findIndex(q => /FROM "Shift"/.test(q) && /FOR UPDATE/.test(q));
+  const handover = sql.findIndex(q => /FROM "HandoverSession"/.test(q) && /FOR UPDATE/.test(q));
+  const gate = sql.findIndex(q => /pg_try_advisory_xact_lock\(/.test(q));
+  const item = sql.findIndex(q => /FROM "InventoryItem"/.test(q) && /FOR UPDATE/.test(q));
+  assert.ok(shift >= 0 && shift < handover && handover < gate && gate < item, JSON.stringify(sql));
+  assert.equal(sql.filter(q => /FROM "Shift"/.test(q) && /FOR UPDATE/.test(q)).length, 1);
+  const inventoryIds = traces.flat().filter(lock => lock.entity === "InventoryItem").flatMap(lock => lock.ids);
+  assert.deepEqual(inventoryIds, [...new Set(inventoryIds)].sort());
+  console.log("PHASE2_SQL_TRACE " + JSON.stringify({ operation: "handover-acceptance", sql, traces }));
 });
 
 /**

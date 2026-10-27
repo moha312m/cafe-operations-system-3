@@ -1,27 +1,17 @@
 // SEC-005 (R-SEC-01/A4) — refund and shift-close authority must obey the
 // permissions the café actually configured.
 //
-// `orders.refund` and `shifts.close_others` were defined in the catalog —
-// both marked sensitive — and enforced by no route at all. Both refund
-// routes and the "close somebody else's shift" check read `shifts:read`
-// out of the STATIC role table instead, so:
-//
-//   • revoking refund rights through a custom café role or a per-user
-//     override changed nothing — the legacy `role` column still said
-//     BRANCH_MANAGER and the money went back; and
-//   • granting refund rights to a cashier was silently ignored.
-//
-// The roles-permissions screen could not bind either way, which made the
-// whole permission system advisory on the one action that moves money out
-// of the drawer.
+// Refund routes require the permission to REQUEST an owner action. A request
+// never moves money; an owner must approve and execute it through the separate
+// approval flow. Shift close authority remains independently permissioned.
 
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { db, closeOpenShifts, teardownTaggedCafe } from "./helpers/db";
 import { countCafe, COUNT_PASSWORD, type CountCafe } from "./helpers/count";
 import { requireServer, login, as } from "./helpers/http";
 import { PERMISSION_KEYS, LEGACY_TO_KEYS } from "@/lib/perms/catalog";
-import { ROLE_PERMISSIONS } from "@/lib/permissions";
 import { defaultKeysForRole, SYSTEM_ROLES } from "@/lib/perms/templates";
 
 let fx: CountCafe;
@@ -49,10 +39,11 @@ describe("SEC-005 the keys exist and are the ones enforced", () => {
     }
   });
 
-  test("refund authority is unchanged by default — a manager has it, a waiter does not", () => {
-    // The repair moves WHERE the answer comes from, not who gets it.
-    assert.ok(defaultKeysForRole("BRANCH_MANAGER" as never).includes("orders.refund"));
-    assert.equal(defaultKeysForRole("WAITER" as never).includes("orders.refund"), false);
+  test("refund requests are available to floor roles, while direct refunds remain owner-gated", () => {
+    for (const role of ["BRANCH_MANAGER", "CASHIER", "WAITER", "BARISTA"] as const) {
+      assert.ok(defaultKeysForRole(role as never).includes("orders.request_owner_action"), role);
+    }
+    assert.ok(defaultKeysForRole("CAFE_OWNER" as never).includes("orders.refund"));
   });
 
   test("both resolution paths grant shifts.close_others to a manager, and only to oversight roles", () => {
@@ -97,37 +88,35 @@ describe("SEC-005 the keys exist and are the ones enforced", () => {
   });
 });
 
-describe("SEC-005 refund authority follows the effective permission", () => {
-  test("a manager with the key is past the guard", async () => {
+describe("SEC-005 owner-action request authority follows the effective permission", () => {
+  test("a manager with request permission is past the guard", async () => {
     // A non-existent order id: the point is the AUTHORIZATION verdict, so
     // anything other than 403 means the guard let them through.
     const res = await as(fx.manager.email, "/api/orders/not-a-real-order/refund", {
       method: "POST",
       body: JSON.stringify({ reason: "SEC-005 probe" }),
     });
-    assert.notEqual(res.status, 403, `manager must pass the refund guard: ${res.text}`);
+    assert.notEqual(res.status, 403, `manager must pass the request guard: ${res.text}`);
     assert.equal(res.status, 404, res.text);
   });
 
-  test("a waiter without the key is refused", async () => {
+  test("a waiter may request, but cannot execute, a refund", async () => {
     const res = await as(fx.waiter.email, "/api/orders/not-a-real-order/refund", {
       method: "POST",
       body: JSON.stringify({ reason: "SEC-005 probe" }),
     });
-    assert.equal(res.status, 403, res.text);
+    assert.equal(res.status, 404, "request permission passes before target lookup");
   });
 
-  test("REVOKING the key from a manager now actually revokes refunds", async () => {
-    // The defect, stated as a test: before this stage the override was
-    // ignored because the route consulted the legacy role instead.
-    await override(fx.manager.id, "orders.refund", false);
+  test("revoking request permission from a manager blocks new requests", async () => {
+    await override(fx.manager.id, "orders.request_owner_action", false);
     await login(fx.manager.email, COUNT_PASSWORD);
 
     const order = await as(fx.manager.email, "/api/orders/not-a-real-order/refund", {
       method: "POST",
       body: JSON.stringify({ reason: "SEC-005 probe" }),
     });
-    assert.equal(order.status, 403, `order refund must now be refused: ${order.text}`);
+    assert.equal(order.status, 403, `order refund request must be refused: ${order.text}`);
 
     const payment = await as(fx.manager.email, "/api/payments/not-a-real-payment/refund", {
       method: "POST",
@@ -135,11 +124,10 @@ describe("SEC-005 refund authority follows the effective permission", () => {
     assert.equal(
       payment.status,
       403,
-      `the payment-level refund must be refused too: ${payment.text}`
+      `the payment-level refund request must be refused too: ${payment.text}`
     );
 
-    // And the legacy role is still BRANCH_MANAGER — proving the refusal came
-    // from the effective permission rather than from a role change.
+    // The legacy role remains unchanged; only its effective request grant changed.
     const row = await db.user.findUniqueOrThrow({
       where: { id: fx.manager.id },
       select: { role: true },
@@ -147,29 +135,34 @@ describe("SEC-005 refund authority follows the effective permission", () => {
     assert.equal(row.role, "BRANCH_MANAGER");
 
     await db.userPermissionOverride.deleteMany({
-      where: { userId: fx.manager.id, permissionKey: "orders.refund" },
+      where: { userId: fx.manager.id, permissionKey: "orders.request_owner_action" },
     });
     await login(fx.manager.email, COUNT_PASSWORD);
   });
 
-  test("GRANTING the key to a cashier now actually grants refunds", async () => {
+  test("a cashier's request permission can be revoked and restored", async () => {
+    await override(fx.cashier.id, "orders.request_owner_action", false);
+    await login(fx.cashier.email, COUNT_PASSWORD);
     const before = await as(fx.cashier.email, "/api/orders/not-a-real-order/refund", {
       method: "POST",
       body: JSON.stringify({ reason: "SEC-005 probe" }),
     });
-    assert.equal(before.status, 403, "a cashier starts without refund authority");
+    assert.equal(before.status, 403, "a cashier with an explicit deny cannot request");
 
-    await override(fx.cashier.id, "orders.refund", true);
+    await db.userPermissionOverride.updateMany({
+      where: { userId: fx.cashier.id, permissionKey: "orders.request_owner_action" },
+      data: { allowed: true },
+    });
     await login(fx.cashier.email, COUNT_PASSWORD);
 
     const after = await as(fx.cashier.email, "/api/orders/not-a-real-order/refund", {
       method: "POST",
       body: JSON.stringify({ reason: "SEC-005 probe" }),
     });
-    assert.notEqual(after.status, 403, `the grant must bind: ${after.text}`);
+    assert.equal(after.status, 404, `restored request permission passes the guard: ${after.text}`);
 
     await db.userPermissionOverride.deleteMany({
-      where: { userId: fx.cashier.id, permissionKey: "orders.refund" },
+      where: { userId: fx.cashier.id, permissionKey: "orders.request_owner_action" },
     });
     await login(fx.cashier.email, COUNT_PASSWORD);
   });
@@ -186,7 +179,7 @@ describe("SEC-005 no legacy-role authority survives on these routes", () => {
       "src/app/api/shifts/[id]/route.ts",
     ];
     for (const file of files) {
-      const source = require("node:fs").readFileSync(file, "utf8") as string;
+      const source = readFileSync(file, "utf8") as string;
       assert.doesNotMatch(
         source,
         /hasPermission\(session\.role/,
@@ -196,7 +189,7 @@ describe("SEC-005 no legacy-role authority survives on these routes", () => {
   });
 
   test("closing another cashier's shift costs shifts.close_others, with no bypass left", () => {
-    const source = require("node:fs").readFileSync(
+    const source = readFileSync(
       "src/app/api/shifts/[id]/close/route.ts",
       "utf8"
     ) as string;

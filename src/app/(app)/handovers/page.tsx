@@ -14,9 +14,11 @@ import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/client";
 import { useApp } from "@/components/app-shell";
+import { BranchScopeSelect } from "@/components/stock-counts/branch-scope-select";
 import { HandoverList, type HandoverRow } from "@/components/handovers/handover-list";
 import { HandoverDetail } from "@/components/handovers/handover-detail";
 import { OpeningVerificationPanel } from "@/components/handovers/opening-verification-panel";
+import { PlaceReceiptPanel } from "@/components/handovers/place-receipt-panel";
 import {
   HANDOVER_STATUSES,
   HANDOVER_STATUS_LABEL,
@@ -32,8 +34,9 @@ import {
 const ANY = "ALL";
 
 export default function HandoversPage() {
-  const { canKey, features } = useApp();
+  const { canKey, features, user } = useApp();
   const [handovers, setHandovers] = useState<HandoverRow[]>([]);
+  const [branchId, setBranchId] = useState(user.branchId ?? "");
   const [status, setStatus] = useState<string>(ANY);
   const [loading, setLoading] = useState(true);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -41,10 +44,10 @@ export default function HandoversPage() {
   const allowed = canKey("handover.view");
 
   const load = useCallback(async () => {
-    if (!allowed) return;
+    if (!allowed || !branchId) return;
     setLoading(true);
     try {
-      const params = new URLSearchParams();
+      const params = new URLSearchParams({ branchId });
       // Only statuses the enum actually has. The list route passes this
       // straight into a Prisma filter, so an invented value is a 500 rather
       // than an empty result — the picker is the guard.
@@ -59,7 +62,7 @@ export default function HandoversPage() {
     } finally {
       setLoading(false);
     }
-  }, [allowed, status]);
+  }, [allowed, status, branchId]);
 
   useEffect(() => {
     load();
@@ -88,11 +91,12 @@ export default function HandoversPage() {
   return (
     <main className="space-y-4 p-4 sm:p-6">
       <header className="flex flex-wrap items-center gap-3">
+        <BranchScopeSelect value={branchId} onChange={setBranchId} />
         <h1 className="text-lg font-semibold">التسليم والاستلام</h1>
         <div className="ms-auto">
           <Select value={status} onValueChange={(v) => setStatus(v ?? ANY)}>
             <SelectTrigger className="w-56" aria-label="الحالة">
-              <SelectValue placeholder="الحالة" />
+              <SelectValue>{status === ANY ? "كل الحالات" : HANDOVER_STATUS_LABEL[status as keyof typeof HANDOVER_STATUS_LABEL]}</SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectItem value={ANY}>كل الحالات</SelectItem>
@@ -106,10 +110,6 @@ export default function HandoversPage() {
         </div>
       </header>
 
-      <p className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">
-        الأسباب بتتكتب بالمعرّف (reasonCodeId) لغاية ما يبقى في endpoint بيرجّع قائمة
-        الأسباب.
-      </p>
 
       {loading ? (
         <div className="h-40 animate-pulse rounded-xl border border-dashed bg-muted/30" />
@@ -118,10 +118,12 @@ export default function HandoversPage() {
           handovers={handovers}
           selectedId={selectedId}
           onSelect={setSelectedId}
+          viewerUserId={user.id}
         />
       )}
 
-      <OpeningVerificationPanel />
+      <OpeningVerificationPanel branchId={branchId} />
+      <PlaceReceiptPanel branchId={branchId} />
 
       <HandoverDetail
         handoverId={selectedId}

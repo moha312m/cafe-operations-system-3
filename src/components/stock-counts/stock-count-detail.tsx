@@ -23,6 +23,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { ReasonCodeSelect } from "./reason-code-select";
 import { CountLineRow, type CountLine } from "./count-line-row";
 import {
   CONFIRMABLE,
@@ -287,9 +288,7 @@ export function StockCountDetail({
         </DialogContent>
       </Dialog>
 
-      {/* One small form for the three line actions that need more than a
-          click. The reason code is typed as an id because no endpoint lists
-          reason codes — see the note in the page header. */}
+      {/* Line actions use the active reasons configured for this cafe. */}
       <Dialog open={pending !== null} onOpenChange={(o) => !o && !busy && setPending(null)}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
@@ -315,12 +314,7 @@ export function StockCountDetail({
             )}
             {needsReason && (
               <div className="space-y-2">
-                <Label>معرّف سبب المخزون (reasonCodeId)</Label>
-                <Input
-                  value={reasonCodeId}
-                  onChange={(e) => setReasonCodeId(e.target.value)}
-                  placeholder="reasonCodeId"
-                />
+                <ReasonCodeSelect domain="STOCK" value={reasonCodeId} onChange={setReasonCodeId} label="سبب فرق المخزون" />
               </div>
             )}
             <div className="space-y-2">

@@ -1,10 +1,11 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { requirePermission, resolveCafeId, handleApiError, ApiError } from "@/lib/api";
+import { requirePermission, resolveCafeId, handleApiError, ApiError, resolveReadScope } from "@/lib/api";
 import { hasPermission } from "@/lib/permissions";
 import { configurationFinancials } from "@/lib/recipes";
 import { resolvePermissions } from "@/lib/perms/effective";
 import { getCafeSettings } from "@/lib/cafe-settings";
+import { withStockAlerts } from "@/lib/low-stock";
 import { periodFinancials, salesByStaff, refundsByActor } from "@/lib/reporting";
 import {
   getDateRangeFromFilter, dayListForRange, dateStrInTz, DEFAULT_TZ,
@@ -80,7 +81,7 @@ export async function GET(request: NextRequest) {
     const session = await requirePermission("dashboard:read");
     const params = request.nextUrl.searchParams;
     const cafeId = resolveCafeId(session, params.get("cafeId"));
-    const branchId = session.branchId ?? params.get("branchId") ?? undefined;
+    const branchId = resolveReadScope(session).branchId ?? params.get("branchId") ?? undefined;
 
     // Timezone-correct reporting window (Africa/Cairo day boundaries),
     // shared with the other reports so numbers always agree.
@@ -150,7 +151,7 @@ export async function GET(request: NextRequest) {
       db.branch.findMany({ where: { cafeId }, select: { id: true, name: true } }),
       db.inventoryItem.findMany({
         where: { cafeId, ...branchFilter, archivedAt: null },
-        select: { name: true, currentStock: true, minimumStock: true, unit: true },
+        select: { id: true, name: true, currentStock: true, minimumStock: true, unit: true },
       }),
       db.shift.count({ where: { cafeId, ...branchFilter, status: "OPEN" } }),
       // Shifts CLOSED within the window (by closedAt) — the "closed today" metric.
@@ -232,17 +233,12 @@ export async function GET(request: NextRequest) {
     // Inventory alerts + a short low-stock list.
     let lowStockCount = 0;
     let outOfStockCount = 0;
-    const lowStockItems: { name: string; stock: number; min: number; unit: string }[] = [];
-    for (const it of inventoryItems) {
-      const cur = Number(it.currentStock);
-      const min = Number(it.minimumStock);
-      if (cur <= 0) {
-        outOfStockCount++;
-        lowStockItems.push({ name: it.name, stock: cur, min, unit: it.unit });
-      } else if (cur <= min) {
-        lowStockCount++;
-        lowStockItems.push({ name: it.name, stock: cur, min, unit: it.unit });
-      }
+    const lowStockItems: { id: string; name: string; stock: number; min: number; unit: string }[] = [];
+    for (const it of await withStockAlerts(cafeId, inventoryItems)) {
+      if (it.status === "ok") continue;
+      if (it.status === "out") outOfStockCount++;
+      else lowStockCount++;
+      lowStockItems.push({ id: it.id, name: it.name, stock: Number(it.currentStock), min: it.alertThreshold, unit: it.unit });
     }
 
     // Sales/orders per local (Cairo) calendar day across the SELECTED range.

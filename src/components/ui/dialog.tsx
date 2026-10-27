@@ -43,9 +43,12 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
+  scrollable = false,
   ...props
 }: DialogPrimitive.Popup.Props & {
   showCloseButton?: boolean
+  /** Keep the close control outside the scrolling body of long dialogs. */
+  scrollable?: boolean
 }) {
   return (
     <DialogPortal>
@@ -57,11 +60,16 @@ function DialogContent({
           // becomes right:50% which combined with the physical translateX(-50%)
           // pushes the dialog fully off the left edge of narrow screens.
           "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
-          className
+          className,
+          scrollable && "flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 pt-10"
         )}
         {...props}
       >
-        {children}
+        {scrollable ? (
+          <div data-slot="dialog-scroll-area" className="grid min-h-0 gap-4 overflow-y-auto overscroll-contain p-4 pt-0 [overflow-wrap:anywhere]">
+            {children}
+          </div>
+        ) : children}
         {showCloseButton && (
           <DialogPrimitive.Close
             data-slot="dialog-close"

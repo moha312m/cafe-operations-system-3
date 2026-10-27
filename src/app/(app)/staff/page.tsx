@@ -46,11 +46,23 @@ type StaffUser = {
   lastLoginAt: string | null;
   branchId: string | null;
   branch: { name: string } | null;
+  effectiveBranchId: string | null;
+  temporaryBranchId: string | null;
+  temporaryBranchUntil: string | null;
+  temporaryBranch: { name: string } | null;
+  temporaryBranchStatus: "PENDING" | "ACTIVE" | "EXPIRED_FINISHING" | "CANCELLED_FINISHING" | null;
   cafeRoleId: string | null;
   cafeRole: { id: string; name: string; isActive: boolean } | null;
 };
-type Branch = { id: string; name: string };
+type Branch = { id: string; name: string; isActive?: boolean };
 type RoleOption = { id: string; name: string; isSystemDefault: boolean };
+
+const TEMPORARY_STATUS = {
+  PENDING: "بانتظار تسليم الوردية والعهدة الحالية",
+  ACTIVE: "تعيين مؤقت نشط",
+  EXPIRED_FINISHING: "انتهى الموعد — بانتظار تسليم الوردية والعهدة",
+  CANCELLED_FINISHING: "ملغي — بانتظار تسليم الوردية والعهدة",
+};
 
 const STATUS = {
   ACTIVE: { label: "نشط", variant: "secondary" as const },
@@ -94,6 +106,8 @@ export default function StaffPage() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [editing, setEditing] = useState<StaffUser | null>(null);
   const [editForm, setEditForm] = useState({ name: "", phone: "", role: "" as Role, branchId: "", cafeRoleId: "" });
+  const [temporaryTarget, setTemporaryTarget] = useState<StaffUser | null>(null);
+  const [temporaryForm, setTemporaryForm] = useState({ branchId: "", until: "" });
   const [pwTarget, setPwTarget] = useState<StaffUser | null>(null);
   const [pw, setPw] = useState({ password: "", confirm: "" });
 
@@ -175,6 +189,10 @@ export default function StaffPage() {
 
   async function saveEdit() {
     if (!editing) return;
+    if (editForm.role !== "CAFE_OWNER" && !editForm.branchId && !user.branchId) {
+      toast.error("الفرع مطلوب");
+      return;
+    }
     setBusy(true);
     try {
       await api(`/api/users/${editing.id}`, {
@@ -199,6 +217,35 @@ export default function StaffPage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function openTemporary(u: StaffUser) {
+    const end = u.temporaryBranchUntil ? new Date(u.temporaryBranchUntil) : new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const local = new Date(end.getTime() - end.getTimezoneOffset() * 60 * 1000).toISOString().slice(0, 16);
+    setTemporaryForm({ branchId: u.temporaryBranchId ?? "", until: local });
+    setTemporaryTarget(u);
+  }
+
+  async function saveTemporary(cancel = false) {
+    if (!temporaryTarget) return;
+    const end = new Date(temporaryForm.until);
+    if (!cancel && (!temporaryForm.branchId || !Number.isFinite(end.getTime()) || end <= new Date())) {
+      toast.error("اختار الفرع المؤقت وتاريخ انتهاء في المستقبل");
+      return;
+    }
+    setBusy(true);
+    try {
+      await api("/api/users/" + temporaryTarget.id, { method: "PATCH",
+        body: cancel ? { temporaryBranchId: null } : {
+          temporaryBranchId: temporaryForm.branchId, temporaryBranchUntil: end.toISOString(),
+        },
+      });
+      toast.success(cancel ? "تم إلغاء التعيين المؤقت؛ العودة بعد تسليم أي وردية وعهدة مفتوحة" : "تم حفظ التعيين المؤقت");
+      setTemporaryTarget(null);
+      await load();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "فشل تعديل التعيين المؤقت");
+    } finally { setBusy(false); }
   }
 
   async function changePassword() {
@@ -344,7 +391,16 @@ export default function StaffPage() {
                         <span className="text-xs text-muted-foreground">افتراضي</span>
                       )}
                     </TableCell>
-                    <TableCell>{u.branch?.name ?? "كل الفروع"}</TableCell>
+                    <TableCell>
+                      <div>{u.branch?.name ?? "كل الفروع"}</div>
+                      {u.temporaryBranchStatus && (
+                        <div className="mt-1 space-y-1 text-xs">
+                          <Badge variant="outline">{TEMPORARY_STATUS[u.temporaryBranchStatus]}</Badge>
+                          <div>الفرع المؤقت: {u.temporaryBranch?.name ?? "—"}</div>
+                          {u.temporaryBranchUntil && <div className="text-muted-foreground">حتى {new Date(u.temporaryBranchUntil).toLocaleString("ar-EG")}</div>}
+                        </div>
+                      )}
+                    </TableCell>
                     <TableCell>
                       <Badge variant={STATUS[st].variant}>{STATUS[st].label}</Badge>
                     </TableCell>
@@ -359,6 +415,11 @@ export default function StaffPage() {
                               <Button size="sm" variant="ghost" disabled={busy} onClick={() => openEdit(u)}>
                                 تعديل
                               </Button>
+                              {user.role === "CAFE_OWNER" && u.branchId && u.role !== "CAFE_OWNER" && u.role !== "SUPER_ADMIN" && (
+                                <Button size="sm" variant="ghost" disabled={busy || !u.isActive} onClick={() => openTemporary(u)}>
+                                  تعيين مؤقت
+                                </Button>
+                              )}
                               {canManagePerms && (
                                 <Button size="sm" variant="ghost" disabled={busy} onClick={() => setPermTarget(u)}>
                                   صلاحيات مخصصة
@@ -637,9 +698,35 @@ export default function StaffPage() {
             </div>
           </div>
           <DialogFooter>
-            <Button onClick={saveEdit} disabled={busy || !editForm.name}>
+            <Button onClick={saveEdit} disabled={busy || !editForm.name ||
+              (editForm.role !== "CAFE_OWNER" && !user.branchId && !editForm.branchId)}>
               {busy ? "جاري الحفظ…" : "حفظ"}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={temporaryTarget !== null} onOpenChange={(o) => !busy && !o && setTemporaryTarget(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader><DialogTitle>تعيين مؤقت — {temporaryTarget?.name}</DialogTitle></DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            الفرع الأساسي: {temporaryTarget?.branch?.name}. يبدأ التعيين بعد تسليم الوردية والعهدة الحالية، وتتم العودة تلقائياً بعد الموعد وتسليم أي وردية وعهدة مفتوحة في الفرع المؤقت.
+          </p>
+          {temporaryTarget?.temporaryBranchStatus && <Badge variant="outline">{TEMPORARY_STATUS[temporaryTarget.temporaryBranchStatus]}</Badge>}
+          <div className="space-y-2">
+            <Label htmlFor="temporary-branch">الفرع المؤقت</Label>
+            <Select value={temporaryForm.branchId} onValueChange={(value) => setTemporaryForm({ ...temporaryForm, branchId: value ?? "" })}>
+              <SelectTrigger id="temporary-branch"><SelectValue>{branches.find((b) => b.id === temporaryForm.branchId)?.name}</SelectValue></SelectTrigger>
+              <SelectContent>
+                {branches.filter((b) => b.id !== temporaryTarget?.branchId && b.isActive !== false).map((b) => <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Label htmlFor="temporary-until">تاريخ ووقت الانتهاء</Label>
+            <Input id="temporary-until" type="datetime-local" dir="ltr" value={temporaryForm.until} onChange={(e) => setTemporaryForm({ ...temporaryForm, until: e.target.value })} />
+          </div>
+          <DialogFooter>
+            {temporaryTarget?.temporaryBranchId && temporaryTarget.temporaryBranchStatus !== "CANCELLED_FINISHING" && <Button variant="destructive" disabled={busy} onClick={() => saveTemporary(true)}>إلغاء التعيين المؤقت</Button>}
+            <Button disabled={busy || !temporaryForm.branchId || !temporaryForm.until} onClick={() => saveTemporary()}>حفظ التعيين المؤقت</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

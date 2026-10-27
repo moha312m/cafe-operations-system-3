@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import type { CafeSettings, CafeWorkflowMode, QrOrderRoutingMode } from "@prisma/client";
+import type { CafeSettings, CafeWorkflowMode, QrOrderRoutingMode, Prisma } from "@prisma/client";
 
 // ── Feature flags catalog ────────────────────────────────────────────
 // The boolean columns on CafeSettings that gate a module. Order here is
@@ -104,10 +104,10 @@ export function toFeatureMap(s: CafeSettings): CafeFeatures {
 
 // Returns the cafe's settings, lazily creating a defaults row the first
 // time (so cafes made before this feature still work).
-export async function getCafeSettings(cafeId: string): Promise<CafeSettings> {
-  const existing = await db.cafeSettings.findUnique({ where: { cafeId } });
+export async function getCafeSettings(cafeId: string, client: Prisma.TransactionClient | typeof db = db): Promise<CafeSettings> {
+  const existing = await client.cafeSettings.findUnique({ where: { cafeId } });
   if (existing) return existing;
-  return db.cafeSettings.create({ data: { cafeId } });
+  return client.cafeSettings.upsert({ where: { cafeId }, update: { cafeId }, create: { cafeId } });
 }
 
 export async function getCafeFeatures(cafeId: string): Promise<CafeFeatures> {

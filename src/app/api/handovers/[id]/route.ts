@@ -5,6 +5,7 @@ import {
   resolveCafeId,
   handleApiError,
 } from "@/lib/api";
+import { db } from "@/lib/db";
 import { incomingHandoverView } from "@/lib/handover";
 
 type Params = { params: Promise<{ id: string }> };
@@ -26,8 +27,13 @@ export async function GET(request: NextRequest, { params }: Params) {
     const handover = await incomingHandoverView(id, session.id, {
       cafeId,
       viewerBranchId: session.branchId,
+      allowOutgoingDraft: true,
     });
-    return NextResponse.json({ handover });
+    const context = await db.handoverSession.findUniqueOrThrow({where:{id},select:{outgoingUser:{select:{name:true}},incomingUser:{select:{name:true}},cashVarianceAmount:true,cashVerifiedAt:true,
+      outgoingShift:{select:{id:true,shiftNumber:true,cashDifference:true,cashReasonNote:true,tenderReconciliations:{select:{method:true,varianceAmount:true,reasonNote:true}}}}}});
+    return NextResponse.json({ handover:{...handover,financialSummary:{outgoingName:context.outgoingUser.name,incomingName:context.incomingUser?.name??null,
+      shiftId:context.outgoingShift.id,shiftNumber:context.outgoingShift.shiftNumber,cashVariance:context.outgoingShift.cashDifference,cashReason:context.outgoingShift.cashReasonNote,
+      tenders:context.outgoingShift.tenderReconciliations,cashReceiptVariance:context.cashVarianceAmount,cashVerifiedAt:context.cashVerifiedAt}} });
   } catch (error) {
     return handleApiError(error);
   }

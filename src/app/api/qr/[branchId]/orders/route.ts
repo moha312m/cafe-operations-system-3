@@ -1,22 +1,25 @@
+import { lockBranchAllocator } from "@/lib/transaction-locks";
+import { decimal, money, sumMoney } from "@/lib/money";
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
-import { handleApiError, ApiError, retryOnUniqueConflict } from "@/lib/api";
-import { audit } from "@/lib/audit";
-import { unitPrice as computeUnitPrice } from "@/lib/pricing";
+import { handleApiError, ApiError } from "@/lib/api";
+import { auditInTransaction } from "@/lib/audit";
+import { unitPriceExact as computeUnitPrice } from "@/lib/pricing";
 import { getCafeSettings } from "@/lib/cafe-settings";
-import { getBranchFinancialSettings, computeCharges } from "@/lib/financials";
+import { getBranchFinancialSettings, computeChargesExact as computeCharges } from "@/lib/financials";
 import { attachOrderToTableSession } from "@/lib/table-sessions";
 import { getApprovalSettings, resolveRouting } from "@/lib/qr-approval";
 import { normalizeEgyptianPhone } from "@/lib/phone";
 import { findOrCreateCustomerByPhone, recordCustomerOrder } from "@/lib/customers";
-import { getLoyaltySettingsSafe, loyaltyCalcSettings, maybeAwardLoyaltyPoints } from "@/lib/loyalty";
+import { getLoyaltySettingsSafe, loyaltyCalcSettingsExact as loyaltyCalcSettings, maybeAwardLoyaltyPoints } from "@/lib/loyalty";
 import { getInventoryEnforcementMode } from "@/lib/inventory-policy";
 import { computeEarnedPoints } from "@/lib/loyalty-calc";
 
+import { withIdempotency, publicQrRequestScope } from "@/lib/idempotency";
+
 type Params = { params: Promise<{ branchId: string }> };
 
-const round2 = (n: number) => Math.round(n * 100) / 100;
+
 
 const qrOrderSchema = z.object({
   customerName: z.string().trim().min(2, "اكتب اسمك"),
@@ -50,173 +53,162 @@ export async function POST(request: NextRequest, { params }: Params) {
     const { branchId } = await params;
     const data = qrOrderSchema.parse(await request.json());
 
-    const branch = await db.branch.findUnique({
-      where: { id: branchId },
-      include: { cafe: true },
-    });
-    if (!branch || !branch.isActive || !branch.cafe.isActive) {
-      throw new ApiError(404, "المنيو ده مش متاح");
-    }
-    if (!branch.publicMenuEnabled) {
-      throw new ApiError(403, "المنيو غير متاح حاليًا");
-    }
-    const cafeId = branch.cafeId;
-
-    // Workflow settings decide where the order lands and its type.
-    const settings = await getCafeSettings(cafeId);
-    if (!settings.qrMenuEnabled) {
-      throw new ApiError(403, "منيو QR غير متاح لهذا الكافيه حاليًا");
-    }
-    // Branch-level approval routing decides who confirms the order (falls
-    // back to the cafe qrOrderRoutingMode inside resolveRouting when the
-    // branch settings are disabled).
-    const approval = await getApprovalSettings(cafeId, branchId);
-    const routing = resolveRouting(approval, {
-      waiterApprovalEnabled: settings.waiterApprovalEnabled,
-      kitchenScreenEnabled: settings.kitchenScreenEnabled,
-    });
-    const orderStatus = routing.orderStatus;
-    // Takeaway-only cafes (or tables disabled) default to TAKEAWAY.
-    const orderType =
-      settings.workflowMode === "TAKEAWAY_ONLY" || !settings.enableTables
-        ? ("TAKEAWAY" as const)
-        : ("DINE_IN" as const);
-
-    // ── Customer profile link (loyalty foundation) ──
-    // Phone becomes mandatory only while the loyalty program is on AND the
-    // cafe requires it — QR checkout is untouched otherwise. NOTE: the QR
-    // flow can only EARN points; redeeming requires the POS (no OTP yet,
-    // so a phone number alone must never spend someone's balance).
-    const loyaltySettings = await getLoyaltySettingsSafe(cafeId);
-    const phoneRequired = loyaltySettings.enabled && loyaltySettings.customerPhoneRequiredForQr;
-    const rawPhone = data.customerPhone?.trim() ?? "";
-    if (phoneRequired && !rawPhone) {
-      throw new ApiError(400, "من فضلك اكتب رقم الموبايل");
-    }
-    let customer = null;
-    if (rawPhone) {
-      if (!normalizeEgyptianPhone(rawPhone)) {
-        throw new ApiError(400, "رقم الموبايل غير صحيح");
-      }
-      customer = await findOrCreateCustomerByPhone({
-        cafeId,
-        phone: rawPhone,
-        name: data.customerName,
+    return await withIdempotency(request, (tx) => publicQrRequestScope(tx, branchId), data, async (tx) => {
+      await lockBranchAllocator(tx, branchId);
+      const branch = await tx.branch.findUnique({
+        where: { id: branchId },
+        include: { cafe: true },
       });
-    }
+      if (!branch || !branch.isActive || !branch.cafe.isActive) {
+        throw new ApiError(404, "المنيو ده مش متاح");
+      }
+      if (!branch.publicMenuEnabled) {
+        throw new ApiError(403, "المنيو غير متاح حاليًا");
+      }
+      const cafeId = branch.cafeId;
 
-    const productIds = [...new Set(data.items.map((i) => i.productId))];
-    const products = await db.product.findMany({
-      // Customers can only order what's published AND available.
-      where: {
-        id: { in: productIds },
-        cafeId,
-        isActive: true,
-        showInCustomerMenu: true,
-        isAvailable: true,
-      },
-      include: {
-        variants: true,
-        addOns: { include: { addOn: true } },
-        branchPrices: { where: { branchId } },
-      },
-    });
-    const productMap = new Map(products.map((p) => [p.id, p]));
+      // Workflow settings decide where the order lands and its type.
+      const settings = await getCafeSettings(cafeId, tx);
+      if (!settings.qrMenuEnabled) {
+        throw new ApiError(403, "منيو QR غير متاح لهذا الكافيه حاليًا");
+      }
+      // Branch-level approval routing decides who confirms the order (falls
+      // back to the cafe qrOrderRoutingMode inside resolveRouting when the
+      // branch settings are disabled).
+      const approval = await getApprovalSettings(cafeId, branchId, tx);
+      const routing = resolveRouting(approval, {
+        waiterApprovalEnabled: settings.waiterApprovalEnabled,
+        kitchenScreenEnabled: settings.kitchenScreenEnabled,
+      });
+      const orderStatus = routing.orderStatus;
+      // Takeaway-only cafes (or tables disabled) default to TAKEAWAY.
+      const orderType =
+        settings.workflowMode === "TAKEAWAY_ONLY" || !settings.enableTables
+          ? ("TAKEAWAY" as const)
+          : ("DINE_IN" as const);
 
-    let subtotal = 0;
-    const itemRows = data.items.map((item) => {
-      const product = productMap.get(item.productId);
-      if (!product) throw new ApiError(400, "المنتج غير متاح حاليًا");
-      let variantName: string | null = null;
-      let chosenVariant: { price: unknown } | null = null;
-
-      if (item.variantId) {
-        const variant = product.variants.find(
-          (v) => v.id === item.variantId && v.isActive
-        );
-        if (!variant) throw new ApiError(400, `اختار حجم متاح لـ ${product.name}`);
-        chosenVariant = variant;
-        variantName = variant.name;
-      } else if (product.variants.some((v) => v.isActive)) {
-        throw new ApiError(400, `اختار الحجم لـ ${product.name}`);
+      // ── Customer profile link (loyalty foundation) ──
+      // Phone becomes mandatory only while the loyalty program is on AND the
+      // cafe requires it — QR checkout is untouched otherwise. NOTE: the QR
+      // flow can only EARN points; redeeming requires the POS (no OTP yet,
+      // so a phone number alone must never spend someone's balance).
+      const loyaltySettings = await getLoyaltySettingsSafe(cafeId, tx);
+      const phoneRequired = loyaltySettings.enabled && loyaltySettings.customerPhoneRequiredForQr;
+      const rawPhone = data.customerPhone?.trim() ?? "";
+      if (phoneRequired && !rawPhone) {
+        throw new ApiError(400, "من فضلك اكتب رقم الموبايل");
+      }
+      let customer = null;
+      if (rawPhone) {
+        if (!normalizeEgyptianPhone(rawPhone)) {
+          throw new ApiError(400, "رقم الموبايل غير صحيح");
+        }
+        customer = await findOrCreateCustomerByPhone({
+          cafeId,
+          phone: rawPhone,
+          name: data.customerName,
+        }, tx);
       }
 
-      const unitPrice = computeUnitPrice(
-        {
-          basePrice: product.basePrice.toString(),
-          branchPrices: product.branchPrices.map((bp) => ({
-            branchId: bp.branchId,
-            price: bp.price.toString(),
-          })),
+      const productIds = [...new Set(data.items.map((i) => i.productId))];
+      const products = await tx.product.findMany({
+        // Customers can only order what's published AND available.
+        where: {
+          id: { in: productIds },
+          cafeId,
+          isActive: true,
+          showInCustomerMenu: true,
+          isAvailable: true,
         },
-        chosenVariant ? { price: String(chosenVariant.price) } : null,
-        branchId
-      );
+        include: {
+          variants: true,
+          addOns: { include: { addOn: true } },
+          branchPrices: { where: { branchId } },
+        },
+      });
+      const productMap = new Map(products.map((p) => [p.id, p]));
 
-      const allowedAddOns = new Map(
-        product.addOns
-          .filter((pa) => pa.addOn.isActive)
-          .map((pa) => [pa.addOn.id, pa.addOn])
-      );
-      const addOnRows = item.addOnIds.map((addOnId) => {
-        const addOn = allowedAddOns.get(addOnId);
-        if (!addOn) throw new ApiError(400, `في إضافة مش متاحة لـ ${product.name}`);
-        return { addOnId: addOn.id, addOnName: addOn.name, price: Number(addOn.price) };
+      let subtotal = decimal(0);
+      const itemRows = data.items.map((item) => {
+        const product = productMap.get(item.productId);
+        if (!product) throw new ApiError(400, "المنتج غير متاح حاليًا");
+        let variantName: string | null = null;
+        let chosenVariant: { price: unknown } | null = null;
+
+        if (item.variantId) {
+          const variant = product.variants.find(
+            (v) => v.id === item.variantId && v.isActive
+          );
+          if (!variant) throw new ApiError(400, `اختار حجم متاح لـ ${product.name}`);
+          chosenVariant = variant;
+          variantName = variant.name;
+        } else if (product.variants.some((v) => v.isActive)) {
+          throw new ApiError(400, `اختار الحجم لـ ${product.name}`);
+        }
+
+        const unitPrice = computeUnitPrice(
+          {
+            basePrice: product.basePrice.toString(),
+            branchPrices: product.branchPrices.map((bp) => ({
+              branchId: bp.branchId,
+              price: bp.price.toString(),
+            })),
+          },
+          chosenVariant ? { price: String(chosenVariant.price) } : null,
+          branchId
+        );
+
+        const allowedAddOns = new Map(
+          product.addOns
+            .filter((pa) => pa.addOn.isActive)
+            .map((pa) => [pa.addOn.id, pa.addOn])
+        );
+        const addOnRows = item.addOnIds.map((addOnId) => {
+          const addOn = allowedAddOns.get(addOnId);
+          if (!addOn) throw new ApiError(400, `في إضافة مش متاحة لـ ${product.name}`);
+          return { addOnId: addOn.id, addOnName: addOn.name, price: decimal(addOn.price) };
+        });
+
+        const addOnsTotal = sumMoney(addOnRows.map(a => a.price));
+        const lineTotal = money(unitPrice.plus(addOnsTotal).times(item.quantity));
+        subtotal = money(subtotal.plus(lineTotal));
+
+        return {
+          productId: product.id,
+          variantId: item.variantId ?? null,
+          productName: product.name,
+          variantName,
+          unitPrice,
+          quantity: item.quantity,
+          lineTotal,
+          notes: item.notes,
+          addOns: addOnRows,
+        };
       });
 
-      const addOnsTotal = addOnRows.reduce((sum, a) => sum + a.price, 0);
-      const lineTotal = round2((unitPrice + addOnsTotal) * item.quantity);
-      subtotal = round2(subtotal + lineTotal);
+      // The café's inventory policy at the moment this order is accepted.
+      //
+      // A QR order takes no availability decision here — it lands in the
+      // approval queue rather than at a till — but it reaches SERVED like any
+      // other, and the deduction there reads the order's own mode. Without a
+      // snapshot the QR path would be the one route whose orders still drifted
+      // with the café's settings. Read from the café, never from the customer's
+      // request: `qrOrderSchema` has no such field, and this endpoint is public.
+      const enforcementMode = await getInventoryEnforcementMode(cafeId, tx);
 
-      return {
-        productId: product.id,
-        variantId: item.variantId ?? null,
-        productName: product.name,
-        variantName,
-        unitPrice,
-        quantity: item.quantity,
-        lineTotal,
-        notes: item.notes,
-        addOns: addOnRows,
-      };
-    });
+      // Tax/service come from the branch's configurable settings, snapshotted.
+      const finSettings = await getBranchFinancialSettings(branchId, tx);
+      const charges = computeCharges({
+        subtotal,
+        discount: 0,
+        orderType,
+        settings: finSettings,
+      });
+      const taxAmount = charges.taxAmount;
+      const total = charges.total;
 
-    // The café's inventory policy at the moment this order is accepted.
-    //
-    // A QR order takes no availability decision here — it lands in the
-    // approval queue rather than at a till — but it reaches SERVED like any
-    // other, and the deduction there reads the order's own mode. Without a
-    // snapshot the QR path would be the one route whose orders still drifted
-    // with the café's settings. Read from the café, never from the customer's
-    // request: `qrOrderSchema` has no such field, and this endpoint is public.
-    const enforcementMode = await getInventoryEnforcementMode(cafeId);
-
-    // Tax/service come from the branch's configurable settings, snapshotted.
-    const finSettings = await getBranchFinancialSettings(branchId);
-    const charges = computeCharges({
-      subtotal,
-      discount: 0,
-      orderType,
-      settings: finSettings,
-    });
-    const taxAmount = charges.taxAmount;
-    const total = charges.total;
-
-    // Same allocation as the staff path, and it needs the same protection.
-    // Reading the branch's current maximum takes no lock, so two customers
-    // scanning together — or a customer submitting while a cashier rings up —
-    // are handed the same number, and `@@unique([branchId, orderNumber])`
-    // refuses the second.
-    //
-    // Deliberately the SAME branch row the POS path locks, not a lock of this
-    // route's own: two paths that queue on different rows do not serialise
-    // against each other, and the cross-path race is the one a real café hits.
-    // `Branch` is locked nowhere else in the codebase and is taken first in
-    // both transactions, so there is no ordering to invert and no deadlock to
-    // have. The hold is two statements long — this endpoint is public.
-    const placeQrOrder = () =>
-      db.$transaction(async (tx) => {
-        await tx.$queryRaw`SELECT "id" FROM "Branch" WHERE "id" = ${branchId} FOR UPDATE`;
+      // POS and QR allocate under the same branch lock acquired at entry.
+      const placeQrOrder = async () => {
         const last = await tx.order.aggregate({
           where: { branchId },
           _max: { orderNumber: true },
@@ -265,89 +257,80 @@ export async function POST(request: NextRequest, { params }: Params) {
             },
           },
         });
-      });
+      };
 
-    const order = await retryOnUniqueConflict(placeQrOrder, {
-      field: "orderNumber",
-      message: "في طلب تاني اتسجل في نفس اللحظة — جرّب تاني",
-    });
+      const order = await placeQrOrder();
 
-    // First QR order for a table opens its session (timer starts at first
-    // submission, even while the order awaits waiter approval).
-    // ── Post-creation side effects are best-effort ──
-    // The order EXISTS from here on: throwing would show the customer an
-    // error for an order that was actually placed (and invite duplicate
-    // retries). Failures are logged for staff-side reconciliation instead.
-    try {
+      // First QR order for a table opens its session (timer starts at first
+      // submission, even while the order awaits waiter approval).
+      // Attachment, customer stats and audit commit with creation and cache.
       await attachOrderToTableSession(
         {
           id: order.id, cafeId, branchId, type: order.type,
           tableNumber: order.tableNumber, orderNumber: order.orderNumber,
           customerName: data.customerName,
         },
-        null // placed by the customer, no staff user
+        null, tx
       );
-    } catch (e) {
-      console.error(`qr order #${order.orderNumber}: table session attach failed`, e);
-    }
 
-    // Loyalty: link stats + (if eligible now) award. With the default
-    // earnOnPaidOrdersOnly=true the award happens later, when the cashier
-    // collects payment — maybeAwardLoyaltyPoints is a no-op here.
-    let expectedPoints = 0;
-    if (customer) {
-      await recordCustomerOrder(customer.id, total);
-      await audit({
-        cafeId, action: "CUSTOMER_LINKED_TO_ORDER", entity: "Order", entityId: order.id,
-        details: { customerId: customer.id, orderId: order.id, orderNumber: order.orderNumber, newValue: { phone: customer.normalizedPhone } },
-      });
-      if (loyaltySettings.enabled) {
-        expectedPoints = computeEarnedPoints(total, loyaltyCalcSettings(loyaltySettings));
-        await maybeAwardLoyaltyPoints(order.id);
+      // Loyalty: link stats + (if eligible now) award. With the default
+      // earnOnPaidOrdersOnly=true the award happens later, when the cashier
+      // collects payment — maybeAwardLoyaltyPoints is a no-op here.
+      let expectedPoints = 0;
+      if (customer) {
+        await recordCustomerOrder(customer.id, total, tx);
+        await auditInTransaction(tx, {
+          cafeId, action: "CUSTOMER_LINKED_TO_ORDER", entity: "Order", entityId: order.id,
+          details: { customerId: customer.id, orderId: order.id, orderNumber: order.orderNumber, newValue: { phone: customer.normalizedPhone } },
+        });
+        if (loyaltySettings.enabled) {
+          expectedPoints = computeEarnedPoints(total, loyaltyCalcSettings(loyaltySettings));
+          await maybeAwardLoyaltyPoints(order.id, tx);
+        }
       }
-    }
 
-    await audit({
-      cafeId,
-      action: "QR_ORDER_SUBMITTED",
-      entity: "Order",
-      entityId: order.id,
-      details: {
-        orderNumber: order.orderNumber,
-        branchId,
-        total,
-        customerName: data.customerName,
-        tableNumber: data.tableNumber ?? null,
-        approvalMode: routing.approvalModeSnapshot,
-      },
-    });
-    if (routing.approvalStatus === "PENDING_APPROVAL") {
-      await audit({
-        cafeId, action: "QR_ORDER_ASSIGNED", entity: "Order", entityId: order.id,
+      await auditInTransaction(tx, {
+        cafeId,
+        action: "QR_ORDER_SUBMITTED",
+        entity: "Order",
+        entityId: order.id,
         details: {
-          branchId, orderId: order.id, orderNumber: order.orderNumber,
+          orderNumber: order.orderNumber,
+          branchId,
+          total,
+          customerName: data.customerName,
+          tableNumber: data.tableNumber ?? null,
           approvalMode: routing.approvalModeSnapshot,
-          assignedApproverRole: routing.assignedApproverRole,
-          assignedApproverUserId: routing.assignedApproverUserId,
         },
       });
-    }
+      if (routing.approvalStatus === "PENDING_APPROVAL") {
+        await auditInTransaction(tx, {
+          cafeId, action: "QR_ORDER_ASSIGNED", entity: "Order", entityId: order.id,
+          details: {
+            branchId, orderId: order.id, orderNumber: order.orderNumber,
+            approvalMode: routing.approvalModeSnapshot,
+            assignedApproverRole: routing.assignedApproverRole,
+            assignedApproverUserId: routing.assignedApproverUserId,
+          },
+        });
+      }
 
-    return NextResponse.json(
-      {
-        order: {
-          id: order.id,
-          orderNumber: order.orderNumber,
-          total: order.total,
-          status: order.status,
-          // Loyalty preview for the success screen (0 when program off /
-          // no customer). Points are ADDED only on payment confirmation.
-          expectedPoints,
-          loyaltyEnabled: loyaltySettings.enabled && !!customer,
+      return NextResponse.json(
+        {
+          order: {
+            id: order.id,
+            orderNumber: order.orderNumber,
+            total: order.total,
+            status: order.status,
+            // Loyalty preview for the success screen (0 when program off /
+            // no customer). Points are ADDED only on payment confirmation.
+            expectedPoints,
+            loyaltyEnabled: loyaltySettings.enabled && !!customer,
+          },
         },
-      },
-      { status: 201 }
-    );
+        { status: 201 }
+      );
+    }, { scope: { branchId } });
   } catch (error) {
     return handleApiError(error);
   }

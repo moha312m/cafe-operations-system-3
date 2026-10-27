@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
+import Link from "next/link";
+import { ReasonCodeSelect } from "@/components/stock-counts/reason-code-select";
 import { api } from "@/lib/client";
 import { useApp } from "@/components/app-shell";
 import { Badge } from "@/components/ui/badge";
@@ -49,6 +51,7 @@ type HandoverLine = {
 };
 
 type HandoverView = {
+  financialSummary?:{outgoingName:string;incomingName:string|null;shiftId:string;shiftNumber:number;cashVariance:string|null;cashReason:string|null;tenders:Array<{method:string;varianceAmount:string|null;reasonNote:string|null}>;cashReceiptVariance:string|null;cashVerifiedAt:string|null};
   handoverId: string;
   status: HandoverStatus;
   branchId: string;
@@ -81,7 +84,7 @@ export function HandoverDetail({
   onClose: () => void;
   onChanged: () => void;
 }) {
-  const { canKey } = useApp();
+  const { canKey, user } = useApp();
   const [view, setView] = useState<HandoverView | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -195,7 +198,7 @@ export function HandoverDetail({
                 )}
               </div>
 
-              {canKey("handover.submit") && (
+              {canKey("handover.submit") && view.outgoingUserId === user.id && ["DRAFT", "REJECTED"].includes(view.status) && (
                 <div className="flex flex-wrap gap-2">
                   <Button
                     size="sm"
@@ -218,6 +221,13 @@ export function HandoverDetail({
                 </div>
               )}
 
+              {view.financialSummary && <section className="rounded-lg border p-3 space-y-2">
+                <h3 className="font-medium">فروق شيفت التسليم — {view.financialSummary.outgoingName} · #{view.financialSummary.shiftNumber}</h3>
+                <p>فرق الكاش: {view.financialSummary.cashVariance??"غير مسجل"} · {view.financialSummary.cashReason??"بدون سبب مسجل"}</p>
+                {view.financialSummary.tenders.map(t=><p key={t.method}>{t.method==="CARD"?"فيزا":t.method==="WALLET"?"محفظة":t.method}: {t.varianceAmount??"غير مسجل"} · {t.reasonNote??"بدون سبب مسجل"}</p>)}
+                {view.financialSummary.cashVerifiedAt&&<p>فرق النقدية عند الاستلام: {view.financialSummary.cashReceiptVariance??"غير متاح"} · المستلم: {view.financialSummary.incomingName}</p>}
+                {canKey("variance.view")&&<Link className="text-primary underline" href={"/reports/employee-variances?handoverId="+view.handoverId}>كشف فروق الشيفت والخامات والمسؤولية</Link>}
+              </section>}
               {view.requiredItems.length > 0 && (
                 <div className="rounded-lg border bg-muted/20 p-3">
                   <p className="mb-1 font-medium">أصناف مطلوب جردها</p>
@@ -257,7 +267,7 @@ export function HandoverDetail({
                             {view.acknowledged ? (line.varianceQuantity ?? "—") : "مخفي"}
                           </TableCell>
                           <TableCell className="text-end">
-                            {canKey("handover.accept") && (
+                            {canKey("handover.accept") && ["OUTGOING_SUBMITTED", "INCOMING_REVIEW"].includes(view.status) && view.outgoingUserId !== user.id && (
                               <Button
                                 size="sm"
                                 variant="outline"
@@ -281,7 +291,8 @@ export function HandoverDetail({
                 </div>
               )}
 
-              <HandoverActionBar handoverId={view.handoverId} onDone={after} />
+              {view.count && <Link className="text-primary underline" href={`/stock-counts?sessionId=${view.count.sessionId}`}>فتح الجرد وتسجيل الكميات</Link>}
+              {(["OUTGOING_SUBMITTED", "INCOMING_REVIEW"] as string[]).includes(view.status) && <HandoverActionBar handoverId={view.handoverId} onDone={() => { onChanged(); onClose(); }} />}
             </div>
           )}
         </DialogContent>
@@ -303,12 +314,7 @@ export function HandoverDetail({
               />
             </div>
             <div className="space-y-2">
-              <Label>معرّف سبب الاعتراض (لو في فرق)</Label>
-              <Input
-                value={disputeReasonCodeId}
-                onChange={(e) => setDisputeReasonCodeId(e.target.value)}
-                placeholder="reasonCodeId"
-              />
+              <ReasonCodeSelect domain="HANDOVER" value={disputeReasonCodeId} onChange={setDisputeReasonCodeId} label="سبب الاعتراض عند وجود فرق" optional />
             </div>
             <div className="space-y-2">
               <Label>ملاحظة</Label>

@@ -2,9 +2,13 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { api, blockersOf, money } from "@/lib/client";
 import { t } from "@/lib/i18n";
+import { useApp } from "@/components/app-shell";
+import { OpeningCashPanel } from "@/components/handovers/opening-cash-panel";
+import { CarriedOrdersStrip } from "@/components/pos/carried-orders-strip";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -20,19 +24,23 @@ import {
 
 export type Shift = {
   id: string;
+  branchId: string;
   shiftNumber: number;
+  custodyGateReason?: string | null;
+  openingCashReceipt?: { status: string } | null;
   openedAt: string;
   openingCashAmount: string;
-  // Absent while the shift is open and belongs to the viewer: the drawer
-  // target is withheld until they commit an independent count (SHIFT-003).
+  // Financial totals are available only to staff with report permission.
   expectedCashAmount?: string;
-  totalSales: string;
-  totalCashSales: string;
-  totalCardSales: string;
-  totalWalletSales: string;
-  totalDiscounts: string;
-  totalRefunds: string;
-  orderCount: number;
+  totalSales?: string;
+  totalCashSales?: string;
+  totalCardSales?: string;
+  totalWalletSales?: string;
+  totalDiscounts?: string;
+  totalRefunds?: string;
+  orderCount?: number;
+  cardSettlementRequired?: boolean;
+  walletSettlementRequired?: boolean;
   cashier: { name: string };
 };
 
@@ -67,8 +75,16 @@ export function ShiftControls({
   // consumers that only need a boolean (POS) can ignore it.
   onActiveChange: (hasActiveShift: boolean, shift?: Shift | null) => void;
 }) {
+  const { canKey, user } = useApp();
+  const router = useRouter();
+  const [handoverEnabled, setHandoverEnabled] = useState(false);
+  const [handoverTarget, setHandoverTarget] = useState<"" | "SHIFT_TO_SHIFT" | "BRANCH_CUSTODY">("");
   const [shift, setShift] = useState<Shift | null>(null);
   const [loading, setLoading] = useState(true);
+  const [pendingShift, setPendingShift] = useState<Shift | null>(null);
+  const [overnightEnabled, setOvernightEnabled] = useState(false);
+  const [leftInDrawer, setLeftInDrawer] = useState('');
+  const [toTreasury, setToTreasury] = useState('');
   const [openDialog, setOpenDialog] = useState(false);
   const [closeDialog, setCloseDialog] = useState(false);
   const [openingCash, setOpeningCash] = useState("");
@@ -95,6 +111,9 @@ export function ShiftControls({
   // Both are the server's words. Neither is computed here.
   const [blockers, setBlockers] = useState<string[]>([]);
   const [handoverNotice, setHandoverNotice] = useState<HandoverOutcome | null>(null);
+  // Open orders at the branch, read when the dialog opens — so the closer
+  // learns what will stop (or travel with) the handover before counting.
+  const [openOrders, setOpenOrders] = useState<{ total: number; refs: string[]; carry: boolean } | null>(null);
 
   const setActive = useCallback(
     (s: Shift | null) => {
@@ -108,10 +127,11 @@ export function ShiftControls({
     if (!branchId) return;
     setLoading(true);
     try {
-      const { shift } = await api<{ shift: Shift | null }>(
+      const { shift, pendingShift } = await api<{ shift: Shift | null; pendingShift: Shift | null }>(
         `/api/shifts/active?branchId=${branchId}`
       );
       setActive(shift);
+      setPendingShift(pendingShift);
     } catch {
       setActive(null);
     } finally {
@@ -130,9 +150,31 @@ export function ShiftControls({
         "/api/shifts",
         {
           method: "POST",
-          body: { branchId, openingCashAmount: Number(openingCash) || 0 },
+          // Staff use their live server assignment rather than a chosen branch.
+          body: {
+            ...(user.role === "CAFE_OWNER" || user.role === "SUPER_ADMIN" ? { branchId } : {}),
+            openingCashAmount: Number(openingCash) || 0,
+          },
         }
       );
+      if (s.branchId !== branchId) {
+        // The owner transferred this employee while their page was still open.
+        // Do not enable the old branch UI using a shift opened at the new one.
+        setActive(null);
+        setOpenDialog(false);
+        setOpeningCash("");
+        router.refresh();
+        toast.success("تم فتح الشيفت في فرعك الحالي وتحديث الصفحة");
+        return;
+      }
+      if (s.custodyGateReason || (s.openingCashReceipt && !["ACCEPTED", "OVERRIDDEN"].includes(s.openingCashReceipt.status))) {
+        setPendingShift(s);
+        setActive(null);
+        setOpenDialog(false);
+        toast.error("الشيفت في انتظار التسليم أو التحقق الافتتاحي — أكمل إجراءات العهدة أولًا");
+        router.refresh();
+        return;
+      }
       setActive(s);
       setOpenDialog(false);
       setOpeningCash("");
@@ -145,6 +187,19 @@ export function ShiftControls({
   }
 
   async function openCloseDialog() {
+    try {
+      const opening = await api<{ settings: { overnightCashEnabled: boolean } }>('/api/branches/'+branchId+'/opening-settings');
+      setOvernightEnabled(opening.settings.overnightCashEnabled);
+      setLeftInDrawer(''); setToTreasury('');
+      const { config } = await api<{ config: { enabled: boolean; configError: { code: string } | null } }>(
+        `/api/branches/${branchId}/handover-config`
+      );
+      setHandoverEnabled(config.enabled && config.configError?.code !== "CYCLE_POLICY_UNSUPPORTED");
+      setHandoverTarget("");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t.shifts.handoverConfigFailure);
+      return;
+    }
     // Refresh figures so the reconciliation summary is current.
     try {
       const { shift: s } = await api<{ shift: Shift | null }>(
@@ -163,27 +218,36 @@ export function ShiftControls({
     setVarianceReason("");
     // Last attempt's obstacles belong to last attempt.
     setBlockers([]);
+    setOpenOrders(null);
+    api<{ carryOpenOrdersOnHandover: boolean; open: { total: number; refs: string[] } }>(
+      `/api/orders/open-summary?branchId=${branchId}`
+    )
+      .then((r) => setOpenOrders({ total: r.open.total, refs: r.open.refs, carry: r.carryOpenOrdersOnHandover }))
+      .catch(() => setOpenOrders(null));
     setCloseDialog(true);
   }
 
   async function closeShift() {
     if (!shift) return;
+    if (overnightEnabled && handoverTarget === "BRANCH_CUSTODY" && (leftInDrawer === "" || toTreasury === "")) { toast.error("سجّل المبلغ المتروك في الدرج والمحوّل للخزنة، حتى لو صفر"); return; }
     setBusy(true);
     try {
-      // The reconciliation is revealed by the server's response, and only
-      // once it has persisted the count — never computed here from a target
-      // the client was never given (SHIFT-003).
+      // The server acknowledges the count. Only oversight receives the
+      // calculated reconciliation in the response.
       const res = await api<{
-        shift: Shift & { cashDifference: string | null };
+        shift: Shift & { cashDifference?: string | null };
         // SH-24 — read rather than dropped. The route answers with both
         // stages of the close; the client used to type only the first.
         handover?: HandoverOutcome;
+        carriedOrders?: { orderNumber: number; remaining: number }[];
       }>(
         `/api/shifts/${shift.id}/close`,
         {
           method: "POST",
           body: {
             actualCashAmount: Number(actualCash) || 0,
+            handoverTarget: handoverEnabled ? handoverTarget || undefined : undefined,
+            cashDisposition: overnightEnabled && handoverTarget === 'BRANCH_CUSTODY' ? { leftInDrawer: Number(leftInDrawer), toTreasury: Number(toTreasury) } : undefined,
             reason: varianceReason.trim() || undefined,
             // Sent only when the closer actually typed something. An empty
             // box must stay `undefined` rather than becoming 0: the server
@@ -199,9 +263,11 @@ export function ShiftControls({
           },
         }
       );
-      const diff = Number(res.shift.cashDifference ?? 0);
-      const msg =
-        Math.abs(diff) < 0.01
+      const canViewReports = canKey("shifts.view_reports");
+      const diff = res.shift.cashDifference == null ? null : Number(res.shift.cashDifference);
+      const msg = !canViewReports || diff === null
+        ? "تم تسجيل العدّ الفعلي للمراجعة"
+        : Math.abs(diff) < 0.01
           ? t.shifts.matched
           : diff > 0
             ? `${t.shifts.surplus} ${money(diff, currency)}`
@@ -217,6 +283,22 @@ export function ShiftControls({
         toast.warning(`${t.shifts.settledNotDischarged} · ${msg}`);
       } else {
         toast.success(`${t.shifts.lockedSuccess} · ${msg}`);
+      }
+      const carried = res.carriedOrders ?? [];
+      if (carried.length > 0) {
+        const unpaid = carried.reduce((s, o) => s + o.remaining, 0);
+        toast.info(
+          `اتنقل للشيفت اللي جاي ${carried.length} أوردر مفتوح: ${carried.map((o) => `#${o.orderNumber}`).join("، ")}` +
+            (unpaid > 0 ? ` · مطلوب تحصيل ${money(unpaid, currency)}` : ""),
+          { duration: 10_000 }
+        );
+      }
+      if (canViewReports) {
+        const closedShiftId = shift.id;
+        toast("📄 تقرير قفل الشيفت جاهز", {
+          duration: 10_000,
+          action: { label: "افتحه", onClick: () => window.open(`/reports/shift/${closedShiftId}`, "_blank", "noopener") },
+        });
       }
 
       // The shift's own status is the server's to report: a close that became
@@ -279,6 +361,10 @@ export function ShiftControls({
         </div>
       )}
 
+      {pendingShift && <p className="rounded-lg border p-3 text-sm">شيفت #{pendingShift.shiftNumber} مفتوح وينتظر إجراءات الاستلام. <Link className="text-primary underline" href="/handovers">استكمل استلام الخامات والمكان</Link></p>}
+      {!shift && <OpeningCashPanel branchId={branchId} onAccepted={load}/>}
+      {shift && <CarriedOrdersStrip branchId={branchId} currency={currency} />}
+
       {/* Open shift dialog */}
       <Dialog open={openDialog} onOpenChange={(o) => !busy && setOpenDialog(o)}>
         <DialogContent className="max-w-sm">
@@ -287,6 +373,7 @@ export function ShiftControls({
           </DialogHeader>
           <div className="space-y-2">
             <Label>{t.shifts.openingCash}</Label>
+            <p className="text-xs text-muted-foreground">لو فيه كاش متروك من شيفت الليل، رصيد الافتتاح هيتثبت بعد عدّه وتأكيد استلامه.</p>
             <Input
               type="number"
               min="0"
@@ -311,9 +398,35 @@ export function ShiftControls({
           <DialogHeader>
             <DialogTitle>{t.shifts.close}</DialogTitle>
           </DialogHeader>
+          {shift && handoverEnabled && openOrders && openOrders.total > 0 && (
+            <div
+              data-testid="close-open-orders-notice"
+              className={
+                "rounded-lg border p-3 text-sm " +
+                (openOrders.carry
+                  ? "border-sky-500/40 bg-sky-500/10 text-sky-900 dark:text-sky-200"
+                  : "border-amber-500/40 bg-amber-500/10 text-amber-900 dark:text-amber-200")
+              }
+            >
+              <p className="font-medium">
+                عندك {openOrders.total} أوردر مفتوح في الفرع: {openOrders.refs.join("، ")}
+                {openOrders.total > openOrders.refs.length ? " …" : ""}
+              </p>
+              <p className="mt-1 text-xs">
+                {openOrders.carry
+                  ? "هيتنقلوا للشيفت اللي جاي يقدّمهم ويحصّلهم. اللي بيتحضر أو جاهز هيتخصم مخزونه عليك قبل الجرد."
+                  : "لازم تقدّمهم أو تلغيهم قبل ما تقفل، وإلا القفل هيترفض. "}
+                {!openOrders.carry && (
+                  <Link href="/kitchen" className="font-medium underline">
+                    افتح شاشة البار
+                  </Link>
+                )}
+              </p>
+            </div>
+          )}
           {shift && (
             <div className="space-y-3">
-              <dl className="space-y-1.5 rounded-lg border bg-muted/30 p-3 text-sm">
+              {canKey("shifts.view_reports") && <dl className="space-y-1.5 rounded-lg border bg-muted/30 p-3 text-sm">
                 {[
                   [t.shifts.openingCash, shift.openingCashAmount],
                   [t.shifts.cashSales, shift.totalCashSales],
@@ -324,14 +437,14 @@ export function ShiftControls({
                 ].map(([label, value]) => (
                   <div key={label} className="flex justify-between">
                     <dt className="text-muted-foreground">{label}</dt>
-                    <dd className="tabular-nums">{money(value, currency)}</dd>
+                    <dd className="tabular-nums">{money(value ?? 0, currency)}</dd>
                   </div>
                 ))}
                 <div className="flex justify-between">
                   <dt className="text-muted-foreground">{t.shifts.orderCount}</dt>
                   <dd className="tabular-nums">{shift.orderCount}</dd>
                 </div>
-              </dl>
+              </dl>}
 
               <div className="space-y-2">
                 <Label>{t.shifts.actualCashInDrawer}</Label>
@@ -346,6 +459,7 @@ export function ShiftControls({
                 />
               </div>
 
+              {overnightEnabled && handoverTarget === 'BRANCH_CUSTODY' && <div className="space-y-3 rounded-lg border p-3"><p className="text-sm font-medium">توزيع الكاش المعدود عند نهاية الليل</p><Label>المبلغ المتروك في الدرج للشيفت القادم</Label><Input aria-label="كاش متروك في الدرج" type="number" min="0" step="0.01" value={leftInDrawer} onChange={e=>setLeftInDrawer(e.target.value)} placeholder="اكتب المبلغ، الصفر مسموح"/><Label>المبلغ المحوّل للخزنة</Label><Input aria-label="كاش محول للخزنة" type="number" min="0" step="0.01" value={toTreasury} onChange={e=>setToTreasury(e.target.value)} placeholder="اكتب المبلغ، الصفر مسموح"/><p className="text-xs text-muted-foreground">المبلغين لازم يساووا إجمالي الكاش اللي عديته. التحويل للخزنة لا يُسجل كمصروف أو بيع جديد.</p></div>}
               {/* No live variance: the count has to be the cashier's own
                   reading of the drawer, not a number nudged until the banner
                   turns green. The result appears once the server has stored
@@ -385,8 +499,9 @@ export function ShiftControls({
                   combined figure would let a card shortfall hide inside a
                   wallet surplus, which is the exact failure the server-side
                   rule refuses to allow. */}
-              {(Number(shift.totalCardSales) !== 0 ||
-                Number(shift.totalWalletSales) !== 0) && (
+              {(shift.cardSettlementRequired || shift.walletSettlementRequired ||
+                Number(shift.totalCardSales ?? 0) !== 0 ||
+                Number(shift.totalWalletSales ?? 0) !== 0) && (
                 <div className="space-y-3 rounded-lg border p-3">
                   <div className="space-y-1">
                     <p className="text-sm font-medium">{t.shifts.settlementHeading}</p>
@@ -395,7 +510,7 @@ export function ShiftControls({
                     </p>
                   </div>
 
-                  {Number(shift.totalCardSales) !== 0 && (
+                  {(shift.cardSettlementRequired || Number(shift.totalCardSales ?? 0) !== 0) && (
                     <div className="space-y-2">
                       <Label>{t.shifts.actualCardSettled}</Label>
                       <Input
@@ -422,7 +537,7 @@ export function ShiftControls({
                     </div>
                   )}
 
-                  {Number(shift.totalWalletSales) !== 0 && (
+                  {(shift.walletSettlementRequired || Number(shift.totalWalletSales ?? 0) !== 0) && (
                     <div className="space-y-2">
                       <Label>{t.shifts.actualWalletSettled}</Label>
                       <Input
@@ -446,6 +561,22 @@ export function ShiftControls({
                 </div>
               )}
 
+              {handoverEnabled && (
+                <div className="space-y-2">
+                  <Label htmlFor="shift-handover-target">{t.shifts.closeHandoverTarget}</Label>
+                  <select
+                    id="shift-handover-target"
+                    value={handoverTarget}
+                    onChange={(event) => setHandoverTarget(event.target.value as typeof handoverTarget)}
+                    className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm"
+                  >
+                    <option value="">{t.shifts.chooseHandoverTarget}</option>
+                    <option value="SHIFT_TO_SHIFT">{t.shifts.handoverToNextShift}</option>
+                    {canKey("handover.exception") && <option value="BRANCH_CUSTODY">{t.shifts.handoverToBranch}</option>}
+                  </select>
+                  <p className="text-xs text-muted-foreground">{t.shifts.handoverTargetHint}</p>
+                </div>
+              )}
               <div className="space-y-2">
                 <Label>{t.shifts.notes}</Label>
                 <Textarea
@@ -485,6 +616,7 @@ export function ShiftControls({
               disabled={
                 busy ||
                 actualCash === "" ||
+                (handoverEnabled && !handoverTarget) ||
                 (Number(shift?.totalCardSales ?? 0) !== 0 && actualCard === "") ||
                 (Number(shift?.totalWalletSales ?? 0) !== 0 && actualWallet === "")
               }
@@ -515,7 +647,7 @@ export function ShiftControls({
               {handoverNotice?.target && (
                 <div className="flex justify-between gap-3">
                   <dt className="text-muted-foreground">{t.shifts.handoverTarget}</dt>
-                  <dd className="font-medium">{handoverNotice.target}</dd>
+                  <dd className="font-medium">{handoverNotice.target === "SHIFT_TO_SHIFT" ? t.shifts.handoverToNextShift : handoverNotice.target === "BRANCH_CUSTODY" ? t.shifts.handoverToBranch : handoverNotice.target}</dd>
                 </div>
               )}
               {typeof handoverNotice?.requiredItemCount === "number" && (

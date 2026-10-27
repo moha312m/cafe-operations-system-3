@@ -1,8 +1,10 @@
+import { decimal, money, sumMoney } from "@/lib/money";
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { ApiError } from "@/lib/api";
+import { assertOpeningReady } from "@/lib/opening-readiness";
 
-const round2 = (n: number) => Math.round(n * 100) / 100;
+const round2 = money;
 
 // Cash custody gate for every transaction class that moves money into the
 // register: POS collection, payment attached to order creation, and table
@@ -18,33 +20,36 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 export async function requireCashCustody(
   branchId: string,
   userId: string,
-  message = "لا يمكن تحصيل الدفع بدون شيفت مفتوح"
+  message = "لا يمكن تحصيل الدفع بدون شيفت مفتوح",
+  client: Prisma.TransactionClient | typeof db = db
 ) {
-  const shift = await requireOperationalShift(branchId, userId);
+  const shift = await requireOperationalShift(branchId, userId, client);
   if (!shift) throw new ApiError(400, message);
   return shift;
 }
 
-// Withhold the reconciliation target from whoever will physically count the
-// drawer, so the count is independent evidence rather than a number typed to
-// match (SHIFT-003).
-//
-// Keyed on custody, not role: the holder of an OPEN shift cannot see its
-// expected cash. A supervisor looking at somebody else's shift is not the one
-// counting it and keeps full visibility, and a CLOSED shift is settled
-// history that stays readable to anyone authorised to read it.
-//
-// The count is revealed back to the holder by the close response, once the
-// server has persisted it.
-export function redactBlindCount<
-  T extends { status: string; cashierId: string; expectedCashAmount: unknown },
->(shift: T, viewerId: string): T | Omit<T, "expectedCashAmount"> {
-  if (shift.status !== "OPEN" || shift.cashierId !== viewerId) return shift;
-  // Destructured off deliberately — the point is that the field never
-  // reaches the caller, so the binding is meant to go unused.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { expectedCashAmount, ...rest } = shift;
-  return rest;
+// A counter enters independent cash and processor counts. Shift sales and
+// variances belong to oversight, including after close; returning the sales
+// subtotal would let the counter reconstruct expected cash from the opening
+// float. Keep only the channel-presence flags needed to render count inputs.
+export function redactBlindCount<T extends {
+  totalCardSales: unknown;
+  totalWalletSales: unknown;
+}>(shift: T, canViewReports: boolean) {
+  if (canViewReports) return shift;
+  const visible: Record<string, unknown> = { ...shift };
+  const cardSettlementRequired = Number(shift.totalCardSales) !== 0;
+  const walletSettlementRequired = Number(shift.totalWalletSales) !== 0;
+  for (const field of [
+    "expectedCashAmount", "cashDifference", "cashWithinTolerance",
+    "cashToleranceAmount", "cashVarianceCaseId", "totalSales",
+    "totalCashSales", "totalCardSales", "totalWalletSales",
+    "totalDiscounts", "totalRefunds", "orderCount",
+    "tenderReconciliations",
+  ]) {
+    delete visible[field];
+  }
+  return { ...visible, cardSettlementRequired, walletSettlementRequired };
 }
 
 // The cashier's currently OPEN shift at a branch, or null. A cashier may
@@ -54,10 +59,14 @@ export async function getActiveShift(
   cashierId: string,
   client: Prisma.TransactionClient | typeof db = db
 ) {
-  return client.shift.findFirst({
+  const shift = await client.shift.findFirst({
     where: { branchId, cashierId, status: "OPEN", custodyGateReason: null },
     orderBy: { openedAt: "desc" },
   });
+  if (!shift) return null;
+  try { await assertOpeningReady(client, { shiftId: shift.id, scope: 'OPERATIONS' }); }
+  catch(error) { if(error instanceof ApiError && error.status === 400) return null; throw error; }
+  return shift;
 }
 
 /** Return an open operational shift, rejecting a visibly-open but gated one. */
@@ -73,6 +82,7 @@ export async function requireOperationalShift(
   if (shift?.custodyGateReason) {
     throw new ApiError(400, `Shift is awaiting custody: ${shift.custodyGateReason}`);
   }
+  if (shift) await assertOpeningReady(client, { shiftId: shift.id, scope: 'OPERATIONS' });
   return shift;
 }
 
@@ -122,35 +132,35 @@ export async function recomputeShiftTotals(
     },
   });
 
-  let cash = 0,
-    card = 0,
-    wallet = 0,
-    refunds = 0;
+  let cash = decimal(0),
+    card = decimal(0),
+    wallet = decimal(0),
+    refunds = decimal(0);
   const paidOrderIds = new Set<string>();
 
   for (const p of payments) {
-    const amt = Number(p.amount);
+    const amt = decimal(p.amount);
     if (p.type === "REFUND") {
       // Money handed back out of this drawer. Amounts are magnitudes now, so
       // the outflow is subtracted explicitly rather than relying on a
       // negative value happening to be added.
-      if (p.method === "CASH") cash -= amt;
-      else if (p.method === "CARD") card -= amt;
-      else if (p.method === "WALLET") wallet -= amt;
-      refunds += amt;
+      if (p.method === "CASH") cash = cash.minus(amt);
+      else if (p.method === "CARD") card = card.minus(amt);
+      else if (p.method === "WALLET") wallet = wallet.minus(amt);
+      refunds = refunds.plus(amt);
       // The sale itself belongs to whichever period collected it, so a
       // refund never counts towards this period's order count.
     } else if (p.status === "PAID") {
-      if (p.method === "CASH") cash += amt;
-      else if (p.method === "CARD") card += amt;
-      else if (p.method === "WALLET") wallet += amt;
+      if (p.method === "CASH") cash = cash.plus(amt);
+      else if (p.method === "CARD") card = card.plus(amt);
+      else if (p.method === "WALLET") wallet = wallet.plus(amt);
       paidOrderIds.add(p.orderId);
     } else if (p.status === "REFUNDED") {
       // Legacy shape: a collection reversed in period before refunds became
       // their own transaction. It never entered `cash` above, so it must not
       // be subtracted again — that double subtraction was SHIFT-001.
       // Disclosed as a refund only.
-      refunds += amt;
+      refunds = refunds.plus(amt);
     }
   }
 
@@ -161,14 +171,14 @@ export async function recomputeShiftTotals(
         select: { discountAmount: true },
       })
     : [];
-  const discounts = orders.reduce((s, o) => s + Number(o.discountAmount), 0);
+  const discounts = sumMoney(orders.map(o => o.discountAmount));
 
   // `cash` is already net of refunds posted to this shift — a REFUND row
   // subtracts once, above. Subtracting `refunds` here as well would remove the
   // same reversal twice and report a shortage the cashier never caused
   // (SHIFT-001).
-  const totalSales = round2(cash + card + wallet);
-  const expectedCash = round2(Number(shift.openingCashAmount) + cash);
+  const totalSales = money(cash.plus(card).plus(wallet));
+  const expectedCash = money(decimal(shift.openingCashAmount).plus(cash));
 
   return client.shift.update({
     where: { id: shiftId },

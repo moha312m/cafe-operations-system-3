@@ -37,6 +37,7 @@ export function ProductCard({
       </div>
       <div className="flex flex-1 flex-col gap-0.5 p-3">
         <p className="text-sm font-semibold leading-tight">{product.name}</p>
+        {product.sku && <p className="text-xs text-muted-foreground" dir="ltr">SKU {product.sku}</p>}
         <p className="text-xs text-muted-foreground">{product.category.name}</p>
         <p className="mt-auto pt-1.5 text-sm font-bold tabular-nums">
           {money(product.basePrice, currency)}

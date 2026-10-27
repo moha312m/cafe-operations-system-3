@@ -1,26 +1,13 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { requirePermission, handleApiError, ApiError } from "@/lib/api";
+import { requirePermission, handleApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { publicInventoryItem } from "@/lib/public-shape";
-import type { SessionUser } from "@/lib/auth";
+import { findScopedItem } from "@/lib/inventory-scope";
 import type { Prisma } from "@prisma/client";
 
 type Params = { params: Promise<{ id: string }> };
-
-// Loads an item and enforces cafe + branch scope in one place.
-export async function findScopedItem(id: string, session: SessionUser) {
-  const item = await db.inventoryItem.findUnique({ where: { id } });
-  if (!item) throw new ApiError(404, "الخامة مش موجودة");
-  if (session.role !== "SUPER_ADMIN" && item.cafeId !== session.cafeId) {
-    throw new ApiError(403, "ليس لديك صلاحية لتنفيذ هذا الإجراء");
-  }
-  if (session.branchId && item.branchId !== session.branchId) {
-    throw new ApiError(403, "ليس لديك صلاحية على فرع تاني");
-  }
-  return item;
-}
 
 const updateSchema = z.object({
   name: z.string().min(1, "اسم الخامة مطلوب").optional(),

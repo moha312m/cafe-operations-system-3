@@ -1,10 +1,12 @@
-import { NextResponse, type NextRequest } from "next/server";
+import { NextResponse, after, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { handleApiError, ApiError, requireActiveSession } from "@/lib/api";
 import { closeShiftWithSettlement } from "@/lib/cash-close";
 import { HandoverBlockedError } from "@/lib/handover";
 import { resolvePermissions } from "@/lib/perms/effective";
+import { sendShiftReport } from "@/lib/whatsapp";
+import { redactBlindCount } from "@/lib/shifts";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -44,6 +46,7 @@ const closeSchema = z
     actualWalletAmount: z.number().optional(),
     walletReason: z.string().max(1000).optional(),
     notes: z.string().max(1000).optional(),
+    cashDisposition: z.object({leftInDrawer:z.number().nonnegative(),toTreasury:z.number().nonnegative(),note:z.string().max(1000).optional()}).strict().optional(),
     // Where the stock is going, when the branch's policy says it has to go
     // somewhere. Stated, never inferred — see `ShiftCloseArgs.handoverTarget`.
     handoverTarget: z.enum(["SHIFT_TO_SHIFT", "BRANCH_CUSTODY"]).optional(),
@@ -78,6 +81,9 @@ export async function POST(request: NextRequest, { params }: Params) {
       throw new ApiError(403, "Not allowed");
     }
     const isOwnShift = shift.cashierId === session.id;
+    if (isOwnShift && !closerKeys.has("shifts.close")) {
+      throw new ApiError(403, "Not allowed");
+    }
     // Closing somebody else's drawer costs the key that names that act.
     //
     // Until R-SEC-01 this read `shifts:read` out of the STATIC role table,
@@ -118,25 +124,33 @@ export async function POST(request: NextRequest, { params }: Params) {
         WALLET: { actual: data.actualWalletAmount, reason: data.walletReason },
       },
       notes: data.notes,
+      cashDisposition: data.cashDisposition,
       actorId: session.id,
+      actor: session,
       closedByManager: !isOwnShift,
       handoverTarget: data.handoverTarget,
       grants,
     });
 
-    // Read back what was COMMITTED, rather than reporting what we intended to
-    // write. The blind-count redaction does not apply: the shift is CLOSED now,
-    // and revealing the target to the person who just counted it is the whole
-    // point of doing so after the server has persisted the count (SHIFT-003).
+    // The owner's WhatsApp report goes out after the response: the close is
+    // already committed, and a slow or failing WhatsApp must not hold the
+    // closer's screen or turn their success into an error.
+    after(() =>
+      sendShiftReport({ shiftId: id, cafeId: shift.cafeId, trigger: "AUTO", actorId: session.id }).catch((e) =>
+        console.error("[whatsapp] shift report", e instanceof Error ? e.message : e)
+      )
+    );
+
+    // Read back what was committed. The counter gets an acknowledgement of
+    // their own count; only oversight receives the financial reconciliation.
     const closed = await db.shift.findUniqueOrThrow({
       where: { id },
       include: {
         cashier: { select: { id: true, name: true } },
         branch: { select: { id: true, name: true } },
         closedBy: { select: { id: true, name: true } },
-        // The settlements this close committed, so the closer sees what was
-        // recorded against each channel rather than being told only that the
-        // shift is shut.
+        // Oversight receives full settlements. The counter response below
+        // removes expected amounts and differences.
         tenderReconciliations: {
           orderBy: { method: "asc" },
           select: {
@@ -157,7 +171,7 @@ export async function POST(request: NextRequest, { params }: Params) {
     // said only "closed" would send a custodian home believing they were
     // discharged of stock they are still answerable for.
     return NextResponse.json({
-      shift: closed,
+      shift: redactBlindCount(closed, closerKeys.has("shifts.view_reports")),
       handover: {
         required: result.handoverRequired,
         target: result.handoverTarget,
@@ -166,6 +180,16 @@ export async function POST(request: NextRequest, { params }: Params) {
         requiredItemCount: result.requiredItemCount,
         configIssue: result.handoverConfigIssue,
       },
+      // Open orders the incoming shift now serves and collects. Empty unless
+      // the café enabled carrying them.
+      carriedOrders: result.carriedOrders.map((o) => ({
+        orderId: o.orderId,
+        orderNumber: o.orderNumber,
+        status: o.status,
+        paymentStatus: o.paymentStatus,
+        remaining: o.remaining,
+        stockDeductedAtHandover: o.stockDeductedAtHandover,
+      })),
     });
   } catch (error) {
     // The one error that carries a payload. `handleApiError` is shared by

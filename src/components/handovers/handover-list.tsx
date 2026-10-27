@@ -34,10 +34,12 @@ export function HandoverList({
   handovers,
   selectedId,
   onSelect,
+  viewerUserId,
 }: {
   handovers: HandoverRow[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  viewerUserId: string;
 }) {
   if (handovers.length === 0) {
     return (
@@ -64,7 +66,8 @@ export function HandoverList({
             // Only a handover under review can be opened; the detail endpoint
             // refuses the rest with 409, so they are shown without being made
             // to look clickable.
-            const openable = REVIEWABLE.includes(h.status);
+            const openable = REVIEWABLE.includes(h.status) ||
+              (h.outgoingUserId === viewerUserId && (h.status === "DRAFT" || h.status === "REJECTED"));
             return (
               <TableRow
                 key={h.id}

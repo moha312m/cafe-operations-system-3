@@ -1,14 +1,12 @@
 import { NextResponse } from "next/server";
-import { getSession } from "@/lib/auth";
+import { requireActiveSession, handleApiError } from "@/lib/api";
 import { ROLE_PERMISSIONS } from "@/lib/permissions";
 
 export async function GET() {
-  const session = await getSession();
-  if (!session) {
-    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  try {
+    const session = await requireActiveSession();
+    return NextResponse.json({ user: session, permissions: ROLE_PERMISSIONS[session.role] });
+  } catch (error) {
+    return handleApiError(error);
   }
-  return NextResponse.json({
-    user: session,
-    permissions: ROLE_PERMISSIONS[session.role],
-  });
 }

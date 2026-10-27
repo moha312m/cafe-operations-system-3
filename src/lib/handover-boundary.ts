@@ -53,6 +53,8 @@ import {
 import { round3 } from "@/lib/costing";
 import { linkShiftCustody, transferCustody } from "@/lib/custody";
 import { lockItemForUpdate } from "@/lib/ledger";
+import { optionalProtectedContext } from "@/lib/protected-transaction";
+import { lockShifts } from "@/lib/transaction-locks";
 import { rebaseFromCountInTransaction, type RebaseResult } from "@/lib/stock-rebase";
 import {
   ACTIVE_COUNT_STATUSES,
@@ -398,13 +400,17 @@ const ANOTHER_COUNT_RUNNING = "في جرد شغال في الفرع بالفعل
 
 export const BRANCH_CUSTODY_VERIFIED_AUDIT_ACTION = "BRANCH_CUSTODY_VERIFIED";
 
-/** Take a custody period's row lock for the rest of the caller's transaction. */
+/**
+ * Serialize custody changes without blocking ledger foreign-key checks.
+ * The custody key stays fixed; FOR UPDATE would make a concurrent movement
+ * wait here while verification waits for the inventory item it already holds.
+ */
 async function lockCustodyPeriod(
   tx: Prisma.TransactionClient,
   custodyPeriodId: string
 ): Promise<boolean> {
   const rows = await tx.$queryRaw<{ id: string }[]>`
-    SELECT "id" FROM "CustodyPeriod" WHERE "id" = ${custodyPeriodId} FOR UPDATE
+    SELECT "id" FROM "CustodyPeriod" WHERE "id" = ${custodyPeriodId} FOR NO KEY UPDATE
   `;
   return rows.length > 0;
 }
@@ -414,6 +420,10 @@ async function lockShiftRow(
   tx: Prisma.TransactionClient,
   shiftId: string
 ): Promise<boolean> {
+  if (optionalProtectedContext(tx)) {
+    await lockShifts(tx, [shiftId]);
+    return true;
+  }
   const rows = await tx.$queryRaw<{ id: string }[]>`
     SELECT "id" FROM "Shift" WHERE "id" = ${shiftId} FOR UPDATE
   `;

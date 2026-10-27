@@ -1982,3 +1982,25 @@ describe("SH-20 accept route", () => {
     assert.equal(r.body.incomingShiftId, h.incomingShiftId);
   });
 });
+
+test('cash handover: mismatch needs reason, is persisted once, and custody agrees with incoming opening',async()=>{
+  const h=await acceptableHandover();
+  await db.shift.update({where:{id:h.incomingShiftId},data:{openingCashAmount:80,expectedCashAmount:80}});
+  const url='/api/handovers/'+h.handoverId+'/accept';
+  const key=MARKER+'cash-'+h.handoverId;
+  const denied=await as(incoming.email,url,{method:'POST',body:JSON.stringify({idempotencyKey:key})});
+  assert.equal(denied.status,400,denied.text);
+  assert.equal((await db.handoverSession.findUniqueOrThrow({where:{id:h.handoverId}})).status,'INCOMING_REVIEW');
+  const body={idempotencyKey:key,countedOpeningCash:80,cashReasonCodeId:handoverReasonId,cashReasonNote:'20 missing on receipt'};
+  const accepted=await as(incoming.email,url,{method:'POST',body:JSON.stringify(body)});
+  assert.equal(accepted.status,200,accepted.text);
+  const persisted=await db.handoverSession.findUniqueOrThrow({where:{id:h.handoverId}});
+  assert.equal(Number(persisted.cashVarianceAmount),-20);
+  const custody=await db.custodyPeriod.findUniqueOrThrow({where:{id:persisted.incomingCashCustodyId!}});
+  assert.equal(Number(custody.openingCashAmount),80);
+  const replay=await as(incoming.email,url,{method:'POST',body:JSON.stringify(body)});
+  assert.equal(replay.status,200,replay.text);
+  assert.equal(await db.varianceCase.count({where:{acceptedHandoverId:h.handoverId,type:'OPENING_EXCEPTION'}}),1);
+  const wrongReplay=await as(fx.manager.email,'/api/handovers/'+h.handoverId+'/override-accept',{method:'POST',body:JSON.stringify({idempotencyKey:key,reasonCodeId:handoverReasonId,note:'Must not turn ordinary cash receipt into manager override',kind:'MANAGER_ADJUSTMENT'})});
+  assert.equal(wrongReplay.status,409,wrongReplay.text);
+});

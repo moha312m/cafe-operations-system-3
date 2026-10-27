@@ -11,6 +11,7 @@ import {
 import { audit } from "@/lib/audit";
 import { round2 } from "@/lib/inventory";
 import { applyStockMutation } from "@/lib/ledger";
+import { withStockAlerts } from "@/lib/low-stock";
 import type { Prisma } from "@prisma/client";
 
 const itemSelect = {
@@ -68,15 +69,10 @@ export async function GET(request: NextRequest) {
 
     // Status filter is derived, so apply it in JS after fetch.
     const status = params.get("status");
-    const withStatus = items.map((i) => {
-      const cur = Number(i.currentStock);
-      const min = Number(i.minimumStock);
-      return {
-        ...i,
-        status: cur <= 0 ? "out" : cur <= min ? "low" : "ok",
-        stockValue: round2(cur * Number(i.costPerUnit)),
-      };
-    });
+    const withStatus = (await withStockAlerts(cafeId, items)).map((i) => ({
+      ...i,
+      stockValue: round2(Number(i.currentStock) * Number(i.costPerUnit)),
+    }));
     const filtered = status
       ? withStatus.filter((i) => i.status === status)
       : withStatus;

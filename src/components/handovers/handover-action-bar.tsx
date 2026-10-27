@@ -5,8 +5,9 @@ import { toast } from "sonner";
 import { api } from "@/lib/client";
 import { useApp } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { ReasonCodeSelect } from "@/components/stock-counts/reason-code-select";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
@@ -40,6 +41,10 @@ export function HandoverActionBar({
   onDone: () => void;
 }) {
   const { canKey } = useApp();
+  const [countedCash,setCountedCash]=useState("");
+  const [cashReason,setCashReason]=useState("");
+  const [cashNote,setCashNote]=useState("");
+  const [acceptKey]=useState(()=>newIdempotencyKey());
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState<Action | null>(null);
   const [reasonCodeId, setReasonCodeId] = useState("");
@@ -62,7 +67,7 @@ export function HandoverActionBar({
         // The retry key is what makes a repeated press safe: the same key on
         // an already-completed handover answers 200, a different one is
         // refused as a second acceptance.
-        { method: "POST", body: { idempotencyKey: newIdempotencyKey() } }
+        { method: "POST", body: { idempotencyKey: acceptKey, countedOpeningCash: Number(countedCash), cashReasonCodeId:cashReason||undefined,cashReasonNote:cashNote.trim()||undefined } }
       );
       toast.success(res.alreadyAccepted ? "التسليم كان مستلم قبل كده" : "تم استلام العهدة");
       onDone();
@@ -91,6 +96,8 @@ export function HandoverActionBar({
           method: "POST",
           body: {
             idempotencyKey: newIdempotencyKey(),
+            countedOpeningCash: countedCash.trim()===""?undefined:Number(countedCash),
+            cashReasonCodeId:cashReason||undefined,cashReasonNote:cashNote.trim()||undefined,
             reasonCodeId: reasonCodeId.trim(),
             // Required by the service, and refused when blank after trimming.
             note: note.trim(),
@@ -130,9 +137,14 @@ export function HandoverActionBar({
 
   return (
     <>
+      {canKey("handover.accept") && <div className="mb-3 grid gap-3 rounded-lg border p-3 sm:grid-cols-3">
+        <label className="text-sm">النقدية اللي عدّيتها عند الاستلام<Input aria-label="النقدية المستلمة" type="number" min="0" step="0.01" value={countedCash} onChange={e=>setCountedCash(e.target.value)} /></label>
+        <ReasonCodeSelect domain="HANDOVER" value={cashReason} onChange={setCashReason} label="سبب فرق النقدية لو موجود" optional />
+        <label className="text-sm">توضيح فرق الاستلام<Textarea value={cashNote} onChange={e=>setCashNote(e.target.value)} /></label>
+      </div>}
       <div className="flex flex-wrap gap-2">
         {canKey("handover.accept") && (
-          <Button size="sm" disabled={busy} onClick={accept} data-testid="handover-accept">
+          <Button size="sm" disabled={busy||countedCash.trim()===""||!Number.isFinite(Number(countedCash))||Number(countedCash)<0} onClick={accept} data-testid="handover-accept">
             استلام العهدة
           </Button>
         )}
@@ -202,16 +214,7 @@ export function HandoverActionBar({
               </div>
             )}
             <div className="space-y-2">
-              <Label>
-                {open === "branch"
-                  ? "معرّف سبب الإعفاء (اختياري)"
-                  : "معرّف السبب (reasonCodeId)"}
-              </Label>
-              <Input
-                value={reasonCodeId}
-                onChange={(e) => setReasonCodeId(e.target.value)}
-                placeholder="reasonCodeId"
-              />
+              <ReasonCodeSelect domain="HANDOVER" value={reasonCodeId} onChange={setReasonCodeId} label={open === "branch" ? "سبب إعفاء صنف من الجرد" : "سبب الإجراء"} optional={open === "branch"} />
             </div>
             <div className="space-y-2">
               <Label>ملاحظة{open === "override" ? "" : " (اختياري)"}</Label>
