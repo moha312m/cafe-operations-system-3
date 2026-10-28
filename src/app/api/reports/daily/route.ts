@@ -8,7 +8,7 @@ import {resolveReportingSelection} from '@/lib/reporting-hours';
 import {reportEventWhere} from '@/lib/report-window-scope';
 import {signReportOutput} from '@/lib/report-output';
 import { decimal, money, sumMoney, type Numeric } from "@/lib/money";
-import { METRIC_DEFINITIONS_VERSION } from "@/lib/metric-definitions";
+import { METRIC_DEFINITIONS_VERSION, dailyReportLabels } from "@/lib/metric-definitions";
 
 const n = (v: Numeric) => money(v).toNumber();
 
@@ -271,7 +271,7 @@ export async function GET(request: NextRequest) {
       byBranch: [...new Set(recognized.map(r=>r.branchId))].map(branchId=>({branchId,branchName:branchName.get(branchId)??branchId,...contributionTotals(recognized.filter(r=>r.branchId===branchId))})),
       items: contributionItems(recognized),
     };
-    return NextResponse.json({...result,outputSnapshot:signReportOutput(session.id,{title:reporting?.mode==='custom'?'تقرير مبيعات مخصص':reporting?.mode==='outside'?'تقرير مبيعات خارج الساعات':'تقرير أيام العمل',reporting:{mode:reporting?.mode,windows:reporting?.windows,branches:reporting?.branches.map(b=>({id:b.id,name:b.name}))},metrics:{meta:result.meta,totals:result.totals,financials:result.financials,collection:result.collection,shifts:result.shifts,tables:result.tables,purchases:result.purchases},rows:[...result.byBranch.map(row=>({section:'byBranch',...row})),...result.byPaymentMethod.map(row=>({section:'byPaymentMethod',...row})),...result.byCashier.map(row=>({section:'byCashier',...row})),...result.refundsByActor.map(row=>({section:'refundsByActor',...row})),...result.items.map(row=>({section:'items',...row})),...result.salesByStaff.map(row=>({section:'salesByStaff',...row}))],generatedAt})});
+    return NextResponse.json({...result,outputSnapshot:signReportOutput(session.id,{title:reporting?.mode==='custom'?'تقرير مبيعات مخصص':reporting?.mode==='outside'?'تقرير مبيعات خارج الساعات':'تقرير أيام العمل',reporting:{mode:reporting?.mode,windows:reporting?.windows,branches:reporting?.branches.map(b=>({id:b.id,name:b.name}))},labels:dailyReportLabels(),metrics:{meta:result.meta,totals:result.totals,financials:result.financials,collection:result.collection,shifts:result.shifts,tables:result.tables,purchases:result.purchases},rows:[...result.byBranch.map(row=>({section:'byBranch',...row})),...result.byPaymentMethod.map(row=>({section:'byPaymentMethod',...row})),...result.byCashier.map(row=>({section:'byCashier',...row})),...result.refundsByActor.map(row=>({section:'refundsByActor',...row})),...result.items.map(row=>({section:'items',...row})),...result.salesByStaff.map(row=>({section:'salesByStaff',...row}))],generatedAt})});
   } catch (error) {
     return handleApiError(error);
   }

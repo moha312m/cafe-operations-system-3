@@ -48,3 +48,22 @@ export const DAILY_REPORT_METRICS = {
 } as const satisfies Record<string, MetricDefinition>;
 
 export type DailyMetricKey = keyof typeof DAILY_REPORT_METRICS;
+
+/** Where each metric sits in the daily report response ("section.field"). */
+export const DAILY_REPORT_FIELDS: Record<string, DailyMetricKey> = {
+  "financials.grossSales": "grossSales", "financials.salesRefunds": "salesRefunds", "financials.netSales": "netSales",
+  "financials.collections": "collections", "financials.refunds": "refunds", "financials.unservedRefunds": "unservedRefunds",
+  "financials.netMoneyMovement": "netMoneyMovement",
+  "totals.revenueExTax": "revenueExTax", "totals.orders": "orders", "totals.avgOrderValue": "avgOrderValue",
+  "totals.discounts": "discounts", "totals.service": "service", "totals.tax": "tax",
+  "shifts.open": "openShifts", "shifts.closed": "closedShifts", "shifts.cashDifferenceTotal": "cashDifferenceTotal",
+  "collection.pendingCount": "pendingCount", "collection.uncollectedTotal": "uncollectedTotal", "collection.partialRemaining": "partialRemaining",
+  "tables.openCount": "openTables", "tables.closedTodayCount": "closedTables", "tables.avgSittingMinutes": "avgSittingMinutes",
+  "tables.collectedTotal": "tableCollections", "tables.uncollectedTotal": "tableUncollected",
+  "purchases.total": "purchases", "purchases.supplierPayments": "supplierPayments", "purchases.unpaidTotal": "supplierUnpaid",
+  "purchases.draftTotal": "purchaseDrafts",
+};
+
+/** Export labels for the daily report snapshot. */
+export const dailyReportLabels = () =>
+  Object.fromEntries(Object.entries(DAILY_REPORT_FIELDS).map(([field, key]) => [field, DAILY_REPORT_METRICS[key].label]));
