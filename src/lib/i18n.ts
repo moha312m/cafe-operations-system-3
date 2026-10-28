@@ -271,6 +271,7 @@ export const t = {
     cardSales: "مبيعات الفيزا",
     walletSales: "مبيعات المحافظ",
     refunds: "إجمالي المرتجعات",
+    supplierPayouts: "مدفوعات موردين من الدرج",
     discounts: "إجمالي الخصومات",
     orderCount: "عدد الطلبات",
     status: "الحالة",

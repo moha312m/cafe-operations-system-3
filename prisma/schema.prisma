@@ -1443,6 +1443,7 @@ model OrderTrace {
 model Shift {
   cashStorage CashStorage?
   openingCashReceipt OpeningCashReceipt?
+  purchasePayments PurchasePayment[]
 
   id                 String    @id @default(cuid())
   cafeId             String
@@ -1480,6 +1481,8 @@ model Shift {
   totalCardSales      Decimal           @default(0) @db.Decimal(10, 2)
   totalWalletSales    Decimal           @default(0) @db.Decimal(10, 2)
   totalRefunds        Decimal           @default(0) @db.Decimal(10, 2)
+  /// Supplier payments handed out of this drawer; expectedCash already nets them.
+  totalCashPayouts    Decimal           @default(0) @db.Decimal(10, 2)
   totalDiscounts      Decimal           @default(0) @db.Decimal(10, 2)
   orderCount          Int               @default(0)
   status              ShiftStatus       @default(OPEN)
@@ -2937,6 +2940,16 @@ enum PurchasePaymentMethod {
   BANK_TRANSFER // تحويل بنكي
 }
 
+// Where the money for a supplier payment came from. Only DRAWER touches a
+// shift: it is cash handed out of an open drawer, so it lowers that shift's
+// expected cash. NULL on rows recorded before this existed — the source was
+// never asked, and guessing one would invent cash movements.
+enum PurchasePaymentFunding {
+  DRAWER // من درج الكاشير
+  SAFE // من الخزنة
+  BANK // من حساب بنكي / كارت / محفظة الكافيه
+}
+
 // Raw-material suppliers (cafe-scoped).
 model Supplier {
   id        String   @id @default(cuid())
@@ -3030,6 +3043,10 @@ model PurchasePayment {
   purchaseInvoiceId String
   amount            Decimal               @db.Decimal(12, 2)
   method            PurchasePaymentMethod @default(CASH)
+  fundingSource     PurchasePaymentFunding?
+  /// The open shift whose drawer paid, set exactly when fundingSource = DRAWER
+  /// (enforced by a CHECK constraint).
+  shiftId           String?
   paidAt            DateTime              @default(now())
   note              String?
   createdByUserId   String?
@@ -3037,10 +3054,12 @@ model PurchasePayment {
 
   invoice   PurchaseInvoice @relation(fields: [purchaseInvoiceId], references: [id], onDelete: Cascade)
   createdBy User?           @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+  shift     Shift?          @relation(fields: [shiftId], references: [id], onDelete: Restrict)
 
   @@index([cafeId])
   @@index([branchId])
   @@index([purchaseInvoiceId])
+  @@index([shiftId])
   @@index([cafeId, paidAt])
 }
 

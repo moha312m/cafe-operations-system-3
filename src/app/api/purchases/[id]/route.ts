@@ -72,6 +72,7 @@ export async function GET(_request: NextRequest, { params }: Params) {
           id: p.id,
           amount: Number(p.amount),
           method: p.method,
+          fundingSource: p.fundingSource,
           note: p.note,
           paidAt: p.paidAt,
           createdBy: p.createdBy?.name ?? null,
