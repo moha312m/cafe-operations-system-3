@@ -149,3 +149,19 @@ export async function projectShadowLedger(args: { cafeId: string; from: Date; to
   }
   return report;
 }
+
+/**
+ * What a projection over [from, to) would still have to do, without posting:
+ * events not yet in the books, and events that cannot be posted at all. The
+ * period-close checklist uses it. An event already posted whose source
+ * changed since is not detected here; a projection run reports it.
+ */
+export async function shadowCoverage(args: { cafeId: string; from: Date; to: Date }) {
+  const all = await candidates(args.cafeId, { gte: args.from, lt: args.to });
+  const exceptions = all.flatMap((c) => (typeof c.lines === "string" ? [{ sourceKey: c.sourceKey, sourceType: c.sourceType, sourceId: c.sourceId, reason: c.lines }] : []));
+  const postable = all.filter((c) => typeof c.lines !== "string" && c.lines.length > 0);
+  const posted = new Set((await db.journalEntry.findMany({ where: { cafeId: args.cafeId, sourceKey: { in: postable.map((c) => c.sourceKey) } }, select: { sourceKey: true } })).map((e) => e.sourceKey));
+  const missing = postable.filter((c) => !posted.has(c.sourceKey)).map((c) => ({ sourceKey: c.sourceKey, sourceType: c.sourceType, sourceId: c.sourceId }));
+  return { events: postable.length, posted: posted.size, missing, exceptions };
+}
+

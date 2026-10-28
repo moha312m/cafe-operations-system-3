@@ -16,7 +16,7 @@
 // Callers pass a transaction: posting commits or rolls back with the business
 // write it describes.
 import { createHash } from "node:crypto";
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { ApiError } from "@/lib/api";
 import { db } from "@/lib/db";
 import { decimal, money, sumMoney, type Numeric } from "@/lib/money";
@@ -147,19 +147,24 @@ export async function closePeriod(tx: Tx, args: { cafeId: string; periodId: stri
   return tx.accountingPeriod.update({ where: { id: period.id }, data: { status: "CLOSED", closedAt: new Date(), closedById: args.actorId } });
 }
 
-export type TrialBalanceRow = { accountId: string; code: string; name: string; type: string; normalBalance: string; debit: number; credit: number; balance: number };
+export type TrialBalanceRow = { accountId: string; code: string; name: string; type: string; normalBalance: string; systemKey: string | null; debit: number; credit: number; balance: number };
 
-/** Debits and credits per account over entry dates [from, to] (both inclusive, optional). */
-export async function trialBalance(args: { cafeId: string; from?: string; to?: string }, client: Tx | typeof db = db) {
+/**
+ * Debits and credits per account over entry dates [from, to] (both inclusive,
+ * optional). With `branchId`, only lines carrying that branch — café-wide
+ * lines (no branch) are left out of a branch view.
+ */
+export async function trialBalance(args: { cafeId: string; from?: string; to?: string; branchId?: string }, client: Tx | typeof db = db) {
   const from = args.from ? asDate(args.from) : new Date("1900-01-01T00:00:00Z");
   const to = args.to ? asDate(args.to) : new Date("9999-12-31T00:00:00Z");
-  const rows = await client.$queryRaw<{ accountId: string; code: string; name: string; type: string; normalBalance: string; debit: string; credit: string }[]>`
-    SELECT a."id" AS "accountId", a."code", a."name", a."type"::text AS "type", a."normalBalance"::text AS "normalBalance",
+  const rows = await client.$queryRaw<{ accountId: string; code: string; name: string; type: string; normalBalance: string; systemKey: string | null; debit: string; credit: string }[]>`
+    SELECT a."id" AS "accountId", a."code", a."name", a."type"::text AS "type", a."normalBalance"::text AS "normalBalance", a."systemKey",
            sum(l."debit")::text AS "debit", sum(l."credit")::text AS "credit"
       FROM "JournalLine" l
       JOIN "JournalEntry" j ON j."id" = l."entryId"
       JOIN "AccountingAccount" a ON a."id" = l."accountId"
      WHERE j."cafeId" = ${args.cafeId} AND j."entryDate" BETWEEN ${from} AND ${to}
+       ${args.branchId ? Prisma.sql`AND l."branchId" = ${args.branchId}` : Prisma.empty}
      GROUP BY a."id" ORDER BY a."code"`;
   const accounts: TrialBalanceRow[] = rows.map((r) => {
     const debit = money(r.debit), credit = money(r.credit);
