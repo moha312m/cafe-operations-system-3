@@ -35,7 +35,7 @@ function sheetCells(sheetXml: string) {
     const row: (string | number | boolean)[] = [];
     for (const [, col, attrs, inner] of body.matchAll(/<c r="([A-Z]+)\d+"([^>]*)>(.*?)<\/c>/g)) {
       const index = [...col].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;
-      row[index] = attrs.includes('t="inlineStr"') ? unxml(inner.match(/<t[^>]*>(.*)<\/t>/s)![1])
+      row[index] = attrs.includes('t="inlineStr"') ? unxml(inner.match(/<t[^>]*>([\s\S]*)<\/t>/)![1])
         : attrs.includes('t="b"') ? inner.includes(">1<") : Number(inner.match(/<v>(.*)<\/v>/)![1]);
     }
     rows[Number(r) - 1] = row;
