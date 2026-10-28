@@ -24,12 +24,14 @@
 //               over/short, Cr drawer; overage the reverse
 // A legacy collection reversed in place (status REFUNDED, no refund row)
 // posts both the receipt and the return, as the reports already count it.
+// Purchases, supplier payments and stock: see purchase-posting.ts.
 import type { PaymentMethod } from "@prisma/client";
 import { db } from "@/lib/db";
 import { dateStrInTz } from "@/lib/date-range";
 import { decimal, money, type Decimal } from "@/lib/money";
 import { ensureAccountingEntity } from "@/lib/accounting/chart";
 import { postEntry, openPeriod, type PostingInput, type PostingLine } from "@/lib/accounting/ledger";
+import { purchaseAndStockCandidates } from "@/lib/accounting/purchase-posting";
 
 type Bill = { subtotal: string; discountAmount: string; taxAmount: string; serviceChargeAmount: string; total: string };
 export type ShadowException = { sourceKey: string; sourceType: string; sourceId: string; reason: string };
@@ -59,7 +61,7 @@ function billLines(bill: Bill, branchId: string, sign: 1 | -1, base?: Bill): Pos
   ].filter((l): l is PostingLine => l !== null);
 }
 
-type Candidate = { sourceType: string; sourceId: string; sourceKey: string; at: Date; description: string; lines: PostingLine[] | string };
+export type Candidate = { sourceType: string; sourceId: string; sourceKey: string; at: Date; description: string; lines: PostingLine[] | string };
 
 async function candidates(cafeId: string, window: { gte: Date; lt: Date }): Promise<Candidate[]> {
   const [orders, revisions, payments, storages, movements, shifts] = await Promise.all([
@@ -108,6 +110,8 @@ async function candidates(cafeId: string, window: { gte: Date; lt: Date }): Prom
     if (!difference.isZero()) out.push({ sourceType: "CASH_VARIANCE", sourceId: s.id, sourceKey: `cash-variance:${s.id}`, at: (s.financiallyClosedAt ?? s.closedAt)!, description: `فرق كاش — شيفت ${s.shiftNumber}`,
       lines: [side("CASH_DRAWER", difference, "debit", s.branchId)!, side("CASH_OVER_SHORT", difference, "credit", s.branchId)!] });
   }
+  // Purchases, supplier payments and stock (F7): src/lib/accounting/purchase-posting.ts.
+  out.push(...await purchaseAndStockCandidates(cafeId, window));
   return out.sort((a, b) => a.at.getTime() - b.at.getTime() || a.sourceKey.localeCompare(b.sourceKey));
 }
 
