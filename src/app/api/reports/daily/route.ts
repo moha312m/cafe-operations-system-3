@@ -7,6 +7,10 @@ import { addDays, dateStrInTz, zonedDayStart } from "@/lib/date-range";
 import {resolveReportingSelection} from '@/lib/reporting-hours';
 import {reportEventWhere} from '@/lib/report-window-scope';
 import {signReportOutput} from '@/lib/report-output';
+import { decimal, money, sumMoney, type Numeric } from "@/lib/money";
+import { METRIC_DEFINITIONS_VERSION, dailyReportLabels } from "@/lib/metric-definitions";
+
+const n = (v: Numeric) => money(v).toNumber();
 
 // Daily sales report: totals, payment-method breakdown, per-branch
 // breakdown, and item sales for one calendar day (?date=YYYY-MM-DD).
@@ -123,9 +127,13 @@ export async function GET(request: NextRequest) {
       }),
     ]);
     // ── Purchases (day) ──
-    const [purchaseAgg, supplierPayAgg, purchaseUnpaid] = await Promise.all([
+    // A purchase is recognized when it is confirmed (stock added). A draft is
+    // a commitment — still editable, no stock — so it is reported apart and
+    // owes the supplier nothing yet. The unpaid balance is as of now, not
+    // as of the selected period.
+    const [purchaseAgg, supplierPayAgg, purchaseUnpaid, draftAgg] = await Promise.all([
       db.purchaseInvoice.aggregate({
-        where: { cafeId, ...branchFilter, status: { not: "CANCELLED" }, ...eventWindow('invoiceDate') },
+        where: { cafeId, ...branchFilter, status: "CONFIRMED", ...eventWindow('invoiceDate') },
         _sum: { totalAmount: true }, _count: true,
       }),
       db.purchasePayment.aggregate({
@@ -133,12 +141,19 @@ export async function GET(request: NextRequest) {
         _sum: { amount: true },
       }),
       db.purchaseInvoice.aggregate({
-        where: { cafeId, ...branchFilter, status: { not: "CANCELLED" }, paymentStatus: { in: ["UNPAID", "PARTIAL"] } },
+        where: { cafeId, ...branchFilter, status: "CONFIRMED", paymentStatus: { in: ["UNPAID", "PARTIAL"] } },
         _sum: { remainingAmount: true },
       }),
+      db.purchaseInvoice.aggregate({
+        where: { cafeId, ...branchFilter, status: "DRAFT", ...eventWindow('invoiceDate') },
+        _sum: { totalAmount: true }, _count: true,
+      }),
     ]);
+    // Every "now" figure (open tables, supplier balance) is as of this instant.
+    const generatedAt = new Date().toISOString();
+    const unpaidAsOf = generatedAt;
 
-    const tableUncollected = openTables.reduce((s, ts) => s + Number(ts.remainingAmount), 0);
+    const tableUncollected = sumMoney(openTables.map((ts) => ts.remainingAmount));
     const durations = closedTables
       .filter((ts) => ts.closedAt)
       .map((ts) => (new Date(ts.closedAt!).getTime() - new Date(ts.startedAt).getTime()) / 60_000);
@@ -170,14 +185,17 @@ export async function GET(request: NextRequest) {
     const collectRow = (status: string) => collectionGroups.find((g) => g.paymentStatus === status);
     const pending = collectRow("PENDING_COLLECTION");
     const partial = collectRow("PARTIAL");
-    const paidAmountTotal = collectionGroups.reduce((s, g) => s + Number(g._sum.paidAmount ?? 0), 0);
-    const uncollectedTotal = collectionGroups
+    const paidAmountTotal = sumMoney(collectionGroups.map((g) => g._sum.paidAmount ?? 0));
+    const uncollectedTotal = sumMoney(collectionGroups
       .filter((g) => g.paymentStatus === "PENDING_COLLECTION" || g.paymentStatus === "PARTIAL")
-      .reduce((s, g) => s + Number(g._sum.remainingAmount ?? 0), 0);
+      .map((g) => g._sum.remainingAmount ?? 0));
 
     const result={
       date,
       reporting,
+      // Which metric definitions (src/lib/metric-definitions.ts) these figures
+      // follow, and the instant the "now" figures describe.
+      meta: { definitionsVersion: METRIC_DEFINITIONS_VERSION, generatedAt },
       totals: {
         orders: orderCount,
         cancelled: cancelledCount,
@@ -186,35 +204,39 @@ export async function GET(request: NextRequest) {
         service: recognizedTotals.service,
         tax: recognizedTotals.tax,
         revenue,
-        avgOrderValue: orderCount > 0 ? Math.round((revenue / orderCount) * 100) / 100 : 0,
+        revenueExTax: recognizedTotals.revenueExTax,
+        avgOrderValue: orderCount > 0 ? n(decimal(revenue).div(orderCount)) : 0,
       },
       collection: {
-        paidTotal: Math.round(paidAmountTotal * 100) / 100,
-        uncollectedTotal: Math.round(uncollectedTotal * 100) / 100,
+        paidTotal: n(paidAmountTotal),
+        uncollectedTotal: n(uncollectedTotal),
         pendingCount: pending?._count ?? 0,
-        pendingRemaining: Math.round(Number(pending?._sum.remainingAmount ?? 0) * 100) / 100,
+        pendingRemaining: n(pending?._sum.remainingAmount ?? 0),
         partialCount: partial?._count ?? 0,
-        partialRemaining: Math.round(Number(partial?._sum.remainingAmount ?? 0) * 100) / 100,
+        partialRemaining: n(partial?._sum.remainingAmount ?? 0),
       },
       shifts: {
         open: openShifts,
         closed: closedShifts,
-        cashDifferenceTotal: Number(closedAgg._sum.cashDifference ?? 0),
+        cashDifferenceTotal: n(closedAgg._sum.cashDifference ?? 0),
       },
       tables: {
         openCount: openTables.length,
         closedTodayCount: closedTables.length,
         avgSittingMinutes: avgTableMinutes,
-        collectedTotal: Number(tablePayAgg._sum.amount ?? 0),
+        collectedTotal: n(tablePayAgg._sum.amount ?? 0),
         collectedCount: tablePayAgg._count,
-        uncollectedTotal: Math.round(tableUncollected * 100) / 100,
-        closedSales: Math.round(closedTables.reduce((s, ts) => s + Number(ts.totalAmount), 0) * 100) / 100,
+        uncollectedTotal: n(tableUncollected),
+        closedSales: n(sumMoney(closedTables.map((ts) => ts.totalAmount))),
       },
       purchases: {
-        total: Number(purchaseAgg._sum.totalAmount ?? 0),
+        total: n(purchaseAgg._sum.totalAmount ?? 0),
         invoiceCount: purchaseAgg._count,
-        supplierPayments: Number(supplierPayAgg._sum.amount ?? 0),
-        unpaidTotal: Math.round(Number(purchaseUnpaid._sum.remainingAmount ?? 0) * 100) / 100,
+        supplierPayments: n(supplierPayAgg._sum.amount ?? 0),
+        unpaidTotal: n(purchaseUnpaid._sum.remainingAmount ?? 0),
+        unpaidAsOf,
+        draftCount: draftAgg._count,
+        draftTotal: n(draftAgg._sum.totalAmount ?? 0),
       },
       // Gross Sales / Refunds / Net Sales / Collections, by transaction period.
       financials,
@@ -249,7 +271,7 @@ export async function GET(request: NextRequest) {
       byBranch: [...new Set(recognized.map(r=>r.branchId))].map(branchId=>({branchId,branchName:branchName.get(branchId)??branchId,...contributionTotals(recognized.filter(r=>r.branchId===branchId))})),
       items: contributionItems(recognized),
     };
-    return NextResponse.json({...result,outputSnapshot:signReportOutput(session.id,{title:reporting?.mode==='custom'?'تقرير مبيعات مخصص':reporting?.mode==='outside'?'تقرير مبيعات خارج الساعات':'تقرير أيام العمل',reporting:{mode:reporting?.mode,windows:reporting?.windows,branches:reporting?.branches.map(b=>({id:b.id,name:b.name}))},metrics:{totals:result.totals,financials:result.financials,collection:result.collection,shifts:result.shifts,tables:result.tables,purchases:result.purchases},rows:[...result.byBranch.map(row=>({section:'byBranch',...row})),...result.byPaymentMethod.map(row=>({section:'byPaymentMethod',...row})),...result.byCashier.map(row=>({section:'byCashier',...row})),...result.refundsByActor.map(row=>({section:'refundsByActor',...row})),...result.items.map(row=>({section:'items',...row})),...result.salesByStaff.map(row=>({section:'salesByStaff',...row}))],generatedAt:new Date().toISOString()})});
+    return NextResponse.json({...result,outputSnapshot:signReportOutput(session.id,{title:reporting?.mode==='custom'?'تقرير مبيعات مخصص':reporting?.mode==='outside'?'تقرير مبيعات خارج الساعات':'تقرير أيام العمل',reporting:{mode:reporting?.mode,windows:reporting?.windows,branches:reporting?.branches.map(b=>({id:b.id,name:b.name}))},labels:dailyReportLabels(),metrics:{meta:result.meta,totals:result.totals,financials:result.financials,collection:result.collection,shifts:result.shifts,tables:result.tables,purchases:result.purchases},rows:[...result.byBranch.map(row=>({section:'byBranch',...row})),...result.byPaymentMethod.map(row=>({section:'byPaymentMethod',...row})),...result.byCashier.map(row=>({section:'byCashier',...row})),...result.refundsByActor.map(row=>({section:'refundsByActor',...row})),...result.items.map(row=>({section:'items',...row})),...result.salesByStaff.map(row=>({section:'salesByStaff',...row}))],generatedAt})});
   } catch (error) {
     return handleApiError(error);
   }

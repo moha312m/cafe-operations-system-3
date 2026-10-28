@@ -5,7 +5,7 @@ import {
   requireKey, resolveCafeId, resolveBranchId, handleApiError, ApiError, requireFeature,
 } from "@/lib/api";
 import { audit } from "@/lib/audit";
-import { round2, paymentStatusFor } from "@/lib/purchases";
+import { round2, paymentStatusFor, fundingMethodError } from "@/lib/purchases";
 import type { Prisma } from "@prisma/client";
 
 // GET /api/purchases — invoice list (+ summary cards). Filters: date, supplier,
@@ -106,6 +106,9 @@ const createSchema = z.object({
     .object({
       amount: z.number().positive(),
       method: z.enum(["CASH", "CARD", "WALLET", "BANK_TRANSFER"]),
+      // A drawer payment needs the shift lock and an Idempotency-Key, so it is
+      // recorded through POST /api/purchases/[id]/payments, never here.
+      fundingSource: z.enum(["SAFE", "BANK"]).optional(),
     })
     .optional(),
 });
@@ -117,6 +120,8 @@ export async function POST(request: NextRequest) {
     await requireFeature(session, "inventoryEnabled");
     await requireFeature(session, "purchasesEnabled");
     const data = createSchema.parse(await request.json());
+    const fundingError = data.payment?.fundingSource ? fundingMethodError(data.payment.fundingSource, data.payment.method) : null;
+    if (fundingError) throw new ApiError(400, fundingError);
     const cafeId = resolveCafeId(session, data.cafeId);
     const branchId = resolveBranchId(session, data.branchId);
 
@@ -193,6 +198,7 @@ export async function POST(request: NextRequest) {
           data: {
             cafeId, branchId, purchaseInvoiceId: created.id,
             amount: paid, method: data.payment.method,
+            fundingSource: data.payment.fundingSource ?? null,
             createdByUserId: session.id,
           },
         });
@@ -209,7 +215,7 @@ export async function POST(request: NextRequest) {
       await audit({
         cafeId, userId: session.id, action: "PURCHASE_PAYMENT_RECORDED",
         entity: "PurchaseInvoice", entityId: invoice.id,
-        details: { branchId, purchaseInvoiceId: invoice.id, amount: paid, method: data.payment?.method },
+        details: { branchId, purchaseInvoiceId: invoice.id, amount: paid, method: data.payment?.method, fundingSource: data.payment?.fundingSource ?? null },
       });
     }
 

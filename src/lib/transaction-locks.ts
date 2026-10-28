@@ -3,7 +3,7 @@ import { ApiError } from "@/lib/api";
 import { assertOpeningReady } from "@/lib/opening-readiness";
 import { protectedContext, optionalProtectedContext } from "@/lib/protected-transaction";
 
-export function scopedLockPredicate(tx: Prisma.TransactionClient, alias: "s" | "o" | "p" | "c" | "t" | "i") {
+export function scopedLockPredicate(tx: Prisma.TransactionClient, alias: "s" | "o" | "p" | "c" | "t" | "i" | "v") {
   const scope = protectedContext(tx).scope;
   const name = Prisma.raw(alias); // closed, code-owned alias set; never request input
   const conditions: Prisma.Sql[] = [];
@@ -92,6 +92,15 @@ export async function lockTableSessions(tx: Prisma.TransactionClient, ids: strin
   const rows = await tx.$queryRaw<{ id: string }[]>`SELECT t."id" FROM "TableSession" t WHERE t."id" IN (${Prisma.join(sorted)}) AND ${scopedLockPredicate(tx, "t")} ORDER BY t."id" FOR UPDATE OF t`;
   if (rows.length !== sorted.length) throw new ApiError(404, "حساب الترابيزة مش موجود في نطاقك");
   remember(tx, "TableSession", sorted, rows.map(row => row.id), 5);
+}
+/** A supplier invoice ranks after table sessions and before inventory, the
+ * order confirmation already takes (invoice claim, then stock rows). */
+export async function lockPurchaseInvoice(tx: Prisma.TransactionClient, id: string) {
+  const ids = newLocks(tx, "PurchaseInvoice", [id], 5.5);
+  if (!ids.length) return;
+  const rows = await tx.$queryRaw<{ id: string }[]>`SELECT v."id" FROM "PurchaseInvoice" v WHERE v."id"=${id} AND ${scopedLockPredicate(tx, "v")} FOR UPDATE OF v`;
+  if (rows.length !== 1) throw new ApiError(404, "الفاتورة غير موجودة");
+  remember(tx, "PurchaseInvoice", ids, rows.map(row => row.id), 5.5);
 }
 export async function lockBranchAllocator(tx: Prisma.TransactionClient, branchId: string) {
   const scope = protectedContext(tx).scope;

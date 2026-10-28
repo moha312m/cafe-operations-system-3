@@ -7,6 +7,7 @@ import { formatTime } from "@/lib/i18n";
 import { useApp } from "@/components/app-shell";
 import {
   INVOICE_STATUS_LABEL, PAYMENT_STATUS_LABEL, PURCHASE_METHOD_LABEL,
+  PAYMENT_CHOICES, FUNDING_LABEL, type FundingSource, type PaymentChoice,
 } from "@/lib/purchases";
 import { UNIT_LABEL } from "@/lib/inventory";
 import type {
@@ -41,7 +42,7 @@ type Detail = {
   taxAmount: number; totalAmount: number; paidAmount: number; remainingAmount: number;
   notes: string | null; createdBy: string | null;
   items: { id: string; name: string; quantity: number; unit: InventoryUnit; unitCost: number; totalCost: number; expiryDate: string | null }[];
-  payments: { id: string; amount: number; method: PurchasePaymentMethod; note: string | null; paidAt: string; createdBy: string | null }[];
+  payments: { id: string; amount: number; method: PurchasePaymentMethod; fundingSource: FundingSource | null; note: string | null; paidAt: string; createdBy: string | null }[];
 };
 
 const STATUS_TONE: Record<PurchaseInvoiceStatus, string> = {
@@ -56,6 +57,8 @@ const PAY_TONE: Record<PurchasePaymentStatus, string> = {
 };
 
 type NewItem = { inventoryItemId: string; quantity: string; unitCost: string; expiryDate: string };
+
+const choiceOf = (key: PaymentChoice["key"]) => PAYMENT_CHOICES.find((c) => c.key === key)!;
 
 export default function PurchasesPage() {
   const { cafe, user, canKey } = useApp();
@@ -87,14 +90,14 @@ export default function PurchasesPage() {
   const [cTax, setCTax] = useState("");
   const [cItems, setCItems] = useState<NewItem[]>([{ inventoryItemId: "", quantity: "", unitCost: "", expiryDate: "" }]);
   const [cPayMode, setCPayMode] = useState<"UNPAID" | "PARTIAL" | "PAID">("UNPAID");
-  const [cPayMethod, setCPayMethod] = useState<PurchasePaymentMethod>("CASH");
+  const [cPayChoice, setCPayChoice] = useState<PaymentChoice["key"]>("SAFE_CASH");
   const [cPayAmount, setCPayAmount] = useState("");
 
   // detail + payment
   const [detail, setDetail] = useState<Detail | null>(null);
   const [payOpen, setPayOpen] = useState(false);
   const [payAmount, setPayAmount] = useState("");
-  const [payMethod, setPayMethod] = useState<PurchasePaymentMethod>("CASH");
+  const [payChoice, setPayChoice] = useState<PaymentChoice["key"]>("SAFE_CASH");
   const [payNote, setPayNote] = useState("");
   const [confirmOpen, setConfirmOpen] = useState(false);
 
@@ -139,7 +142,7 @@ export default function PurchasesPage() {
     setCBranch(user.branchId ?? (branches[0]?.id ?? ""));
     setCSupplier(""); setCNumber(""); setCNotes(""); setCDiscount(""); setCTax("");
     setCItems([{ inventoryItemId: "", quantity: "", unitCost: "", expiryDate: "" }]);
-    setCPayMode("UNPAID"); setCPayMethod("CASH"); setCPayAmount("");
+    setCPayMode("UNPAID"); setCPayChoice("SAFE_CASH"); setCPayAmount("");
     setCreateOpen(true);
   }
 
@@ -156,7 +159,8 @@ export default function PurchasesPage() {
         cPayMode === "UNPAID"
           ? undefined
           : {
-              method: cPayMethod,
+              method: choiceOf(cPayChoice).method,
+              fundingSource: choiceOf(cPayChoice).fundingSource,
               amount: cPayMode === "PAID" ? cTotal : Number(cPayAmount) || 0,
             };
       if (payment && payment.amount <= 0) { setBusy(false); return toast.error("مبلغ الدفعة غير صحيح"); }
@@ -224,7 +228,7 @@ export default function PurchasesPage() {
     try {
       await api(`/api/purchases/${detail.id}/payments`, {
         method: "POST",
-        body: { amount: Number(payAmount) || 0, method: payMethod, note: payNote.trim() || undefined },
+        body: { amount: Number(payAmount) || 0, method: choiceOf(payChoice).method, fundingSource: choiceOf(payChoice).fundingSource, note: payNote.trim() || undefined },
       });
       toast.success("تم تسجيل الدفعة");
       setPayOpen(false); setPayAmount(""); setPayNote("");
@@ -440,10 +444,11 @@ export default function PurchasesPage() {
                   {cPayMode === "PARTIAL" && (
                     <Input type="number" min="0" step="0.01" dir="ltr" placeholder="مبلغ الدفعة" value={cPayAmount} onChange={(e) => setCPayAmount(e.target.value)} />
                   )}
-                  <select value={cPayMethod} onChange={(e) => setCPayMethod(e.target.value as PurchasePaymentMethod)}
+                  <select aria-label="الفلوس طالعة منين" value={cPayChoice} onChange={(e) => setCPayChoice(e.target.value as PaymentChoice["key"])}
                     className={`h-9 rounded-lg border border-input bg-background px-3 text-sm ${cPayMode === "PAID" ? "col-span-2" : ""}`}>
-                    {(["CASH", "CARD", "WALLET", "BANK_TRANSFER"] as const).map((m) => <option key={m} value={m}>{PURCHASE_METHOD_LABEL[m]}</option>)}
+                    {PAYMENT_CHOICES.filter((c) => c.fundingSource !== "DRAWER").map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
                   </select>
+                  <p className="col-span-2 text-xs text-muted-foreground">الدفع من درج الكاشير بيتسجل بعد إنشاء الفاتورة من زرار &quot;تسجيل دفعة&quot;، علشان يتخصم من الشيفت.</p>
                 </div>
               )}
             </div>
@@ -515,7 +520,7 @@ export default function PurchasesPage() {
                   <p className="font-semibold">المدفوعات</p>
                   {detail.payments.map((p) => (
                     <div key={p.id} className="flex items-center justify-between">
-                      <span>{PURCHASE_METHOD_LABEL[p.method]}{p.createdBy ? ` · ${p.createdBy}` : ""}{p.note ? ` — ${p.note}` : ""}</span>
+                      <span>{PURCHASE_METHOD_LABEL[p.method]}{p.fundingSource ? ` · ${FUNDING_LABEL[p.fundingSource]}` : ""}{p.createdBy ? ` · ${p.createdBy}` : ""}{p.note ? ` — ${p.note}` : ""}</span>
                       <span className="tabular-nums">{fmt(p.amount)} <span className="text-xs text-muted-foreground">{formatTime(p.paidAt)}</span></span>
                     </div>
                   ))}
@@ -534,7 +539,7 @@ export default function PurchasesPage() {
                   <Button onClick={() => setConfirmOpen(true)} disabled={busy}>تأكيد الفاتورة</Button>
                 )}
                 {detail.status !== "CANCELLED" && detail.remainingAmount > 0 && canPay && (
-                  <Button variant="outline" onClick={() => { setPayMethod("CASH"); setPayAmount(String(detail.remainingAmount)); setPayOpen(true); }} disabled={busy}>تسجيل دفعة</Button>
+                  <Button variant="outline" onClick={() => { setPayChoice("SAFE_CASH"); setPayAmount(String(detail.remainingAmount)); setPayOpen(true); }} disabled={busy}>تسجيل دفعة</Button>
                 )}
                 {detail.status !== "CANCELLED" && canCancel && (
                   <Button variant="ghost" className="text-destructive" onClick={cancelInvoice} disabled={busy}>إلغاء الفاتورة</Button>
@@ -571,15 +576,16 @@ export default function PurchasesPage() {
                 <Input type="number" min="0" step="0.01" dir="ltr" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} />
               </div>
               <div className="space-y-1.5">
-                <Label>طريقة الدفع</Label>
+                <Label>الفلوس طالعة منين؟</Label>
                 <div className="grid grid-cols-2 gap-2">
-                  {(["CASH", "CARD", "WALLET", "BANK_TRANSFER"] as const).map((m) => (
-                    <button key={m} onClick={() => setPayMethod(m)}
-                      className={`rounded-lg border px-2 py-2 text-sm font-medium ${payMethod === m ? "border-foreground bg-foreground text-background" : "border-border"}`}>
-                      {PURCHASE_METHOD_LABEL[m]}
+                  {PAYMENT_CHOICES.map((c) => (
+                    <button key={c.key} type="button" aria-pressed={payChoice === c.key} onClick={() => setPayChoice(c.key)}
+                      className={`rounded-lg border px-2 py-2 text-sm font-medium ${payChoice === c.key ? "border-foreground bg-foreground text-background" : "border-border"}`}>
+                      {c.label}
                     </button>
                   ))}
                 </div>
+                {payChoice === "DRAWER_CASH" && <p className="text-xs text-muted-foreground">بيتخصم من الكاش المتوقع في شيفتك المفتوح في نفس الفرع.</p>}
               </div>
               <Input placeholder="ملاحظة (اختياري)" value={payNote} onChange={(e) => setPayNote(e.target.value)} />
             </div>

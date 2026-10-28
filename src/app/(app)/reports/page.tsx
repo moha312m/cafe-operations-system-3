@@ -9,6 +9,7 @@ import { useApp } from "@/components/app-shell";
 import {ReportingControls,type ReportingMetadata} from '@/components/sales/reporting-controls';
 import {ReportOutputActions} from '@/components/sales/report-output-actions';
 import {TouchSelect} from '@/components/pos/touch-select';
+import { DAILY_REPORT_METRICS, type DailyMetricKey } from "@/lib/metric-definitions";
 import {
   Card,
   CardContent,
@@ -36,6 +37,7 @@ type Report = {
     service: number;
     tax: number;
     revenue: number;
+    revenueExTax?: number;
     avgOrderValue: number;
   };
   financials: {
@@ -76,6 +78,9 @@ type Report = {
     invoiceCount: number;
     supplierPayments: number;
     unpaidTotal: number;
+    unpaidAsOf?: string;
+    draftCount?: number;
+    draftTotal?: number;
   };
   byPaymentMethod: { method: string; amount: number; count: number }[];
   byBranch: { branchId: string; branchName: string; revenue: number; orders: number }[];
@@ -137,49 +142,53 @@ export default function ReportsPage() {
       {report && (
         <>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            {[
-              { label: "المبيعات قبل المرتجعات", value: money(report.financials.grossSales, currency) },
-              { label: "مرتجعات المبيعات", value: money(report.financials.salesRefunds, currency) },
-              { label: "صافي المبيعات", value: money(report.financials.netSales, currency) },
-              { label: "اللي اتحصّل فعليًا", value: money(report.financials.collections, currency) },
-              { label: "كل المبالغ المرتجعة", value: money(report.financials.refunds, currency) },
-              { label: "مرتجعات قبل التسليم", value: money(report.financials.unservedRefunds, currency) },
-              { label: "صافي حركة الأموال", value: money(report.financials.netMoneyMovement, currency) },
-              { label: "عدد الطلبات", value: String(report.totals.orders) },
-              { label: "متوسط قيمة الطلب", value: money(report.totals.avgOrderValue, currency) },
-              { label: "الخصومات", value: money(report.totals.discounts, currency) },
-              { label: "الشيفتات المفتوحة", value: String(report.shifts.open) },
-              { label: "الشيفتات المقفولة", value: String(report.shifts.closed) },
-              {
-                label: "فروقات الكاش",
-                value: money(report.shifts.cashDifferenceTotal, currency),
-              },
-              { label: "إجمالي السيرفيس", value: money(report.totals.service, currency) },
-              { label: "إجمالي الضريبة", value: money(report.totals.tax, currency) },
-              { label: "طلبات في انتظار التحصيل", value: String(report.collection.pendingCount) },
-              { label: "إجمالي المبالغ غير المحصلة", value: money(report.collection.uncollectedTotal, currency) },
-              { label: "إجمالي المدفوع جزئيًا", value: money(report.collection.partialRemaining, currency) },
+            {([
+              { metric: "grossSales", value: money(report.financials.grossSales, currency) },
+              { metric: "salesRefunds", value: money(report.financials.salesRefunds, currency) },
+              { metric: "netSales", value: money(report.financials.netSales, currency) },
+              { metric: "collections", value: money(report.financials.collections, currency) },
+              { metric: "refunds", value: money(report.financials.refunds, currency) },
+              { metric: "unservedRefunds", value: money(report.financials.unservedRefunds, currency) },
+              { metric: "netMoneyMovement", value: money(report.financials.netMoneyMovement, currency) },
+              ...(report.totals.revenueExTax !== undefined
+                ? [{ metric: "revenueExTax", value: money(report.totals.revenueExTax, currency) }]
+                : []),
+              { metric: "orders", value: String(report.totals.orders) },
+              { metric: "avgOrderValue", value: money(report.totals.avgOrderValue, currency) },
+              { metric: "discounts", value: money(report.totals.discounts, currency) },
+              { metric: "openShifts", value: String(report.shifts.open) },
+              { metric: "closedShifts", value: String(report.shifts.closed) },
+              { metric: "cashDifferenceTotal", value: money(report.shifts.cashDifferenceTotal, currency) },
+              { metric: "service", value: money(report.totals.service, currency) },
+              { metric: "tax", value: money(report.totals.tax, currency) },
+              { metric: "pendingCount", value: String(report.collection.pendingCount) },
+              { metric: "uncollectedTotal", value: money(report.collection.uncollectedTotal, currency) },
+              { metric: "partialRemaining", value: money(report.collection.partialRemaining, currency) },
               ...(report.tables
                 ? [
-                    { label: "الترابيزات المفتوحة", value: String(report.tables.openCount) },
-                    { label: "الترابيزات المقفولة اليوم", value: String(report.tables.closedTodayCount) },
-                    { label: "متوسط مدة الجلوس", value: `${report.tables.avgSittingMinutes} دقيقة` },
-                    { label: "إجمالي تحصيل الترابيزات", value: money(report.tables.collectedTotal, currency) },
-                    { label: "مبالغ غير محصلة على الترابيزات", value: money(report.tables.uncollectedTotal, currency) },
+                    { metric: "openTables", value: String(report.tables.openCount) },
+                    { metric: "closedTables", value: String(report.tables.closedTodayCount) },
+                    { metric: "avgSittingMinutes", value: `${report.tables.avgSittingMinutes} دقيقة` },
+                    { metric: "tableCollections", value: money(report.tables.collectedTotal, currency) },
+                    { metric: "tableUncollected", value: money(report.tables.uncollectedTotal, currency) },
                   ]
                 : []),
               ...(report.purchases
                 ? [
-                    { label: "إجمالي المشتريات", value: money(report.purchases.total, currency) },
-                    { label: "مدفوعات الموردين", value: money(report.purchases.supplierPayments, currency) },
-                    { label: "مشتريات غير مدفوعة", value: money(report.purchases.unpaidTotal, currency) },
+                    { metric: "purchases", value: money(report.purchases.total, currency) },
+                    { metric: "supplierPayments", value: money(report.purchases.supplierPayments, currency) },
+                    { metric: "supplierUnpaid", value: money(report.purchases.unpaidTotal, currency) },
+                    {
+                      metric: "purchaseDrafts", suffix: ` (${report.purchases.draftCount ?? 0})`,
+                      value: money(report.purchases.draftTotal ?? 0, currency),
+                    },
                   ]
                 : []),
-            ].map((stat) => (
-              <Card key={stat.label}>
+            ] as { metric: DailyMetricKey; value: string; suffix?: string }[]).map((stat) => (
+              <Card key={stat.metric} title={DAILY_REPORT_METRICS[stat.metric].definition}>
                 <CardHeader className="pb-1">
                   <CardTitle className="text-sm font-normal text-muted-foreground">
-                    {stat.label}
+                    {DAILY_REPORT_METRICS[stat.metric].label}{stat.suffix}
                   </CardTitle>
                 </CardHeader>
                 <CardContent>

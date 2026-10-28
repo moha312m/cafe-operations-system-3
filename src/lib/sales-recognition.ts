@@ -22,5 +22,7 @@ export async function recognizedSales(scope:FinancialScope):Promise<SaleContribu
  }
  return result;
 }
-export function contributionTotals(rows:SaleContribution[]){return {orders:rows.reduce((s,r)=>s+r.orders,0),gross:money(sumMoney(rows.map(r=>r.subtotal))).toNumber(),discounts:money(sumMoney(rows.map(r=>r.discount))).toNumber(),tax:money(sumMoney(rows.map(r=>r.tax))).toNumber(),service:money(sumMoney(rows.map(r=>r.service))).toNumber(),revenue:money(sumMoney(rows.map(r=>r.revenue))).toNumber()};}
+export function contributionTotals(rows:SaleContribution[]){return {orders:rows.reduce((s,r)=>s+r.orders,0),gross:money(sumMoney(rows.map(r=>r.subtotal))).toNumber(),discounts:money(sumMoney(rows.map(r=>r.discount))).toNumber(),tax:money(sumMoney(rows.map(r=>r.tax))).toNumber(),service:money(sumMoney(rows.map(r=>r.service))).toNumber(),revenue:money(sumMoney(rows.map(r=>r.revenue))).toNumber(),
+ // Tax is added on top of the bill (src/lib/charges.ts), so removing the recorded tax leaves the bill without it; service stays in.
+ revenueExTax:money(sumMoney(rows.map(r=>r.revenue)).minus(sumMoney(rows.map(r=>r.tax)))).toNumber()};}
 export function contributionItems(rows:SaleContribution[]){const items=new Map<string,{product:string;variant:string|null;quantity:number;revenue:number}>();for(const row of rows)for(const line of row.items){const key=JSON.stringify([line.product,line.variant]),current=items.get(key)??{product:line.product,variant:line.variant,quantity:0,revenue:0};current.quantity+=line.quantity;current.revenue=money(decimal(current.revenue).plus(line.revenue)).toNumber();items.set(key,current);}return [...items.values()].filter(i=>i.quantity||i.revenue).sort((a,b)=>b.revenue-a.revenue);}

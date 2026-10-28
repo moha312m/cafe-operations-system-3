@@ -230,6 +230,7 @@ enum SubscriptionStatus {
 // ─────────────────────────── Tenancy core ────────────────────────────
 
 model Cafe {
+  accountingEntity AccountingEntity?
   branchOpeningSettings BranchOpeningSettings[]
   cashStorages CashStorage[]
   cashStorageMovements CashStorageMovement[]
@@ -427,6 +428,7 @@ model CafeSettings {
 }
 
 model Branch {
+  journalLines JournalLine[]
   stockBindings ProductStockBinding[] @relation("FinishedBindingBranch")
   inventorySaleIdentityItems InventoryItem[] @relation("InventorySaleIdentityBranch")
   reportingVersions BranchReportingVersion[]
@@ -656,6 +658,8 @@ model BranchFinancialSettings {
 }
 
 model User {
+  journalEntries JournalEntry[] @relation("JournalEntryCreator")
+  accountingPeriodsClosed AccountingPeriod[] @relation("AccountingPeriodCloser")
   finishedGoodsReturns FinishedGoodsReturn[] @relation("FinishedReturnActor")
   branchOpeningSettingsUpdated BranchOpeningSettings[]
   cashStoragesDeclared CashStorage[]
@@ -1443,6 +1447,7 @@ model OrderTrace {
 model Shift {
   cashStorage CashStorage?
   openingCashReceipt OpeningCashReceipt?
+  purchasePayments PurchasePayment[]
 
   id                 String    @id @default(cuid())
   cafeId             String
@@ -1480,6 +1485,8 @@ model Shift {
   totalCardSales      Decimal           @default(0) @db.Decimal(10, 2)
   totalWalletSales    Decimal           @default(0) @db.Decimal(10, 2)
   totalRefunds        Decimal           @default(0) @db.Decimal(10, 2)
+  /// Supplier payments handed out of this drawer; expectedCash already nets them.
+  totalCashPayouts    Decimal           @default(0) @db.Decimal(10, 2)
   totalDiscounts      Decimal           @default(0) @db.Decimal(10, 2)
   orderCount          Int               @default(0)
   status              ShiftStatus       @default(OPEN)
@@ -2937,6 +2944,16 @@ enum PurchasePaymentMethod {
   BANK_TRANSFER // تحويل بنكي
 }
 
+// Where the money for a supplier payment came from. Only DRAWER touches a
+// shift: it is cash handed out of an open drawer, so it lowers that shift's
+// expected cash. NULL on rows recorded before this existed — the source was
+// never asked, and guessing one would invent cash movements.
+enum PurchasePaymentFunding {
+  DRAWER // من درج الكاشير
+  SAFE // من الخزنة
+  BANK // من حساب بنكي / كارت / محفظة الكافيه
+}
+
 // Raw-material suppliers (cafe-scoped).
 model Supplier {
   id        String   @id @default(cuid())
@@ -3030,6 +3047,10 @@ model PurchasePayment {
   purchaseInvoiceId String
   amount            Decimal               @db.Decimal(12, 2)
   method            PurchasePaymentMethod @default(CASH)
+  fundingSource     PurchasePaymentFunding?
+  /// The open shift whose drawer paid, set exactly when fundingSource = DRAWER
+  /// (enforced by a CHECK constraint).
+  shiftId           String?
   paidAt            DateTime              @default(now())
   note              String?
   createdByUserId   String?
@@ -3037,10 +3058,12 @@ model PurchasePayment {
 
   invoice   PurchaseInvoice @relation(fields: [purchaseInvoiceId], references: [id], onDelete: Cascade)
   createdBy User?           @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+  shift     Shift?          @relation(fields: [shiftId], references: [id], onDelete: Restrict)
 
   @@index([cafeId])
   @@index([branchId])
   @@index([purchaseInvoiceId])
+  @@index([shiftId])
   @@index([cafeId, paidAt])
 }
 
@@ -3606,4 +3629,146 @@ model FinishedGoodsReturn {
   @@index([branchId, appliedAt], map: "FinishedGoodsReturn_branch_pending_idx")
   @@index([deferredHandoverId, appliedAt], map: "FinishedGoodsReturn_handover_pending_idx")
   @@index([inventoryTransactionId], map: "FinishedGoodsReturn_ledger_idx")
+}
+
+// ───────────────────────────── Accounting ledger (F5) ─────────────────────────────
+// One books per café (owner decision D3: all branches are one company). The
+// ledger is append-only: entries and lines are never updated or deleted (DB
+// triggers), a correction is a reversing entry, every entry balances at
+// commit (deferred constraint trigger), and an entry can only land in an OPEN
+// period that contains its date. cafeId is repeated on every row so the
+// tenant can be checked by trigger and purged by café. No business flow posts
+// here yet: F5 is the core, exercised on synthetic data only.
+
+enum AccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  REVENUE
+  EXPENSE
+}
+
+enum BalanceSide {
+  DEBIT
+  CREDIT
+}
+
+enum AccountingPeriodStatus {
+  OPEN
+  CLOSED
+}
+
+model AccountingEntity {
+  id               String   @id @default(cuid())
+  cafeId           String   @unique
+  name             String
+  currency         String
+  /// Next gapless entry number; taken under this row's lock by the posting service.
+  nextEntryNumber  Int      @default(1)
+  createdAt        DateTime @default(now())
+
+  cafe     Cafe                @relation(fields: [cafeId], references: [id], onDelete: Restrict)
+  accounts AccountingAccount[]
+  periods  AccountingPeriod[]
+  entries  JournalEntry[]
+}
+
+model AccountingAccount {
+  id            String      @id @default(cuid())
+  cafeId        String
+  entityId      String
+  code          String
+  name          String
+  type          AccountType
+  normalBalance BalanceSide
+  /// Stable handle the posting rules map to (e.g. CASH_DRAWER); null for accounts an accountant adds.
+  systemKey     String?
+  /// Header accounts group others and never take lines.
+  isPostable    Boolean     @default(true)
+  isActive      Boolean     @default(true)
+  parentId      String?
+  createdAt     DateTime    @default(now())
+
+  entity   AccountingEntity    @relation(fields: [entityId], references: [id], onDelete: Restrict)
+  parent   AccountingAccount?  @relation("AccountTree", fields: [parentId], references: [id], onDelete: NoAction)
+  children AccountingAccount[] @relation("AccountTree")
+  lines    JournalLine[]
+
+  @@unique([entityId, code])
+  @@unique([entityId, systemKey])
+  @@index([cafeId])
+}
+
+model AccountingPeriod {
+  id         String                 @id @default(cuid())
+  cafeId     String
+  entityId   String
+  /// Inclusive local calendar dates (Africa/Cairo business dates).
+  startsOn   DateTime               @db.Date
+  endsOn     DateTime               @db.Date
+  status     AccountingPeriodStatus @default(OPEN)
+  closedAt   DateTime?
+  closedById String?
+  createdAt  DateTime               @default(now())
+
+  entity   AccountingEntity @relation(fields: [entityId], references: [id], onDelete: Restrict)
+  closedBy User?            @relation("AccountingPeriodCloser", fields: [closedById], references: [id], onDelete: Restrict)
+  entries  JournalEntry[]
+
+  @@unique([entityId, startsOn])
+  @@index([cafeId])
+}
+
+model JournalEntry {
+  id           String   @id @default(cuid())
+  cafeId       String
+  entityId     String
+  periodId     String
+  number       Int
+  /// The accounting date (local business date), which picks the period.
+  entryDate    DateTime @db.Date
+  postedAt     DateTime @default(now())
+  description  String
+  /// What produced the entry, kept as a snapshot so it survives the source row.
+  sourceType   String
+  sourceId     String?
+  /// Idempotency: one entry per source event per entity.
+  sourceKey    String
+  /// SHA-256 of the canonical lines; a replay with a different payload is refused.
+  payloadHash  String
+  reversalOfId String?  @unique
+  createdById  String?
+
+  entity     AccountingEntity @relation(fields: [entityId], references: [id], onDelete: Restrict)
+  period     AccountingPeriod @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  createdBy  User?            @relation("JournalEntryCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  reversalOf JournalEntry?    @relation("JournalReversal", fields: [reversalOfId], references: [id], onDelete: NoAction)
+  reversedBy JournalEntry?    @relation("JournalReversal")
+  lines      JournalLine[]
+
+  @@unique([entityId, number])
+  @@unique([entityId, sourceKey])
+  @@index([cafeId])
+  @@index([periodId])
+  @@index([entityId, entryDate])
+}
+
+model JournalLine {
+  id        String  @id @default(cuid())
+  cafeId    String
+  entryId   String
+  accountId String
+  /// Branch dimension; null for café-wide lines.
+  branchId  String?
+  debit     Decimal @default(0) @db.Decimal(14, 2)
+  credit    Decimal @default(0) @db.Decimal(14, 2)
+  memo      String?
+
+  entry   JournalEntry      @relation(fields: [entryId], references: [id], onDelete: Restrict)
+  account AccountingAccount @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  branch  Branch?           @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  @@index([cafeId])
+  @@index([entryId])
+  @@index([accountId])
 }

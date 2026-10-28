@@ -47,6 +47,7 @@ export type Shift = {
   totalWalletSales?: string;
   totalDiscounts?: string;
   totalRefunds?: string;
+  totalCashPayouts?: string;
   orderCount?: number;
   cardSettlementRequired?: boolean;
   walletSettlementRequired?: boolean;
@@ -533,6 +534,9 @@ export function ShiftControls({
                   [t.shifts.walletSales, shift.totalWalletSales],
                   [t.shifts.discounts, shift.totalDiscounts],
                   [t.shifts.refunds, shift.totalRefunds],
+                  // Shown only when the drawer paid a supplier, so the gap
+                  // between cash sales and expected cash is explained.
+                  ...(Number(shift.totalCashPayouts ?? 0) ? [[t.shifts.supplierPayouts, shift.totalCashPayouts]] : []),
                 ].map(([label, value]) => (
                   <div key={label} className="flex justify-between">
                     <dt className="text-muted-foreground">{label}</dt>
