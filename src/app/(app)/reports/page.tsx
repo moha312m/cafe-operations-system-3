@@ -76,6 +76,9 @@ type Report = {
     invoiceCount: number;
     supplierPayments: number;
     unpaidTotal: number;
+    unpaidAsOf?: string;
+    draftCount?: number;
+    draftTotal?: number;
   };
   byPaymentMethod: { method: string; amount: number; count: number }[];
   byBranch: { branchId: string; branchName: string; revenue: number; orders: number }[];
@@ -161,18 +164,22 @@ export default function ReportsPage() {
               { label: "إجمالي المدفوع جزئيًا", value: money(report.collection.partialRemaining, currency) },
               ...(report.tables
                 ? [
-                    { label: "الترابيزات المفتوحة", value: String(report.tables.openCount) },
+                    { label: "الترابيزات المفتوحة حاليًا", value: String(report.tables.openCount) },
                     { label: "الترابيزات المقفولة اليوم", value: String(report.tables.closedTodayCount) },
                     { label: "متوسط مدة الجلوس", value: `${report.tables.avgSittingMinutes} دقيقة` },
                     { label: "إجمالي تحصيل الترابيزات", value: money(report.tables.collectedTotal, currency) },
-                    { label: "مبالغ غير محصلة على الترابيزات", value: money(report.tables.uncollectedTotal, currency) },
+                    { label: "مبالغ غير محصلة على الترابيزات حاليًا", value: money(report.tables.uncollectedTotal, currency) },
                   ]
                 : []),
               ...(report.purchases
                 ? [
-                    { label: "إجمالي المشتريات", value: money(report.purchases.total, currency) },
+                    { label: "إجمالي المشتريات المؤكدة", value: money(report.purchases.total, currency) },
                     { label: "مدفوعات الموردين", value: money(report.purchases.supplierPayments, currency) },
-                    { label: "مشتريات غير مدفوعة", value: money(report.purchases.unpaidTotal, currency) },
+                    { label: "مستحق للموردين حاليًا", value: money(report.purchases.unpaidTotal, currency) },
+                    {
+                      label: `مسودات مشتريات غير مؤكدة (${report.purchases.draftCount ?? 0})`,
+                      value: money(report.purchases.draftTotal ?? 0, currency),
+                    },
                   ]
                 : []),
             ].map((stat) => (

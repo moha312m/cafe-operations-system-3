@@ -142,14 +142,20 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       });
     }
 
-    const discount = data.discountAmount ?? Number(inv.discountAmount);
-    const tax = data.taxAmount ?? Number(inv.taxAmount);
-    const total = round2(subtotal - discount + tax);
-    if (total < 0) throw new ApiError(400, "الخصم أكبر من قيمة الفاتورة");
-    const paid = Number(inv.paidAmount);
-    const remaining = round2(total - paid);
+    const total = await db.$transaction(async (tx) => {
+      // Totals are decided on the locked row: a concurrent supplier payment
+      // or confirmation must be visible here, not overwritten by a stale read.
+      await tx.$queryRaw`SELECT id FROM "PurchaseInvoice" WHERE id = ${id} FOR UPDATE`;
+      const current = await tx.purchaseInvoice.findUniqueOrThrow({ where: { id } });
+      if (current.status !== "DRAFT") throw new ApiError(400, "لا يمكن تعديل فاتورة مؤكدة أو ملغية");
+      if (!itemRows) subtotal = Number(current.subtotalAmount);
+      const discount = data.discountAmount ?? Number(current.discountAmount);
+      const tax = data.taxAmount ?? Number(current.taxAmount);
+      const total = round2(subtotal - discount + tax);
+      if (total < 0) throw new ApiError(400, "الخصم أكبر من قيمة الفاتورة");
+      const paid = Number(current.paidAmount);
+      const remaining = round2(total - paid);
 
-    await db.$transaction(async (tx) => {
       if (itemRows) {
         await tx.purchaseInvoiceItem.deleteMany({ where: { purchaseInvoiceId: id } });
         await tx.purchaseInvoiceItem.createMany({ data: itemRows });
@@ -168,6 +174,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
           paymentStatus: paymentStatusFor(total, paid),
         },
       });
+      return total;
     });
 
     await audit({

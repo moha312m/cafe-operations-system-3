@@ -89,7 +89,7 @@ export async function api<T>(
   const method = options.method ?? "GET";
   const body = options.body ? JSON.stringify(options.body) : undefined;
   const physicalReturn = /^\/api\/inventory\/[^/]+\/movement(?:\?.*)?$/.test(path) && (options.body as { type?: string; orderItemId?: string } | undefined)?.type === "RETURN" && !!(options.body as { orderItemId?: string } | undefined)?.orderItemId;
-  const protectedPost = method.toUpperCase() === "POST" && (physicalReturn || /^\/api\/(orders\/?$|payments\/?$|tables\/[^/]+\/pay$|qr\/[^/]+\/orders$)/.test(path));
+  const protectedPost = method.toUpperCase() === "POST" && (physicalReturn || /^\/api\/(orders\/?$|payments\/?$|tables\/[^/]+\/pay$|qr\/[^/]+\/orders$|purchases\/[^/]+\/payments$)/.test(path));
   const pending = protectedPost && !options.idempotencyKey ? await requestKey(path, body ?? "") : null;
   const key = options.idempotencyKey ?? pending?.key;
   const res = await fetch(path, {

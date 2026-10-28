@@ -123,9 +123,13 @@ export async function GET(request: NextRequest) {
       }),
     ]);
     // ── Purchases (day) ──
-    const [purchaseAgg, supplierPayAgg, purchaseUnpaid] = await Promise.all([
+    // A purchase is recognized when it is confirmed (stock added). A draft is
+    // a commitment — still editable, no stock — so it is reported apart and
+    // owes the supplier nothing yet. The unpaid balance is as of now, not
+    // as of the selected period.
+    const [purchaseAgg, supplierPayAgg, purchaseUnpaid, draftAgg] = await Promise.all([
       db.purchaseInvoice.aggregate({
-        where: { cafeId, ...branchFilter, status: { not: "CANCELLED" }, ...eventWindow('invoiceDate') },
+        where: { cafeId, ...branchFilter, status: "CONFIRMED", ...eventWindow('invoiceDate') },
         _sum: { totalAmount: true }, _count: true,
       }),
       db.purchasePayment.aggregate({
@@ -133,10 +137,15 @@ export async function GET(request: NextRequest) {
         _sum: { amount: true },
       }),
       db.purchaseInvoice.aggregate({
-        where: { cafeId, ...branchFilter, status: { not: "CANCELLED" }, paymentStatus: { in: ["UNPAID", "PARTIAL"] } },
+        where: { cafeId, ...branchFilter, status: "CONFIRMED", paymentStatus: { in: ["UNPAID", "PARTIAL"] } },
         _sum: { remainingAmount: true },
       }),
+      db.purchaseInvoice.aggregate({
+        where: { cafeId, ...branchFilter, status: "DRAFT", ...eventWindow('invoiceDate') },
+        _sum: { totalAmount: true }, _count: true,
+      }),
     ]);
+    const unpaidAsOf = new Date().toISOString();
 
     const tableUncollected = openTables.reduce((s, ts) => s + Number(ts.remainingAmount), 0);
     const durations = closedTables
@@ -215,6 +224,9 @@ export async function GET(request: NextRequest) {
         invoiceCount: purchaseAgg._count,
         supplierPayments: Number(supplierPayAgg._sum.amount ?? 0),
         unpaidTotal: Math.round(Number(purchaseUnpaid._sum.remainingAmount ?? 0) * 100) / 100,
+        unpaidAsOf,
+        draftCount: draftAgg._count,
+        draftTotal: Number(draftAgg._sum.totalAmount ?? 0),
       },
       // Gross Sales / Refunds / Net Sales / Collections, by transaction period.
       financials,
