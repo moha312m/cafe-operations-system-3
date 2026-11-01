@@ -1,0 +1,1 @@
+ALTER TYPE "IdempotencyStatus" ADD VALUE IF NOT EXISTS 'FAILED';
