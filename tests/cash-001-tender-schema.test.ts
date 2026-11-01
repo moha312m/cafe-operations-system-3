@@ -51,11 +51,13 @@ let preExisting: {
   id: string;
   actualCashAmount: unknown;
   cashDifference: unknown;
+  cashReasonCodeId: string | null;
+  cashReasonNote: string | null;
 }[] = [];
 
 before(async () => {
   preExisting = await db.shift.findMany({
-    select: { id: true, actualCashAmount: true, cashDifference: true },
+    select: { id: true, actualCashAmount: true, cashDifference: true, cashReasonCodeId: true, cashReasonNote: true },
   });
 
   const cafe = await db.cafe.create({
@@ -252,7 +254,7 @@ describe("CASH-001 tender reconciliation and shift cash columns", () => {
             status: "CLOSED",
             closedAt: new Date(),
           },
-          select: { id: true, actualCashAmount: true, cashDifference: true },
+          select: { id: true, actualCashAmount: true, cashDifference: true, cashReasonCodeId: true, cashReasonNote: true },
         }),
       ];
     }
@@ -273,8 +275,14 @@ describe("CASH-001 tender reconciliation and shift cash columns", () => {
       assert.ok(before);
       assert.equal(shift.cashWithinTolerance, null, `${shift.id} gained no verdict`);
       assert.equal(shift.cashToleranceAmount, null);
-      assert.equal(shift.cashReasonCodeId, null);
-      assert.equal(shift.cashReasonNote, null);
+      // A shared database legitimately holds shifts that were CLOSED WITH a
+      // reason after this migration (seen 2026-10-30: a demo-café shift closed
+      // 2026-10-27 with +25 and its own audited reason). What this test
+      // proves is that nothing rewrote them: each keeps exactly the note it
+      // had when the suite started — NULL for a legacy shape, like the
+      // synthetic one above.
+      assert.equal(shift.cashReasonCodeId, before.cashReasonCodeId, `${shift.id} reason code unchanged`);
+      assert.equal(shift.cashReasonNote, before.cashReasonNote, `${shift.id} reason note unchanged`);
       assert.equal(
         String(shift.actualCashAmount), String(before.actualCashAmount),
         "the counted drawer is exactly what it was"

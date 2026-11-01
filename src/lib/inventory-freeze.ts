@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { ApiError } from "@/lib/api";
 import { auditInTransaction } from "@/lib/audit";
+import { optionalProtectedContext } from "@/lib/protected-transaction";
 
 const INVENTORY_LOCK_SEED = BigInt(1313035600);
 
@@ -109,9 +110,15 @@ export async function acquireInventorySharedLocks(
   const newEntries = entries.filter(({ key }) => !memo.sharedKeys.has(key.toString()) && !memo.exclusiveKeys.has(key.toString()));
   assertLockOrder(memo, newEntries.map(({ key }) => key));
   for (const { key } of newEntries) {
+    const context = optionalProtectedContext(tx);
+    if (context && context.highestRank > 5.5) throw new ApiError(409, "ترتيب قفل الحساب اتغير — جرّب العملية تاني");
     await tx.$queryRaw<{ locked: string }[]>`
       SELECT pg_advisory_xact_lock_shared(${key}::bigint)::text AS locked
     `;
+    if (context) {
+      context.highestRank = 5.5;
+      context.trace.push({ entity: "InventoryBranchGate", ids: [key.toString()], mode: "pg_advisory_xact_lock_shared" });
+    }
     memo.sharedKeys.add(key.toString());
     memo.highestAcquiredKey = memo.highestAcquiredKey === undefined || key > memo.highestAcquiredKey
       ? key
@@ -130,7 +137,8 @@ export async function acquireInventorySharedLocks(
 
 export async function acquireInventoryExclusiveLock(
   tx: Prisma.TransactionClient,
-  branchId: string
+  branchId: string,
+  options: { tryOnly?: boolean } = {}
 ): Promise<{ key: bigint }> {
   const key = await inventoryBranchLockKey(tx, branchId);
   const memo = transactionMemo(tx);
@@ -140,9 +148,18 @@ export async function acquireInventoryExclusiveLock(
     return { key };
   }
   assertLockOrder(memo, memo.sharedKeys.has(keyText) ? [] : [key]);
-  await tx.$queryRaw<{ locked: string }[]>`
-    SELECT pg_advisory_xact_lock(${key}::bigint)::text AS locked
-  `;
+  const context = optionalProtectedContext(tx);
+  if (context && context.highestRank > 5.5) throw new ApiError(409, "ترتيب قفل الحساب اتغير — جرّب العملية تاني");
+  if (options.tryOnly) {
+    const [row] = await tx.$queryRaw<{ locked: boolean }[]>`SELECT pg_try_advisory_xact_lock(${key}::bigint) AS locked`;
+    if (!row.locked) throw new ApiError(409, "المخزون مشغول بعملية تانية — جرّب الاستلام تاني");
+  } else {
+    await tx.$queryRaw<{ locked: string }[]>`SELECT pg_advisory_xact_lock(${key}::bigint)::text AS locked`;
+  }
+  if (context) {
+    context.highestRank = 5.5;
+    context.trace.push({ entity: "InventoryBranchGate", ids: [keyText], mode: options.tryOnly ? "pg_try_advisory_xact_lock" : "pg_advisory_xact_lock" });
+  }
   memo.exclusiveKeys.add(keyText);
   memo.highestAcquiredKey = memo.highestAcquiredKey === undefined || key > memo.highestAcquiredKey
     ? key

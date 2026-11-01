@@ -39,6 +39,7 @@ export const DISPOSITIONS = [
   "RECOUNT_REQUIRED",
   "RESOLVED_WITHIN_TOLERANCE",
   "VARIANCE_CONFIRMED",
+  "VARIANCE_RECORDED",
 ] as const;
 export type Disposition = (typeof DISPOSITIONS)[number];
 
@@ -50,6 +51,7 @@ export const DISPOSITION_LABEL: Record<Disposition, string> = {
   RECOUNT_REQUIRED: "محتاج إعادة عد",
   RESOLVED_WITHIN_TOLERANCE: "اترجع للسماحية",
   VARIANCE_CONFIRMED: "فرق معتمد",
+  VARIANCE_RECORDED: "فرق مسجّل",
 };
 
 /** Lines the service will not move again. */
@@ -57,6 +59,7 @@ export const TERMINAL_DISPOSITIONS: readonly Disposition[] = [
   "WITHIN_TOLERANCE",
   "RESOLVED_WITHIN_TOLERANCE",
   "VARIANCE_CONFIRMED",
+  "VARIANCE_RECORDED",
 ];
 
 /** A session that still takes counts. CONFIRMED and LOCKED do not. */

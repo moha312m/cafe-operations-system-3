@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { requireKey, handleApiError, ApiError } from "@/lib/api";
+import { requireKey, handleApiError, ApiError, resolveReadScope } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { serializeCustomer } from "@/lib/customers";
 
@@ -13,12 +13,14 @@ const DENIED = "ليس لديك صلاحية للوصول لبيانات الع�
 export async function GET(_request: NextRequest, { params }: Params) {
   try {
     const session = await requireKey("customers.view", DENIED);
+    const scope = resolveReadScope(session);
     const { id } = await params;
     const customer = await db.customer.findFirst({
       // cafeId filter = tenant isolation, even with a leaked id.
-      where: { id, cafeId: session.cafeId ?? "" },
+      where: { id, cafeId: scope.cafeId },
       include: {
         orders: {
+          where: scope,
           orderBy: { createdAt: "desc" },
           take: 20,
           select: {
@@ -27,6 +29,9 @@ export async function GET(_request: NextRequest, { params }: Params) {
           },
         },
         loyaltyTxns: {
+          // Branchless adjustments are café-level evidence; staff see only
+          // ledger entries backed by an order in their current branch.
+          where: scope.branchId ? { cafeId: scope.cafeId, order: { is: scope } } : {},
           orderBy: { createdAt: "desc" },
           take: 30,
           include: {

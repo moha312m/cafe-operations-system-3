@@ -23,7 +23,7 @@ export function FeatureGate({
     enabled !== undefined
       ? enabled
       : !features || feature === undefined
-        ? true
+        ? feature !== "finishedGoodsSalesEnabled"
         : Boolean(features[feature]);
 
   if (allowed) return <>{children}</>;

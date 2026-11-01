@@ -35,7 +35,7 @@
 import { after, before, beforeEach, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import bcrypt from "bcryptjs";
-import { db, tag, teardownTaggedCafe } from "./helpers/db";
+import { db, tag, teardownTaggedCafe, purgeOrderTracesFor } from "./helpers/db";
 import { countCafe, countItem, COUNT_PASSWORD, type CountCafe } from "./helpers/count";
 import { as, login, requireServer } from "./helpers/http";
 
@@ -140,7 +140,7 @@ async function resetBranch(branchId: string) {
   await db.tenderReconciliation.deleteMany({ where: { branchId } });
   await db.payment.deleteMany({ where: { branchId } });
   await db.inventoryTransaction.deleteMany({ where: { branchId } });
-  await db.order.deleteMany({ where: { branchId } });
+  await purgeOrderTracesFor({ branchId }); await db.order.deleteMany({ where: { branchId } });
   await db.shiftCustody.deleteMany({ where: { shift: { branchId } } });
   await db.custodyParticipant.deleteMany({ where: { custodyPeriod: { branchId } } });
   await db.custodyPeriod.updateMany({ where: { branchId }, data: { previousPeriodId: null } });
@@ -1101,8 +1101,32 @@ describe("SH-20 stock rebase inside the acceptance", () => {
     );
   });
 
+  // HND-UX-004: a complete count with a difference is now recorded as the
+  // outgoing declaration, unsigned. Unsigned evidence (like a system match)
+  // is only valid while the ledger has not moved since the observation, so
+  // the movement below makes acceptance refuse as stale. In production no
+  // writer can move the shelf in that window — the freeze refuses untokened
+  // writers and only acceptance itself holds the token — so this is the
+  // safe answer to an impossible-in-practice case.
+  test("a movement after an unsigned count makes the evidence stale and acceptance refuses", async () => {
+    const h = await acceptableHandover({ [items.alpha.id]: 9 });
+    const { applyStockMutation } = await import("@/lib/ledger");
+    await db.$transaction((tx) =>
+      applyStockMutation(tx, {
+        inventoryItemId: items.alpha.id, type: "USAGE", quantity: -0.25,
+        cafeId: fx.cafeId, branchId: fx.branchId, createdById: fx.cashier.id,
+        freezeToken: h.handoverId,
+      }),
+    );
+    await assert.rejects(accept(h.handoverId), statusIs(409));
+    assert.notEqual((await db.handoverSession.findUniqueOrThrow({ where: { id: h.handoverId } })).status, "COMPLETED");
+  });
+
   test("a movement made after the count point is replayed onto the rebase", async () => {
     const h = await acceptableHandover({ [items.alpha.id]: 9 });
+    // The manager-signed shape (every count before HND-UX-004, and counts a
+    // manager confirms today): signed evidence is replayed, not re-checked.
+    await db.stockCountSession.update({ where: { id: h.sessionId }, data: { confirmedById: fx.manager.id } });
     // A sale after the counter looked at the shelf. Setting the balance to
     // the counted figure would put that coffee back.
     const { applyStockMutation } = await import("@/lib/ledger");
@@ -1981,4 +2005,26 @@ describe("SH-20 accept route", () => {
     assert.equal(r.status, 200, r.text);
     assert.equal(r.body.incomingShiftId, h.incomingShiftId);
   });
+});
+
+test('cash handover: an unexplained mismatch is persisted once and custody agrees with incoming opening',async()=>{
+  const h=await acceptableHandover();
+  await db.shift.update({where:{id:h.incomingShiftId},data:{openingCashAmount:80,expectedCashAmount:80}});
+  const url='/api/handovers/'+h.handoverId+'/accept';
+  const key=MARKER+'cash-'+h.handoverId;
+  const body={idempotencyKey:key,countedOpeningCash:80};
+  const accepted=await as(incoming.email,url,{method:'POST',body:JSON.stringify(body)});
+  assert.equal(accepted.status,200,accepted.text);
+  const persisted=await db.handoverSession.findUniqueOrThrow({where:{id:h.handoverId}});
+  assert.equal(Number(persisted.cashVarianceAmount),-20);
+  const observation=await db.openingException.findFirstOrThrow({where:{handoverId:h.handoverId,kind:'CASH_MISMATCH'}});
+  assert.equal(observation.reasonCodeId,null);
+  assert.equal(observation.note,null);
+  const custody=await db.custodyPeriod.findUniqueOrThrow({where:{id:persisted.incomingCashCustodyId!}});
+  assert.equal(Number(custody.openingCashAmount),80);
+  const replay=await as(incoming.email,url,{method:'POST',body:JSON.stringify(body)});
+  assert.equal(replay.status,200,replay.text);
+  assert.equal(await db.varianceCase.count({where:{acceptedHandoverId:h.handoverId,type:'OPENING_EXCEPTION'}}),1);
+  const wrongReplay=await as(fx.manager.email,'/api/handovers/'+h.handoverId+'/override-accept',{method:'POST',body:JSON.stringify({idempotencyKey:key,reasonCodeId:handoverReasonId,note:'Must not turn ordinary cash receipt into manager override',kind:'MANAGER_ADJUSTMENT'})});
+  assert.equal(wrongReplay.status,409,wrongReplay.text);
 });

@@ -1,9 +1,11 @@
 "use client";
+import { TouchNumberInput } from "@/components/pos/touch-number-input";
 
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { api, money } from "@/lib/client";
 import { useApp } from "@/components/app-shell";
+import { PaymentReceiptPreview } from "@/components/receipts/payment-receipt-preview";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -69,8 +71,10 @@ export function CollectPaymentPanel({
   onDone: () => void;
   onClose: () => void;
 }) {
-  const { canKey } = useApp();
+  const { canKey, can } = useApp();
   const canRedeem = canKey("loyalty.redeem_points");
+  const canServe = can("orders:update-status");
+  const [served, setServed] = useState(false);
 
   const [target, setTarget] = useState<OrderTarget | null>(null);
   const [loyalty, setLoyalty] = useState<LoyaltyCalcSettings | null>(null);
@@ -78,6 +82,8 @@ export function CollectPaymentPanel({
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState<"CASH" | "CARD" | "WALLET">("CASH");
   const [busy, setBusy] = useState(false);
+  const inFlight = useRef(false);
+  const [collectionError, setCollectionError] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<{ paymentId: string | null; amount: number; loyaltyDiscount: number } | null>(null);
 
   // بيانات العميل والنقاط
@@ -167,11 +173,30 @@ export function CollectPaymentPanel({
     setRedeemOpen(false);
   }
 
-  async function collect() {
-    if (!target || busy) return;
+  const servable = !!target && target.status === "READY" && canServe && !served;
+
+  // Serving is its own request through the ordinary status route, so the
+  // café's payment, stock and custody rules decide it. A refusal after a
+  // successful collection leaves the money recorded and says so plainly.
+  async function serveNow(afterCollect: boolean) {
+    if (!target) return;
+    try {
+      await api(`/api/orders/${target.orderId}/status`, { method: "PATCH", body: { status: "SERVED" } });
+      setServed(true);
+      toast.success(`الطلب #${target.orderNumber} اتقدم ✅`);
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : "فشل التقديم";
+      toast.error(afterCollect ? `اتحصّل بس متقدمش: ${reason}` : reason);
+    }
+  }
+
+  async function collect(andServe = false) {
+    if (!target || inFlight.current) return;
     const amt = Number(amount) || 0;
     if (amt <= 0 && redeem.points === 0) return toast.error("مبلغ الدفع يجب أن يكون أكبر من صفر");
     if (amt > requiredToCollect + 0.001) return toast.error("مبلغ الدفع أكبر من المطلوب تحصيله");
+    inFlight.current = true;
+    setCollectionError(null);
     setBusy(true);
     try {
       const body: Record<string, unknown> = { orderId: target.orderId };
@@ -183,19 +208,25 @@ export function CollectPaymentPanel({
       const r = await api<{ payments: { id: string }[] }>("/api/payments", { method: "POST", body });
       toast.success("تم تحصيل الدفع بنجاح");
       setReceipt({ paymentId: r.payments[0]?.id ?? null, amount: amt, loyaltyDiscount: redeem.discount });
+      if (andServe) await serveNow(true);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "فشل التحصيل");
-      // Refresh so a duplicate attempt shows the settled state.
-      try {
-        const t = await loadTarget();
-        setRedeemState({ points: 0, discount: 0 });
-        setAmount(String(t.remainingAmount));
-      } catch { /* keep old view */ }
+      const message = e instanceof Error ? e.message : "فشل التحصيل";
+      setCollectionError(message);
+      toast.error(message);
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   }
 
+  if (receipt) {
+    return <PaymentReceiptPreview
+      paymentId={receipt.paymentId}
+      scope="order"
+      onClose={onDone}
+      extraActions={servable ? <Button variant="outline" onClick={() => serveNow(false)}>🍽️ قدّم الطلب دلوقتي</Button> : undefined}
+    />;
+  }
   return (
     <Dialog open onOpenChange={(o) => !o && !busy && onClose()}>
       <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-sm">
@@ -205,46 +236,9 @@ export function CollectPaymentPanel({
           </DialogTitle>
         </DialogHeader>
 
-        {receipt ? (
-          /* ── Post-payment success: receipt actions ── */
-          <div className="space-y-3 py-2 text-center">
-            <p className="text-4xl">✅</p>
-            <p className="text-base font-bold">تم تحصيل الدفع بنجاح</p>
-            <p className="text-sm text-muted-foreground">
-              {money(receipt.amount, currency)}
-              {receipt.loyaltyDiscount > 0 && (
-                <span> + خصم نقاط {money(receipt.loyaltyDiscount, currency)}</span>
-              )}
-              {target ? ` — طلب #${target.orderNumber}` : ""}
-            </p>
-            <div className="grid gap-2">
-              {receipt.paymentId ? (
-                <>
-                  <Button
-                    className="h-11 w-full"
-                    onClick={() => window.open(`/receipts/payment/${receipt.paymentId}?print=1&scope=order`, "_blank")}
-                  >
-                    🖨️ طباعة الريسيت
-                  </Button>
-                  <Button
-                    variant="outline"
-                    className="h-11 w-full"
-                    onClick={() => window.open(`/receipts/payment/${receipt.paymentId}?scope=order`, "_blank")}
-                  >
-                    عرض الريسيت
-                  </Button>
-                </>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  تم سداد الحساب بخصم النقاط بالكامل — لا توجد دفعة نقدية لطباعتها.
-                </p>
-              )}
-              <Button variant="ghost" className="h-10 w-full text-muted-foreground" onClick={onDone}>
-                إغلاق
-              </Button>
-            </div>
-          </div>
-        ) : error ? (
+        {collectionError && <p role="alert" className="text-destructive">{collectionError} — المبلغ والبيانات محفوظة. إعادة نفس المحاولة لا تسجل دفعة أخرى.</p>}
+        {busy && <p role="status">جاري تسجيل الدفع…</p>}
+        {error ? (
           <p className="text-sm text-destructive">{error}</p>
         ) : !target ? (
           <p className="text-sm text-muted-foreground">جاري التحميل…</p>
@@ -354,11 +348,11 @@ export function CollectPaymentPanel({
                         <span>الأقصى: <b>{cap}</b> نقطة</span>
                       </div>
                       <div className="flex items-center gap-1.5">
-                        <Input
+                        <TouchNumberInput
                           type="number" dir="ltr" min={0} max={cap} placeholder="عدد النقاط"
                           className="h-9"
                           value={pointsInput}
-                          onChange={(e) => { setPointsInput(e.target.value); setRedeemError(null); }}
+                          onValueChange={touchValue => { setPointsInput(touchValue); setRedeemError(null); }}
                         />
                         <Button size="sm" className="h-9 shrink-0 px-3 text-xs" onClick={applyRedemption}>
                           تطبيق الخصم
@@ -410,9 +404,16 @@ export function CollectPaymentPanel({
             )}
 
             {settled ? (
-              <p className="rounded-lg bg-emerald-500/10 px-3 py-2 text-sm font-medium text-emerald-700 dark:text-emerald-400">
-                تم تحصيل هذا الحساب بالفعل ✅
-              </p>
+              <div className="space-y-2">
+                <p className="rounded-lg bg-emerald-500/10 px-3 py-2 text-sm font-medium text-emerald-700 dark:text-emerald-400">
+                  تم تحصيل هذا الحساب بالفعل ✅
+                </p>
+                {servable && (
+                  <Button variant="outline" className="h-10 w-full" onClick={() => serveNow(false)}>
+                    🍽️ قدّم الطلب دلوقتي
+                  </Button>
+                )}
+              </div>
             ) : shiftBlocked ? (
               <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-400">
                 لا يمكن تحصيل الدفع بدون شيفت مفتوح — افتح الشيفت من أعلى شاشة الكاشير أولًا.
@@ -421,10 +422,10 @@ export function CollectPaymentPanel({
               <>
                 <div className="space-y-1.5">
                   <Label>مبلغ التحصيل</Label>
-                  <Input
+                  <TouchNumberInput
                     type="number" min="0" step="0.01" dir="ltr"
                     value={amount}
-                    onChange={(e) => setAmount(e.target.value)}
+                    onValueChange={touchValue => setAmount(touchValue)}
                   />
                 </div>
                 <div className="space-y-1.5">
@@ -456,8 +457,13 @@ export function CollectPaymentPanel({
               رجوع لإنشاء طلب
             </Button>
             {target && !settled && !shiftBlocked && (
-              <Button onClick={collect} disabled={busy}>
+              <Button variant={servable ? "outline" : "default"} onClick={() => collect(false)} disabled={busy}>
                 {busy ? "جاري التحصيل…" : "تحصيل الدفع"}
+              </Button>
+            )}
+            {target && !settled && !shiftBlocked && servable && (
+              <Button data-testid="collect-and-serve" onClick={() => collect(true)} disabled={busy}>
+                {busy ? "جاري…" : "حصّل وقدّم 🍽️"}
               </Button>
             )}
           </DialogFooter>

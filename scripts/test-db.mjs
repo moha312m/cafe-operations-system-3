@@ -50,11 +50,24 @@ import path from "node:path";
  */
 export const TEST_DB_NAME_PATTERN = /^cafe_ops_test(_[A-Za-z0-9]+)*$/;
 
-/** How the test cluster is addressed. Deliberately not port 5433. */
-export const TEST_DB_PORT = 5434;
-export const TEST_DB_NAME = "cafe_ops_test";
+/**
+ * How the test cluster is addressed. Deliberately not port 5433.
+ * TEST_DB_PORT / TEST_DB_NAME / TEST_CLUSTER_ROOT may be overridden to run a
+ * separate isolated acceptance cluster; the name must still match
+ * TEST_DB_NAME_PATTERN and the marker check still applies.
+ */
+export const TEST_DB_PORT = Number(process.env.TEST_DB_PORT ?? 5434);
+if (TEST_DB_PORT === 5433) {
+  throw new Error("Refusing TEST_DB_PORT=5433: that port is the owner's real cafe database.");
+}
+export const TEST_DB_NAME = process.env.TEST_DB_NAME ?? "cafe_ops_test";
+if (!TEST_DB_NAME_PATTERN.test(TEST_DB_NAME)) {
+  throw new Error("Refusing TEST_DB_NAME: disposable database names must match cafe_ops_test with optional alphanumeric suffixes.");
+}
 export const TEST_DATABASE_URL = `postgresql://postgres@127.0.0.1:${TEST_DB_PORT}/${TEST_DB_NAME}?schema=public`;
-export const TEST_SERVER_PORT = 3100;
+// TEST_SERVER_PORT may be overridden (e.g. 3101) to target a dedicated
+// isolated test server on an unused port; the default stays :3100.
+export const TEST_SERVER_PORT = Number(process.env.TEST_SERVER_PORT ?? 3100);
 export const TEST_BASE_URL = `http://localhost:${TEST_SERVER_PORT}`;
 
 /** The table whose existence is the database's own statement about itself. */
@@ -62,7 +75,7 @@ export const MARKER_TABLE = "_disposable_test_database";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(HERE, "..");
-export const TEST_CLUSTER_ROOT = "C:\\Dev\\_nextcup_test_postgres";
+export const TEST_CLUSTER_ROOT = process.env.TEST_CLUSTER_ROOT ?? "C:\\Dev\\_nextcup_test_postgres";
 export const TEST_PGDATA = path.join(TEST_CLUSTER_ROOT, "pgdata");
 export const PG_BIN = "C:\\Dev\\_nextcup_postgres\\pg17\\bin";
 

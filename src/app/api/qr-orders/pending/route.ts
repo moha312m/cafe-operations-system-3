@@ -1,9 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { getSession } from "@/lib/auth";
-import { handleApiError, ApiError, requireActiveSession } from "@/lib/api";
+import { handleApiError, requireActiveSession, resolveReadScope } from "@/lib/api";
 import { resolvePermissions } from "@/lib/perms/effective";
 import { approvalQueueWhere } from "@/lib/qr-approval";
+import { orderPage } from "@/lib/order-pagination";
 
 // GET /api/qr-orders/pending — pending QR orders the CURRENT user may
 // approve (assignment-aware). ?countOnly=1 returns just the badge count.
@@ -13,28 +13,32 @@ export async function GET(request: NextRequest) {
     const { keys } = await resolvePermissions(session);
     // Must be able to view QR orders at all.
     if (!keys.has("qr_orders.view") && !keys.has("qr_orders.approve")) {
-      return NextResponse.json({ orders: [], count: 0 });
+      return NextResponse.json({ orders: [], count: 0, pageInfo: { hasMore: false, nextCursor: null }, canApprove: false, canReject: false, canEdit: false });
     }
-    const where = approvalQueueWhere(session, keys.has("qr_orders.approve"));
+    const where = { ...approvalQueueWhere(session, keys.has("qr_orders.approve")), ...resolveReadScope(session) };
 
     if (request.nextUrl.searchParams.get("countOnly") === "1") {
       const count = await db.order.count({ where });
       return NextResponse.json({ count });
     }
 
-    const orders = await db.order.findMany({
-      where,
-      orderBy: { createdAt: "asc" },
-      take: 100,
+    const page = orderPage(request.nextUrl.searchParams, where);
+    const rows = await db.order.findMany({
+      where: page.where,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: page.pageSize + 1,
       include: {
         items: { include: { addOns: true } },
         branch: { select: { name: true } },
         assignedApprover: { select: { name: true } },
       },
     });
+    const { orders, pageInfo } = page.finish(rows);
+    const count = await db.order.count({ where });
 
     return NextResponse.json({
-      count: orders.length,
+      count,
+      pageInfo,
       canApprove: keys.has("qr_orders.approve"),
       canReject: keys.has("qr_orders.reject"),
       canEdit: keys.has("qr_orders.edit_before_approval"),

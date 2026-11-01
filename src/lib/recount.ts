@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 // A real shortage can be confirmed, not merely re-argued.
 //
 // THE defect this module exists to close: an earlier revision refused
@@ -56,8 +57,9 @@
 
 import type { CountLineDisposition, RecountKind } from "@prisma/client";
 import { db } from "@/lib/db";
+import { lockHandoverCount } from "@/lib/handover-count-validation";
 import { ApiError } from "@/lib/api";
-import { audit } from "@/lib/audit";
+import { audit, auditInTransaction } from "@/lib/audit";
 import { round3 } from "@/lib/costing";
 import { captureCountPoint } from "@/lib/count-point";
 import { canTransition, isTerminal } from "@/lib/count-disposition";
@@ -106,8 +108,8 @@ async function lineForResolution(args: {
   sessionId?: string;
   cafeId?: string;
   viewerBranchId?: string | null;
-}) {
-  const line = await db.stockCountLine.findUnique({
+}, client: Prisma.TransactionClient | typeof db = db) {
+  const line = await client.stockCountLine.findUnique({
     where: { id: args.lineId },
     select: {
       id: true,
@@ -166,11 +168,20 @@ export async function recordRecount(args: {
   cafeId?: string;
   viewerBranchId?: string | null;
 }): Promise<RecountResult> {
+  const candidate=await db.stockCountLine.findUnique({where:{id:args.lineId},select:{sessionId:true,session:{select:{accountabilityContext:true}}}});
+  if(candidate?.session.accountabilityContext === "HANDOVER") return db.$transaction(async(tx)=>{
+    await lockHandoverCount(tx,candidate.sessionId);
+    return recordRecountWithClient(args,tx);
+  },{timeout:30000});
+  return recordRecountWithClient(args,db);
+}
+async function recordRecountWithClient(args:{lineId:string;countedQuantity:number;recounterId:string;sessionId?:string;cafeId?:string;viewerBranchId?:string|null},client:Prisma.TransactionClient|typeof db):Promise<RecountResult> {
+  const writeAudit=(entry: Parameters<typeof audit>[0]) => client === db ? audit(entry) : auditInTransaction(client as Prisma.TransactionClient,entry);
   if (!Number.isFinite(args.countedQuantity) || args.countedQuantity < 0) {
     throw new ApiError(400, "الكمية المعدودة لازم تكون رقم مش سالب");
   }
 
-  const line = await lineForResolution(args);
+  const line = await lineForResolution(args,client);
   if (!RECOUNTABLE.includes(line.disposition)) {
     throw new ApiError(
       409,
@@ -188,7 +199,7 @@ export async function recordRecount(args: {
       inventoryItemId: line.inventoryItemId,
       category: line.inventoryItem.category,
     }),
-    db.stockCountRecount.findMany({
+    client.stockCountRecount.findMany({
       where: { lineId: line.id },
       orderBy: { attempt: "desc" },
       select: { attempt: true, counterId: true },
@@ -217,7 +228,7 @@ export async function recordRecount(args: {
   const attempt = (attempts[0]?.attempt ?? 0) + 1;
   const counted = round3(args.countedQuantity);
 
-  const outcome = await db.$transaction(async (tx) => {
+  const writeRecount=async(tx:Prisma.TransactionClient)=>{
     const point = await captureCountPoint(tx, line.inventoryItemId);
     const variance = round3(counted - point.expectedQuantity);
     const resolved = withinTolerance({
@@ -267,12 +278,13 @@ export async function recordRecount(args: {
     });
 
     return { point, variance, resolved, next };
-  });
+  };
+  const outcome=client === db ? await db.$transaction(writeRecount) : await writeRecount(client as Prisma.TransactionClient);
 
   const attemptsRemaining = Math.max(0, policy.maxAttempts - attempt);
 
   if (who.kind === "SELF_RECOUNT") {
-    await audit({
+    await writeAudit({
       cafeId: line.session.cafeId,
       userId: args.recounterId,
       action: SELF_RECOUNT_AUDIT_ACTION,
@@ -287,7 +299,7 @@ export async function recordRecount(args: {
     });
   }
 
-  await audit({
+  await writeAudit({
     cafeId: line.session.cafeId,
     userId: args.recounterId,
     action: "STOCK_COUNT_RECOUNTED",
@@ -327,14 +339,22 @@ export async function acceptLineVariance(args: {
   cafeId?: string;
   viewerBranchId?: string | null;
 }): Promise<{ disposition: "VARIANCE_CONFIRMED" }> {
+  const candidate=await db.stockCountLine.findUnique({where:{id:args.lineId},select:{sessionId:true,session:{select:{accountabilityContext:true}}}});
+  if(candidate?.session.accountabilityContext === "HANDOVER") return db.$transaction(async(tx)=>{
+    await lockHandoverCount(tx,candidate.sessionId);
+    return acceptLineVarianceWithClient(args,tx);
+  });
+  return acceptLineVarianceWithClient(args,db);
+}
+async function acceptLineVarianceWithClient(args:{lineId:string;actorId:string;reasonCodeId:string;note?:string;sessionId?:string;cafeId?:string;viewerBranchId?:string|null},client:Prisma.TransactionClient|typeof db):Promise<{disposition:"VARIANCE_CONFIRMED"}> {
   if (!args.reasonCodeId) {
     throw new ApiError(400, "لازم تحدد سبب الفرق قبل ما تعتمده");
   }
 
-  const line = await lineForResolution(args);
+  const line = await lineForResolution(args,client);
   assertLegal(line.disposition, "VARIANCE_CONFIRMED");
 
-  const reason = await db.reasonCode.findUnique({
+  const reason = await client.reasonCode.findUnique({
     where: { id: args.reasonCodeId },
     select: { cafeId: true, domain: true, isActive: true },
   });
@@ -343,7 +363,7 @@ export async function acceptLineVariance(args: {
   }
   if (!reason.isActive) throw new ApiError(400, "سبب الفرق ده متوقف");
 
-  await db.stockCountLine.update({
+  await client.stockCountLine.update({
     where: { id: line.id },
     data: {
       disposition: "VARIANCE_CONFIRMED",
@@ -352,7 +372,7 @@ export async function acceptLineVariance(args: {
     },
   });
 
-  await audit({
+  const entry = {
     cafeId: line.session.cafeId,
     userId: args.actorId,
     action: VARIANCE_ACCEPTED_AUDIT_ACTION,
@@ -365,7 +385,8 @@ export async function acceptLineVariance(args: {
       reasonCodeId: args.reasonCodeId,
       note: args.note ?? null,
     },
-  });
+  };
+  if(client === db) await audit(entry); else await auditInTransaction(client as Prisma.TransactionClient,entry);
 
   return { disposition: "VARIANCE_CONFIRMED" };
 }

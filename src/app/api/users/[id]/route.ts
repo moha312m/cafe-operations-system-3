@@ -5,7 +5,8 @@ import { requireKey, handleApiError, ApiError } from "@/lib/api";
 import { hashPassword } from "@/lib/auth";
 import { MANAGEABLE_ROLES } from "@/lib/permissions";
 import { resolvePermissions } from "@/lib/perms/effective";
-import { audit } from "@/lib/audit";
+import { audit, auditInTransaction } from "@/lib/audit";
+import { hasStaffBranchResponsibilities, isBranchStaff, projectStaffBranch, staffBranchSelect } from "@/lib/staff-branch";
 import type { Prisma } from "@prisma/client";
 
 type Params = { params: Promise<{ id: string }> };
@@ -20,6 +21,8 @@ const updateUserSchema = z.object({
     .enum(["CAFE_OWNER", "BRANCH_MANAGER", "CASHIER", "WAITER", "BARISTA", "INVENTORY_MANAGER"])
     .optional(),
   branchId: z.string().nullable().optional(),
+  temporaryBranchId: z.string().min(1).nullable().optional(),
+  temporaryBranchUntil: z.string().datetime({ offset: true }).optional(),
   cafeRoleId: z.string().nullable().optional(),
   isActive: z.boolean().optional(),
   archived: z.boolean().optional(), // true = أرشفة، false = إلغاء الأرشفة
@@ -48,6 +51,11 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     }
 
     const data = updateUserSchema.parse(await request.json());
+    const temporaryChange = data.temporaryBranchId !== undefined || data.temporaryBranchUntil !== undefined;
+    if (temporaryChange && session.role !== "CAFE_OWNER") throw new ApiError(403, NOT_ALLOWED);
+    if (temporaryChange && data.temporaryBranchId === undefined) {
+      throw new ApiError(400, "اختار الفرع المؤقت وتاريخ الانتهاء معاً");
+    }
 
     // Password resets need the dedicated sensitive permission (own password
     // change is always allowed).
@@ -97,6 +105,11 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     ) {
       throw new ApiError(403, NOT_ALLOWED);
     }
+    const nextRole = data.role ?? target.role;
+    const nextBranchId = data.branchId !== undefined ? data.branchId : target.branchId;
+    if (nextRole !== "CAFE_OWNER" && nextRole !== "SUPER_ADMIN" && !nextBranchId) {
+      throw new ApiError(400, "الفرع مطلوب");
+    }
     // Target branch must belong to the same cafe.
     if (data.branchId) {
       const branch = await db.branch.findFirst({
@@ -128,19 +141,58 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       update.archivedAt = null;
     }
 
-    const user = await db.user.update({
-      where: { id },
-      data: update,
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        phone: true,
-        role: true,
-        isActive: true,
-        archivedAt: true,
-        branchId: true,
-      },
+    const user = await db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${id} FOR NO KEY UPDATE`;
+      const current = await tx.user.findUniqueOrThrow({ where: { id }, select: staffBranchSelect });
+      const holds = current.temporaryBranchId ? await hasStaffBranchResponsibilities(tx, current) : false;
+      // Preserve ordinary permanent transfers. A started temporary assignment
+      // may not lose its home/role while the employee still has responsibilities.
+      if (current.temporaryBranchStartedAt && holds &&
+          ((data.branchId !== undefined && data.branchId !== current.branchId) ||
+           (data.role !== undefined && !isBranchStaff(data.role)))) {
+        throw new ApiError(409, "الموظف لازم يسلّم الوردية والعهدة قبل تغيير الفرع الأساسي أو الدور");
+      }
+      if (temporaryChange) {
+        const finalRole = data.role ?? current.role;
+        const finalHome = data.branchId !== undefined ? data.branchId : current.branchId;
+        if (!isBranchStaff(finalRole) || !finalHome || !current.cafeId || current.cafeId !== session.cafeId) {
+          throw new ApiError(400, "التعيين المؤقت للموظفين أصحاب فرع أساسي فقط");
+        }
+        if (data.temporaryBranchId === null) {
+          if (data.temporaryBranchUntil !== undefined) throw new ApiError(400, "إلغاء التعيين لا يحتاج تاريخ انتهاء");
+          Object.assign(update, current.temporaryBranchStartedAt && holds
+            ? { temporaryBranchCancelledAt: new Date() }
+            : { temporaryBranch: { disconnect: true }, temporaryBranchUntil: null,
+                temporaryBranchStartedAt: null, temporaryBranchCancelledAt: null });
+        } else {
+          if (!data.temporaryBranchUntil) throw new ApiError(400, "تاريخ انتهاء التعيين المؤقت مطلوب");
+          const until = new Date(data.temporaryBranchUntil);
+          if (until <= new Date()) throw new ApiError(400, "تاريخ الانتهاء لازم يكون في المستقبل");
+          if (data.temporaryBranchId === finalHome) throw new ApiError(400, "اختار فرعاً مؤقتاً مختلفاً عن الفرع الأساسي");
+          const branch = await tx.branch.findFirst({ where: { id: data.temporaryBranchId, cafeId: current.cafeId, isActive: true }, select: { id: true } });
+          if (!branch) throw new ApiError(400, "الفرع المؤقت لازم يكون نشطاً ومن نفس الكافيه");
+          const sameTemporaryBranch = current.temporaryBranchId === branch.id;
+          if (current.temporaryBranchStartedAt && holds && !sameTemporaryBranch) throw new ApiError(409, "سلّم الوردية والعهدة قبل تغيير التعيين المؤقت");
+          const pending = await hasStaffBranchResponsibilities(tx, current);
+          Object.assign(update, { temporaryBranch: { connect: { id: branch.id } }, temporaryBranchUntil: until,
+            temporaryBranchStartedAt: sameTemporaryBranch && current.temporaryBranchStartedAt
+              ? current.temporaryBranchStartedAt : pending ? null : new Date(), temporaryBranchCancelledAt: null });
+        }
+      }
+      const updated = await tx.user.update({
+        where: { id }, data: update,
+        select: { ...staffBranchSelect, email: true, name: true, phone: true, isActive: true, archivedAt: true },
+      });
+      if (temporaryChange) {
+        await auditInTransaction(tx, { cafeId: current.cafeId, userId: session.id, entity: "User", entityId: id,
+          action: data.temporaryBranchId === null ? "STAFF_TEMPORARY_BRANCH_CANCELLED" : "STAFF_TEMPORARY_BRANCH_SET",
+          details: { targetUserId: id, targetName: target.name, byName: session.name,
+            homeBranchId: updated.branchId, oldBranchId: current.temporaryBranchId,
+            temporaryBranchId: updated.temporaryBranchId, until: updated.temporaryBranchUntil?.toISOString() ?? null },
+        });
+      }
+      const branch = await projectStaffBranch(tx, updated);
+      return { ...updated, effectiveBranchId: branch.branchId, temporaryBranchStatus: branch.temporaryBranchStatus };
     });
 
     // ── Specific audit events (one per meaningful change) ──

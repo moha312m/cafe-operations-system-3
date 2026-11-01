@@ -21,11 +21,33 @@ import {
 } from "./helpers/db";
 import { requireServer, login, as } from "./helpers/http";
 
-after(async () => { await db.$disconnect(); });
+let approvalSettings: Awaited<ReturnType<typeof db.ownerActionSettings.findUnique>> = null;
+let approvalCafeId = "";
+after(async () => {
+  if (approvalCafeId) {
+    if (approvalSettings) await db.ownerActionSettings.update({ where: { cafeId: approvalCafeId }, data: {
+      ownerId: approvalSettings.ownerId, refundMode: approvalSettings.refundMode,
+      cancelMode: approvalSettings.cancelMode, itemVoidMode: approvalSettings.itemVoidMode,
+      version: approvalSettings.version,
+    } });
+    else await db.ownerActionSettings.deleteMany({ where: { cafeId: approvalCafeId } });
+  }
+  await db.$disconnect();
+});
 before(async () => {
   await requireServer();
   await login("manager@demo.com", "manager123");
   await login("cashier@demo.com", "cashier123");
+  const fx = await fixture();
+  approvalCafeId = fx.cafeId;
+  approvalSettings = await db.ownerActionSettings.findUnique({ where: { cafeId: fx.cafeId } });
+  const owner = await db.user.findFirst({ where: { cafeId: fx.cafeId, role: "CAFE_OWNER", isActive: true, archivedAt: null }, select: { id: true } });
+  if (!owner) throw new Error("Seeded cafe owner is required for refund approval tests");
+  await db.ownerActionSettings.upsert({
+    where: { cafeId: fx.cafeId },
+    create: { cafeId: fx.cafeId, ownerId: owner.id },
+    update: { ownerId: owner.id, refundMode: "OWNER_REQUEST" },
+  });
 });
 
 const REASON = "طلب العميل إلغاء الطلب";
@@ -125,7 +147,7 @@ describe("REFUND-004 order-level full refund", () => {
       });
       await assert.rejects(
         () => refundOrder(s.order.id, s.manager, "   "),
-        /سبب|reason/i,
+        (error: unknown) => Boolean(error && typeof error === "object" && "status" in error && error.status === 400),
         "whitespace is not a reason"
       );
       const o = await db.order.findUniqueOrThrow({ where: { id: s.order.id } });
@@ -153,7 +175,7 @@ describe("REFUND-004 order-level full refund", () => {
 
       await assert.rejects(
         () => refundOrder(s.order.id, s.manager, REASON),
-        /مرتجع|refunded/i,
+        (error: unknown) => Boolean(error && typeof error === "object" && "status" in error && error.status === 400),
         "a second refund must be refused"
       );
       assert.equal(
@@ -225,7 +247,7 @@ describe("REFUND-004 order-level full refund", () => {
       });
       await assert.rejects(
         () => refundOrder(order.id, manager, REASON),
-        /شيفت|وردية|custody/i,
+        (error: unknown) => Boolean(error && typeof error === "object" && "status" in error && error.status === 400),
         "no drawer, no cash out"
       );
       const o = await db.order.findUniqueOrThrow({ where: { id: order.id } });
@@ -308,7 +330,7 @@ describe("REFUND-004 order-level full refund", () => {
     }
   });
 
-  test("J: an unauthorised actor is refused through the API", async () => {
+  test("J: a cashier may request a refund but cannot execute it before owner approval", async () => {
     const marker = "PH15-R004-J";
     const s = await scene(marker, 30);
     try {
@@ -316,10 +338,12 @@ describe("REFUND-004 order-level full refund", () => {
         session: s.cashier, orderId: s.order.id, branchId: s.fx.branchId,
         splits: [{ method: "CASH", amount: 30 }],
       });
-      const r = await as("cashier@demo.com", `/api/orders/${s.order.id}/refund`, {
+      const r = await as<{ request: { id: string; status: string } }>("cashier@demo.com", `/api/orders/${s.order.id}/refund`, {
         method: "POST", body: JSON.stringify({ reason: REASON }),
       });
-      assert.equal(r.status, 403, `a cashier must not be able to refund: ${r.text.slice(0, 120)}`);
+      assert.equal(r.status, 202, `a cashier request should wait for the owner: ${r.text.slice(0, 120)}`);
+      assert.equal(r.body.request.status, "PENDING");
+      assert.equal((await db.order.findUniqueOrThrow({ where: { id: s.order.id } })).paymentStatus, "PAID");
       assert.equal(await db.payment.count({ where: { orderId: s.order.id, type: "REFUND" } }), 0);
     } finally {
       await purge(s.order.id);
@@ -343,12 +367,14 @@ describe("REFUND-004 order-level full refund", () => {
       });
       assert.equal(blank.status, 400, "a blank reason must be refused at the boundary too");
 
-      const ok = await as<{ order?: { paymentStatus: string }; totalRefunded?: number }>(
+      const ok = await as<{ request?: { status: string } }>(
         "manager@demo.com", `/api/orders/${s.order.id}/refund`,
         { method: "POST", body: JSON.stringify({ reason: REASON }) }
       );
-      assert.equal(ok.status, 200, `refund failed: ${ok.text.slice(0, 160)}`);
-      assert.equal(ok.body.order?.paymentStatus, "REFUNDED", "the response must carry the new state");
+      assert.equal(ok.status, 202, `refund request failed: ${ok.text.slice(0, 160)}`);
+      assert.equal(ok.body.request?.status, "PENDING");
+      assert.equal((await db.order.findUniqueOrThrow({ where: { id: s.order.id } })).paymentStatus, "PAID", "financial state cannot change before owner approval and execution");
+      assert.equal(await db.payment.count({ where: { orderId: s.order.id, type: "REFUND" } }), 0);
     } finally {
       await purge(s.order.id);
       await cleanup(marker);

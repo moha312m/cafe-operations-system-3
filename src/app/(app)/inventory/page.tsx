@@ -52,8 +52,11 @@ type InvItem = {
   branchId: string;
   branch: { id: string; name: string };
   status: "ok" | "low" | "out";
+  alertThreshold: number;
   stockValue: number;
 };
+type ReturnLine = { orderItemId: string; orderNumber: number; productName: string; eligibleQuantity: number; receipts: { receiptId: string; quantity: number; status: string; valuation: string; totalCost: string | null }[] };
+type ReturnOptions = { linked: boolean; lines: ReturnLine[] };
 type Summary = { totalItems: number; lowCount: number; outCount: number; totalValue: number };
 type Branch = { id: string; name: string };
 
@@ -95,13 +98,18 @@ const emptyForm = (branchId = ""): ItemForm => ({
 // ─────────────────────────── Page ───────────────────────────
 
 export default function InventoryPage() {
-  const { cafe, user } = useApp();
+  const { cafe, user, features, can, canKey } = useApp();
+  const canManage = can("inventory:manage");
+  const canMove = canKey("inventory.transactions");
+  const canReturn = canKey("inventory.finished_returns");
   const currency = cafe?.currency ?? "EGP";
 
   const [items, setItems] = useState<InvItem[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [busy, setBusy] = useState(false);
+  const [hasFinishedHistory, setHasFinishedHistory] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
 
   // Filters
   const [search, setSearch] = useState("");
@@ -116,6 +124,9 @@ export default function InventoryPage() {
   const [moveQty, setMoveQty] = useState("");
   const [moveCost, setMoveCost] = useState("");
   const [moveNote, setMoveNote] = useState("");
+  const [returnOptions, setReturnOptions] = useState<ReturnOptions | null>(null);
+  const [returnLineId, setReturnLineId] = useState("");
+  const [returnOrderSearch, setReturnOrderSearch] = useState("");
   const [transferOpen, setTransferOpen] = useState(false);
   const [tItemId, setTItemId] = useState("");
   const [tToBranch, setTToBranch] = useState("");
@@ -124,17 +135,19 @@ export default function InventoryPage() {
 
   const load = useCallback(async () => {
     try {
-      const branchQuery =
-        !user.branchId && branchFilter !== "all" ? `?branchId=${branchFilter}` : "";
-      const data = await api<{ items: InvItem[]; summary: Summary }>(
-        `/api/inventory${branchQuery}`
+      const query = new URLSearchParams();
+      if (!user.branchId && branchFilter !== "all") query.set("branchId", branchFilter);
+      if (showArchived) query.set("includeArchived", "1");
+      const data = await api<{ items: InvItem[]; summary: Summary; hasFinishedHistory: boolean }>(
+        `/api/inventory?${query}`
       );
       setItems(data.items);
       setSummary(data.summary);
+      setHasFinishedHistory(data.hasFinishedHistory);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "فشل تحميل المخزون");
     }
-  }, [branchFilter, user.branchId]);
+  }, [branchFilter, user.branchId, showArchived]);
 
   useEffect(() => {
     load();
@@ -202,19 +215,39 @@ export default function InventoryPage() {
     if (ok) setItemForm(null);
   }
 
+  useEffect(() => {
+    if (!moveFor) return;
+    let active = true;
+    api<ReturnOptions>(`/api/inventory/${moveFor.id}/movement`).then(data => { if (active) setReturnOptions(data); }).catch(e => { if (active) toast.error(e.message); });
+    return () => { active = false; };
+  }, [moveFor]);
+
+  async function searchReturnOrder() {
+    if (!moveFor) return;
+    try { setReturnOptions(await api<ReturnOptions>(`/api/inventory/${moveFor.id}/movement?orderNumber=${encodeURIComponent(returnOrderSearch)}`)); setReturnLineId(""); }
+    catch (e) { toast.error(e instanceof Error ? e.message : "تعذر البحث"); }
+  }
+
   async function saveMovement() {
     if (!moveFor) return;
     const ok = await run(
-      () =>
-        api(`/api/inventory/${moveFor.id}/movement`, {
+      async () => {
+        const response = await api<{ receipt?: { receiptId: string; status: string; valuation: string; replayed: boolean } }>(`/api/inventory/${moveFor.id}/movement`, {
           method: "POST",
           body: {
             type: moveType,
+            ...(moveType === "RETURN" && returnOptions?.linked ? { orderItemId: returnLineId } : {}),
             quantity: Number(moveQty),
-            unitCost: moveCost ? Number(moveCost) : undefined,
+            unitCost: moveType === "PURCHASE" && moveCost ? Number(moveCost) : undefined,
             note: moveNote || undefined,
           },
-        }),
+        });
+        if (response.receipt) {
+          const r = response.receipt;
+          toast.info(`${r.replayed ? "طلب مكرر — الإيصال السابق" : "إيصال مرتجع"} ${r.receiptId}: ${r.status === "PENDING" ? "معلّق — احفظ القطع منفصلة خارج الجرد والبيع" : "تمت الإضافة"}${r.valuation === "UNVALUED" ? " — تكلفة الاستهلاك الأصلي غير مسجلة" : r.valuation === "PENDING" ? " — التقييم معلّق" : " — بالتكلفة الأصلية"}`, { duration: 10000 });
+        }
+        return response;
+      },
       "اتسجلت حركة المخزون"
     );
     if (ok) {
@@ -261,17 +294,19 @@ export default function InventoryPage() {
   ];
 
   return (
-    <FeatureGate feature="inventoryEnabled">
+    <FeatureGate enabled={features?.inventoryEnabled !== false || hasFinishedHistory}>
+    <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={showArchived} onChange={e => setShowArchived(e.target.checked)} />إظهار المؤرشف للوصول لمرتجعات الطلبات الأصلية</label>
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold">المخزون</h1>
         <div className="flex gap-2">
-          {canPickBranch && branches.length > 1 && (
+          {canManage && canPickBranch && branches.length > 1 && (
             <Button variant="outline" onClick={() => { setTItemId(""); setTToBranch(""); setTransferOpen(true); }}>
               🔁 تحويل بين الفروع
             </Button>
           )}
           <Button
+            disabled={!canManage}
             onClick={() =>
               setItemForm(emptyForm(user.branchId ?? branches[0]?.id ?? ""))
             }
@@ -401,7 +436,12 @@ export default function InventoryPage() {
               <TableCell className="text-sm text-muted-foreground">{i.category ?? "—"}</TableCell>
               <TableCell className="font-semibold tabular-nums">{Number(i.currentStock)}</TableCell>
               <TableCell className="text-sm">{UNIT_LABEL[i.unit]}</TableCell>
-              <TableCell className="tabular-nums">{Number(i.minimumStock)}</TableCell>
+              <TableCell className="tabular-nums">
+                {Number(i.minimumStock)}
+                {i.alertThreshold > Number(i.minimumStock) && (
+                  <span className="block text-xs text-muted-foreground">التنبيه عند {i.alertThreshold}</span>
+                )}
+              </TableCell>
               <TableCell className="tabular-nums">{money(i.costPerUnit, currency)}</TableCell>
               <TableCell className="tabular-nums">{money(i.stockValue, currency)}</TableCell>
               <TableCell>
@@ -412,8 +452,12 @@ export default function InventoryPage() {
               <TableCell className="text-end [&>button]:ms-1">
                 <Button
                   size="sm"
+                  disabled={!canMove && !canReturn}
                   onClick={() => {
-                    setMoveType("PURCHASE");
+                    setReturnOptions(null);
+                    setReturnLineId("");
+                    setReturnOrderSearch("");
+                    setMoveType(canMove ? "PURCHASE" : "RETURN");
                     setMoveCost(String(i.costPerUnit));
                     setMoveFor(i);
                   }}
@@ -423,6 +467,7 @@ export default function InventoryPage() {
                 <Button
                   size="sm"
                   variant="outline"
+                  disabled={!canManage}
                   onClick={() =>
                     setItemForm({
                       id: i.id,
@@ -444,7 +489,7 @@ export default function InventoryPage() {
                   size="sm"
                   variant="ghost"
                   className="text-destructive"
-                  disabled={busy}
+                  disabled={busy || !canManage}
                   onClick={() =>
                     confirm(`أرشفة خامة «${i.name}»؟`) &&
                     run(() => api(`/api/inventory/${i.id}`, { method: "DELETE" }), "اتأرشفت الخامة")
@@ -570,7 +615,7 @@ export default function InventoryPage() {
               <div className="space-y-1.5">
                 <Label>نوع الحركة</Label>
                 <div className="flex flex-wrap gap-1.5">
-                  {MOVEMENT_TYPES.map((t) => (
+                  {MOVEMENT_TYPES.filter(t => canMove || (canReturn && t === "RETURN")).map((t) => (
                     <Button
                       key={t}
                       size="sm"
@@ -583,6 +628,17 @@ export default function InventoryPage() {
                 </div>
               </div>
               <div className="space-y-1.5">
+                {moveType === "RETURN" && <div className="space-y-2 rounded border p-3 text-sm">
+                  <p>رد الأموال لا يعيد المخزون. سجل فقط القطع السليمة التي رجعت فعلياً. أثناء التجميد: احفظها منفصلة، خارج البيع والجرد حتى تتم الإضافة.</p>
+                  {returnOptions?.linked && <>
+                    <div className="flex gap-2"><Input aria-label="رقم الطلب الأصلي" value={returnOrderSearch} onChange={e => setReturnOrderSearch(e.target.value)} placeholder="رقم الطلب الأصلي" /><Button onClick={searchReturnOrder} variant="outline">بحث</Button></div>
+                    <select aria-label="صنف الطلب الأصلي للمرتجع" className="w-full rounded border p-2" value={returnLineId} onChange={e => setReturnLineId(e.target.value)}>
+                      <option value="">اختار صنف الطلب الأصلي</option>{returnOptions.lines.map(line => <option key={line.orderItemId} value={line.orderItemId}>#{line.orderNumber} — {line.productName} — متبقي {line.eligibleQuantity} قطعة</option>)}
+                    </select>
+                    {returnOptions.lines.find(line => line.orderItemId === returnLineId)?.receipts.map(r => <p key={r.receiptId}>{r.receiptId}: {r.quantity} قطعة — {r.status === "PENDING" ? "معلّق ومنفصل عن الجرد والبيع" : "تمت الإضافة"} — {r.valuation === "UNVALUED" ? "بدون تقييم؛ التكلفة الأصلية غير مسجلة" : r.valuation === "PENDING" ? "التقييم معلّق" : `القيمة الأصلية ${r.totalCost}`}</p>)}
+                  </>}
+                  <p>قيمة المخزون تقدير بالتكلفة المرجعية الحالية؛ قيمة المرتجع بالتكلفة الأصلية وقد تختلف القيمتان.</p>
+                </div>}
                 <Label>الكمية {moveType === "ADJUSTMENT" && "(موجب زيادة / سالب نقص)"}</Label>
                 <Input type="number" dir="ltr" value={moveQty} onChange={(e) => setMoveQty(e.target.value)} placeholder="0" />
               </div>
@@ -600,7 +656,7 @@ export default function InventoryPage() {
           )}
           <DialogFooter className="gap-2">
             <Button variant="outline" onClick={() => setMoveFor(null)}>إلغاء</Button>
-            <Button onClick={saveMovement} disabled={busy || !moveQty}>
+            <Button onClick={saveMovement} disabled={busy || !moveQty || (moveType === "RETURN" && (!returnOptions || (returnOptions.linked && (!returnLineId || moveNote.trim().length < 3))))}>
               {busy ? "جاري الحفظ…" : "حفظ الحركة"}
             </Button>
           </DialogFooter>

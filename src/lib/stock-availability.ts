@@ -51,7 +51,7 @@
 
 import { db } from "@/lib/db";
 import { round3, RecipeIssue } from "@/lib/costing";
-import { theoreticalConsumption } from "@/lib/recipes";
+import { cartLineConsumption } from "@/lib/sale-consumption";
 import { UNIT_LABEL } from "@/lib/inventory";
 import {
   allowsKnownShortage,
@@ -59,10 +59,14 @@ import {
   OVERRIDE_SALE_WARNING,
   type InventoryEnforcementMode,
 } from "@/lib/inventory-policy";
-import type { InventoryUnit } from "@prisma/client";
+import type { InventoryUnit, Prisma } from "@prisma/client";
 
 /** One thing the cart is asking the branch to make. */
 export type AvailabilityLine = {
+  /** Acceptance can force legacy prepared behavior. */
+  stockMode?: "RECIPE" | "FINISHED_GOOD";
+  /** QR acceptance preserves prepared policy, while counting its known shared demand. */
+  sharedFinishedStockOnly?: boolean;
   productId: string;
   variantId: string | null;
   addOnIds: string[];
@@ -103,6 +107,7 @@ export type Refusal =
   /** The branch carries it and does not hold enough. */
   | {
       kind: "INSUFFICIENT";
+      finished?: boolean;
       label: string;
       ingredient: string;
       unit: InventoryUnit;
@@ -172,7 +177,7 @@ export async function checkCartAvailability(args: {
   /** The café's persisted policy. Never taken from a request body. */
   mode: InventoryEnforcementMode;
   lines: AvailabilityLine[];
-}): Promise<AvailabilityVerdict> {
+}, client: Prisma.TransactionClient | typeof db = db): Promise<AvailabilityVerdict> {
   const refusals: Refusal[] = [];
   const unresolvedConsumption: UnresolvedConsumption[] = [];
 
@@ -182,18 +187,19 @@ export async function checkCartAvailability(args: {
   // it was declared to, add-ons merge into the base, NOT_APPLICABLE consumes
   // nothing) must be the same ones the SERVED-time deduction obeys, or the
   // POS would refuse orders the deduction would have allowed and vice versa.
-  const cafeDemand = new Map<string, { qty: number; labels: string[] }>();
+  const cafeDemand = new Map<string, { qty: number; labels: string[]; sharedQty: number; sharedLabels: string[] }>();
+  const direct = new Map<string, Demand>();
 
   for (const line of args.lines) {
-    const consumption = await theoreticalConsumption({
-      productId: line.productId,
-      variantId: line.variantId,
-      addOnIds: line.addOnIds,
-      quantity: line.quantity,
-    });
+    const { recipe: consumption, finishedItem } = await cartLineConsumption(client, args, line);
+    if (finishedItem) {
+      const cur = direct.get(finishedItem.id);
+      if (cur) { cur.required = round3(cur.required + line.quantity); cur.labels.push(line.label); }
+      else direct.set(finishedItem.id, { inventoryItemId: finishedItem.id, name: finishedItem.name, unit: finishedItem.unit, available: Number(finishedItem.currentStock), required: line.quantity, labels: [line.label] });
+    }
 
     const blocking = consumption.issues.filter((i) => UNRESOLVABLE.has(i));
-    if (blocking.length > 0) {
+    if (blocking.length > 0 && !line.sharedFinishedStockOnly) {
       if (!refusals.some((r) => r.kind === "RECIPE_UNRESOLVABLE" && r.label === line.label)) {
         refusals.push({ kind: "RECIPE_UNRESOLVABLE", label: line.label, issues: blocking });
         // Recorded whether or not policy lets the sale through. Under
@@ -210,14 +216,22 @@ export async function checkCartAvailability(args: {
     // decision somebody recorded — "this consumes nothing trackable" — and it
     // is the one empty consumption that is an answer rather than a gap.
     for (const cl of consumption.lines) {
+      if (line.sharedFinishedStockOnly && cl.quantityInStockUnit <= 0) continue;
       const cur = cafeDemand.get(cl.inventoryItemId);
       if (cur) {
-        cur.qty = round3(cur.qty + cl.quantityInStockUnit);
-        if (!cur.labels.includes(line.label)) cur.labels.push(line.label);
+        if (line.sharedFinishedStockOnly) {
+          cur.sharedQty = round3(cur.sharedQty + cl.quantityInStockUnit);
+          if (!cur.sharedLabels.includes(line.label)) cur.sharedLabels.push(line.label);
+        } else {
+          cur.qty = round3(cur.qty + cl.quantityInStockUnit);
+          if (!cur.labels.includes(line.label)) cur.labels.push(line.label);
+        }
       } else {
         cafeDemand.set(cl.inventoryItemId, {
-          qty: cl.quantityInStockUnit,
-          labels: [line.label],
+          qty: line.sharedFinishedStockOnly ? 0 : cl.quantityInStockUnit,
+          labels: line.sharedFinishedStockOnly ? [] : [line.label],
+          sharedQty: line.sharedFinishedStockOnly ? cl.quantityInStockUnit : 0,
+          sharedLabels: line.sharedFinishedStockOnly ? [line.label] : [],
         });
       }
     }
@@ -235,13 +249,13 @@ export async function checkCartAvailability(args: {
   const demand: Demand[] = [];
 
   if (cafeDemand.size > 0) {
-    const cafeItems = await db.inventoryItem.findMany({
+    const cafeItems = await client.inventoryItem.findMany({
       where: { id: { in: [...cafeDemand.keys()] }, cafeId: args.cafeId },
       select: { id: true, name: true, unit: true },
     });
 
     const branchRows = cafeItems.length
-      ? await db.inventoryItem.findMany({
+      ? await client.inventoryItem.findMany({
           where: {
             cafeId: args.cafeId,
             branchId: args.branchId,
@@ -286,18 +300,22 @@ export async function checkCartAvailability(args: {
         continue;
       }
 
+      const shared = direct.has(branchRow.id);
+      const quantity = round3(want.qty + (shared ? want.sharedQty : 0));
+      if (!quantity) continue;
+      const labels = [...want.labels, ...(shared ? want.sharedLabels : [])];
       const cur = perBranchRow.get(branchRow.id);
       if (cur) {
-        cur.required = round3(cur.required + want.qty);
-        for (const l of want.labels) if (!cur.labels.includes(l)) cur.labels.push(l);
+        cur.required = round3(cur.required + quantity);
+        for (const l of labels) if (!cur.labels.includes(l)) cur.labels.push(l);
       } else {
         perBranchRow.set(branchRow.id, {
           inventoryItemId: branchRow.id,
           name: branchRow.name,
           unit: branchRow.unit,
-          required: round3(want.qty),
+          required: quantity,
           available: round3(Number(branchRow.currentStock)),
-          labels: [...want.labels],
+          labels,
         });
       }
     }
@@ -313,10 +331,19 @@ export async function checkCartAvailability(args: {
   // A shortage is recorded as a refusal REGARDLESS of policy. Whether it
   // actually blocks is decided in one place below, so the arithmetic and the
   // business rule never drift apart.
+  for (const d of direct.values()) {
+    const existing = demand.find(row => row.inventoryItemId === d.inventoryItemId);
+    if (existing) {
+      existing.required = round3(existing.required + d.required);
+      existing.labels.push(...d.labels);
+    } else demand.push(d);
+  }
+
   for (const d of demand) {
     if (round3(d.available - d.required) < 0) {
       refusals.push({
         kind: "INSUFFICIENT",
+        finished: direct.has(d.inventoryItemId),
         label: d.labels[0],
         ingredient: d.name,
         unit: d.unit,
@@ -346,7 +373,7 @@ function applyPolicy(
   const waivable = (r: Refusal) =>
     r.kind === "INSUFFICIENT"
       // A known number the owner has decided to sell past.
-      ? allowsKnownShortage(mode)
+      ? !r.finished && allowsKnownShortage(mode)
       // An unknown draw on the shelf: a recipe that will not resolve, or an
       // ingredient this branch does not carry at all.
       : allowsUnknownConsumption(mode);

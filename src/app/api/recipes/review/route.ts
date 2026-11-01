@@ -12,7 +12,7 @@ import {
 type NextAction = "CREATE_RECIPE" | "EDIT_RECIPE" | "CONFIRM" | "ENTER_COST" | null;
 
 function nextActionFor(args: {
-  costStatus: "AVAILABLE" | "RECIPE_INCOMPLETE" | "NOT_APPLICABLE";
+  costStatus: "AVAILABLE" | "RECIPE_INCOMPLETE" | "NOT_APPLICABLE" | "MISSING_COST";
   issues: string[];
   structurallyValid: boolean;
   confirmed: boolean;
@@ -59,7 +59,7 @@ export async function GET(request: NextRequest) {
 
     const [products, addOns] = await Promise.all([
       db.product.findMany({
-        where: { cafeId, isActive: true },
+        where: { cafeId, isActive: true, stockMode: "RECIPE" },
         include: {
           variants: { where: { isActive: true }, orderBy: { sortOrder: "asc" } },
           category: { select: { name: true } },
@@ -76,7 +76,7 @@ export async function GET(request: NextRequest) {
       recipeId: string | null; defaultRecipeId: string | null;
       status: GateStatus; source: string; structurallyValid: boolean; confirmed: boolean;
       costAvailable: boolean; varianceEligible: boolean; issues: string[]; verifiedAt: Date | null;
-      sellingPrice: number; costStatus: "AVAILABLE" | "RECIPE_INCOMPLETE" | "NOT_APPLICABLE";
+      sellingPrice: number; costStatus: "AVAILABLE" | "RECIPE_INCOMPLETE" | "NOT_APPLICABLE" | "MISSING_COST";
       cost: number | null; profit: number | null; margin: number | null; tier: string | null;
       nextAction: NextAction;
     };

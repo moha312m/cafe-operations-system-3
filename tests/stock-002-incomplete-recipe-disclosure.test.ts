@@ -23,7 +23,7 @@
 import { test, after, describe } from "node:test";
 import assert from "node:assert/strict";
 import { deductStockForOrder, auditDeduction } from "@/lib/stock-deduction";
-import { db, fixture, type Fixture } from "./helpers/db";
+import { db, fixture, type Fixture, purgeOrderTracesFor } from "./helpers/db";
 
 after(async () => { await db.$disconnect(); });
 
@@ -81,7 +81,7 @@ async function teardown(c: Ctx) {
   const ids = orders.map((o) => o.id);
   if (ids.length) {
     await db.inventoryTransaction.deleteMany({ where: { orderId: { in: ids } } });
-    await db.order.deleteMany({ where: { id: { in: ids } } });
+    await purgeOrderTracesFor({ id: { in: ids } }); await db.order.deleteMany({ where: { id: { in: ids } } });
   }
   await db.auditLog.deleteMany({ where: { entityId: { in: ids } } });
   await db.recipe.deleteMany({ where: { productId: c.product.id } });

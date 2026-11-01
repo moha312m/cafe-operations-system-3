@@ -1,0 +1,2 @@
+import {redirect} from 'next/navigation';import {getSession} from '@/lib/auth';import {resolvePermissions} from '@/lib/perms/effective';import {TracingWorkspace} from '@/components/sales/tracing-workspace';
+export default async function TracingPage(){const actor=await getSession();if(!actor)redirect('/login');if(!(await resolvePermissions(actor)).keys.has('audit.view'))redirect('/dashboard');return <TracingWorkspace/>;}

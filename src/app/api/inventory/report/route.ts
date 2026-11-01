@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { requirePermission, resolveCafeId, handleApiError } from "@/lib/api";
 import { round2 } from "@/lib/inventory";
+import { withStockAlerts } from "@/lib/low-stock";
 import { publicInventoryTransaction } from "@/lib/public-shape";
 import type { Prisma } from "@prisma/client";
 
@@ -41,13 +42,13 @@ export async function GET(request: NextRequest) {
     });
 
     let stockValue = 0;
-    const lowStock: typeof items = [];
-    const outOfStock: typeof items = [];
-    for (const i of items) {
-      const cur = Number(i.currentStock);
-      stockValue += cur * Number(i.costPerUnit);
-      if (cur <= 0) outOfStock.push(i);
-      else if (cur <= Number(i.minimumStock)) lowStock.push(i);
+    const rated = await withStockAlerts(cafeId, items);
+    const lowStock: typeof rated = [];
+    const outOfStock: typeof rated = [];
+    for (const i of rated) {
+      stockValue += Number(i.currentStock) * Number(i.costPerUnit);
+      if (i.status === "out") outOfStock.push(i);
+      else if (i.status === "low") lowStock.push(i);
     }
 
     const txnWhere: Prisma.InventoryTransactionWhereInput = {

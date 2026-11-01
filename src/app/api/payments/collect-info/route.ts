@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { requireKey, handleApiError, ApiError } from "@/lib/api";
+import { requireKey, handleApiError, ApiError, resolveReadScope } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { getLoyaltySettingsSafe, loyaltyCalcSettings } from "@/lib/loyalty";
 
@@ -10,14 +10,14 @@ import { getLoyaltySettingsSafe, loyaltyCalcSettings } from "@/lib/loyalty";
 export async function GET(request: NextRequest) {
   try {
     const session = await requireKey("pos.collect_payment", "ليس لديك صلاحية لتحصيل الدفع");
+    const scope = resolveReadScope(session);
     const params = request.nextUrl.searchParams;
     const orderId = params.get("orderId");
     const tableSessionId = params.get("tableSessionId");
 
     if (orderId) {
       const order = await db.order.findFirst({
-        // cafe scope in the query = tenant isolation even with a leaked id
-        where: { id: orderId, cafeId: session.cafeId ?? "" },
+        where: { id: orderId, ...scope },
         include: {
           payments: {
             // Money received only — a refund row also carries status PAID
@@ -37,9 +37,6 @@ export async function GET(request: NextRequest) {
         },
       });
       if (!order) throw new ApiError(404, "الطلب مش موجود");
-      if (session.branchId && order.branchId !== session.branchId) {
-        throw new ApiError(403, "الطلب تبع فرع تاني");
-      }
 
       await audit({
         cafeId: order.cafeId, userId: session.id,
@@ -89,19 +86,16 @@ export async function GET(request: NextRequest) {
 
     if (tableSessionId) {
       const ts = await db.tableSession.findFirst({
-        where: { id: tableSessionId, cafeId: session.cafeId ?? "" },
+        where: { id: tableSessionId, ...scope },
         select: {
-          id: true, branchId: true, tableNumber: true, status: true,
+          id: true, cafeId: true, branchId: true, tableNumber: true, status: true,
           totalAmount: true, paidAmount: true, remainingAmount: true,
         },
       });
       if (!ts) throw new ApiError(404, "حساب الترابيزة مش موجود");
-      if (session.branchId && ts.branchId !== session.branchId) {
-        throw new ApiError(403, "الترابيزة تبع فرع تاني");
-      }
 
       await audit({
-        cafeId: session.cafeId, userId: session.id,
+        cafeId: ts.cafeId, userId: session.id,
         action: "PAYMENT_COLLECTION_STARTED_FROM_POS",
         entity: "TableSession", entityId: ts.id,
         details: {
@@ -110,7 +104,7 @@ export async function GET(request: NextRequest) {
         },
       });
 
-      const loyalty = loyaltyCalcSettings(await getLoyaltySettingsSafe(session.cafeId ?? ""));
+      const loyalty = loyaltyCalcSettings(await getLoyaltySettingsSafe(ts.cafeId));
       return NextResponse.json({
         loyalty,
         target: {

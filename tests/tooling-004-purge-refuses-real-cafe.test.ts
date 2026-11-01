@@ -26,6 +26,7 @@
 
 import { test, after, describe } from "node:test";
 import assert from "node:assert/strict";
+import type { Prisma } from "@prisma/client";
 import {
   TAG_PREFIX, TEST_CAFE_SLUG_PREFIX, assertPurgeableTestCafe, db, fixture, purgeCafe, tag,
 } from "./helpers/db";
@@ -164,28 +165,20 @@ describe("TOOLING-004 purgeCafe refuses anything that is not a test fixture", ()
 
     const executed: string[] = [];
     const queried: string[] = [];
-    const realExecute = db.$executeRawUnsafe.bind(db);
-    const realQuery = db.$queryRaw.bind(db);
-
-    // Cast through `unknown`: these are overloaded Prisma methods and the
-    // recorder only needs to observe the call, not reproduce the signature.
+    const originalTransaction = db.$transaction;
     const client = db as unknown as Record<string, unknown>;
-    client.$executeRawUnsafe = (sql: string, ...args: unknown[]) => {
-      executed.push(sql);
-      return (realExecute as (s: string, ...a: unknown[]) => unknown)(sql, ...args);
+    // Purge SQL belongs entirely to its transaction. A refused call cannot
+    // reach even that boundary, let alone a catalog query or DELETE.
+    client.$transaction = () => {
+      executed.push("TRANSACTION");
+      queried.push("TRANSACTION");
+      throw new Error("Refused purge entered a transaction");
     };
-    client.$queryRaw = (...args: unknown[]) => {
-      queried.push(String(args[0]));
-      return (realQuery as (...a: unknown[]) => unknown)(...args);
-    };
-
     try {
       await assert.rejects(() => purgeCafe(fx.cafeId), /non-test café/);
     } finally {
-      client.$executeRawUnsafe = realExecute;
-      client.$queryRaw = realQuery;
+      client.$transaction = originalTransaction;
     }
-
     assert.deepEqual(executed, [], "a refused purge issues no DELETE");
     assert.deepEqual(queried, [], "and never even reads the table list");
   });
@@ -198,22 +191,31 @@ describe("TOOLING-004 purgeCafe refuses anything that is not a test fixture", ()
     const cafeId = await taggedCafe(marker);
 
     const executed: string[] = [];
-    const realExecute = db.$executeRawUnsafe.bind(db);
+    const originalTransaction = db.$transaction;
+    const realTransaction = originalTransaction.bind(db) as unknown as (
+      body: (tx: Prisma.TransactionClient) => Promise<void>, options?: unknown
+    ) => Promise<void>;
     const client = db as unknown as Record<string, unknown>;
-    client.$executeRawUnsafe = (sql: string, ...args: unknown[]) => {
-      executed.push(sql);
-      return (realExecute as (s: string, ...a: unknown[]) => unknown)(sql, ...args);
-    };
-
+    client.$transaction = (body: (tx: Prisma.TransactionClient) => Promise<void>, options?: unknown) =>
+      realTransaction(async tx => {
+        const execute = tx.$executeRawUnsafe.bind(tx);
+        const recorded = new Proxy(tx, { get(target, property) {
+          if (property !== "$executeRawUnsafe") return Reflect.get(target, property, target);
+          return (sql: string, ...args: unknown[]) => {
+            executed.push(sql);
+            return execute(sql, ...args);
+          };
+        } });
+        return body(recorded);
+      }, options);
     try {
       await purgeCafe(cafeId);
     } finally {
-      client.$executeRawUnsafe = realExecute;
+      client.$transaction = originalTransaction;
     }
-
     assert.ok(executed.length > 0, "an allowed purge does issue DELETEs");
     assert.ok(
-      executed.some((sql) => /DELETE FROM "Cafe"/.test(sql)),
+      executed.some((sql) => /DELETE FROM (?:(?:"[^"]+")\.)?"Cafe" /.test(sql)),
       "including the one that removes the café itself"
     );
     assert.equal(await db.cafe.count({ where: { id: cafeId } }), 0);

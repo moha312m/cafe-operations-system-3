@@ -477,6 +477,14 @@ export async function advanceVarianceCase(args: {
       );
     }
 
+    if (args.assignedResponsibilityUserId && args.to !== "RESPONSIBILITY_ASSIGNED") {
+      throw new ApiError(400,"اختيار الموظف المسؤول لازم يكون في خطوة اعتماد المسؤولية");
+    }
+    if (args.to === "RESPONSIBILITY_ASSIGNED") {
+      if (!args.assignedResponsibilityUserId?.trim()) throw new ApiError(400,"لازم تختار الموظف المسؤول");
+      const person=await tx.user.findFirst({where:{id:args.assignedResponsibilityUserId,cafeId:current.cafeId},select:{id:true}});
+      if(!person)throw new ApiError(400,"الموظف مش تابع للكافيه");
+    }
     const terminal = args.to === "RESOLVED" || args.to === "WAIVED";
     const updated = await tx.varianceCase.update({
       where: { id: args.caseId },

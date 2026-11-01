@@ -23,6 +23,8 @@ export const TERMINAL_DISPOSITIONS = [
   "WITHIN_TOLERANCE",
   "RESOLVED_WITHIN_TOLERANCE",
   "VARIANCE_CONFIRMED",
+  // HND-UX-004: an outgoing handover difference recorded as observed.
+  "VARIANCE_RECORDED",
 ] as const;
 
 export function isTerminal(d: CountLineDisposition): boolean {
@@ -45,14 +47,16 @@ export const DISPOSITION_TRANSITIONS: Record<CountLineDisposition, CountLineDisp
     "RECOUNT_REQUIRED",
     "RESOLVED_WITHIN_TOLERANCE",
     "VARIANCE_CONFIRMED",
+    "VARIANCE_RECORDED",
   ],
   // A recount either lands inside tolerance, or exhausts its attempts and the
   // variance is confirmed. Both are exits; neither is a dead end.
-  RECOUNT_REQUIRED: ["RESOLVED_WITHIN_TOLERANCE", "VARIANCE_CONFIRMED"],
+  RECOUNT_REQUIRED: ["RESOLVED_WITHIN_TOLERANCE", "VARIANCE_CONFIRMED", "VARIANCE_RECORDED"],
 
   WITHIN_TOLERANCE: [],
   RESOLVED_WITHIN_TOLERANCE: [],
   VARIANCE_CONFIRMED: [],
+  VARIANCE_RECORDED: [],
 };
 
 /** Whether a line may move from one disposition to another. */

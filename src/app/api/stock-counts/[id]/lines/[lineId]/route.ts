@@ -15,6 +15,7 @@ import {
 type Params = { params: Promise<{ id: string; lineId: string }> };
 
 const captureSchema = z.object({
+  expectedCountedAt: z.string().datetime().nullable().optional(),
   countedQuantity: z
     .number({ message: "الكمية المعدودة لازم تكون رقم" })
     .min(0, "الكمية المعدودة لازم تكون رقم مش سالب"),
@@ -41,6 +42,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       sessionId: id,
       lineId,
       countedQuantity: body.countedQuantity,
+      expectedCountedAt: body.expectedCountedAt,
       counterId: session.id,
       cafeId,
       viewerBranchId: session.branchId,

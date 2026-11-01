@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { requireKey, resolveCafeId, handleApiError } from "@/lib/api";
+import { requireKey, resolveCafeId, handleApiError, ApiError, resolveReadScope } from "@/lib/api";
 import { configurationFinancials } from "@/lib/recipes";
 
 // تقرير تكلفة المنتجات — cost, profit, margin, and profitability tier for
@@ -10,6 +10,10 @@ export async function GET(request: NextRequest) {
     const session = await requireKey("finance.view_profit");
     const params = request.nextUrl.searchParams;
     const cafeId = resolveCafeId(session, params.get("cafeId"));
+    const requestedBranch = params.get("branchId");
+    const branchId = resolveReadScope(session).branchId ?? requestedBranch;
+    if (session.branchId && requestedBranch && requestedBranch !== session.branchId) throw new ApiError(403, "الفرع خارج نطاقك");
+    if (branchId && !await db.branch.findFirst({ where: { id: branchId, cafeId } })) throw new ApiError(404, "الفرع مش موجود في نطاقك");
     const categoryId = params.get("categoryId") ?? undefined;
 
     const products = await db.product.findMany({
@@ -26,10 +30,11 @@ export async function GET(request: NextRequest) {
       return configurations.map(async (variant) => {
         const sellingPrice = Number(variant?.price ?? p.basePrice);
         const financials = await configurationFinancials({
-          productId: p.id, variantId: variant?.id ?? null, sellingPrice,
+          productId: p.id, variantId: variant?.id ?? null, sellingPrice, branchId,
         });
         return {
           id: variant ? `${p.id}:${variant.id}` : p.id,
+          stockMode: p.stockMode,
           productId: p.id,
           variantId: variant?.id ?? null,
           name: variant ? `${p.name} — ${variant.name}` : p.name,
@@ -52,7 +57,7 @@ export async function GET(request: NextRequest) {
       lowestProfit: [...costable].sort((a, b) => (a.margin ?? 0) - (b.margin ?? 0)).slice(0, 5),
     };
 
-    return NextResponse.json({ rows, summary });
+    return NextResponse.json({ rows, summary, valuationBasis: "CURRENT_BRANCH_REFERENCE_ESTIMATE", limitation: "Catalog margins are current estimates, not realized order profit. Physical returns reverse original recorded usage cost; money refunds are accounted separately." });
   } catch (error) {
     return handleApiError(error);
   }

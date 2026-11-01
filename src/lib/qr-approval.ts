@@ -1,7 +1,7 @@
 // ── QR order approval routing ────────────────────────────────────────
 import { db } from "@/lib/db";
 import type { SessionUser } from "@/lib/auth";
-import type { QrApprovalMode, Role, CafeWorkflowMode } from "@prisma/client";
+import type { QrApprovalMode, Role, CafeWorkflowMode, Prisma } from "@prisma/client";
 import { getCafeSettings } from "@/lib/cafe-settings";
 
 export const APPROVAL_MODE_LABEL: Record<QrApprovalMode, string> = {
@@ -46,13 +46,18 @@ function defaultMode(workflow: CafeWorkflowMode): QrApprovalMode {
 // row the first time (so branches made before this feature still work).
 export async function getApprovalSettings(
   cafeId: string,
-  branchId: string
+  branchId: string,
+  client: Prisma.TransactionClient | typeof db = db
 ): Promise<ApprovalSettings> {
-  const existing = await db.qrOrderApprovalSettings.findUnique({ where: { branchId } });
+  const existing = await client.qrOrderApprovalSettings.findUnique({ where: { branchId } });
   if (existing) return existing;
-  const cafe = await getCafeSettings(cafeId);
-  return db.qrOrderApprovalSettings.create({
-    data: { cafeId, branchId, approvalMode: defaultMode(cafe.workflowMode) },
+  const cafe = await getCafeSettings(cafeId, client);
+  // Concurrent first requests must share one row without changing owner settings.
+  // A scalar update lets Prisma use the database upsert instead of a read/create race.
+  return client.qrOrderApprovalSettings.upsert({
+    where: { branchId },
+    update: { branchId },
+    create: { cafeId, branchId, approvalMode: defaultMode(cafe.workflowMode) },
   });
 }
 

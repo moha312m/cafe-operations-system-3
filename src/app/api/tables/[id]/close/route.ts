@@ -1,7 +1,9 @@
+import { protectedTransaction } from "@/lib/protected-transaction";
+import { lockOrders, lockOrderPayments, lockTableSessions } from "@/lib/transaction-locks";
+import { money } from "@/lib/money";
 import { NextResponse, type NextRequest } from "next/server";
-import { db } from "@/lib/db";
-import { requireKey, handleApiError, ApiError } from "@/lib/api";
-import { audit } from "@/lib/audit";
+import { requireKey, handleApiError, ApiError, resolveReadScope } from "@/lib/api";
+import { auditInTransaction } from "@/lib/audit";
 import { resolvePermissions } from "@/lib/perms/effective";
 import { recomputeSessionTotals, BLOCKING_ORDER_STATUSES } from "@/lib/table-sessions";
 
@@ -14,19 +16,6 @@ export async function POST(_request: NextRequest, { params }: Params) {
     const session = await requireKey("tables.close");
     const { id } = await params;
 
-    const ts = await db.tableSession.findUnique({ where: { id } });
-    if (!ts) throw new ApiError(404, "الجلسة غير موجودة");
-    if (session.role !== "SUPER_ADMIN" && ts.cafeId !== session.cafeId) {
-      throw new ApiError(403, "ليس لديك صلاحية لتنفيذ هذا الإجراء");
-    }
-    if (session.branchId && ts.branchId !== session.branchId) {
-      throw new ApiError(403, "الترابيزة تبع فرع تاني");
-    }
-    if (ts.status !== "OPEN") throw new ApiError(400, "الترابيزة مقفولة بالفعل");
-
-    // Refresh totals first so a stale remaining can't block/allow wrongly.
-    await recomputeSessionTotals(id);
-
     const { keys } = await resolvePermissions(session);
     const mayOverride = keys.has("tables.manage");
 
@@ -34,14 +23,24 @@ export async function POST(_request: NextRequest, { params }: Params) {
     // trusting the eligibility the screen computed. Between the prompt
     // appearing and the button being pressed a waiter can ring in another
     // round, and a close decided before that must not release the table.
-    const closed = await db.$transaction(async (tx) => {
-      const current = await tx.tableSession.findUnique({ where: { id } });
+    const closed = await protectedTransaction(async (tx) => {
+      const scope = resolveReadScope(session);
+      const candidate = await tx.tableSession.findFirst({ where: { id, ...scope } });
+      if (!candidate) throw new ApiError(404, "الحساب مش موجود");
+      const members = await tx.order.findMany({ where: { tableSessionId: id, ...scope }, select: { id: true } });
+      await lockOrders(tx, members.map(order => order.id));
+      await lockOrderPayments(tx, members.map(order => order.id));
+      await lockTableSessions(tx, [id]);
+      const freshMembers = await tx.order.findMany({ where: { tableSessionId: id, ...scope }, select: { id: true } });
+      if (freshMembers.some(order => !members.some(locked => locked.id === order.id))) throw new ApiError(409, "طلبات الترابيزة اتغيرت — جرّب تاني");
+      await recomputeSessionTotals(id, tx);
+      const current = await tx.tableSession.findFirst({ where: { id, ...scope } });
       if (!current || current.status !== "OPEN") {
         throw new ApiError(400, "الترابيزة مقفولة بالفعل");
       }
 
-      const remaining = Number(current.remainingAmount);
-      if (remaining > 0.001 && !mayOverride) {
+      const remaining = money(current.remainingAmount);
+      if (remaining.gt(0) && !mayOverride) {
         throw new ApiError(400, "لا يمكن قفل الترابيزة قبل تحصيل باقي الحساب");
       }
 
@@ -63,27 +62,13 @@ export async function POST(_request: NextRequest, { params }: Params) {
       });
       if (flipped.count === 0) throw new ApiError(400, "الترابيزة مقفولة بالفعل");
 
+      await auditInTransaction(tx, { cafeId: current.cafeId, userId: session.id, action: "TABLE_SESSION_CLOSED", entity: "TableSession", entityId: id, details: { branchId: current.branchId, tableSessionId: id, tableNumber: current.tableNumber, oldValue: "OPEN", newValue: "CLOSED", totalAmount: current.totalAmount, paidAmount: current.paidAmount, remainingAmount: current.remainingAmount, unservedOrders: unserved, managerOverride: remaining.gt(0) || unserved > 0 } });
       return {
         session: await tx.tableSession.findUniqueOrThrow({ where: { id } }),
         remaining,
         unserved,
       };
-    });
-    const remaining = closed.remaining;
-
-    await audit({
-      cafeId: ts.cafeId, userId: session.id, action: "TABLE_SESSION_CLOSED",
-      entity: "TableSession", entityId: id,
-      details: {
-        branchId: ts.branchId, tableSessionId: id, tableNumber: ts.tableNumber,
-        oldValue: "OPEN", newValue: "CLOSED",
-        totalAmount: Number(closed.session.totalAmount), paidAmount: Number(closed.session.paidAmount),
-        remainingAmount: Number(closed.session.remainingAmount),
-        unservedOrders: closed.unserved,
-        managerOverride: remaining > 0.001 || closed.unserved > 0,
-      },
-    });
-
+    }, resolveReadScope(session));
     return NextResponse.json({
       session: {
         id: closed.session.id,

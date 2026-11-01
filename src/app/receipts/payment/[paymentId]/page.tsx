@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { getSession } from "@/lib/auth";
+import { requireActiveSession, ApiError } from "@/lib/api";
 import { resolvePermissions } from "@/lib/perms/effective";
 import { audit } from "@/lib/audit";
 import { PrintActions } from "@/components/receipts/print-actions";
@@ -79,11 +79,18 @@ export default async function ReceiptPage({
   searchParams,
 }: {
   params: Promise<{ paymentId: string }>;
-  searchParams: Promise<{ print?: string; reprint?: string; scope?: string }>;
+  searchParams: Promise<{ print?: string; reprint?: string; scope?: string; embedded?: string }>;
 }) {
   const [{ paymentId }, sp] = await Promise.all([params, searchParams]);
-  const session = await getSession();
-  if (!session) return <Message text="سجّل دخولك الأول" />;
+  // The full guard, not the bare cookie: a deactivated, revoked or moved
+  // account must lose its receipts with the rest of its access.
+  let session;
+  try {
+    session = await requireActiveSession();
+  } catch (error) {
+    if (error instanceof ApiError && (error.status === 401 || error.status === 403)) return <Message text={error.message} />;
+    throw error;
+  }
 
   const { keys } = await resolvePermissions(session);
   const isReprint = sp.reprint === "1";
@@ -266,7 +273,7 @@ export default async function ReceiptPage({
   const row = { display: "flex", justifyContent: "space-between", gap: 8 } as const;
 
   return (
-    <main dir="rtl" style={{ background: "#f4f4f5", minHeight: "100dvh", padding: "16px 8px", fontFamily: "var(--font-cairo), sans-serif" }}>
+    <main data-receipt-ready="true" dir="rtl" style={{ background: "#f4f4f5", minHeight: "100dvh", padding: "16px 8px", fontFamily: "var(--font-cairo), sans-serif" }}>
       {/* Print CSS: 80mm paper, hide screen chrome. */}
       <style>{`
         @media print {
@@ -285,7 +292,7 @@ export default async function ReceiptPage({
         @page { size: 80mm auto; margin: 2mm; }
       `}</style>
 
-      <PrintActions autoPrint={sp.print === "1"} />
+      {sp.embedded !== "1" && <PrintActions autoPrint={sp.print === "1"} />}
 
       <div
         className="receipt"

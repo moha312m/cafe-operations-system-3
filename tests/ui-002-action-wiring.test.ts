@@ -50,7 +50,7 @@ describe("UI-002 the custody screens are wired to the existing API", () => {
     const bar = read("src/components/handovers/handover-action-bar.tsx");
 
     assert.match(detail, /\/api\/handovers\/\$\{handoverId\}/);
-    assert.match(detail, /\/api\/handovers\/\$\{view\.handoverId\}\/acknowledge/);
+    assert.match(read("src/components/handovers/receiving-sheet.tsx"), /\/api\/handovers\/\$\{handoverId\}\/acknowledge/);
     assert.match(detail, /body: \{ action, handoverId: view\.handoverId \}/);
 
     assert.match(bar, /\/api\/handovers\/\$\{handoverId\}\/accept/);
@@ -105,7 +105,7 @@ describe("UI-002 the custody screens are wired to the existing API", () => {
 
     assert.match(page, /"\/api\/stock-counts"/);
     assert.match(detail, /\/api\/stock-counts\/\$\{sessionId\}/);
-    assert.match(detail, /\/api\/stock-counts\/\$\{detail\.id\}\/lines\/\$\{lineId\}/);
+    assert.match(detail, /\/api\/stock-counts\/\$\{sessionId\}\/lines\/\$\{lineId\}/);
     assert.match(detail, /\/api\/stock-counts\/\$\{detail\.id\}\/submit/);
     assert.match(detail, /\/api\/stock-counts\/\$\{detail\.id\}\/confirm/);
     assert.match(detail, /\$\{base\}\/recount/);

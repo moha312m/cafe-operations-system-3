@@ -1,10 +1,13 @@
 "use client";
+import { TouchNumberInput } from "@/components/pos/touch-number-input";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { api, money } from "@/lib/client";
 import { useApp } from "@/components/app-shell";
+import { PaymentReceiptPreview } from "@/components/receipts/payment-receipt-preview";
 import { cn } from "@/lib/utils";
+import { TONE_SIDE, TONE_SURFACE } from "@/components/ui/tone";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -30,10 +33,10 @@ const PAY_LABEL: Record<PaymentStatus, string> = {
   UNPAID: "غير مدفوع", PENDING_COLLECTION: "في انتظار التحصيل", PARTIAL: "مدفوع جزئيًا", PAID: "مدفوع", REFUNDED: "مرتجع", CANCELLED: "ملغي",
 };
 const PAY_TONE: Record<PaymentStatus, string> = {
-  UNPAID: "bg-red-500/12 text-red-700 dark:text-red-400",
-  PENDING_COLLECTION: "bg-amber-500/12 text-amber-700 dark:text-amber-400",
-  PARTIAL: "bg-violet-500/12 text-violet-700 dark:text-violet-400",
-  PAID: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400",
+  UNPAID: "bg-clay-soft text-clay-ink",
+  PENDING_COLLECTION: "bg-caramel-soft text-caramel-ink",
+  PARTIAL: "bg-tide-soft text-tide-ink",
+  PAID: "bg-sage-soft text-sage-ink",
   REFUNDED: "bg-foreground/8 text-muted-foreground", CANCELLED: "bg-foreground/8 text-muted-foreground",
 };
 const METHOD_LABEL: Record<"CASH" | "CARD" | "WALLET", string> = { CASH: "كاش", CARD: "فيزا", WALLET: "محفظة" };
@@ -66,6 +69,8 @@ export function TableInvoices({
   const [summary, setSummary] = useState<SessionSummary | null>(null);
   const [invoices, setInvoices] = useState<Invoice[] | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // Folds the whole invoice list away; the summary and its collect/close actions stay.
+  const [listCollapsed, setListCollapsed] = useState(false);
   const [busy, setBusy] = useState(false);
   const initFor = useRef<string | null>(null);
 
@@ -138,15 +143,17 @@ export function TableInvoices({
 
   async function refresh() { await load(); onChanged?.(); }
 
+  const paymentInFlight = useRef(false);
   async function submitCollect() {
-    if (!collect) return;
+    if (!collect || paymentInFlight.current) return;
     const amt = Number(amount) || 0;
+    paymentInFlight.current = true;
     setBusy(true);
     try {
       let paymentId = "";
       let scope: "order" | "table" = "order";
       if (collect.kind === "invoice") {
-        if (amt <= 0 || amt > collect.remaining + 0.001) { setBusy(false); return toast.error("مبلغ غير صحيح"); }
+        if (amt <= 0 || amt > collect.remaining + 0.001) { paymentInFlight.current=false; setBusy(false); return toast.error("مبلغ غير صحيح"); }
         const r = await api<{ payments: { id: string }[] }>("/api/payments", {
           method: "POST", body: { orderId: collect.orderId, amount: amt, method: payMethod },
         });
@@ -155,7 +162,7 @@ export function TableInvoices({
         const mode = collect.kind === "table-full" ? "FULL" : "PARTIAL";
         const body: Record<string, unknown> = { mode, method: payMethod };
         if (mode === "PARTIAL") body.amount = amt;
-        if (mode === "PARTIAL" && (amt <= 0 || amt > collect.remaining + 0.001)) { setBusy(false); return toast.error("مبلغ غير صحيح"); }
+        if (mode === "PARTIAL" && (amt <= 0 || amt > collect.remaining + 0.001)) { paymentInFlight.current=false; setBusy(false); return toast.error("مبلغ غير صحيح"); }
         // Loyalty redemption against the table account (server re-validates).
         if (tiPointsNum > 0 && tiCustomer) {
           body.loyaltyPointsToRedeem = tiPointsNum;
@@ -172,6 +179,7 @@ export function TableInvoices({
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "فشل التحصيل");
     } finally {
+      paymentInFlight.current = false;
       setBusy(false);
     }
   }
@@ -195,12 +203,50 @@ export function TableInvoices({
 
   return (
     <div className="space-y-2 border-t pt-3">
-      <p className="text-xs font-medium text-muted-foreground">فواتير الترابيزة</p>
+      <div className="flex flex-wrap items-center justify-between gap-2" data-testid="pos-table-invoices-bar">
+        <p className="text-xs font-medium text-muted-foreground">
+          فواتير الترابيزة ({invoices.length})
+          {summary && summary.remainingAmount > 0.001 && <> · المتبقي <span className="tabular-nums font-semibold text-caramel-ink">{fmt(summary.remainingAmount)}</span></>}
+        </p>
+        {invoices.length > 0 && (
+          <button type="button" className="min-h-8 text-xs font-medium text-foreground/70 underline" aria-expanded={!listCollapsed} onClick={() => setListCollapsed((v) => !v)}>
+            {listCollapsed ? "عرض الفواتير ▾" : "إخفاء الفواتير ▴"}
+          </button>
+        )}
+      </div>
+
+      {/* Session summary, kept above the list so a new invoice never pushes its actions away. */}
+      {summary && (
+        <div data-testid="pos-table-session-summary" className={cn("space-y-2 rounded-xl border p-2.5", summary.remainingAmount > 0.001 ? TONE_SURFACE.caramel : TONE_SURFACE.sage, summary.remainingAmount > 0.001 ? TONE_SIDE.caramel : TONE_SIDE.sage)}>
+          <p className="text-xs font-semibold">ملخص حساب الترابيزة</p>
+          <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px]">
+            <span className="opacity-80">عدد الفواتير: <span className="tabular-nums font-medium opacity-100">{summary.invoiceCount}</span></span>
+            <span className="opacity-80">مدة الجلوس: <span className="font-medium">{sinceLabel(summary.startedAt)}</span></span>
+            <span className="opacity-80">الإجمالي: <span className="tabular-nums font-medium">{fmt(summary.totalAmount)}</span></span>
+            <span className="opacity-80">المدفوع: <span className="tabular-nums font-medium">{fmt(summary.paidAmount)}</span></span>
+            <span className="opacity-80">المتبقي: <span className="tabular-nums font-bold">{fmt(summary.remainingAmount)}</span></span>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {canCollect && summary.remainingAmount > 0.001 && (
+              <>
+                <Button size="sm" className="h-7 px-2 text-xs" onClick={() => { setPayMethod("CASH"); setAmount(String(summary.remainingAmount)); setCollect({ kind: "table-full", remaining: summary.remainingAmount }); }}>تحصيل كامل حساب الترابيزة</Button>
+                <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => { setPayMethod("CASH"); setAmount(""); setCollect({ kind: "table-partial", remaining: summary.remainingAmount }); }}>تحصيل جزئي من حساب الترابيزة</Button>
+              </>
+            )}
+            {canClose && (
+              <Button size="sm" variant={summary.remainingAmount <= 0.001 ? "default" : "outline"} className="h-7 px-2 text-xs" disabled={busy} onClick={closeTable}>🔒 قفل الترابيزة</Button>
+            )}
+          </div>
+          {summary.remainingAmount > 0.001 && (
+            <p className="text-[10px] opacity-80">لا يمكن قفل الترابيزة قبل تحصيل باقي الحساب</p>
+          )}
+        </div>
+      )}
 
       {invoices.length === 0 ? (
         <p className="rounded-lg bg-muted/40 px-2.5 py-2 text-xs text-muted-foreground">لا توجد فواتير على هذه الترابيزة حتى الآن</p>
-      ) : (
-        <div className="max-h-72 space-y-2 overflow-y-auto pe-0.5">
+      ) : !listCollapsed && (
+        <div className="max-h-52 space-y-2 overflow-y-auto pe-0.5">
           {invoices.map((inv) => {
             const open = expanded.has(inv.id);
             return (
@@ -215,7 +261,13 @@ export function TableInvoices({
                 </div>
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-2.5 pb-2 text-[11px] text-muted-foreground">
                   <span>{inv.itemCount} صنف</span>
-                  {inv.remainingAmount > 0.001 && <span className="text-amber-600 dark:text-amber-400">المتبقي {fmt(inv.remainingAmount)}</span>}
+                  {inv.remainingAmount > 0.001 && <span className="font-medium text-caramel-ink">المتبقي {fmt(inv.remainingAmount)}</span>}
+                  {/* One click, even with the item details folded away. */}
+                  {canCollect && inv.remainingAmount > 0.001 && (
+                    <Button size="sm" className="h-7 px-2 text-xs" onClick={() => { setPayMethod("CASH"); setAmount(String(inv.remainingAmount)); setCollect({ kind: "invoice", orderId: inv.id, remaining: inv.remainingAmount, label: `#${inv.orderNumber}` }); }}>
+                      تحصيل الفاتورة
+                    </Button>
+                  )}
                   <button className="ms-auto font-medium text-foreground/70 underline" onClick={() => toggle(inv.id)}>
                     {open ? "إخفاء التفاصيل" : "عرض التفاصيل"}
                   </button>
@@ -231,7 +283,7 @@ export function TableInvoices({
                             <span className="tabular-nums">{it.quantity}×</span> {it.productName}
                             {it.variantName && <span className="text-muted-foreground"> ({it.variantName})</span>}
                             {it.addOns.length > 0 && <span className="text-muted-foreground"> + {it.addOns.map((a) => a.name).join("، ")}</span>}
-                            {it.notes && <span className="block text-[10px] text-amber-700 dark:text-amber-400">📝 {it.notes}</span>}
+                            {it.notes && <span className="block text-[10px] text-caramel-ink">📝 {it.notes}</span>}
                           </span>
                           <span className="shrink-0 tabular-nums text-muted-foreground">{fmt(it.lineTotal)}</span>
                         </div>
@@ -246,11 +298,6 @@ export function TableInvoices({
                       <Row label="المدفوع" value={fmt(inv.paidAmount)} />
                       {inv.remainingAmount > 0.001 && <Row label="المتبقي" value={fmt(inv.remainingAmount)} bold />}
                     </div>
-                    {canCollect && inv.remainingAmount > 0.001 && (
-                      <Button size="sm" className="w-full" onClick={() => { setPayMethod("CASH"); setAmount(String(inv.remainingAmount)); setCollect({ kind: "invoice", orderId: inv.id, remaining: inv.remainingAmount, label: `#${inv.orderNumber}` }); }}>
-                        تحصيل الفاتورة
-                      </Button>
-                    )}
                   </div>
                 )}
               </div>
@@ -259,86 +306,13 @@ export function TableInvoices({
         </div>
       )}
 
-      {/* Session summary */}
-      {summary && (
-        <div className="space-y-2 rounded-xl border bg-muted/30 p-2.5">
-          <p className="text-xs font-semibold">ملخص حساب الترابيزة</p>
-          <div className="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px]">
-            <span className="text-muted-foreground">عدد الفواتير: <span className="tabular-nums text-foreground">{summary.invoiceCount}</span></span>
-            <span className="text-muted-foreground">مدة الجلوس: <span className="text-foreground">{sinceLabel(summary.startedAt)}</span></span>
-            <span className="text-muted-foreground">الإجمالي: <span className="tabular-nums text-foreground">{fmt(summary.totalAmount)}</span></span>
-            <span className="text-muted-foreground">المدفوع: <span className="tabular-nums text-emerald-600 dark:text-emerald-400">{fmt(summary.paidAmount)}</span></span>
-            <span className="text-muted-foreground">المتبقي: <span className="tabular-nums font-semibold text-amber-600 dark:text-amber-400">{fmt(summary.remainingAmount)}</span></span>
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            {canCollect && summary.remainingAmount > 0.001 && (
-              <>
-                <Button size="sm" className="h-7 px-2 text-xs" onClick={() => { setPayMethod("CASH"); setAmount(String(summary.remainingAmount)); setCollect({ kind: "table-full", remaining: summary.remainingAmount }); }}>تحصيل كامل حساب الترابيزة</Button>
-                <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={() => { setPayMethod("CASH"); setAmount(""); setCollect({ kind: "table-partial", remaining: summary.remainingAmount }); }}>تحصيل جزئي من حساب الترابيزة</Button>
-              </>
-            )}
-            {canClose && (
-              <Button size="sm" variant={summary.remainingAmount <= 0.001 ? "default" : "outline"} className="h-7 px-2 text-xs" disabled={busy} onClick={closeTable}>🔒 قفل الترابيزة</Button>
-            )}
-          </div>
-          {summary.remainingAmount > 0.001 && (
-            <p className="text-[10px] text-muted-foreground">لا يمكن قفل الترابيزة قبل تحصيل باقي الحساب</p>
-          )}
-        </div>
-      )}
-
-      {/* Post-payment receipt actions */}
-      <Dialog open={receipt !== null} onOpenChange={(o) => !o && setReceipt(null)}>
-        <DialogContent className="max-w-xs">
-          <DialogHeader>
-            <DialogTitle>تم تحصيل الدفع بنجاح ✅</DialogTitle>
-          </DialogHeader>
-          <div className="grid gap-2">
-            {receipt?.paymentId ? (
-              <>
-                <Button
-                  className="h-11 w-full"
-                  onClick={() => {
-                    // Table payments default to the unified bill; explicit
-                    // invoice collections force the single-order receipt.
-                    const scopeQs = receipt.scope === "table" ? "&scope=table" : "&scope=order";
-                    window.open(`/receipts/payment/${receipt.paymentId}?print=1${scopeQs}`, "_blank");
-                  }}
-                >
-                  🖨️ طباعة الريسيت
-                </Button>
-                <Button
-                  variant="outline"
-                  className="h-11 w-full"
-                  onClick={() => {
-                    const scopeQs = receipt.scope === "table" ? "?scope=table" : "?scope=order";
-                    window.open(`/receipts/payment/${receipt.paymentId}${scopeQs}`, "_blank");
-                  }}
-                >
-                  عرض الريسيت
-                </Button>
-              </>
-            ) : (
-              <p className="text-xs text-muted-foreground">
-                تم سداد الحساب بخصم النقاط بالكامل — لا توجد دفعة نقدية لطباعتها.
-              </p>
-            )}
-            {summary && summary.remainingAmount > 0.001 && (
-              <Button
-                variant="outline"
-                className="h-10 w-full text-sm"
-                onClick={() => setReceipt(null)}
-              >
-                تحصيل دفعة أخرى
-              </Button>
-            )}
-            <Button variant="ghost" className="h-10 w-full text-muted-foreground" onClick={() => setReceipt(null)}>
-              إغلاق
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
+      {/* Post-payment preview, shared with new-order and later collection. */}
+      {receipt && <PaymentReceiptPreview
+        paymentId={receipt.paymentId}
+        scope={receipt.scope}
+        onClose={() => setReceipt(null)}
+        extraActions={summary && summary.remainingAmount > 0.001 ? <Button variant="outline" onClick={() => setReceipt(null)}>تحصيل دفعة أخرى</Button> : undefined}
+      />}
       {/* Collect dialog */}
       <Dialog open={collect !== null} onOpenChange={(o) => !o && !busy && setCollect(null)}>
         <DialogContent className="max-w-xs">
@@ -352,7 +326,7 @@ export function TableInvoices({
               <div className="rounded-lg bg-muted/40 p-2 text-sm">
                 المتبقي: <span className="font-bold tabular-nums">{fmt(collect.remaining)}</span>
                 {collect.kind !== "invoice" && tiDiscount > 0 && (
-                  <span className="block text-xs text-amber-700 dark:text-amber-400">
+                  <span className="block text-xs text-caramel-ink">
                     خصم نقاط الولاء: −{fmt(tiDiscount)} · المطلوب تحصيله: <b className="tabular-nums">{fmt(Math.max(collect.remaining - tiDiscount, 0))}</b>
                   </span>
                 )}
@@ -371,20 +345,20 @@ export function TableInvoices({
                   />
                   {tiCustomer && (
                     <>
-                      <p className="rounded bg-blue-500/10 px-2 py-1 text-[11px] text-blue-800 dark:text-blue-300">
+                      <p className={cn("rounded border px-2 py-1 text-[11px]", TONE_SURFACE.tide)}>
                         عميل موجود{tiCustomer.name ? `: ${tiCustomer.name}` : ""} · رصيد النقاط:{" "}
                         <b className="tabular-nums">{tiCustomer.loyaltyPointsBalance}</b> نقطة
                       </p>
                       {tiLoyalty?.enabled && tiCustomer.loyaltyPointsBalance >= (tiLoyalty?.minPointsToRedeem ?? 0) ? (
                         <>
-                          <Input
+                          <TouchNumberInput
                             type="number" dir="ltr" className="h-9"
                             placeholder={`عدد النقاط المستخدمة (أقل عدد ${tiLoyalty.minPointsToRedeem})`}
                             value={tiPoints}
-                            onChange={(e) => setTiPoints(e.target.value)}
+                            onValueChange={touchValue => setTiPoints(touchValue)}
                           />
                           {tiPointsNum > 0 && (
-                            <p className="text-[11px] text-amber-700 dark:text-amber-400">
+                            <p className="text-[11px] text-caramel-ink">
                               سيتم استخدام نقاط هذا العميل كخصم على حساب الترابيزة
                             </p>
                           )}
@@ -399,7 +373,7 @@ export function TableInvoices({
 
               <div className="space-y-1.5">
                 <Label>مبلغ التحصيل</Label>
-                <Input type="number" min="0" step="0.01" dir="ltr" value={amount} onChange={(e) => setAmount(e.target.value)}
+                <TouchNumberInput type="number" min="0" step="0.01" dir="ltr" value={amount} onValueChange={touchValue => setAmount(touchValue)}
                   disabled={collect.kind === "table-full"} />
               </div>
               <div className="space-y-1.5">

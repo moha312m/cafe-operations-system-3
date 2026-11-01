@@ -1,12 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { api, money } from "@/lib/client";
 import { t, formatTime } from "@/lib/i18n";
 import { useApp } from "@/components/app-shell";
 import { ROLE_LABELS } from "@/lib/permissions";
-import { APPROVAL_MODE_LABEL } from "@/lib/qr-approval";
 import type { Role, QrApprovalMode } from "@prisma/client";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -18,6 +17,8 @@ import {
 } from "@/components/ui/dialog";
 import { QrApprovalSettingsDialog } from "@/components/qr-approval-settings-dialog";
 import { QrOrderEditDialog } from "@/components/approvals/qr-order-edit-dialog";
+import { OwnerActionQueue } from "@/components/approvals/owner-action-queue";
+import { collectOrderPages, type OrderPage } from "@/lib/order-pages-client";
 
 type OrderItem = {
   id: string; productName: string; variantName: string | null;
@@ -47,6 +48,8 @@ export default function ApprovalsPage() {
   const { cafe, canKey } = useApp();
   const currency = cafe?.currency ?? "EGP";
   const [orders, setOrders] = useState<PendingOrder[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const loadVersion = useRef(0);
   const [perms, setPerms] = useState({ canApprove: false, canReject: false, canEdit: false });
   const [busy, setBusy] = useState(false);
   const [rejecting, setRejecting] = useState<PendingOrder | null>(null);
@@ -57,21 +60,34 @@ export default function ApprovalsPage() {
   const canEditSettings = canKey("settings.edit_qr_approval");
 
   const load = useCallback(async () => {
+    const version = ++loadVersion.current;
     try {
-      const data = await api<{ orders: PendingOrder[]; canApprove: boolean; canReject: boolean; canEdit: boolean }>(
+      type QueuePage = OrderPage<PendingOrder> & { canApprove: boolean; canReject: boolean; canEdit: boolean };
+      const data = await api<QueuePage>(
         "/api/qr-orders/pending"
       );
-      setOrders(data.orders);
+      const complete = await collectOrderPages<PendingOrder>((cursor) => cursor
+        ? api<QueuePage>(`/api/qr-orders/pending?cursor=${encodeURIComponent(cursor)}`)
+        : Promise.resolve(data));
+      if (version !== loadVersion.current) return;
+      setOrders(complete.orders.sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)));
       setPerms({ canApprove: data.canApprove, canReject: data.canReject, canEdit: data.canEdit });
-    } catch {
-      // polling failure is non-fatal
+      setLoadError(null);
+    } catch (error) {
+      if (version === loadVersion.current) setLoadError(error instanceof Error ? error.message : "تعذر تحديث قائمة الموافقات");
     }
   }, []);
 
   useEffect(() => {
-    load();
-    const timer = setInterval(load, 20_000); // lightweight refresh
-    return () => clearInterval(timer);
+    const versionRef = loadVersion;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const refresh = async () => {
+      await load();
+      if (!stopped) timer = setTimeout(refresh, 20_000);
+    };
+    timer = setTimeout(refresh, 0);
+    return () => { stopped = true; clearTimeout(timer); versionRef.current++; };
   }, [load]);
 
   async function approve(order: PendingOrder) {
@@ -104,6 +120,8 @@ export default function ApprovalsPage() {
 
   return (
     <div className="space-y-4">
+      <OwnerActionQueue />
+      {loadError && <p role="alert" className="rounded-lg border border-destructive p-3 text-sm text-destructive">تعذر تحديث القائمة؛ آخر بيانات مكتملة معروضة. {loadError}</p>}
       <div className="flex flex-wrap items-center gap-3">
         <div>
           <h1 className="text-2xl font-semibold">طلبات المنيو في انتظار التأكيد</h1>
@@ -208,5 +226,3 @@ export default function ApprovalsPage() {
     </div>
   );
 }
-
-export { APPROVAL_MODE_LABEL };

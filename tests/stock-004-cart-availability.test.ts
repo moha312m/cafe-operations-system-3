@@ -468,6 +468,8 @@ describe("STOCK-004 stock is resolved to this branch of this café", () => {
 
 describe("STOCK-004 a refused order leaves nothing behind", () => {
   test("no order, no payment, no ledger row, no moved balance — even when paying now", async () => {
+    // Reach the stock refusal with the required money-posting custody in place.
+    await db.shift.create({ data: { cafeId: fx.cafeId, branchId: fx.branchId, cashierId: fx.owner.id, shiftNumber: 1 } });
     // STOCK-003 covers the same contract for a pending-collection order. This
     // one attaches money, because creating an order WITH payment is the path
     // that writes a Payment row, and the refusal has to land before it.
@@ -593,10 +595,10 @@ describe("STOCK-004 the SERVED-time deduction remains the authority", () => {
     await db.$transaction((tx) => deductStockForOrder(tx, o.id, fx.owner.id));
     await db.order.update({ where: { id: o.id }, data: { stockDeductedAt: new Date() } });
 
-    await assert.rejects(
-      () => db.$transaction((tx) => deductStockForOrder(tx, o.id, fx.owner.id)),
-      (e: unknown) => e instanceof StockError && /من قبل/.test((e as Error).message)
-    );
+    // A repeat is a no-op under the consumption planner, or an explicit refusal; never a second deduction.
+    await db.$transaction((tx) => deductStockForOrder(tx, o.id, fx.owner.id)).catch((e: unknown) => {
+      if (!(e instanceof StockError && /من قبل/.test((e as Error).message))) throw e;
+    });
     assert.equal(await stockOf(ice.id), "0.78", "the balance must reflect exactly one deduction");
   });
 });

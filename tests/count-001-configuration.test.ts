@@ -25,7 +25,9 @@
 
 import { test, after, before, describe } from "node:test";
 import assert from "node:assert/strict";
-import { db, fixture, tag, TAG_PREFIX, type Fixture, teardownTaggedCafe } from "./helpers/db";
+import { readFileSync } from "node:fs";
+import { resolveStockCountPolicy } from "@/lib/stock-count-policy";
+import { db, fixture, tag, type Fixture, teardownTaggedCafe } from "./helpers/db";
 
 const MARKER = tag("COUNT001");
 let fx: Fixture;
@@ -150,43 +152,83 @@ describe("COUNT-001 count configuration", () => {
   });
 
   test("every pre-existing inventory item reads isCritical = false", async () => {
-    // Scoped for the same reason as the policy assertion above: a suite that
-    // creates its own critical ingredient is exercising the flag, not
-    // evidence that the backfill set one.
-    const [{ count }] = await db.$queryRaw<{ count: bigint }[]>`
-      SELECT COUNT(*)::bigint AS count
-        FROM "InventoryItem"
-       WHERE "isCritical" = true AND "name" NOT LIKE ${`${TAG_PREFIX}%`}
-    `;
+    // Current owner selections cannot prove what the migration originally
+    // backfilled. Exercise its actual statement on rows that predate the
+    // column, inside a temporary table that cannot touch business inventory.
+    const migration = readFileSync(
+      "prisma/migrations/20260828100000_count_configuration/migration.sql", "utf8"
+    ).replace(/--[^\n]*/g, "");
+    const statements = [...migration.matchAll(/ALTER TABLE\s+"InventoryItem"[\s\S]*?;/g)];
+    assert.equal(statements.length, 1, "one criticality backfill statement must exist");
+    const statement = statements[0][0];
     assert.equal(
-      Number(count), 0,
-      "no café acquires a critical list it did not choose"
+      statement.replace(/\s+/g, " ").trim(),
+      'ALTER TABLE "InventoryItem" ADD COLUMN "isCritical" BOOLEAN NOT NULL DEFAULT false;',
+      "the migration must not guess an owner's critical list"
     );
+    assert.doesNotMatch(migration, /\b(?:UPDATE|INSERT INTO|DELETE FROM)\s+"InventoryItem"/i);
+
+    await db.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(
+        'CREATE TEMP TABLE "InventoryItem" ("id" TEXT PRIMARY KEY, "name" TEXT NOT NULL) ON COMMIT DROP'
+      );
+      await tx.$executeRaw`
+        INSERT INTO pg_temp."InventoryItem" ("id", "name")
+        VALUES ('before-column-1', 'existing beans'), ('before-column-2', 'existing milk')
+      `;
+      // Explicit qualification is essential: even if temporary setup fails,
+      // this statement can never target public.InventoryItem.
+      await tx.$executeRawUnsafe(statement.replace('"InventoryItem"', 'pg_temp."InventoryItem"'));
+      const rows = await tx.$queryRaw<{ id: string; isCritical: boolean }[]>`
+        SELECT "id", "isCritical" FROM pg_temp."InventoryItem" ORDER BY "id"
+      `;
+      assert.deepEqual(rows, [
+        { id: "before-column-1", isCritical: false },
+        { id: "before-column-2", isCritical: false },
+      ], "no cafe acquires a critical list it did not choose");
+    });
   });
 
   test("branch overrides accept NULL, which means inherit", async () => {
-    // The same shape dineInServingPolicyOverride already uses: a branch that
-    // has never been configured must be distinguishable from one that has
-    // deliberately been set to the same value as its café.
-    const branch = await db.branch.findUniqueOrThrow({ where: { id: fx.branchId } });
+    // A configured demo branch is not evidence about an untouched default.
+    // This suite owns the branch, so the roundtrip preserves demo settings.
+    const cafe = await db.cafe.create({
+      data: {
+        name: `${MARKER} override cafe`, slug: `${MARKER.toLowerCase()}-override`,
+        settings: { create: { stockCountPolicy: "CRITICAL" } },
+        branches: { create: { name: `${MARKER} override branch` } },
+      },
+      include: { branches: true },
+    });
+    cafeIds.push(cafe.id);
+    const branch = cafe.branches[0];
     assert.equal(branch.stockCountPolicyOverride, null);
     assert.equal(branch.handoverCountTypeOverride, null);
     assert.equal(branch.periodicCountTypeOverride, null);
     assert.equal(branch.stockCountModeOverride, null);
+    const inherited = await resolveStockCountPolicy(cafe.id, branch.id);
+    assert.equal(inherited.policy, "CRITICAL");
+    assert.deepEqual(inherited.source, {
+      policy: "CAFE", handoverCountType: "CAFE", periodicCountType: "CAFE", mode: "CAFE",
+    });
 
     const updated = await db.branch.update({
-      where: { id: fx.branchId },
+      where: { id: branch.id },
       data: { stockCountPolicyOverride: "FULL" },
     });
     assert.equal(updated.stockCountPolicyOverride, "FULL");
+    const overridden = await resolveStockCountPolicy(cafe.id, branch.id);
+    assert.equal(overridden.policy, "FULL");
+    assert.equal(overridden.source.policy, "BRANCH");
 
-    // Restored immediately: this branch belongs to the demo café, not to
-    // this suite, and an override left behind would change its behaviour.
     const restored = await db.branch.update({
-      where: { id: fx.branchId },
+      where: { id: branch.id },
       data: { stockCountPolicyOverride: null },
     });
     assert.equal(restored.stockCountPolicyOverride, null, "NULL is restorable, not a one-way door");
+    const restoredPolicy = await resolveStockCountPolicy(cafe.id, branch.id);
+    assert.equal(restoredPolicy.policy, "CRITICAL", "restoring NULL restores cafe inheritance");
+    assert.equal(restoredPolicy.source.policy, "CAFE");
   });
 
   test("StockCountType has exactly two values, and CYCLE is not one of them", async () => {

@@ -345,49 +345,46 @@ describe("TENDER-001 — card and wallet settlement is part of the shift close",
 
   // ───────────────────────────── the reasons ────────────────────────────
 
-  test("a card variance without a reason is refused, and nothing commits", async () => {
+  // HND-UX-004 changed the reason rule on the owner's instruction: a tender
+  // difference is recorded and the close continues; the explanation is an
+  // optional note. These tests used to assert a 400. What they still hold:
+  // each channel stays its own record with its own case, nothing is netted,
+  // and no reason is invented — an empty or whitespace note stores NULL.
+  test("a card variance without a note is recorded, with its own open case and a NULL note", async () => {
     const t = await till();
     const r = await close(fx.cashier.email, t.shiftId, { ...exact, actualCardAmount: 3180 });
 
-    assert.equal(r.status, 400, r.text);
-    const row = await shiftRow(t.shiftId);
-    assert.equal(row.status, "OPEN", "a refused close commits nothing");
-    assert.equal(row.actualCashAmount, null, "not even the cash it could have accepted");
-    assert.deepEqual(await recons(t.shiftId), []);
-    assert.deepEqual(await tenderCases(t.shiftId), []);
+    assert.equal(r.status, 200, r.text);
+    const card = (await recon(t.shiftId, "CARD"))!;
+    assert.equal(Number(card.varianceAmount), -20);
+    assert.equal(card.reasonNote, null, "no reason is fabricated");
+    assert.equal((await tenderCases(t.shiftId)).length, 1, "the unexplained difference is an open case");
+    assert.equal(Number((await recon(t.shiftId, "WALLET"))!.varianceAmount), 0, "the wallet is not touched by the card");
   });
 
-  test("a wallet variance without a reason is refused too", async () => {
+  test("a wallet variance without a note is recorded the same way", async () => {
     const t = await till();
     const r = await close(fx.cashier.email, t.shiftId, { ...exact, actualWalletAmount: 1530 });
 
-    assert.equal(r.status, 400, r.text);
-    assert.equal((await shiftRow(t.shiftId)).status, "OPEN");
-    assert.deepEqual(await recons(t.shiftId), []);
+    assert.equal(r.status, 200, r.text);
+    const wallet = (await recon(t.shiftId, "WALLET"))!;
+    assert.equal(Number(wallet.varianceAmount), 30);
+    assert.equal(wallet.reasonNote, null);
   });
 
-  test("a whitespace-only card reason is not a reason", async () => {
+  test("whitespace-only card and wallet notes are stored as no note", async () => {
     const t = await till();
     const r = await close(fx.cashier.email, t.shiftId, {
       ...exact,
       actualCardAmount: 3180,
       cardReason: "   \t\n  ",
-    });
-
-    assert.equal(r.status, 400, r.text);
-    assert.equal((await shiftRow(t.shiftId)).status, "OPEN");
-  });
-
-  test("a whitespace-only wallet reason is not a reason", async () => {
-    const t = await till();
-    const r = await close(fx.cashier.email, t.shiftId, {
-      ...exact,
       actualWalletAmount: 1530,
       walletReason: "\n\t   ",
     });
 
-    assert.equal(r.status, 400, r.text);
-    assert.equal((await shiftRow(t.shiftId)).status, "OPEN");
+    assert.equal(r.status, 200, r.text);
+    assert.equal((await recon(t.shiftId, "CARD"))!.reasonNote, null);
+    assert.equal((await recon(t.shiftId, "WALLET"))!.reasonNote, null);
   });
 
   test("real reasons are stored trimmed, one per tender", async () => {
@@ -405,11 +402,9 @@ describe("TENDER-001 — card and wallet settlement is part of the shift close",
     assert.equal((await recon(t.shiftId, "WALLET"))!.reasonNote, "استرداد من المزود");
   });
 
-  test("a card reason does not satisfy a wallet variance", async () => {
+  test("a card note is never copied onto a wallet variance", async () => {
     // The failure this catches is one generic "settlement reason" field
-    // covering both channels. The causes are different — a rejected card
-    // authorisation is not a pending wallet transfer — so the explanations
-    // must be too.
+    // covering both channels. The causes are different, so the notes are too.
     const t = await till();
     const r = await close(fx.cashier.email, t.shiftId, {
       ...exact,
@@ -418,11 +413,12 @@ describe("TENDER-001 — card and wallet settlement is part of the shift close",
       actualWalletAmount: 1530,
     });
 
-    assert.equal(r.status, 400, r.text);
-    assert.equal((await shiftRow(t.shiftId)).status, "OPEN");
+    assert.equal(r.status, 200, r.text);
+    assert.equal((await recon(t.shiftId, "CARD"))!.reasonNote, "عملية مرفوضة");
+    assert.equal((await recon(t.shiftId, "WALLET"))!.reasonNote, null);
   });
 
-  test("a cash reason does not satisfy a card variance", async () => {
+  test("a cash note is never copied onto a card variance", async () => {
     const t = await till();
     const r = await close(fx.cashier.email, t.shiftId, {
       ...exact,
@@ -431,8 +427,9 @@ describe("TENDER-001 — card and wallet settlement is part of the shift close",
       actualCardAmount: 3180,
     });
 
-    assert.equal(r.status, 400, r.text);
-    assert.equal((await shiftRow(t.shiftId)).status, "OPEN");
+    assert.equal(r.status, 200, r.text);
+    assert.equal((await shiftRow(t.shiftId)).cashReasonNote, "عجز في الدرج");
+    assert.equal((await recon(t.shiftId, "CARD"))!.reasonNote, null);
   });
 
   test("an exact settlement is never asked for a reason", async () => {
@@ -514,19 +511,15 @@ describe("TENDER-001 — card and wallet settlement is part of the shift close",
 
   test("a settlement on a channel that took nothing is a real overage", async () => {
     const t = await till({ legs: [{ amount: 1000, method: "CASH" }] });
-    const r = await close(fx.cashier.email, t.shiftId, {
-      actualCashAmount: 5000,
-      actualCardAmount: 50,
-    });
-    assert.equal(r.status, 400, "50 EGP the till never saw still needs explaining");
-
+    // HND-UX-004: recorded without a required note; it is still a real
+    // overage with its own case, never a silent zero.
     const ok = await close(fx.cashier.email, t.shiftId, {
       actualCashAmount: 5000,
       actualCardAmount: 50,
-      cardReason: "تسوية متأخرة من وردية أمس",
     });
     assert.equal(ok.status, 200, ok.text);
     assert.equal(Number((await recon(t.shiftId, "CARD"))!.varianceAmount), 50);
+    assert.equal((await recon(t.shiftId, "CARD"))!.reasonNote, null);
     assert.equal((await tenderCases(t.shiftId)).length, 1);
   });
 
@@ -1093,16 +1086,8 @@ describe("TENDER-001 — card and wallet settlement is part of the shift close",
     });
     try {
       const t = await till();
-      const refused = await close(fx.cashier.email, t.shiftId, {
-        ...exact,
-        actualCardAmount: 3180,
-      });
-      assert.equal(
-        refused.status,
-        400,
-        "a 20 EGP shortfall inside a 100 EGP bound STILL needs a reason"
-      );
-
+      // HND-UX-004: no note is required at any size, so the bound cannot be
+      // what decides; the difference is still recorded with its case.
       const ok = await close(fx.cashier.email, t.shiftId, {
         ...exact,
         actualCardAmount: 3180,
@@ -1224,10 +1209,16 @@ describe("TENDER-001 — card and wallet settlement is part of the shift close",
     }
   });
 
-  test("a cash shortage without a reason is still refused, tenders or not", async () => {
+  // HND-UX-004: a cash shortage beside exact tenders is recorded on its own;
+  // the tenders are not netted against it.
+  test("a cash shortage without a note is recorded beside exact tenders, never netted into them", async () => {
     const t = await till();
     const r = await close(fx.cashier.email, t.shiftId, { ...exact, actualCashAmount: 4970 });
-    assert.equal(r.status, 400, r.text);
-    assert.equal((await shiftRow(t.shiftId)).status, "OPEN");
+    assert.equal(r.status, 200, r.text);
+    const row = await shiftRow(t.shiftId);
+    assert.equal(Number(row.cashDifference), -30);
+    assert.equal(row.cashReasonNote, null);
+    assert.equal(Number((await recon(t.shiftId, "CARD"))!.varianceAmount), 0);
+    assert.equal(Number((await recon(t.shiftId, "WALLET"))!.varianceAmount), 0);
   });
 });

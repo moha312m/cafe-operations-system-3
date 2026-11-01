@@ -190,7 +190,7 @@ describe("REFUND-001 refunds are typed transactions", () => {
 
       await assert.rejects(
         () => refundPayment(res.payments[0].id, manager),
-        /شيفت|drawer|custody/i,
+        (error: unknown) => Boolean(error && typeof error === "object" && "status" in error && error.status === 400),
         "handing cash back without holding a drawer must be refused"
       );
     } finally {

@@ -1,12 +1,27 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { requireKey, handleApiError, ApiError, requireFeature } from "@/lib/api";
-import { audit } from "@/lib/audit";
+import type { Prisma } from "@prisma/client";
+import { auditInTransaction } from "@/lib/audit";
 import { weightedAverageCost } from "@/lib/purchases";
-import { applyStockMutation, lockItemForUpdate } from "@/lib/ledger";
+import { PurchaseArithmeticError, purchaseLine, purchaseAmount, purchaseStockAfter } from "@/lib/purchase-arithmetic";
+import { applyStockMutation, lockItemForUpdate, MissingInventoryItemError } from "@/lib/ledger";
 import { acquireInventorySharedLocks } from "@/lib/inventory-freeze";
+import { protectedTransaction } from "@/lib/protected-transaction";
+import { lockPurchaseInvoice } from "@/lib/transaction-locks";
 
 type Params = { params: Promise<{ id: string }> };
+
+// Only a row that is genuinely absent is a missing item. A lock timeout or
+// deadlock is contention, and stays one.
+async function lockLineItem(tx: Prisma.TransactionClient, inventoryItemId: string) {
+  try {
+    return await lockItemForUpdate(tx, inventoryItemId);
+  } catch (error) {
+    if (error instanceof MissingInventoryItemError) throw new ApiError(400, "خامة غير موجودة");
+    throw error;
+  }
+}
 
 // POST /api/purchases/[id]/confirm — confirm a DRAFT invoice: add each item's
 // quantity to inventory, create a PURCHASE transaction, and roll the item's
@@ -37,21 +52,38 @@ export async function POST(_request: NextRequest, { params }: Params) {
     if (inv.items.length === 0) throw new ApiError(400, "الفاتورة لا تحتوي على أصناف");
 
     const now = new Date();
-    // Everything in one transaction: stock rows + item updates + confirm flag.
-    const stockAdds = await db.$transaction(async (tx) => {
+    // Everything in one transaction: stock rows + item updates + confirm flag
+    // + both audit actions. Lock order: branch freeze gate, invoice, then
+    // every distinct item in ID order.
+    const stockAdds = await protectedTransaction(async (tx) => {
       const adds: { itemId: string; qty: number; newStock: number; newCost: number }[] = [];
       await acquireInventorySharedLocks(tx, [inv.branchId]);
-      for (const line of inv.items) {
-        // The locked read replaces a plain findUnique: the balance this
-        // arithmetic is based on must be the one nothing else can move
-        // until this transaction commits.
-        const locked = await lockItemForUpdate(tx, line.inventoryItemId).catch(() => null);
-        if (!locked) throw new ApiError(400, "خامة غير موجودة");
+      await lockPurchaseInvoice(tx, id);
+      // A draft edit may have committed while confirmation waited for this
+      // lock. Use its stored lines and totals, never the earlier pre-check.
+      const current = await tx.purchaseInvoice.findUniqueOrThrow({ where: { id }, include: { items: true } });
+      // Claim under the invoice row lock before touching stock. A concurrent
+      // confirmation rechecks this predicate after the first transaction ends.
+      const claimed = await tx.purchaseInvoice.updateMany({
+        where: { id, status: "DRAFT", confirmedAt: null },
+        data: { status: "CONFIRMED", confirmedAt: now },
+      });
+      if (claimed.count !== 1) throw new ApiError(400, "الفاتورة لم تعد مسودة متاحة للتأكيد");
+      // Two invoices sharing items lock them in one order, so they cannot
+      // deadlock. Lines are still processed one by one, in invoice order.
+      for (const itemId of [...new Set(current.items.map((line) => line.inventoryItemId))].sort()) {
+        await lockLineItem(tx, itemId);
+      }
+      for (const line of current.items) {
+        // Re-read under the lock already held: a duplicate line sees the
+        // balance and cost the previous line just wrote.
+        const locked = await lockLineItem(tx, line.inventoryItemId);
 
-        const qty = Number(line.quantity);
-        const unitCost = Number(line.unitCost);
+        const { quantity: qty, unitCost } = purchaseLine(Number(line.quantity), Number(line.unitCost));
+        const totalCost = purchaseAmount(Number(line.totalCost));
         const oldStock = locked.currentStock;
-        const newCost = weightedAverageCost(oldStock, locked.costPerUnit, qty, unitCost);
+        const newCost = weightedAverageCost(oldStock, locked.costPerUnitExact, qty, unitCost);
+        purchaseStockAfter(oldStock, qty); // refuse column overflow before any write
 
         // Previously `round2(oldStock + qty)` — two decimals on a
         // Decimal(12,3) column, so an 18 g receipt landed as 20 g and
@@ -64,7 +96,7 @@ export async function POST(_request: NextRequest, { params }: Params) {
           type: "PURCHASE",
           quantity: qty, // positive delta
           unitCost,
-          totalCost: Number(line.totalCost),
+          totalCost,
           note: `إضافة من فاتورة شراء رقم ${inv.invoiceNumber}`,
           createdById: session.id,
           newCostPerUnit: newCost,
@@ -75,28 +107,27 @@ export async function POST(_request: NextRequest, { params }: Params) {
         });
       }
 
-      await tx.purchaseInvoice.update({
-        where: { id },
-        data: { status: "CONFIRMED", confirmedAt: now },
+      // The audit rows are part of the confirmation: if either cannot be
+      // written, the stock, cost and claim roll back with it.
+      await auditInTransaction(tx, {
+        cafeId: inv.cafeId, userId: session.id, action: "PURCHASE_INVOICE_CONFIRMED",
+        entity: "PurchaseInvoice", entityId: id,
+        details: { branchId: inv.branchId, purchaseInvoiceId: id, invoiceNumber: inv.invoiceNumber, itemCount: current.items.length, oldValue: "DRAFT", newValue: "CONFIRMED" },
       });
-      return adds;
-    });
+      for (const a of adds) {
+        await auditInTransaction(tx, {
+          cafeId: inv.cafeId, userId: session.id, action: "PURCHASE_STOCK_ADDED",
+          entity: "InventoryItem", entityId: a.itemId,
+          details: { branchId: inv.branchId, purchaseInvoiceId: id, inventoryItemId: a.itemId, quantity: a.qty, newStock: a.newStock, newCostPerUnit: a.newCost },
+        });
+      }
 
-    await audit({
-      cafeId: inv.cafeId, userId: session.id, action: "PURCHASE_INVOICE_CONFIRMED",
-      entity: "PurchaseInvoice", entityId: id,
-      details: { branchId: inv.branchId, purchaseInvoiceId: id, invoiceNumber: inv.invoiceNumber, itemCount: inv.items.length, oldValue: "DRAFT", newValue: "CONFIRMED" },
-    });
-    for (const a of stockAdds) {
-      await audit({
-        cafeId: inv.cafeId, userId: session.id, action: "PURCHASE_STOCK_ADDED",
-        entity: "InventoryItem", entityId: a.itemId,
-        details: { branchId: inv.branchId, purchaseInvoiceId: id, inventoryItemId: a.itemId, quantity: a.qty, newStock: a.newStock, newCostPerUnit: a.newCost },
-      });
-    }
+      return adds;
+    }, { cafeId: inv.cafeId, branchId: inv.branchId });
 
     return NextResponse.json({ ok: true, itemsAdded: stockAdds.length });
   } catch (error) {
+    if (error instanceof PurchaseArithmeticError) return handleApiError(new ApiError(400, error.message));
     return handleApiError(error);
   }
 }

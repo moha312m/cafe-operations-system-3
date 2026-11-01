@@ -7,6 +7,7 @@ import { api, money } from "@/lib/client";
 import { useApp } from "@/components/app-shell";
 import { PageHeader, LoadingState, EmptyState } from "@/components/cafe/ui";
 import { RecipeEditor } from "@/components/menu/recipe-editor";
+import { RecipeExchange } from "@/components/recipe-import/recipe-exchange";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
@@ -241,6 +242,7 @@ export default function RecipeReviewPage() {
         <Button size="sm" variant="outline" onClick={() => void load()} disabled={busy}>
           ↻ تحديث
         </Button>
+        {canManageRecipes && <RecipeExchange onImported={load} />}
       </PageHeader>
 
       <div className="mb-4 grid grid-cols-2 gap-2 lg:grid-cols-4">

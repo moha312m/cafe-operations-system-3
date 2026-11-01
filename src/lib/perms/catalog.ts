@@ -17,7 +17,7 @@ export type ModuleCode =
   | "SHIFTS" | "FINANCE" | "USERS" | "EDIT_CENTER" | "AUDIT"
   | "SETTINGS" | "CUSTOMER_ORDERS" | "EXCEL" | "HANDOVER" | "REPORTS"
   | "AI_ASSISTANT" | "BRANCHES" | "CUSTOMERS"
-  | "STOCK_COUNT" | "VARIANCE";
+  | "STOCK_COUNT" | "VARIANCE" | "ACCOUNTING";
 
 export type PermModule = {
   code: ModuleCode;
@@ -56,6 +56,7 @@ export const MODULES: PermModule[] = [
   { code: "EXPENSES", label: "المصاريف", icon: "💸" },
   { code: "SHIFTS", label: "الشيفتات", icon: "🕒", feature: "shiftManagementEnabled" },
   { code: "FINANCE", label: "المالية", icon: "💰" },
+  { code: "ACCOUNTING", label: "المحاسبة (تجريبي)", icon: "📒" },
   { code: "SALES", label: "المبيعات", icon: "📈" },
   { code: "REPORTS", label: "التقارير", icon: "🧮" },
   { code: "USERS", label: "المستخدمين", icon: "👥", feature: "staffManagementEnabled" },
@@ -77,6 +78,12 @@ export const MODULE_MAP: Record<ModuleCode, PermModule> = Object.fromEntries(
 // The full key catalog. `sensitive` marks operations that grant money,
 // access, or the ability to grant access to others.
 export const PERMISSION_KEYS: PermKey[] = [
+  { key: "treasury.view", module: "FINANCE", label: "عرض الحسابات والتحويلات", sensitive: true },
+  { key: "treasury.manage_accounts", module: "FINANCE", label: "إدارة الحسابات", sensitive: true },
+  { key: "treasury.transfer_create", module: "FINANCE", label: "إنشاء تحويل داخلي", sensitive: true },
+  { key: "treasury.transfer_dispatch", module: "FINANCE", label: "توثيق خروج الأموال", sensitive: true },
+  { key: "treasury.transfer_receive", module: "FINANCE", label: "توثيق استلام الأموال", sensitive: true },
+  { key: "treasury.transfer_cancel", module: "FINANCE", label: "إلغاء مسودة تحويل", sensitive: true },
   // Dashboard
   { key: "dashboard.view", module: "DASHBOARD", label: "عرض لوحة التحكم" },
 
@@ -92,6 +99,7 @@ export const PERMISSION_KEYS: PermKey[] = [
   { key: "orders.update_status", module: "ORDERS", label: "تحديث حالة الطلب" },
   { key: "orders.cancel", module: "ORDERS", label: "إلغاء الطلب", sensitive: true },
   { key: "orders.refund", module: "ORDERS", label: "استرجاع مبلغ", sensitive: true },
+  { key: "orders.request_owner_action", module: "ORDERS", label: "طلب موافقة المالك على إلغاء أو استرجاع" },
 
   // QR / customer orders
   { key: "qr_orders.view", module: "QR_ORDERS", label: "عرض طلبات المنيو" },
@@ -154,6 +162,17 @@ export const PERMISSION_KEYS: PermKey[] = [
   { key: "tender_reconciliation.submit", module: "FINANCE", label: "تسجيل تسوية كارت/محفظة", sensitive: true },
   { key: "tender_reconciliation.approve", module: "FINANCE", label: "اعتماد تسوية الدفع", sensitive: true },
 
+  // Accounting — the shadow books. Each power is its own key: reading the
+  // books, exporting them, running the projection, reversing an entry,
+  // reconciling, setting up the chart and periods, and closing a period.
+  { key: "accounting.view", module: "ACCOUNTING", label: "عرض الدفاتر التجريبية", sensitive: true },
+  { key: "accounting.export", module: "ACCOUNTING", label: "تصدير تقارير المحاسبة", sensitive: true },
+  { key: "accounting.project", module: "ACCOUNTING", label: "تشغيل الترحيل التجريبي", sensitive: true },
+  { key: "accounting.reverse", module: "ACCOUNTING", label: "عكس قيد محاسبي", sensitive: true },
+  { key: "accounting.reconcile", module: "ACCOUNTING", label: "مطابقة الحسابات", sensitive: true },
+  { key: "accounting.setup", module: "ACCOUNTING", label: "إعداد الدفاتر ودليل الحسابات", sensitive: true },
+  { key: "accounting.close", module: "ACCOUNTING", label: "قفل فترة محاسبية", sensitive: true },
+
   // Stock count — physical counting, recount, and confirmation.
   // `confirm`, `correct` and `approve_correction` are withheld from the
   // custodian on purpose: nobody confirms their own count.
@@ -175,6 +194,10 @@ export const PERMISSION_KEYS: PermKey[] = [
 
   // Sales
   { key: "sales.view", module: "SALES", label: "عرض المبيعات" },
+  { key: "sales.edit", module: "SALES", label: "تعديل الفواتير مع حفظ المراجعات", sensitive: true },
+  { key: "sales.approve", module: "SALES", label: "اعتماد تعديل أو تصحيح شيفت مقفول", sensitive: true },
+  { key: "sales.override_price", module: "SALES", label: "تجاوز سعر صنف في فاتورة", sensitive: true },
+  { key: "sales.configure_limits", module: "SALES", label: "ضبط حدود خصم المستخدم", sensitive: true },
 
   // Reports
   { key: "reports.view", module: "REPORTS", label: "عرض التقارير" },
@@ -305,10 +328,10 @@ export const LEGACY_TO_KEYS: Record<string, string[]> = {
   // NOTE: pos.collect_payment intentionally does NOT ride here — money
   // collection is centralized behind payments:create (POS cashier flow),
   // so order-takers (waiters) can place orders without touching the drawer.
-  "orders:create": ["pos.view", "pos.create_order", "pos.view_payments", "tables.view", "tables.open", "pos.apply_discount", "customers.lookup"],
+  "orders:create": ["pos.view", "pos.create_order", "pos.view_payments", "tables.view", "tables.open", "pos.apply_discount", "customers.lookup", "orders.request_owner_action"],
   "orders:read": ["orders.view"],
-  "orders:update-status": ["orders.update_status", "kitchen.view", "kitchen.update_status"],
-  "orders:cancel": ["orders.cancel", "orders.refund"],
+  "orders:update-status": ["orders.update_status", "kitchen.view", "kitchen.update_status", "orders.request_owner_action"],
+  "orders:cancel": ["orders.cancel", "orders.refund", "orders.request_owner_action"],
   "orders:approve": ["qr_orders.view", "qr_orders.approve", "qr_orders.reject", "qr_orders.edit_before_approval"],
   "payments:create": [
     "pos.collect_payment",

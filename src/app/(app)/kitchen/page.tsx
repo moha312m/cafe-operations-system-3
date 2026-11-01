@@ -1,9 +1,11 @@
 "use client";
+import {KitchenAmendmentTickets} from '@/components/sales/kitchen-amendment-tickets';
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { api, money } from "@/lib/client";
+import { api, money, ApiRequestError } from "@/lib/client";
+import { collectOrderPages, type OrderPage } from "@/lib/order-pages-client";
 import { t, formatTime } from "@/lib/i18n";
 import { isOrderFullyPaid } from "@/lib/order-payments";
 import { handledBy } from "@/lib/order-staff";
@@ -129,6 +131,8 @@ export default function KitchenPage() {
   const currency = cafe?.currency ?? "EGP";
 
   const [orders, setOrders] = useState<KitchenOrder[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const loadVersion = useRef(0);
   const [branches, setBranches] = useState<Branch[]>([]);
   const [branchFilter, setBranchFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
@@ -157,12 +161,14 @@ export default function KitchenPage() {
   }
 
   const load = useCallback(async () => {
+    const version = ++loadVersion.current;
     try {
       const branchQuery =
         !user.branchId && branchFilter !== "all" ? `&branchId=${branchFilter}` : "";
-      const { orders } = await api<{ orders: KitchenOrder[] }>(
-        `/api/orders?status=CONFIRMED,PREPARING,READY${branchQuery}`
-      );
+      const { orders } = await collectOrderPages(cursor => api<OrderPage<KitchenOrder>>(
+        `/api/orders?status=CONFIRMED,PREPARING,READY${branchQuery}` +
+        (cursor ? `&cursor=${encodeURIComponent(cursor)}` : "")));
+      if (version !== loadVersion.current) return;
       // New-order detection for the chime (first load doesn't beep).
       if (knownIds.current) {
         const fresh = orders.filter(
@@ -175,9 +181,10 @@ export default function KitchenPage() {
       }
       knownIds.current = new Set(orders.map((o) => o.id));
       setOrders(orders);
+      setLoadError(null);
       setSecondsAgo(0);
-    } catch {
-      // polling failure is non-fatal; next tick retries
+    } catch (error) {
+      if (version === loadVersion.current) setLoadError(error instanceof Error ? error.message : "تعذر تحديث الطلبات");
     }
   }, [branchFilter, user.branchId]);
 
@@ -192,15 +199,20 @@ export default function KitchenPage() {
   }, [branchFilter, user.branchId]);
 
   useEffect(() => {
-    load();
-    const poll = setInterval(load, 7000);
+    const versionRef = loadVersion;
+    let stopped = false;
+    let poll: ReturnType<typeof setTimeout>;
+    const refresh = async () => { await load(); if (!stopped) poll = setTimeout(refresh, 7000); };
+    poll = setTimeout(refresh, 0);
     // One ticker drives both the "آخر تحديث" counter and wait-time labels.
     const timers = setInterval(() => {
       setSecondsAgo((s) => (s === null ? null : s + 10));
       setTick((n) => n + 1);
     }, 10_000);
     return () => {
-      clearInterval(poll);
+      stopped = true;
+      clearTimeout(poll);
+      versionRef.current++;
       clearInterval(timers);
     };
   }, [load]);
@@ -213,20 +225,49 @@ export default function KitchenPage() {
     }
   }, [user.branchId]);
 
+  // The same recovery /orders offers when serving is refused because the branch's stock custody has no responsible shift:
+  // resume the caller's own open shift (POST /api/shifts {resumeOnly}) or, mid-handover, go to the handover page. Nothing is retried automatically.
+  async function resumeShiftForCustody(branchId: string) {
+    try {
+      const result = await api<{ shift: { custodyGateReason: string | null } }>("/api/shifts", {
+        method: "POST",
+        body: { resumeOnly: true, ...(user.role === "CAFE_OWNER" || user.role === "SUPER_ADMIN" ? { branchId } : {}) },
+      });
+      if (result.shift.custodyGateReason) throw new Error("الشيفت في انتظار التسليم أو التحقق الافتتاحي — أكمل الإجراءات من صفحة التسليم والاستلام");
+      toast.success("تم استئناف الشيفت وربط العهدة — جرّب تسليم الطلب تاني");
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "فشل استئناف الشيفت");
+    }
+  }
+  function showCustodyRecovery(e: unknown, branchId: string): boolean {
+    if (!(e instanceof ApiRequestError) || !e.payload || typeof e.payload !== "object" || !("code" in e.payload) || e.payload.code !== "STOCK_CUSTODY_REQUIRED") return false;
+    const handover = "recovery" in e.payload && e.payload.recovery === "HANDOVER";
+    toast.error(e.message, {
+      duration: 15_000,
+      action: handover
+        ? { label: "التسليم والاستلام", onClick: () => router.push("/handovers") }
+        : { label: "استئناف الشيفت", onClick: () => void resumeShiftForCustody(branchId) },
+    });
+    return true;
+  }
+
   async function advance(order: KitchenOrder, next: string) {
     setBusy(true);
     try {
-      await api(`/api/orders/${order.id}/status`, {
+      const result = await api<{ stockDeferred?: boolean }>(`/api/orders/${order.id}/status`, {
         method: "PATCH",
         body: { status: next },
       });
       if (next === "SERVED") {
-        toast.success(`طلب رقم ${order.orderNumber} اتسلّم ✅`);
+        toast.success(
+          `طلب رقم ${order.orderNumber} اتسلّم ✅`,
+          result.stockDeferred ? { description: "المخزون متجمّد للتسليم — الخصم هيتسجّل بعد الاستلام" } : undefined,
+        );
       }
       setDetail(null);
       await load();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "فشل تحديث الحالة");
+      if (!showCustodyRecovery(e, order.branch.id)) toast.error(e instanceof Error ? e.message : "فشل تحديث الحالة");
     } finally {
       setBusy(false);
     }
@@ -238,11 +279,51 @@ export default function KitchenPage() {
       (sourceFilter === "all" || o.source === sourceFilter)
   );
 
+  // Until the policy loads, keep the stricter behaviour rather than letting
+  // an order out that this café would not allow.
+  function serveBlockedFor(order: KitchenOrder): boolean {
+    const mustPayFirst =
+      order.type === "DINE_IN"
+        ? policy?.dineIn !== "ALLOW_BEFORE_PAYMENT"
+        : order.type === "TAKEAWAY"
+          ? policy?.takeaway !== "ALLOW_BEFORE_PAYMENT"
+          : true; // delivery is not configurable yet
+    return mustPayFirst && !isPaid(order);
+  }
+
+  // One request per order, in turn, through the ordinary status route — so
+  // every payment, stock and custody rule still applies to each one, and a
+  // refusal stops only that order.
+  async function serveMany(list: KitchenOrder[], label: string) {
+    if (list.length === 0) return;
+    setBusy(true);
+    const failed: string[] = [];
+    let custodyError: { error: unknown; branchId: string } | null = null;
+    let served = 0;
+    for (const order of list) {
+      try {
+        await api(`/api/orders/${order.id}/status`, { method: "PATCH", body: { status: "SERVED" } });
+        served += 1;
+      } catch (e) {
+        if (e instanceof ApiRequestError && e.payload && typeof e.payload === "object" && "code" in e.payload && e.payload.code === "STOCK_CUSTODY_REQUIRED") custodyError ??= { error: e, branchId: order.branch.id };
+        failed.push(`#${order.orderNumber}: ${e instanceof Error ? e.message : "فشل"}`);
+      }
+    }
+    if (served > 0) toast.success(`${label}: اتقدم ${served} طلب ✅`);
+    if (failed.length > 0) toast.error(`متقدمش ${failed.length}: ${failed.join(" · ")}`, { duration: 10_000 });
+    if (custodyError) showCustodyRecovery(custodyError.error, custodyError.branchId);
+    setDetail(null);
+    await load();
+    setBusy(false);
+  }
+
 
 
   return (
     <FeatureGate feature="kitchenScreenEnabled">
     <div className="space-y-4">
+      <KitchenAmendmentTickets/>
+      {loadError && <p role="alert" className="text-sm text-destructive">تعذر تحديث المطبخ؛ البيانات المعروضة قديمة: {loadError}</p>}
       {/* ── Header & filters ─────────────────────────────────── */}
       <div className="flex flex-wrap items-center gap-3">
         <div>
@@ -317,6 +398,15 @@ export default function KitchenPage() {
             />
             🔔 تنبيه صوتي
           </label>
+          <a
+            data-testid="open-customer-display"
+            href={`/display${!user.branchId && branchFilter !== "all" ? `?branchId=${branchFilter}` : ""}`}
+            target="_blank"
+            rel="noopener"
+            className="rounded-md border px-3 py-2 text-sm hover:bg-muted"
+          >
+            📺 شاشة العملاء
+          </a>
         </div>
       </div>
 
@@ -326,11 +416,23 @@ export default function KitchenPage() {
           const colOrders = filtered
             .filter((o) => o.status === col.status)
             .sort((a, b) => a.createdAt.localeCompare(b.createdAt)); // oldest first
+          const servable = col.status === "READY" ? colOrders.filter((o) => !serveBlockedFor(o)) : [];
           return (
             <div key={col.status} className="space-y-3">
               <div className="flex items-center gap-2 rounded-lg bg-muted px-4 py-3">
                 <h2 className="text-lg font-bold">{col.title}</h2>
                 <Badge className="text-base tabular-nums">{colOrders.length}</Badge>
+                {servable.length > 1 && (
+                  <Button
+                    size="sm"
+                    data-testid="serve-all-ready"
+                    className="ms-auto"
+                    disabled={busy}
+                    onClick={() => serveMany(servable, "قدّم الكل")}
+                  >
+                    قدّم الكل ({servable.length})
+                  </Button>
+                )}
               </div>
               {colOrders.length === 0 && (
                 <p className="rounded-xl border border-dashed p-8 text-center text-muted-foreground">
@@ -343,16 +445,11 @@ export default function KitchenPage() {
                 );
                 const late = waitMins >= 15;
                 const veryLate = waitMins >= 25;
-                const paid = isPaid(order);
-                // Until the policy loads, keep the stricter behaviour rather
-                // than letting an order out that this café would not allow.
-                const mustPayFirst =
-                  order.type === "DINE_IN"
-                    ? policy?.dineIn !== "ALLOW_BEFORE_PAYMENT"
-                    : order.type === "TAKEAWAY"
-                      ? policy?.takeaway !== "ALLOW_BEFORE_PAYMENT"
-                      : true; // delivery is not configurable yet
-                const serveBlocked = col.next === "SERVED" && mustPayFirst && !paid;
+                const serveBlocked = col.next === "SERVED" && serveBlockedFor(order);
+                const sameTable =
+                  col.status === "READY" && order.tableNumber
+                    ? servable.filter((o) => o.tableNumber === order.tableNumber && o.branch.id === order.branch.id)
+                    : [];
                 return (
                   <div
                     key={order.id}
@@ -463,6 +560,20 @@ export default function KitchenPage() {
                     >
                       {col.action}
                     </Button>
+                    {sameTable.length > 1 && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="w-full"
+                        disabled={busy}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          serveMany(sameTable, `ترابيزة ${order.tableNumber}`);
+                        }}
+                      >
+                        قدّم كل طلبات ترابيزة {order.tableNumber} ({sameTable.length})
+                      </Button>
+                    )}
                     {serveBlocked && (
                       <div className="space-y-1.5">
                         <p className="text-center text-xs text-destructive">

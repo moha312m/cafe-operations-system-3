@@ -76,6 +76,7 @@ before(async () => {
       outgoingShiftId: shift.id, outgoingUserId: fx.cashier.id,
     },
   })).id;
+  await db.inventoryFreeze.create({data:{cafeId:fx.cafeId,branchId:fx.branchId,handoverId,startedById:fx.cashier.id}});
   openingCustodyId = (await db.custodyPeriod.create({
     data: { cafeId: fx.cafeId, branchId: fx.branchId, scope: "STOCK" },
   })).id;
@@ -84,6 +85,7 @@ before(async () => {
 after(() => teardownTaggedCafe(fx?.cafeId, [
   () => db.stockCountLine.deleteMany({ where: { session: { cafeId: fx.cafeId } } }),
   () => db.stockCountSession.deleteMany({ where: { cafeId: fx.cafeId } }),
+  () => db.inventoryFreeze.deleteMany({ where: { cafeId: fx.cafeId } }),
   () => db.handoverSession.deleteMany({ where: { cafeId: fx.cafeId } }),
 ], { disconnect: true }));
 
@@ -265,6 +267,8 @@ async function session(context: Ctx, observed: number[], unobserved: number) {
     },
     select: { id: true, lines: { select: { id: true, inventoryItemId: true } } },
   });
+
+  if(context === "HANDOVER") await db.handoverSession.update({where:{id:handoverId},data:{stockCountSessionId:s.id}});
 
   for (const [i, it] of observedItems.entries()) {
     const lineId = s.lines.find((l) => l.inventoryItemId === it.id)!.id;
@@ -604,7 +608,7 @@ describe("COUNT-018 confirm strictness outside HANDOVER", () => {
     assert.ok((await submit(s.id)).status < 300);
     const contested = await db.stockCountLine.findMany({
       where: { sessionId: s.id, disposition: { in: ["OUTSIDE_TOLERANCE", "RECOUNT_REQUIRED"] } },
-      select: { id: true },
+      select: { id: true, inventoryItem: { select: { name: true } } },
     });
     assert.equal(contested.length, 1, "the 4-against-10 line is outside tolerance");
 
@@ -612,8 +616,8 @@ describe("COUNT-018 confirm strictness outside HANDOVER", () => {
     assert.equal(r.status, 409, `expected a refusal, got ${r.status}: ${r.text}`);
     assert.match(r.body.error ?? "", /مش مقفولة/);
     assert.ok(
-      (r.body.error ?? "").includes(contested[0].id),
-      "and the refusal names the line, not the gap"
+      (r.body.error ?? "").includes(contested[0].inventoryItem.name) && !(r.body.error ?? "").includes(contested[0].id),
+      "and the refusal names the item (never a line id), not the gap"
     );
     assert.ok(!(r.body.error ?? "").includes(s.unobservedLineIds[0]));
   });

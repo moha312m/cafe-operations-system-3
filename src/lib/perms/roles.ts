@@ -41,9 +41,12 @@ export async function ensureCafeRoles(cafeId: string): Promise<void> {
     const known = new Set(role.permissions.map((p) => p.permissionKey));
     const toAdd = tpl.keys.filter((k) => !known.has(k));
     if (toAdd.length === 0) continue;
-    await db.cafeRolePermission.createMany({
-      data: toAdd.map((permissionKey) => ({ cafeRoleId: role.id, permissionKey, allowed: true })),
-      skipDuplicates: true,
+    await db.$transaction(async tx => {
+      await tx.$queryRaw`SELECT "id" FROM "CafeRole" WHERE "id" = ${role.id} FOR NO KEY UPDATE`;
+      await tx.cafeRolePermission.createMany({
+        data: toAdd.map((permissionKey) => ({ cafeRoleId: role.id, permissionKey, allowed: true })),
+        skipDuplicates: true,
+      });
     });
   }
 }

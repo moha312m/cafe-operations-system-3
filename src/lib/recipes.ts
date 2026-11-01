@@ -109,7 +109,8 @@ function confirmationHolds(r: {
  */
 export async function resolveEffectiveRecipe(
   productId: string,
-  variantId: string | null
+  variantId: string | null,
+  client: Prisma.TransactionClient | typeof db = db
 ): Promise<ResolvedRecipe> {
   const empty = (source: RecipeSource, issues: RecipeIssue[]): ResolvedRecipe => ({
     source, recipeId: null, items: [], issues,
@@ -118,10 +119,10 @@ export async function resolveEffectiveRecipe(
 
   const [variantRecipe, defaultRecipe, variantCount] = await Promise.all([
     variantId
-      ? db.recipe.findFirst({ where: { productId, variantId }, include: withItems })
+      ? client.recipe.findFirst({ where: { productId, variantId }, include: withItems })
       : Promise.resolve(null),
-    db.recipe.findFirst({ where: { productId, variantId: null, addOnId: null }, include: withItems }),
-    db.productVariant.count({ where: { productId } }),
+    client.recipe.findFirst({ where: { productId, variantId: null, addOnId: null }, include: withItems }),
+    client.productVariant.count({ where: { productId } }),
   ]);
 
   const chosen =
@@ -161,8 +162,8 @@ export async function resolveEffectiveRecipe(
 }
 
 /** The recipe attached to an add-on, if one has been configured. */
-export async function resolveAddOnRecipe(addOnId: string): Promise<ResolvedRecipe> {
-  const r = await db.recipe.findFirst({ where: { addOnId }, include: withItems });
+export async function resolveAddOnRecipe(addOnId: string, client: Prisma.TransactionClient | typeof db = db): Promise<ResolvedRecipe> {
+  const r = await client.recipe.findFirst({ where: { addOnId }, include: withItems });
   if (!r) {
     return {
       source: "NONE", recipeId: null, items: [], issues: [RecipeIssue.MISSING_ADDON_RECIPE],
@@ -208,13 +209,14 @@ export type Consumption = {
  * compatible units.
  */
 export async function theoreticalConsumption(args: {
+  excludeBase?: boolean;
   productId: string;
   variantId: string | null;
   addOnIds: string[];
   quantity: number;
-}): Promise<Consumption> {
-  const base = await resolveEffectiveRecipe(args.productId, args.variantId);
-  const addOns = await Promise.all(args.addOnIds.map((id) => resolveAddOnRecipe(id)));
+}, client: Prisma.TransactionClient | typeof db = db): Promise<Consumption> {
+  const base: ResolvedRecipe = args.excludeBase ? { source: "NOT_APPLICABLE", recipeId: null, items: [], issues: [], confirmed: true, verifiedById: null, verifiedAt: null } : await resolveEffectiveRecipe(args.productId, args.variantId, client);
+  const addOns = await Promise.all(args.addOnIds.map((id) => resolveAddOnRecipe(id, client)));
 
   const issues = new Set<RecipeIssue>([...base.issues]);
   for (const a of addOns) a.issues.forEach((i) => issues.add(i));
@@ -332,7 +334,7 @@ async function withBranchIngredientCosts(
 }
 
 export type ConfigurationFinancials = {
-  costStatus: "AVAILABLE" | "RECIPE_INCOMPLETE" | "NOT_APPLICABLE";
+  costStatus: "AVAILABLE" | "RECIPE_INCOMPLETE" | "NOT_APPLICABLE" | "MISSING_COST";
   recipeSource: RecipeSource;
   issues: RecipeIssue[];
   cost: number | null;
@@ -363,6 +365,15 @@ export async function configurationFinancials(args: {
    */
   branchId?: string | null;
 }): Promise<ConfigurationFinancials> {
+  const product = await db.product.findUnique({ where: { id: args.productId }, select: { stockMode: true, cafeId: true } });
+  if (product?.stockMode === "FINISHED_GOOD") {
+    const binding = args.branchId ? await db.productStockBinding.findFirst({ where: { cafeId: product.cafeId, branchId: args.branchId, productId: args.productId, variantId: args.variantId, unit: "PIECE" }, include: { inventoryItem: true } }) : null;
+    const stock = binding?.inventoryItem;
+    const cost = stock && stock.unit === "PIECE" && stock.isActive && !stock.archivedAt ? Number(stock.costPerUnit) : null;
+    if (cost === null || cost <= 0) return { costStatus: "MISSING_COST", recipeSource: "NONE", issues: [RecipeIssue.MISSING_COST], cost: null, profit: null, margin: null, tier: null };
+    const profitability = profitFor(args.sellingPrice, cost, true);
+    return { costStatus: "AVAILABLE", recipeSource: "NONE", issues: [], cost: profitability.cost, profit: profitability.profit, margin: profitability.margin, tier: profitability.tier };
+  }
   const resolved = await resolveEffectiveRecipe(args.productId, args.variantId);
   const gate = gateForResolvedRecipe(resolved);
 
@@ -423,6 +434,8 @@ export async function isEligibleForVarianceCosting(args: {
   variantId: string | null;
   addOnIds?: string[];
 }): Promise<{ eligible: boolean; issues: RecipeIssue[] }> {
+  const product = await db.product.findUnique({ where: { id: args.productId }, select: { stockMode: true } });
+  if (product?.stockMode === "FINISHED_GOOD") return { eligible: false, issues: [] };
   const gate = await sellableGate(args.productId, args.variantId);
   const issues = new Set<RecipeIssue>(gate.issues);
   if (gate.status !== "VERIFIED") {

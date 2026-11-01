@@ -22,7 +22,7 @@
 import { test, before, after, describe } from "node:test";
 import assert from "node:assert/strict";
 import { requireServer, login, as } from "./helpers/http";
-import { db, fixture, type Fixture } from "./helpers/db";
+import { db, fixture, type Fixture, purgeOrderTracesFor } from "./helpers/db";
 
 const OWNER = { email: "owner@demo.com", password: "owner1234" };
 const MARKER = "PH15-ORDNUM";
@@ -52,7 +52,7 @@ async function purge(marker: string) {
   if (ids.length === 0) return;
   await db.payment.deleteMany({ where: { orderId: { in: ids } } });
   await db.orderItem.deleteMany({ where: { orderId: { in: ids } } });
-  await db.order.deleteMany({ where: { id: { in: ids } } });
+  await purgeOrderTracesFor({ id: { in: ids } }); await db.order.deleteMany({ where: { id: { in: ids } } });
 }
 
 before(async () => {

@@ -52,7 +52,8 @@ export type AttributionInput = {
    * give the right answer on input that says otherwise.
    */
   openingBoundary: {
-    boundaryId: string;
+    // A branch-opening count is accepted evidence without a handover boundary row.
+    boundaryId: string | null;
     verified: boolean;
     acceptedAt: Date;
     custodyPeriodId: string | null;
@@ -180,7 +181,23 @@ export async function resolveVarianceAttribution(args: {
     },
     orderBy: { handover: { acceptedAt: "desc" } },
   });
-  const openingAcceptedAt = opening?.handover.acceptedAt ?? null;
+  let openingPoint: AttributionInput["openingBoundary"] = opening?.handover.acceptedAt ? {
+    boundaryId:opening.id,verified:true,acceptedAt:opening.handover.acceptedAt,custodyPeriodId:opening.handover.incomingStockCustodyId,
+  } : null;
+  // A LOCKED branch-opening count also starts the employee's custody span.
+  // Confirmation alone is insufficient: require an actual observation and a completed transfer to a successor.
+  const openingCounts=await db.stockCountLine.findMany({
+    where:{inventoryItemId:args.inventoryItemId,session:{branchId:args.branchId,status:"LOCKED",accountabilityContext:"BRANCH_OPENING_VERIFICATION",
+      openingBranchCustodyPeriod:{holderType:"BRANCH",scope:"STOCK",status:"TRANSFERRED",acceptedAt:{lt:args.countedAt},nextPeriod:{isNot:null}}}},
+    select:{...EFFECTIVE_EVIDENCE_SELECT,session:{select:{openingBranchCustodyPeriod:{select:{acceptedAt:true,nextPeriod:{select:{id:true}}}}}}},
+    orderBy:{session:{openingBranchCustodyPeriod:{acceptedAt:"desc"}}},
+  });
+  const observedOpening=openingCounts.find(line=>hasAuthoritativeObservation(line));
+  const acceptedOpening=observedOpening?.session.openingBranchCustodyPeriod;
+  if(acceptedOpening?.acceptedAt&&acceptedOpening.nextPeriod&&(!openingPoint||acceptedOpening.acceptedAt>openingPoint.acceptedAt)){
+    openingPoint={boundaryId:null,verified:true,acceptedAt:acceptedOpening.acceptedAt,custodyPeriodId:acceptedOpening.nextPeriod.id};
+  }
+  const openingAcceptedAt = openingPoint?.acceptedAt ?? null;
 
   // Everything the item crossed since that observation. With no observation at
   // all the whole accepted history is the interval, which is the honest
@@ -208,26 +225,10 @@ export async function resolveVarianceAttribution(args: {
     closingBoundaryVerified: true,
     closingCustodyPeriodId: closingCustody?.id ?? null,
     closingCustodyHolderType: closingCustody?.holderType ?? null,
-    openingBoundary:
-      opening && openingAcceptedAt
-        ? {
-            boundaryId: opening.id,
-            verified: opening.verified,
-            acceptedAt: openingAcceptedAt,
-            // The classifier asks whether ONE custody held the shelf from the
-            // opening observation to the close. The custody that answers that
-            // question is the one this boundary handed the shelf TO. Reading
-            // the discharged party here made the comparison fail on every
-            // real chain — a verified span that could name nobody, which is
-            // the defect SH-25 repairs. A NULL successor needs no special
-            // case: it cannot equal the closing custody, so the verdict falls
-            // through to PERIOD_UNRESOLVED, which is the safe answer.
-            custodyPeriodId: opening.handover.incomingStockCustodyId,
-          }
-        : null,
+    openingBoundary: openingPoint,
     interveningUnverifiedBoundaryCount: crossed.filter((b) => !b.verified).length,
     crossedCustodyPeriodIds: dedupe([
-      opening?.handover.incomingStockCustodyId,
+      openingPoint?.custodyPeriodId,
       ...crossed.map((b) => b.handover.incomingStockCustodyId),
       closingCustody?.id,
     ]),

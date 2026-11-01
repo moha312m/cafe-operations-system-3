@@ -22,6 +22,7 @@
 import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import { db, tag, purgeCafe, teardownTaggedCafe } from "./helpers/db";
+import type { Prisma } from "@prisma/client";
 
 /**
  * A café carrying the children that make a naive `DELETE FROM "Cafe"` fail.
@@ -229,6 +230,65 @@ describe("TOOLING-003 teardown survives a cleanup step that cannot run", () => {
     assert.deepEqual(await residue(cafeId), NOTHING);
   });
 
+  const triggerModes = () => db.$queryRaw<{ table: string; trigger: string; mode: string }[]>`
+    SELECT c.relname AS "table", t.tgname AS "trigger", t.tgenabled::text AS mode
+      FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid
+      JOIN pg_namespace n ON n.oid=c.relnamespace
+     WHERE n.nspname=current_schema() AND NOT t.tgisinternal AND t.tgname LIKE '%immutable%'
+     ORDER BY c.relname,t.tgname
+  `;
+
+  test("real SQL successful purge preserves every immutable trigger mode", async () => {
+    const { cafeId } = await taggedCafe(tag("TOOL003TRIGSUCCESS"));
+    const beforeModes = await triggerModes();
+    assert.ok(beforeModes.length > 0, "the installed immutable triggers are exercised");
+    await purgeCafe(cafeId);
+    assert.deepEqual(await triggerModes(), beforeModes);
+    assert.deepEqual(await residue(cafeId), NOTHING);
+  });
+
+  for (const failure of ["delete", "restore"] as const) {
+    test(`real SQL ${failure} failure rolls back purge rows and trigger changes`, async () => {
+      const { cafeId } = await taggedCafe(tag("TOOL003TRIG" + failure));
+      const beforeModes = await triggerModes();
+      const beforeRows = await residue(cafeId);
+      const client = db as unknown as Record<string, unknown>;
+      const originalTransaction = db.$transaction;
+      const realTransaction = originalTransaction.bind(db) as unknown as (
+        body: (tx: Prisma.TransactionClient) => Promise<void>, options?: unknown
+      ) => Promise<void>;
+      let injected = false;
+      try {
+        client.$transaction = (body: (tx: Prisma.TransactionClient) => Promise<void>, options?: unknown) =>
+          realTransaction(async tx => {
+            const execute = tx.$executeRawUnsafe.bind(tx);
+            const intercepted = new Proxy(tx, { get(target, property) {
+              if (property !== "$executeRawUnsafe") return Reflect.get(target, property, target);
+              return (sql: string, ...args: unknown[]) => {
+              const target = failure === "delete"
+                ? /^DELETE FROM (?:(?:"[^"]+")\.)?"Cafe" /.test(sql)
+                : /^ALTER TABLE .* ENABLE(?: REPLICA| ALWAYS)? TRIGGER /.test(sql);
+              if (target) {
+                injected = true;
+                // A genuine PostgreSQL statement error, not a JavaScript mock.
+                return execute('SELECT 1 / 0');
+              }
+              return execute(sql, ...args);
+              };
+            } });
+            return body(intercepted);
+          }, options);
+        await assert.rejects(() => purgeCafe(cafeId));
+        client.$transaction = originalTransaction;
+        assert.equal(injected, true, "the SQL failure point was reached");
+        assert.deepEqual(await triggerModes(), beforeModes, "rollback restores all trigger modes");
+        assert.deepEqual(await residue(cafeId), beforeRows, "rollback restores the entire owned graph");
+      } finally {
+        client.$transaction = originalTransaction;
+        await purgeCafe(cafeId);
+      }
+    });
+  }
   test("no café id is a no-op, and an empty one is refused outright", async () => {
     // `before` can throw before the café id is assigned. Prisma reads an
     // `undefined` filter as "no filter", so the naive recovery — pass

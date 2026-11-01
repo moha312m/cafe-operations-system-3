@@ -17,6 +17,7 @@ export type AddOn = {
 
 export type Product = {
   id: string;
+  sku?: string | null;
   name: string;
   description: string | null;
   basePrice: string;
@@ -34,6 +35,7 @@ export type Category = { id: string; name: string; isActive: boolean };
 export type Branch = { id: string; name: string };
 
 export type CartLine = {
+  discount?: {type:'NONE'|'PERCENT'|'FIXED';value:string};
   key: string; // product|variant|addOns|note — identical configs merge
   product: Product;
   variant: Variant | null;

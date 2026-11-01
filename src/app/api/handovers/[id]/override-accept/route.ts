@@ -71,6 +71,9 @@ const overrideAcceptSchema = z
       error: "نوع الاستثناء مش مظبوط",
     }),
     incomingUserId: z.string().min(1).optional(),
+    countedOpeningCash: z.number().finite().min(0).max(99999999.99).optional(),
+    cashReasonCodeId: z.string().min(1).optional(),
+    cashReasonNote: z.string().max(1000).optional(),
     cafeId: z.string().optional(),
   })
   .strict();
@@ -108,6 +111,9 @@ export async function POST(request: NextRequest, { params }: Params) {
 
     const result = await overrideAcceptHandover({
       handoverId: id,
+      countedOpeningCash: body.countedOpeningCash,
+      cashReasonCodeId: body.cashReasonCodeId,
+      cashReasonNote: body.cashReasonNote,
       // The authenticated manager, and the only place this value comes from.
       managerId: session.id,
       incomingUserId: body.incomingUserId,

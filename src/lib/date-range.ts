@@ -36,7 +36,7 @@ export function normalizeRangeKey(raw: string | null): RangeKey {
 }
 
 // Milliseconds the zone is ahead of UTC at a given instant.
-function tzOffsetMs(tz: string, at: Date): number {
+export function tzOffsetMs(tz: string, at: Date): number {
   const parts = Object.fromEntries(
     new Intl.DateTimeFormat("en-US", {
       timeZone: tz, hour12: false,
@@ -82,11 +82,38 @@ export function zonedDayStart(dateStr: string, tz: string = DEFAULT_TZ): Date {
   return new Date(utcGuess.getTime() - offset);
 }
 
+/** The existing operational day begins at 03:00 local, including DST days. */
+export function zonedBusinessDayStart(dateStr:string,tz:string=DEFAULT_TZ):Date {
+  const guess=new Date(`${dateStr}T03:00:00Z`);
+  let offset=tzOffsetMs(tz,guess);offset=tzOffsetMs(tz,new Date(guess.getTime()-offset));
+  return new Date(guess.getTime()-offset);
+}
+
 // Shift a "YYYY-MM-DD" string by n calendar days (pure date math).
 export function addDays(dateStr: string, n: number): string {
   const [y, m, d] = dateStr.split("-").map(Number);
   const shifted = new Date(Date.UTC(y, m - 1, d + n));
   return shifted.toISOString().slice(0, 10);
+}
+
+/** Resolve a local minute using Intl's timezone rules, including folds/gaps.
+ * Compatible disambiguation: earlier instant in a fold; advance through a gap.
+ * Calendar arithmetic is performed before conversion, never by adding 24 hours.
+ */
+export function zonedDateTime(local: string, timezone: string): {at: Date; warning?: string} {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(local)) throw new Error('تاريخ أو وقت غير صالح');
+  const nominal = new Date(local + ':00Z');
+  if (!Number.isFinite(nominal.getTime()) || nominal.toISOString().slice(0,16) !== local) throw new Error('تاريخ أو وقت غير صالح');
+  const formatter = new Intl.DateTimeFormat('sv-SE', {timeZone:timezone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
+  const wall = (at: Date) => formatter.format(at).replace(' ','T');
+  const offsets = new Set<number>();
+  for (let hours = -48; hours <= 48; hours += 6) offsets.add(tzOffsetMs(timezone,new Date(nominal.getTime()+hours*3600000)));
+  const candidates = [...offsets].map(offset=>new Date(nominal.getTime()-offset)).sort((a,b)=>a.getTime()-b.getTime());
+  const exact = candidates.filter(at=>wall(at)===local);
+  if (exact.length) return {at:exact[0],...(exact.length>1?{warning:'وقت مكرر بسبب التوقيت الصيفي — استُخدمت المرة الأولى'}:{})};
+  const later = candidates.filter(at=>wall(at)>local).sort((a,b)=>wall(a).localeCompare(wall(b)))[0];
+  if (!later) throw new Error('تعذر تحديد الوقت في المنطقة الزمنية');
+  return {at:later,warning:`وقت غير موجود بسبب التوقيت الصيفي — حُرّك إلى ${wall(later)}`};
 }
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;

@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { requireKey, resolveCafeId, handleApiError, ApiError, requireFeature } from "@/lib/api";
+import { requireKey, resolveCafeId, handleApiError, ApiError, requireFeature, resolveReadScope } from "@/lib/api";
 import { getCafeSettings } from "@/lib/cafe-settings";
 import { sessionDisplayStatus, BLOCKING_ORDER_STATUSES } from "@/lib/table-sessions";
 import { ensureDefaultTables } from "@/lib/table-setup";
@@ -14,7 +14,7 @@ export async function GET(request: NextRequest) {
     await requireFeature(session, "enableTables");
     const params = request.nextUrl.searchParams;
     const cafeId = resolveCafeId(session, params.get("cafeId"));
-    const branchId = session.branchId ?? params.get("branchId") ?? undefined;
+    const branchId = resolveReadScope(session).branchId ?? params.get("branchId") ?? undefined;
     if (!branchId) throw new ApiError(400, "اختار الفرع الأول");
 
     // First-use fallback: a branch that never opened table setup still gets

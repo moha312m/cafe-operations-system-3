@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { requireKey, handleApiError, ApiError } from "@/lib/api";
+import { requireKey, handleApiError, ApiError, resolveReadScope } from "@/lib/api";
 import { sessionDisplayStatus, BLOCKING_ORDER_STATUSES } from "@/lib/table-sessions";
 
 type Params = { params: Promise<{ id: string }> };
@@ -12,11 +12,13 @@ export async function GET(_request: NextRequest, { params }: Params) {
     const session = await requireKey("tables.view");
     const { id } = await params;
 
-    const ts = await db.tableSession.findUnique({
-      where: { id },
+    const scope = resolveReadScope(session);
+    const ts = await db.tableSession.findFirst({
+      where: { id, ...scope },
       include: {
         branch: { select: { id: true, name: true } },
         orders: {
+          where: scope,
           orderBy: { createdAt: "asc" },
           include: {
             items: { include: { addOns: true, itemPayments: { select: { quantityPaid: true } } } },
@@ -24,26 +26,20 @@ export async function GET(_request: NextRequest, { params }: Params) {
           },
         },
         payments: {
-          where: { status: { in: ["PAID", "REFUNDED"] } },
+          where: { cafeId: scope.cafeId, status: { in: ["PAID", "REFUNDED"] } },
           orderBy: { createdAt: "asc" },
           include: { receivedBy: { select: { name: true } } },
         },
       },
     });
     if (!ts) throw new ApiError(404, "الجلسة غير موجودة");
-    if (session.role !== "SUPER_ADMIN" && ts.cafeId !== session.cafeId) {
-      throw new ApiError(403, "ليس لديك صلاحية لتنفيذ هذا الإجراء");
-    }
-    if (session.branchId && ts.branchId !== session.branchId) {
-      throw new ApiError(403, "الترابيزة تبع فرع تاني");
-    }
 
     // Also surface payments recorded directly on session orders (e.g. POS
     // inline payments made before the session id existed on the payment).
     const orderIds = ts.orders.map((o) => o.id);
     const orderPayments = orderIds.length
       ? await db.payment.findMany({
-          where: { orderId: { in: orderIds }, status: { in: ["PAID", "REFUNDED"] }, tableSessionId: null },
+          where: { cafeId: ts.cafeId, order: { cafeId: ts.cafeId, branchId: ts.branchId }, orderId: { in: orderIds }, status: { in: ["PAID", "REFUNDED"] }, tableSessionId: null },
           orderBy: { createdAt: "asc" },
           include: { receivedBy: { select: { name: true } } },
         })

@@ -1,4 +1,5 @@
 "use client";
+import { TouchNumberInput } from "@/components/pos/touch-number-input";
 
 import { useEffect, useRef, useState } from "react";
 import { Input } from "@/components/ui/input";
@@ -162,10 +163,10 @@ export function CustomerLoyalty({
       {/* Lookup result */}
       {looksComplete && looked && (
         customer ? (
-          <div className="space-y-1 rounded-lg bg-blue-500/10 px-2.5 py-2 text-[11px] leading-snug text-blue-800 dark:text-blue-300">
+          <div className="space-y-1 rounded-lg border border-tide-line bg-tide-soft px-2.5 py-2 text-[11px] leading-snug text-tide-ink">
             <p className="text-xs font-semibold">
               عميل موجود{customer.name ? `: ${customer.name}` : ""}
-              {!customer.isActive && <span className="ms-1 text-red-600"> (معطّل)</span>}
+              {!customer.isActive && <span className="ms-1 text-clay-ink"> (معطّل)</span>}
             </p>
             <div className="flex flex-wrap gap-x-3 gap-y-0.5">
               <span>رصيد النقاط: <b className="tabular-nums">{customer.loyaltyPointsBalance}</b> نقطة</span>
@@ -174,7 +175,7 @@ export function CustomerLoyalty({
             </div>
           </div>
         ) : (
-          <p className="rounded-lg bg-emerald-500/10 px-2.5 py-1.5 text-[11px] text-emerald-700 dark:text-emerald-400">
+          <p className="rounded-lg border border-sage-line bg-sage-soft px-2.5 py-1.5 text-[11px] text-sage-ink">
             عميل جديد — سيتم إنشاء حساب له بعد تسجيل الطلب
             {customerName.trim() ? ` باسم ${customerName.trim()}` : ""}.
           </p>
@@ -183,7 +184,7 @@ export function CustomerLoyalty({
 
       {/* ── نقاط الولاء ── */}
       {showLoyaltySection && (
-        <div className="space-y-1.5 rounded-lg border border-amber-500/40 bg-amber-500/5 p-2">
+        <div className="space-y-1.5 rounded-lg border border-caramel-line bg-caramel-soft p-2">
           <p className="text-xs font-semibold">نقاط الولاء</p>
           <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
             <span>رصيد النقاط الحالي: <b className="tabular-nums text-foreground">{customer!.loyaltyPointsBalance}</b></span>
@@ -191,21 +192,21 @@ export function CustomerLoyalty({
           </div>
 
           {redeem.points > 0 ? (
-            <div className="flex items-center justify-between rounded-md bg-emerald-500/10 px-2 py-1.5 text-xs text-emerald-700 dark:text-emerald-400">
+            <div className="flex items-center justify-between rounded-md border border-sage-line bg-sage-soft px-2 py-1.5 text-xs text-sage-ink">
               <span>
                 النقاط المستخدمة: <b className="tabular-nums">{redeem.points}</b> · خصم النقاط:{" "}
                 <b className="tabular-nums">{money(redeem.discount, currency)}</b>
               </span>
               <button
                 type="button"
-                className="text-[11px] font-medium text-red-600 underline"
+                className="text-[11px] font-medium text-clay-ink underline"
                 onClick={() => { onRedeemChange({ points: 0, discount: 0 }); setPointsInput(""); }}
               >
                 إلغاء
               </button>
             </div>
           ) : !collectNow ? (
-            <p className="text-[11px] text-amber-700 dark:text-amber-400">
+            <p className="text-[11px] text-caramel-ink">
               يمكن استخدام النقاط عند التحصيل الآن فقط
             </p>
           ) : customer!.loyaltyPointsBalance <= 0 ? (
@@ -222,7 +223,7 @@ export function CustomerLoyalty({
             <Button
               size="sm"
               variant="outline"
-              className="h-8 w-full border-amber-500/60 text-xs font-semibold"
+              className="h-8 w-full border-caramel-line text-xs font-semibold"
               onClick={() => {
                 if (!phone.trim()) return; // guarded by section visibility anyway
                 setPointsInput(String(cap));
@@ -260,16 +261,16 @@ export function CustomerLoyalty({
               </div>
               <div className="space-y-1.5">
                 <Label>عدد النقاط المستخدمة (الأقصى {cap})</Label>
-                <Input
+                <TouchNumberInput
                   type="number" dir="ltr" min={0} max={cap}
                   value={pointsInput}
-                  onChange={(e) => { setPointsInput(e.target.value); setModalError(null); }}
+                  onValueChange={touchValue => { setPointsInput(touchValue); setModalError(null); }}
                 />
               </div>
               <div className="space-y-1 text-xs">
                 <div className="flex justify-between">
                   <span className="text-muted-foreground">قيمة الخصم</span>
-                  <span className="tabular-nums font-semibold text-emerald-600">
+                  <span className="tabular-nums font-semibold text-sage-ink">
                     −{money(modalDiscount, currency)}
                   </span>
                 </div>

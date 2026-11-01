@@ -1,6 +1,7 @@
 "use client";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Table,
   TableBody,
@@ -15,6 +16,8 @@ import {
   TARGET_LABEL,
   type HandoverStatus,
 } from "./handover-labels";
+import { handoverBlockMessage } from "./workflow-state";
+import { COUNT_STATUS_LABEL, type CountStatus } from "@/components/stock-counts/stock-count-labels";
 
 /** One row of `GET /api/handovers` — ids and counters, no quantities. */
 export type HandoverRow = {
@@ -28,16 +31,23 @@ export type HandoverRow = {
   requiredItemCount: number | null;
   submittedAt: string | null;
   createdAt: string;
+  outgoingUser?: { name: string } | null;
+  outgoingShift?: { shiftNumber: number } | null;
+  stockCountSession?: { status: string } | null;
 };
 
 export function HandoverList({
   handovers,
   selectedId,
   onSelect,
+  viewerUserId,
+  canReviewDraft = false,
 }: {
   handovers: HandoverRow[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  viewerUserId: string;
+  canReviewDraft?: boolean;
 }) {
   if (handovers.length === 0) {
     return (
@@ -64,7 +74,8 @@ export function HandoverList({
             // Only a handover under review can be opened; the detail endpoint
             // refuses the rest with 409, so they are shown without being made
             // to look clickable.
-            const openable = REVIEWABLE.includes(h.status);
+            const openable = REVIEWABLE.includes(h.status) ||
+              ((h.outgoingUserId === viewerUserId || (canReviewDraft && h.stockCountSessionId)) && (h.status === "DRAFT" || h.status === "REJECTED"));
             return (
               <TableRow
                 key={h.id}
@@ -77,12 +88,15 @@ export function HandoverList({
                 <TableCell>
                   <div className="flex items-center gap-2">
                     {HANDOVER_STATUS_LABEL[h.status] ?? h.status}
+                    {h.outgoingUser?.name && <span className="text-xs text-muted-foreground">({h.outgoingShift?.shiftNumber ? `شيفت #${h.outgoingShift.shiftNumber} · ` : ""}{h.outgoingUser.name} · {h.stockCountSession ? `الجرد: ${COUNT_STATUS_LABEL[h.stockCountSession.status as CountStatus] ?? h.stockCountSession.status}` : "لم يبدأ الجرد"})</span>}
+                    {openable && <Button size="sm" variant="outline" onClick={event => { event.stopPropagation(); onSelect(h.id); }}>متابعة التسليم</Button>}
                     {!openable && (
                       <Badge className="bg-muted text-muted-foreground hover:bg-muted">
                         للاطلاع
                       </Badge>
                     )}
                   </div>
+                  {(h.status === "DRAFT" || h.status === "REJECTED") && <p className="mt-1 text-xs text-muted-foreground" data-testid="handover-row-phase">{handoverBlockMessage({ status: h.status, countStatus: h.stockCountSession?.status ?? null, outgoingName: h.outgoingUser?.name ?? "المُسلّم", outgoingShiftNumber: h.outgoingShift?.shiftNumber ?? null })}</p>}
                 </TableCell>
                 <TableCell className="text-muted-foreground">
                   {h.target ? (TARGET_LABEL[h.target] ?? h.target) : "—"}

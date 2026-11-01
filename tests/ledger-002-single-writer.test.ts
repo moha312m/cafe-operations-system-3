@@ -24,6 +24,7 @@
 // uses round3 throughout, and test 9 pins it.
 
 import { test, after, before, describe } from "node:test";
+import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -224,6 +225,7 @@ describe("LEDGER-002 the single guarded stock writer", () => {
     const item = await ingredient("movement-http", "12.018");
     const r = await as(OWNER, `/api/inventory/${item.id}/movement`, {
       method: "POST",
+      headers: { "Idempotency-Key": randomUUID() },
       body: JSON.stringify({ type: "WASTE", quantity: 0.018, note: MARKER }),
     });
     assert.ok(r.status < 300, `movement failed: ${r.text}`);
@@ -246,6 +248,7 @@ describe("LEDGER-002 the single guarded stock writer", () => {
     const source = await ingredient("transfer-http", "12.018");
     const r = await as(OWNER, "/api/inventory/transfer", {
       method: "POST",
+      headers: { "Idempotency-Key": randomUUID() },
       body: JSON.stringify({
         inventoryItemId: source.id, toBranchId: other.id, quantity: 0.018, note: MARKER,
       }),

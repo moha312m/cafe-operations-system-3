@@ -104,7 +104,7 @@ export function MenuAIChat({
       </button>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="inset-x-0 bottom-0 top-auto mx-auto flex h-[88dvh] max-h-[88dvh] w-full max-w-full translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-b-none rounded-t-2xl p-0 sm:max-w-lg data-open:slide-in-from-bottom-8 data-closed:slide-out-to-bottom-8">
+        <DialogContent scrollable={false} className="inset-x-0 bottom-0 top-auto mx-auto flex h-[88dvh] max-h-[88dvh] w-full max-w-full translate-x-0 translate-y-0 flex-col gap-0 overflow-hidden rounded-b-none rounded-t-2xl p-0 sm:max-w-lg data-open:slide-in-from-bottom-8 data-closed:slide-out-to-bottom-8">
           <DialogHeader className="border-b px-4 py-3">
             <DialogTitle className="flex items-center gap-2 text-base">
               <span>✨</span> مساعد المنيو

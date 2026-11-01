@@ -1,12 +1,13 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/client";
 import { useApp } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { ReasonCodeSelect } from "@/components/stock-counts/reason-code-select";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog,
@@ -15,6 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { ConfirmHandoverAction } from "./detail-frame";
 import { newIdempotencyKey } from "./handover-labels";
 
 type Action = "recount" | "override" | "branch";
@@ -35,11 +37,25 @@ type Action = "recount" | "override" | "branch";
 export function HandoverActionBar({
   handoverId,
   onDone,
+  allowReceive = true,
+  hasIncomingShift = true,
+  stockReviewReady = true,
+  target = "SHIFT_TO_SHIFT",
 }: {
   handoverId: string;
-  onDone: () => void;
+  allowReceive?: boolean;
+  hasIncomingShift?: boolean;
+  stockReviewReady?: boolean;
+  target?: string | null;
+  onDone: () => void | Promise<void>;
 }) {
   const { canKey } = useApp();
+  const inFlight = useRef(false);
+  const [confirmAccept, setConfirmAccept] = useState(false);
+  const [countedCash,setCountedCash]=useState("");
+  const [cashReason,setCashReason]=useState("");
+  const [cashNote,setCashNote]=useState("");
+  const [acceptKey]=useState(()=>newIdempotencyKey());
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState<Action | null>(null);
   const [reasonCodeId, setReasonCodeId] = useState("");
@@ -55,6 +71,8 @@ export function HandoverActionBar({
   }
 
   async function accept() {
+    if (inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
     try {
       const res = await api<{ alreadyAccepted: boolean }>(
@@ -62,19 +80,21 @@ export function HandoverActionBar({
         // The retry key is what makes a repeated press safe: the same key on
         // an already-completed handover answers 200, a different one is
         // refused as a second acceptance.
-        { method: "POST", body: { idempotencyKey: newIdempotencyKey() } }
+        { method: "POST", body: { idempotencyKey: acceptKey, countedOpeningCash: Number(countedCash), cashReasonCodeId:cashReason||undefined,cashReasonNote:cashNote.trim()||undefined } }
       );
       toast.success(res.alreadyAccepted ? "التسليم كان مستلم قبل كده" : "تم استلام العهدة");
-      onDone();
+      await onDone();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "تعذّر الاستلام");
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   }
 
   async function run() {
-    if (!open) return;
+    if (!open || inFlight.current) return;
+    inFlight.current = true;
     setBusy(true);
     try {
       if (open === "recount") {
@@ -91,6 +111,8 @@ export function HandoverActionBar({
           method: "POST",
           body: {
             idempotencyKey: newIdempotencyKey(),
+            countedOpeningCash: countedCash.trim()===""?undefined:Number(countedCash),
+            cashReasonCodeId:cashReason||undefined,cashReasonNote:cashNote.trim()||undefined,
             reasonCodeId: reasonCodeId.trim(),
             // Required by the service, and refused when blank after trimming.
             note: note.trim(),
@@ -118,10 +140,11 @@ export function HandoverActionBar({
         toast.success("اتحولت العهدة للفرع");
       }
       setOpen(null);
-      onDone();
+      await onDone();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "تعذّر تنفيذ الإجراء");
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   }
@@ -130,10 +153,15 @@ export function HandoverActionBar({
 
   return (
     <>
-      <div className="flex flex-wrap gap-2">
-        {canKey("handover.accept") && (
-          <Button size="sm" disabled={busy} onClick={accept} data-testid="handover-accept">
-            استلام العهدة
+      {((canKey("handover.accept") && allowReceive) || (canKey("handover.exception") && hasIncomingShift && stockReviewReady && target !== "BRANCH_CUSTODY")) && <div className="mb-3 grid gap-3 rounded-lg border p-3 sm:grid-cols-3">
+        <label className="text-sm">النقدية اللي عدّيتها عند الاستلام<Input aria-label="النقدية المستلمة" type="number" min="0" step="0.01" value={countedCash} onChange={e=>setCountedCash(e.target.value)} /></label>
+        <ReasonCodeSelect domain="HANDOVER" value={cashReason} onChange={setCashReason} label="سبب فرق النقدية لو موجود" optional />
+        <label className="text-sm">ملاحظة فرق الاستلام (اختياري)<Textarea value={cashNote} onChange={e=>setCashNote(e.target.value)} /></label>
+      </div>}
+      <div className="sticky bottom-0 z-10 flex flex-wrap gap-2 rounded-lg border bg-background/95 p-2 backdrop-blur" data-testid="handover-sticky-actions">
+        {canKey("handover.accept") && allowReceive && (
+          <Button size="sm" disabled={busy||countedCash.trim()===""||!Number.isFinite(Number(countedCash))||Number(countedCash)<0} onClick={() => setConfirmAccept(true)} data-testid="handover-accept">
+            تأكيد استلام عهدة الشيفت
           </Button>
         )}
         {canKey("handover.request_recount") && (
@@ -149,7 +177,8 @@ export function HandoverActionBar({
         )}
         {canKey("handover.exception") && (
           <>
-            <Button
+            {/* The server refuses an override on a BRANCH_CUSTODY target; that path is the branch-custody action. */}
+            {target !== "BRANCH_CUSTODY" && <Button
               size="sm"
               variant="outline"
               disabled={busy}
@@ -157,7 +186,7 @@ export function HandoverActionBar({
               data-testid="handover-override-accept"
             >
               استلام استثنائي
-            </Button>
+            </Button>}
             <Button
               size="sm"
               variant="ghost"
@@ -171,6 +200,7 @@ export function HandoverActionBar({
         )}
       </div>
 
+      <ConfirmHandoverAction title="تأكيد استلام العهدة" open={confirmAccept} busy={busy} onCancel={() => setConfirmAccept(false)} onConfirm={() => {setConfirmAccept(false); void accept();}}>أؤكد استلام العهدة والنقدية الفعلية المسجلة ({countedCash}). لن يصبح الشيفت جاهزًا إلا بعد قبول الخادم لجميع شروط التسليم.</ConfirmHandoverAction>
       <Dialog open={open !== null} onOpenChange={(o) => !o && !busy && setOpen(null)}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
@@ -183,6 +213,13 @@ export function HandoverActionBar({
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-3 text-sm">
+            {open === "override" && (!hasIncomingShift || !stockReviewReady) && (
+              <p role="alert" data-testid="handover-override-prerequisite-warning" className="rounded-lg border border-amber-500/50 bg-amber-500/10 p-2.5 text-xs font-medium text-amber-950 dark:text-amber-100">
+                {!hasIncomingShift
+                  ? "تنبيه: لا يوجد شيفت مستلم مفتوح حاليًا. افتح الشيفت الجديد أولًا واطلب من المستلم توقيع ورقة الاستلام قبل استخدام الاستلام الاستثنائي."
+                  : "تنبيه: يجب على المستلم تسجيل وتأكيد قرارات ورقة استلام المخزون للسطور المعدودة أولًا قبل تنفيذ الاستلام الاستثنائي."}
+              </p>
+            )}
             {open === "override" && (
               <div className="space-y-2">
                 <Label>نوع الاستثناء</Label>
@@ -202,16 +239,7 @@ export function HandoverActionBar({
               </div>
             )}
             <div className="space-y-2">
-              <Label>
-                {open === "branch"
-                  ? "معرّف سبب الإعفاء (اختياري)"
-                  : "معرّف السبب (reasonCodeId)"}
-              </Label>
-              <Input
-                value={reasonCodeId}
-                onChange={(e) => setReasonCodeId(e.target.value)}
-                placeholder="reasonCodeId"
-              />
+              <ReasonCodeSelect domain="HANDOVER" value={reasonCodeId} onChange={setReasonCodeId} label={open === "branch" ? "سبب إعفاء صنف من الجرد" : "سبب الإجراء"} optional={open === "branch"} />
             </div>
             <div className="space-y-2">
               <Label>ملاحظة{open === "override" ? "" : " (اختياري)"}</Label>
@@ -224,7 +252,7 @@ export function HandoverActionBar({
               disabled={
                 busy ||
                 (needsReason && reasonCodeId.trim() === "") ||
-                (open === "override" && note.trim() === "") ||
+                (open === "override" && (!hasIncomingShift || !stockReviewReady || note.trim() === "" || countedCash.trim() === "" || !Number.isFinite(Number(countedCash)) || Number(countedCash) < 0)) ||
                 // Half an omission authorisation is not a smaller
                 // authorisation. Rather than quietly dropping whichever
                 // field was filled in, the pair has to be completed or

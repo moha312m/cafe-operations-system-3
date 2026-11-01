@@ -1,0 +1,2 @@
+import {redirect} from 'next/navigation';import {getSession} from '@/lib/auth';import {resolvePermissions} from '@/lib/perms/effective';import {SalesWorkspace} from '@/components/sales/sales-workspace';
+export default async function SalesPage(){const actor=await getSession();if(!actor)redirect('/login');if(!(await resolvePermissions(actor)).keys.has('sales.view'))redirect('/dashboard');return <SalesWorkspace/>;}

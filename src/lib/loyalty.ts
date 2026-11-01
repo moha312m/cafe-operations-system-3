@@ -1,23 +1,24 @@
+import { money, decimal, type Numeric } from "@/lib/money";
+import { protectedTransaction } from "@/lib/protected-transaction";
 import { db } from "@/lib/db";
-import { audit } from "@/lib/audit";
+import { audit, auditInTransaction } from "@/lib/audit";
 import { ApiError } from "@/lib/api";
 import {
   computeEarnedPoints,
+  type ExactLoyaltySettings,
   type LoyaltyCalcSettings,
 } from "@/lib/loyalty-calc";
 import type { LoyaltySettings, Prisma } from "@prisma/client";
 
 // Lazily returns the cafe's loyalty settings, creating the defaults row
 // (disabled program, 10 EGP = 1 point, 1 point = 1 EGP) the first time.
-export async function getLoyaltySettings(cafeId: string): Promise<LoyaltySettings> {
-  const existing = await db.loyaltySettings.findUnique({ where: { cafeId } });
+export async function getLoyaltySettings(cafeId: string, client: Prisma.TransactionClient | typeof db = db): Promise<LoyaltySettings> {
+  const existing = await client.loyaltySettings.findUnique({ where: { cafeId } });
   if (existing) return existing;
-  try {
-    return await db.loyaltySettings.create({ data: { cafeId } });
-  } catch {
-    // Unique race: another request created it first.
-    return (await db.loyaltySettings.findUnique({ where: { cafeId } }))!;
-  }
+  // Financial transactions must not initialize a cafe-wide settings row
+  // after taking customer locks. Missing settings mean the disabled defaults.
+  if (client !== db) return loyaltyDefaults(cafeId);
+  return client.loyaltySettings.upsert({ where: { cafeId }, update: { cafeId }, create: { cafeId } });
 }
 
 // In-memory defaults mirroring the schema defaults — used when the loyalty
@@ -43,7 +44,8 @@ function loyaltyDefaults(cafeId: string): LoyaltySettings {
 
 // Never-throwing variant for PUBLIC pages and order-flow enhancers: any DB
 // failure degrades to "loyalty disabled" instead of crashing the request.
-export async function getLoyaltySettingsSafe(cafeId: string): Promise<LoyaltySettings> {
+export async function getLoyaltySettingsSafe(cafeId: string, client?: Prisma.TransactionClient): Promise<LoyaltySettings> {
+  if (client) return getLoyaltySettings(cafeId, client);
   try {
     return await getLoyaltySettings(cafeId);
   } catch (e) {
@@ -71,19 +73,20 @@ export function loyaltyCalcSettings(s: LoyaltySettings): LoyaltyCalcSettings {
 // earnOnPaidOrdersOnly) fully paid. The atomic updateMany claim on
 // loyaltyPointsAwardedAt is the double-earn guard.
 //
-// Never throws: awarding points is an enhancement — a loyalty-layer
-// failure must never fail the payment/order that triggered it.
-export async function maybeAwardLoyaltyPoints(orderId: string): Promise<number | null> {
+// Standalone calls tolerate failures. Transaction callers propagate errors
+// so the points ledger and the payment/order commit together.
+export async function maybeAwardLoyaltyPoints(orderId: string, client?: Prisma.TransactionClient): Promise<number | null> {
+  if (client) return awardLoyaltyPointsInner(orderId, client);
   try {
-    return await awardLoyaltyPointsInner(orderId);
+    return await protectedTransaction((tx) => awardLoyaltyPointsInner(orderId, tx));
   } catch (e) {
     console.error("loyalty award skipped", e);
     return null;
   }
 }
 
-async function awardLoyaltyPointsInner(orderId: string): Promise<number | null> {
-  const order = await db.order.findUnique({
+async function awardLoyaltyPointsInner(orderId: string, tx: Prisma.TransactionClient): Promise<number | null> {
+  const order = await tx.order.findUnique({
     where: { id: orderId },
     select: {
       id: true, cafeId: true, customerId: true, orderNumber: true,
@@ -93,21 +96,21 @@ async function awardLoyaltyPointsInner(orderId: string): Promise<number | null> 
   if (!order?.customerId || order.loyaltyPointsAwardedAt) return null;
   if (order.status === "CANCELLED" || order.status === "REJECTED") return null;
 
-  const settings = await getLoyaltySettings(order.cafeId);
+  const settings = await getLoyaltySettings(order.cafeId, tx);
   if (!settings.enabled) return null;
   if (settings.earnOnPaidOrdersOnly && order.paymentStatus !== "PAID") return null;
 
-  const points = computeEarnedPoints(Number(order.total), loyaltyCalcSettings(settings));
+  const points = computeEarnedPoints(order.total, loyaltyCalcSettingsExact(settings));
 
-  const claimed = await db.order.updateMany({
+  const claimed = await tx.order.updateMany({
     where: { id: order.id, loyaltyPointsAwardedAt: null },
     data: { loyaltyPointsAwardedAt: new Date(), loyaltyPointsEarned: points },
   });
   if (claimed.count === 0) return null; // another request won the race
   if (points <= 0) return 0;
 
-  await db.$transaction([
-    db.loyaltyTransaction.create({
+  await Promise.all([
+    tx.loyaltyTransaction.create({
       data: {
         cafeId: order.cafeId,
         customerId: order.customerId,
@@ -118,7 +121,7 @@ async function awardLoyaltyPointsInner(orderId: string): Promise<number | null> 
         note: `كسب نقاط — طلب #${order.orderNumber}`,
       },
     }),
-    db.customer.update({
+    tx.customer.update({
       where: { id: order.customerId },
       data: {
         loyaltyPointsBalance: { increment: points },
@@ -126,7 +129,7 @@ async function awardLoyaltyPointsInner(orderId: string): Promise<number | null> 
       },
     }),
   ]);
-  await audit({
+  await auditInTransaction(tx, {
     cafeId: order.cafeId,
     action: "LOYALTY_POINTS_EARNED",
     entity: "Customer",
@@ -160,7 +163,7 @@ export async function recordRedemptionInTx(
     cafeId, customerId, orderId, orderNumber, points, amountValue, userId,
   }: {
     cafeId: string; customerId: string; orderId: string; orderNumber: number;
-    points: number; amountValue: number; userId: string | null;
+    points: number; amountValue: Numeric; userId: string | null;
   }
 ): Promise<{ oldBalance: number; newBalance: number }> {
   const claimed = await tx.customer.updateMany({
@@ -177,7 +180,7 @@ export async function recordRedemptionInTx(
       cafeId, customerId, orderId,
       type: "REDEEM",
       points: -points,
-      amountValue,
+      amountValue: money(amountValue),
       note: `استخدام نقاط — طلب #${orderNumber}`,
       createdByUserId: userId,
     },
@@ -198,10 +201,11 @@ export async function auditRedemption({
   cafeId, customerId, orderId, orderNumber, points, amountValue, userId, oldBalance, newBalance,
 }: {
   cafeId: string; customerId: string; orderId: string; orderNumber: number;
-  points: number; amountValue: number; userId: string | null;
+  points: number; amountValue: Numeric; userId: string | null;
   oldBalance: number; newBalance: number;
-}) {
-  await audit({
+}, client?: Prisma.TransactionClient) {
+  const writeAudit = (entry: Parameters<typeof audit>[0]) => client ? auditInTransaction(client, entry) : audit(entry);
+  await writeAudit({
     cafeId, userId,
     action: "LOYALTY_POINTS_REDEEMED",
     entity: "Customer",
@@ -218,16 +222,17 @@ export async function auditRedemption({
 // On order cancellation: take back earned points and refund redeemed
 // points, once (guarded by an existing CANCELLED_REVERSAL row).
 // Never throws — a loyalty failure must not block the cancellation.
-export async function reverseOrderLoyalty(orderId: string, userId: string | null) {
+export async function reverseOrderLoyalty(orderId: string, userId: string | null, client?: Prisma.TransactionClient) {
+  if (client) return reverseOrderLoyaltyInner(orderId, userId, client);
   try {
-    await reverseOrderLoyaltyInner(orderId, userId);
+    await protectedTransaction((tx) => reverseOrderLoyaltyInner(orderId, userId, tx));
   } catch (e) {
     console.error("loyalty reversal skipped", e);
   }
 }
 
-async function reverseOrderLoyaltyInner(orderId: string, userId: string | null) {
-  const order = await db.order.findUnique({
+async function reverseOrderLoyaltyInner(orderId: string, userId: string | null, tx: Prisma.TransactionClient) {
+  const order = await tx.order.findUnique({
     where: { id: orderId },
     select: {
       id: true, cafeId: true, customerId: true, orderNumber: true,
@@ -239,15 +244,15 @@ async function reverseOrderLoyaltyInner(orderId: string, userId: string | null) 
   const redeemed = order.loyaltyPointsRedeemed;
   if (earned <= 0 && redeemed <= 0) return;
 
-  const already = await db.loyaltyTransaction.findFirst({
+  const already = await tx.loyaltyTransaction.findFirst({
     where: { orderId: order.id, type: "CANCELLED_REVERSAL" },
     select: { id: true },
   });
   if (already) return;
 
   const delta = redeemed - earned; // refund redeemed, claw back earned
-  await db.$transaction([
-    db.loyaltyTransaction.create({
+  await Promise.all([
+    tx.loyaltyTransaction.create({
       data: {
         cafeId: order.cafeId,
         customerId: order.customerId,
@@ -258,7 +263,7 @@ async function reverseOrderLoyaltyInner(orderId: string, userId: string | null) 
         createdByUserId: userId,
       },
     }),
-    db.customer.update({
+    tx.customer.update({
       where: { id: order.customerId },
       data: {
         loyaltyPointsBalance: { increment: delta },
@@ -267,7 +272,7 @@ async function reverseOrderLoyaltyInner(orderId: string, userId: string | null) 
       },
     }),
   ]);
-  await audit({
+  await auditInTransaction(tx, {
     cafeId: order.cafeId, userId,
     action: "LOYALTY_POINTS_REVERSED",
     entity: "Customer",
@@ -277,4 +282,14 @@ async function reverseOrderLoyaltyInner(orderId: string, userId: string | null) 
       oldValue: { earned, redeemed }, newValue: { balanceDelta: delta },
     },
   });
+}
+
+export function loyaltyCalcSettingsExact(s: LoyaltySettings): ExactLoyaltySettings {
+  return {
+    enabled: s.enabled, earnPointsPerAmount: s.earnPointsPerAmount,
+    earnAmountStep: decimal(s.earnAmountStep), pointValueAmount: decimal(s.pointValueAmount),
+    minPointsToRedeem: s.minPointsToRedeem,
+    maxRedeemPercentageOfOrder: s.maxRedeemPercentageOfOrder,
+    earnOnPaidOrdersOnly: s.earnOnPaidOrdersOnly,
+  };
 }

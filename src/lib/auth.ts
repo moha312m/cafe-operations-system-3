@@ -1,10 +1,10 @@
-import { SignJWT, jwtVerify } from "jose";
+import { SignJWT, jwtVerify, base64url } from "jose";
 import { cookies } from "next/headers";
 import bcrypt from "bcryptjs";
 import type { Role } from "@prisma/client";
 
 const SESSION_COOKIE = "cafeops_session";
-const SESSION_HOURS = 12;
+export const SESSION_HOURS = 12;
 
 /**
  * The development fallback, named so it can be refused by name.
@@ -67,6 +67,14 @@ export type SessionUser = {
   role: Role;
   cafeId: string | null;
   branchId: string | null;
+  homeBranchId?: string | null;
+  temporaryBranchId?: string | null;
+  temporaryBranchUntil?: string | null;
+  temporaryBranchStatus?: "PENDING" | "ACTIVE" | "EXPIRED_FINISHING" | "CANCELLED_FINISHING" | null;
+  // New tokens use jti; legacy tokens use a digest of the exact signed token.
+  // Neither logout nor account changes revoke other valid sessions.
+  tokenId?: string | null;
+  tokenExpiresAt?: number;
 };
 
 export async function hashPassword(plain: string): Promise<string> {
@@ -84,6 +92,7 @@ export async function createSessionToken(user: SessionUser): Promise<string> {
   return new SignJWT({ ...user })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(user.id)
+    .setJti(crypto.randomUUID())
     .setIssuedAt()
     .setExpirationTime(`${SESSION_HOURS}h`)
     .sign(secretBytes());
@@ -94,6 +103,18 @@ export async function verifySessionToken(
 ): Promise<SessionUser | null> {
   try {
     const { payload } = await jwtVerify(token, secretBytes());
+    if (typeof payload.exp !== "number" || !Number.isFinite(payload.exp)) return null;
+    // jose accepts alternate unused base64url pad bits in a signature. Hash
+    // its canonical bytes so equivalent legacy JWT encodings revoke together.
+    const signatureStart = token.lastIndexOf(".") + 1;
+    const canonicalToken = token.slice(0, signatureStart) + base64url.encode(
+      base64url.decode(token.slice(signatureStart))
+    );
+    const tokenId = typeof payload.jti === "string" && payload.jti
+      ? payload.jti
+      : "legacy:" + Array.from(new Uint8Array(await crypto.subtle.digest(
+          "SHA-256", new TextEncoder().encode(canonicalToken)
+        )), byte => byte.toString(16).padStart(2, "0")).join("");
     return {
       id: payload.id as string,
       email: payload.email as string,
@@ -101,6 +122,8 @@ export async function verifySessionToken(
       role: payload.role as Role,
       cafeId: (payload.cafeId as string | null) ?? null,
       branchId: (payload.branchId as string | null) ?? null,
+      tokenId,
+      tokenExpiresAt: payload.exp,
     };
   } catch {
     return null;

@@ -21,7 +21,7 @@ export function PageHeader({
   return (
     <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
       <div className="min-w-0">
-        <h1 className="font-heading text-2xl font-bold tracking-tight text-foreground">
+        <h1 className="font-heading text-2xl leading-snug font-bold tracking-normal text-foreground">
           {title}
         </h1>
         {subtitle && (
@@ -91,10 +91,10 @@ export function Panel({
   children: React.ReactNode;
 }) {
   return (
-    <section className={cn("rounded-2xl border border-border bg-card shadow-sm", className)}>
+    <section className={cn("rounded-2xl border border-border bg-card text-card-foreground shadow-sm", className)}>
       {(title || action) && (
         <header className="flex items-center justify-between gap-2 border-b border-border/70 px-5 py-3.5">
-          {title && <h2 className="font-heading text-sm font-semibold text-foreground">{title}</h2>}
+          {title && <h2 className="font-heading text-sm leading-snug font-semibold text-card-foreground">{title}</h2>}
           {action}
         </header>
       )}

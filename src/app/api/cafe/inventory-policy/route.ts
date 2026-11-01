@@ -2,11 +2,15 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { requirePermission, requireKey, handleApiError, ApiError } from "@/lib/api";
-import { audit } from "@/lib/audit";
+import { auditInTransaction } from "@/lib/audit";
 import {
   DEFAULT_ENFORCEMENT_MODE,
   INVENTORY_ENFORCEMENT_MODES,
 } from "@/lib/inventory-policy";
+import {
+  DEFAULT_LOW_STOCK_ALERT_PERCENT,
+  MAX_LOW_STOCK_ALERT_PERCENT,
+} from "@/lib/low-stock";
 
 // How hard this café enforces inventory and recipe completeness at the till.
 //
@@ -26,21 +30,32 @@ export async function GET() {
     const cafeId = cafeIdOf(session);
     const settings = await db.cafeSettings.findUnique({
       where: { cafeId },
-      select: { inventoryEnforcementMode: true },
+      select: { inventoryEnforcementMode: true, lowStockAlertPercent: true },
     });
     // A café with no settings row has never opted in, so the stricter rule
     // applies rather than a permissive default being invented for it.
     return NextResponse.json({
       mode: settings?.inventoryEnforcementMode ?? DEFAULT_ENFORCEMENT_MODE,
+      lowStockAlertPercent: settings?.lowStockAlertPercent ?? DEFAULT_LOW_STOCK_ALERT_PERCENT,
     });
   } catch (error) {
     return handleApiError(error);
   }
 }
 
-const patchSchema = z.object({
-  mode: z.enum(INVENTORY_ENFORCEMENT_MODES),
-});
+const patchSchema = z
+  .object({
+    mode: z.enum(INVENTORY_ENFORCEMENT_MODES).optional(),
+    lowStockAlertPercent: z
+      .number({ message: "نسبة التنبيه لازم تكون رقم" })
+      .int("نسبة التنبيه لازم تكون رقم صحيح")
+      .min(0, "نسبة التنبيه من 0 لـ 90")
+      .max(MAX_LOW_STOCK_ALERT_PERCENT, "نسبة التنبيه من 0 لـ 90")
+      .optional(),
+  })
+  .refine((v) => v.mode !== undefined || v.lowStockAlertPercent !== undefined, {
+    message: "مفيش تغيير متبعت",
+  });
 
 export async function PATCH(request: NextRequest) {
   try {
@@ -50,33 +65,60 @@ export async function PATCH(request: NextRequest) {
     // can relax for itself.
     const session = await requireKey("settings.edit");
     const cafeId = cafeIdOf(session);
-    const { mode } = patchSchema.parse(await request.json());
+    const { mode, lowStockAlertPercent } = patchSchema.parse(await request.json());
 
-    const prev = await db.cafeSettings.findUnique({
-      where: { cafeId },
-      select: { inventoryEnforcementMode: true },
-    });
-    const updated = await db.cafeSettings.upsert({
-      where: { cafeId },
-      create: { cafeId, inventoryEnforcementMode: mode },
-      update: { inventoryEnforcementMode: mode },
+    const updated = await db.$transaction(async (tx) => {
+      const prev = await tx.cafeSettings.findUnique({
+        where: { cafeId },
+        select: { inventoryEnforcementMode: true, lowStockAlertPercent: true },
+      });
+      const data = {
+        ...(mode !== undefined ? { inventoryEnforcementMode: mode } : {}),
+        ...(lowStockAlertPercent !== undefined ? { lowStockAlertPercent } : {}),
+      };
+      const next = await tx.cafeSettings.upsert({
+        where: { cafeId },
+        create: { cafeId, ...data },
+        update: data,
+      });
+
+      if (mode !== undefined) {
+        await auditInTransaction(tx, {
+          cafeId,
+          userId: session.id,
+          action: "INVENTORY_ENFORCEMENT_MODE_CHANGED",
+          entity: "CafeSettings",
+          entityId: next.id,
+          details: {
+            byName: session.name,
+            scope: "CAFE",
+            oldValue: prev?.inventoryEnforcementMode ?? null,
+            newValue: next.inventoryEnforcementMode,
+          },
+        });
+      }
+      if (lowStockAlertPercent !== undefined) {
+        await auditInTransaction(tx, {
+          cafeId,
+          userId: session.id,
+          action: "LOW_STOCK_ALERT_PERCENT_CHANGED",
+          entity: "CafeSettings",
+          entityId: next.id,
+          details: {
+            byName: session.name,
+            scope: "CAFE",
+            oldValue: prev?.lowStockAlertPercent ?? null,
+            newValue: next.lowStockAlertPercent,
+          },
+        });
+      }
+      return next;
     });
 
-    await audit({
-      cafeId,
-      userId: session.id,
-      action: "INVENTORY_ENFORCEMENT_MODE_CHANGED",
-      entity: "CafeSettings",
-      entityId: updated.id,
-      details: {
-        byName: session.name,
-        scope: "CAFE",
-        oldValue: prev?.inventoryEnforcementMode ?? null,
-        newValue: updated.inventoryEnforcementMode,
-      },
+    return NextResponse.json({
+      mode: updated.inventoryEnforcementMode,
+      lowStockAlertPercent: updated.lowStockAlertPercent,
     });
-
-    return NextResponse.json({ mode: updated.inventoryEnforcementMode });
   } catch (error) {
     return handleApiError(error);
   }

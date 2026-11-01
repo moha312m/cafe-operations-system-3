@@ -10,6 +10,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { money } from "@/lib/client";
+import { TONE_SIDE, TONE_SURFACE, TONE_TOP, type Tone } from "@/components/ui/tone";
 import {
   STATUS_LABEL,
   TYPE_LABEL,
@@ -40,6 +41,33 @@ export type VarianceRow = {
     inventoryItem: { id: string; name: string; unit: string };
   } | null;
 };
+
+const CLOSED: readonly VarianceStatus[] = ["RESOLVED", "WAIVED"];
+const IN_PROGRESS: readonly VarianceStatus[] = ["UNDER_INVESTIGATION", "RESPONSIBILITY_ASSIGNED", "APPROVED"];
+
+/**
+ * Four counters over the cases already on screen (so they follow the filters).
+ * Counting only: no figure here is a money total, since an unvalued case has
+ * no amount and adding the others would understate it.
+ */
+export function VarianceSummary({ cases }: { cases: VarianceRow[] }) {
+  const cards: { key: string; label: string; value: number; tone: Tone }[] = [
+    { key: "all", label: "كل الحالات في القائمة", value: cases.length, tone: "tide" },
+    { key: "open", label: "مفتوحة", value: cases.filter((c) => c.status === "OPEN").length, tone: "clay" },
+    { key: "progress", label: "قيد المتابعة", value: cases.filter((c) => IN_PROGRESS.includes(c.status)).length, tone: "caramel" },
+    { key: "closed", label: "مقفولة أو متجاوَز عنها", value: cases.filter((c) => CLOSED.includes(c.status)).length, tone: "sage" },
+  ];
+  return (
+    <dl className="grid grid-cols-2 gap-2 lg:grid-cols-4" data-testid="variance-summary">
+      {cards.map((card) => (
+        <div key={card.key} className={`min-w-0 rounded-lg border p-3 ${TONE_SURFACE[card.tone]} ${TONE_TOP[card.tone]}`}>
+          <dt className="text-xs font-medium opacity-80">{card.label}</dt>
+          <dd className="mt-0.5 text-2xl font-bold tabular-nums">{card.value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
 
 export function VarianceList({
   cases,
@@ -81,11 +109,11 @@ export function VarianceList({
               className={`cursor-pointer ${selectedId === c.id ? "bg-muted/60" : ""}`}
               data-testid="variance-row"
             >
-              <TableCell>
+              <TableCell className={c.status === "OPEN" ? `${TONE_SIDE.clay} bg-clay-soft/50` : CLOSED.includes(c.status) ? `${TONE_SIDE.sage} bg-sage-soft/50` : ""}>
                 <div className="flex items-center gap-2">
                   {TYPE_LABEL[c.type] ?? c.type}
                   {c.blocking && (
-                    <Badge className="bg-amber-100 text-amber-800 hover:bg-amber-100">
+                    <Badge className={`border ${TONE_SURFACE.clay} hover:bg-clay-soft`}>
                       موقفة
                     </Badge>
                   )}

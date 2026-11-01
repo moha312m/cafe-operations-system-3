@@ -6,7 +6,9 @@ import { getSession } from "@/lib/auth";
 import { resolveBranchHandoverConfig, updateBranchHandoverConfig } from "@/lib/handover-config";
 
 type Params = { params: Promise<{ id: string }> };
-const patchSchema = z.object({ enabled: z.boolean().optional(), mode: z.enum(["FULL", "SELECTED"]).optional(), selectedItemIds: z.array(z.string().min(1)).max(2000).optional(), schedule: z.enum(["MANUAL_ONLY", "DAILY_LAST_HANDOVER", "WEEKLY"]).nullable().optional(), weekday: z.number().int().min(0).max(6).nullable().optional() }).strict();
+const patchSchema = z.object({ enabled: z.boolean().optional(), mode: z.enum(["FULL", "SELECTED"]).optional(), selectedItemIds: z.array(z.string().min(1)).max(2000).optional(), schedule: z.enum(["MANUAL_ONLY", "DAILY_LAST_HANDOVER", "WEEKLY"]).nullable().optional(), weekday: z.number().int().min(0).max(6).nullable().optional(),
+  // HND-UX-004 materials cadence, independent of the periodic full count.
+  materials: z.object({ cadence: z.enum(["EVERY_SHIFT", "DAILY", "WEEKLY"]), weekday: z.number().int().min(0).max(6).nullable(), cutoff: z.string().regex(/^([01][0-9]|2[0-3]):[0-5][0-9]$/).nullable() }).strict().optional() }).strict();
 
 async function authorize(branchId: string, cafeId: string, edit: boolean) {
   const session = edit ? await requireKey("stock_count.configure") : await requireActiveSession();

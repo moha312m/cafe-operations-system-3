@@ -15,6 +15,10 @@
 
 # next.js
 /.next/
+/.next-touch/
+
+# runtime uploads (place media); production mounts PLACE_MEDIA_ROOT on a volume
+/.private/
 /out/
 
 # production

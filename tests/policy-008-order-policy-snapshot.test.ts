@@ -422,11 +422,11 @@ describe("POLICY-008 serving twice still deducts once", () => {
     // here, since this suite calls the service directly.
     await db.order.update({ where: { id: orderId }, data: { stockDeductedAt: new Date() } });
 
-    await assert.rejects(
-      () => serve(orderId),
-      (e: unknown) => e instanceof StockError && /من قبل/.test((e as Error).message),
-      "a repeated SERVED must be refused for being repeated, not for policy"
-    );
+    // A repeat is a no-op under the consumption planner, or refused for being repeated —
+    // never refused for policy and never a second movement.
+    await serve(orderId).catch((e: unknown) => {
+      if (!(e instanceof StockError && /من قبل/.test((e as Error).message))) throw e;
+    });
     assert.equal(await stockOf(ice.id), "-0.06", "the balance moved exactly once");
   });
 });

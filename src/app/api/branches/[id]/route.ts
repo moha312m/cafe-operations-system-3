@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { requirePermission, handleApiError, ApiError } from "@/lib/api";
+import { requireKey, handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
 
 type Params = { params: Promise<{ id: string }> };
@@ -21,7 +21,7 @@ const updateBranchSchema = z.object({
 
 export async function PATCH(request: NextRequest, { params }: Params) {
   try {
-    const session = await requirePermission("branches:manage");
+    const session = await requireKey("branches.manage");
     const { id } = await params;
 
     const branch = await db.branch.findUnique({ where: { id } });

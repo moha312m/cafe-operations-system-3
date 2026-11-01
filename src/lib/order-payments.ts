@@ -10,6 +10,7 @@
 // kitchen screen and the orders screen cannot drift apart on what "paid"
 // means, and so the rule can be tested at all.
 
+import { decimal, money } from "@/lib/money";
 export type PaymentLike = {
   // Structural rather than importing Prisma's Decimal, so this stays usable
   // from client components without dragging the Prisma types into the bundle.
@@ -30,16 +31,18 @@ export type PaymentLike = {
  *                              written. Never money in hand.     (0)
  */
 export function collectedAmount(payments: PaymentLike[]): number {
+  return collectedAmountExact(payments).toNumber();
+}
+export function collectedAmountExact(payments: PaymentLike[]) {
   const net = payments.reduce((sum, p) => {
-    const amount = Number(p.amount);
-    if (!Number.isFinite(amount)) return sum;
-    if (p.type === "REFUND") return sum - amount;
+    const amount = decimal(p.amount);
+    if (p.type === "REFUND") return sum.minus(amount);
     // Rows still awaiting collection, cancelled, or reversed in period are
     // not money in hand.
     if (p.status !== "PAID") return sum;
-    return sum + amount;
-  }, 0);
-  return Math.round(net * 100) / 100;
+    return sum.plus(amount);
+  }, decimal(0));
+  return money(net);
 }
 
 /** Whether an order's own payment rows cover its total. */
@@ -47,5 +50,5 @@ export function isOrderFullyPaid(order: {
   total: string | number | { toString(): string };
   payments: PaymentLike[];
 }): boolean {
-  return collectedAmount(order.payments) + 0.001 >= Number(order.total);
+  return collectedAmountExact(order.payments).gte(money(order.total));
 }

@@ -6,7 +6,6 @@ import {
 } from "@/lib/api";
 import { audit } from "@/lib/audit";
 
-const TABLE_DENIED = "ليس لديك صلاحية لإدارة الترابيزات";
 
 // GET /api/tables/config — configured tables for a branch (+ summary cards)
 // for the setup page. Gated by tables.manage (the POS picker uses the
@@ -111,5 +110,3 @@ export async function POST(request: NextRequest) {
     return handleApiError(error);
   }
 }
-
-export { TABLE_DENIED };

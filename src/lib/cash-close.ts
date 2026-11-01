@@ -1,3 +1,8 @@
+import { decimal, money, moneyMax, type Numeric, sumMoney } from "@/lib/money";
+import { protectedTransaction, protectedContext } from "@/lib/protected-transaction";
+import { resolveReadScope } from "@/lib/api";
+import { lockShifts, lockOrders, lockOrderPayments, lockBranchAllocator, assertFinancialLocks } from "@/lib/transaction-locks";
+import type { SessionUser } from "@/lib/auth";
 // The shift's money becomes a fact, and its evidence commits with it.
 //
 // T33 for cash, extended by T34 to the channels that never reach a drawer.
@@ -72,8 +77,9 @@
 // away by rewriting the takings is the failure the whole feature exists to
 // make impossible.
 
-import type { HandoverTarget, Prisma, ShiftStatus } from "@prisma/client";
-import { db } from "@/lib/db";
+import type { HandoverTarget, OrderStatus, PaymentStatus, Prisma, ShiftStatus } from "@prisma/client";
+import { assertOpeningReceiptEvidence } from "@/lib/opening-readiness";
+import { recordNightCash, validateCashDisposition, type CashDisposition } from "@/lib/overnight-cash";
 import { ApiError } from "@/lib/api";
 import { auditInTransaction } from "@/lib/audit";
 import { openVarianceCase } from "@/lib/variance-case";
@@ -84,12 +90,15 @@ import {
   type PersistedTenderSettlement,
   type TenderSettlementInputs,
 } from "@/lib/tender-settlement";
-import { handoverStartBlockers } from "@/lib/handover-blockers";
+import { CARRYABLE_BLOCKER_CODES, handoverStartBlockers } from "@/lib/handover-blockers";
+import { deductStockForOrder, lockStockForOrders, StockError } from "@/lib/stock-deduction";
 import {
   resolveBranchHandoverConfigReadOnly,
   type HandoverConfigError,
 } from "@/lib/handover-config";
 import { acquireInventoryExclusiveLock } from "@/lib/inventory-freeze";
+import { recordMaterialsDecision, resolveMaterialsDecision, type ResolvedMaterialsDecision } from "@/lib/materials-schedule";
+import { fullCountDueInTransaction } from "@/lib/stock-count-policy";
 import {
   createHandoverInClose,
   finalizeCashCustodyAtFinancialClose,
@@ -98,7 +107,7 @@ import {
 } from "@/lib/handover";
 
 /** The column is Decimal(10,2); every comparison happens at that resolution. */
-const round2 = (n: number) => Math.round(n * 100) / 100;
+const round2 = (n: Numeric) => money(n).toNumber();
 
 export const SHIFT_CLOSED_AUDIT_ACTION = "SHIFT_CLOSED";
 export const CASH_DIFFERENCE_AUDIT_ACTION = "CASH_DIFFERENCE_DETECTED";
@@ -116,8 +125,8 @@ export type CashVarianceKind = "SHORTAGE" | "OVERAGE" | "EXACT";
  * sub-piastre noise cannot manufacture a variance the column could not hold
  * and nobody could explain.
  */
-export function cashVariance(actualCash: number, expectedCash: number): number {
-  return round2(round2(actualCash) - round2(expectedCash));
+export function cashVariance(actualCash: Numeric, expectedCash: Numeric): number {
+  return money(money(actualCash).minus(money(expectedCash))).toNumber();
 }
 
 export function varianceKind(variance: number): CashVarianceKind {
@@ -129,27 +138,20 @@ export function varianceKind(variance: number): CashVarianceKind {
 /**
  * The reason rule.
  *
- * Required when, and only when, the variance is non-zero. A zero variance must
- * NOT demand one: there is nothing to explain, and forcing the field would
- * only teach cashiers to type "No variance" into an evidence column.
+ * HND-UX-004: optional, on every variance. The owner chose to record money
+ * differences and let the close continue, so a missing explanation is no
+ * longer a refusal. It is not invented either: a non-zero variance without a
+ * note stores NULL, and the CASH variance case it opens stays OPEN — the
+ * truthful "needs later review".
  *
- * Whitespace is not an explanation, so the value is trimmed before it is
- * judged and the trimmed form is what gets stored — the same treatment
- * `refundOrder` gives the reason it requires.
+ * Whitespace is not an explanation, so the value is trimmed and the trimmed
+ * form is what gets stored.
  */
 export function resolveVarianceReason(
-  variance: number,
+  _variance: number,
   reason: string | null | undefined
 ): string | null {
-  const trimmed = (reason ?? "").trim();
-  if (variance === 0) {
-    // Accepted if offered, never required, never invented.
-    return trimmed || null;
-  }
-  if (!trimmed) {
-    throw new ApiError(400, "لازم تكتب سبب فرق الكاش قبل ما تقفل الشيفت");
-  }
-  return trimmed;
+  return (reason ?? "").trim() || null;
 }
 
 /** The two handover capabilities a close may need, resolved by the route. */
@@ -161,6 +163,7 @@ export type CloseHandoverGrants = {
 };
 
 export type ShiftCloseArgs = {
+  cashDisposition?: CashDisposition;
   shiftId: string;
   /** The physically counted drawer. */
   actualCash: number;
@@ -176,6 +179,7 @@ export type ShiftCloseArgs = {
   /** Free-text shift note, unrelated to any variance reason. */
   notes?: string | null;
   actorId: string;
+  actor?: SessionUser;
   /** True when the closer is not the custodian — recorded, never blocked. */
   closedByManager: boolean;
   /**
@@ -238,9 +242,111 @@ export type ShiftCloseResult = {
    * policy themselves.
    */
   handoverConfigIssue: HandoverConfigError | null;
+  /** HND-UX-004: the materials schedule's answer; null when handovers are off. */
+  materials: ShiftCloseMaterials | null;
   /** The CASH discharge a BRANCH_CUSTODY close performed, if it performed one. */
   cashCustodyFinalization: CashCustodyFinalization | null;
+  /** Open orders passed to the incoming shift (only when the café enabled it). */
+  carriedOrders: CarriedOrderSummary[];
 };
+
+export type ShiftCloseMaterials = {
+  due: boolean;
+  reason: string;
+  cadence: string;
+  periodFrom: string | null;
+  periodTo: string | null;
+  nextDueAt: string | null;
+  fullCountDue: boolean;
+};
+
+export const HANDOVER_ORDERS_CARRIED_AUDIT_ACTION = "HANDOVER_ORDERS_CARRIED";
+
+export type CarriedOrderSummary = {
+  orderId: string;
+  orderNumber: number;
+  status: OrderStatus;
+  paymentStatus: PaymentStatus;
+  remaining: number;
+  stockDeductedAtHandover: boolean;
+  recipesAlreadyProcessed: boolean;
+  finishedStockPending: boolean;
+  deducted: { name: string; quantity: number }[];
+};
+
+const CARRIED_ORDER_STATUSES: OrderStatus[] = ["PENDING_WAITER_APPROVAL", "CONFIRMED", "PREPARING", "READY"];
+/** Already being made: the ingredients left the shelf on the outgoing shift's watch. */
+const MADE_STATUSES: ReadonlySet<OrderStatus> = new Set<OrderStatus>(["PREPARING", "READY"]);
+
+/**
+ * Pass every open order in the branch to the incoming shift.
+ *
+ * Runs under the exclusive inventory lock and BEFORE the freeze, so recipes
+ * of orders already being made come off the shelf now, attributed to the
+ * custody being handed over. Otherwise the handover count would find those
+ * drinks' ingredients missing, blame the incoming count on the outgoing
+ * custodian as a shortage, and deduct them a second time at serving.
+ *
+ * Orders not yet started (CONFIRMED, PENDING_WAITER_APPROVAL) move nothing:
+ * their ingredients are still on the shelf and the shift that makes them
+ * deducts them when it serves. A STRICT shortage refuses the whole close with
+ * the order named — nothing is carried half-deducted.
+ */
+async function carryOpenOrders(
+  tx: Prisma.TransactionClient,
+  args: { cafeId: string; branchId: string; actorId: string; at: Date },
+): Promise<CarriedOrderSummary[]> {
+  const ids = await tx.order.findMany({ where: { cafeId: args.cafeId, branchId: args.branchId, status: { in: CARRIED_ORDER_STATUSES } }, select: { id: true } });
+  assertFinancialLocks(tx, ids.map(row => row.id));
+  if (ids.length === 0) return [];
+  const orders = await tx.order.findMany({
+    where: { id: { in: ids.map((r) => r.id) }, status: { in: CARRIED_ORDER_STATUSES } },
+    select: {
+      id: true, orderNumber: true, status: true, paymentStatus: true,
+      total: true, paidAmount: true, stockDeductedAt: true,
+      items: { where: { voidedAt: null }, select: { stockModeSnapshot: true, stockAcceptedAt: true, finishedStockDeductedAt: true } },
+    },
+    orderBy: { orderNumber: "asc" },
+  });
+
+  const madeOrders = orders.filter(order => MADE_STATUSES.has(order.status) && !order.stockDeductedAt);
+  try { await lockStockForOrders(tx, madeOrders.map(order => order.id), { boundary: "CARRY_RECIPES" }); }
+  catch (error) {
+    // Planning refusals (e.g. a recipe ingredient missing in this branch) are as explanatory as a shortage.
+    if (error instanceof StockError || (error instanceof ApiError && error.status < 500)) throw new ApiError(409, `مش قادر أرحّل الطلبات ${madeOrders.map(order => "#" + order.orderNumber).join("، ")} للشيفت اللي جاي: ${error.message}`);
+    throw error;
+  }
+  const carried: CarriedOrderSummary[] = [];
+  for (const order of orders) {
+    let deducted: { name: string; quantity: number }[] = [];
+    let stockDeductedAtHandover = false;
+    if (MADE_STATUSES.has(order.status) && !order.stockDeductedAt) {
+      try {
+        const result = await deductStockForOrder(tx, order.id, args.actorId, undefined, { boundary: "CARRY_RECIPES" });
+        deducted = result.deducted;
+      } catch (e) {
+        if (e instanceof StockError) {
+          throw new ApiError(409, `مش قادر أرحّل الطلب #${order.orderNumber} للشيفت اللي جاي: ${e.message}`);
+        }
+        throw e;
+      }
+      await tx.order.update({ where: { id: order.id }, data: { stockDeductedAt: args.at } });
+      stockDeductedAtHandover = deducted.length > 0;
+    }
+    carried.push({
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      status: order.status,
+      paymentStatus: order.paymentStatus,
+      remaining: moneyMax(money(decimal(order.total).minus(order.paidAmount)), 0).toNumber(),
+      stockDeductedAtHandover,
+      recipesAlreadyProcessed: !!order.stockDeductedAt || MADE_STATUSES.has(order.status),
+      finishedStockPending: order.items.some(i => i.stockModeSnapshot === "FINISHED_GOOD" && !!i.stockAcceptedAt && !i.finishedStockDeductedAt),
+      deducted,
+    });
+  }
+  return carried;
+}
 
 /**
  * Lock the shift row for the duration of the transaction.
@@ -251,11 +357,32 @@ export type ShiftCloseResult = {
  * concurrent close may already have changed. The same shape `lockItemForUpdate`
  * uses for stock, and for the same reason.
  */
-async function lockShift(tx: Prisma.TransactionClient, shiftId: string): Promise<boolean> {
-  const rows = await tx.$queryRaw<{ id: string }[]>`
-    SELECT "id" FROM "Shift" WHERE "id" = ${shiftId} FOR UPDATE
-  `;
-  return rows.length > 0;
+
+
+// Without a physical handover, retire only periods whose linked shifts all
+// finished. Shared custody stays open until its final operational shift closes.
+async function finalizeUncountedCustodies(tx: Prisma.TransactionClient, args: {
+  shiftId: string; branchId: string; cafeId: string; actualCash: number; at: Date;
+}): Promise<string[]> {
+  const links = await tx.shiftCustody.findMany({
+    where: { shiftId: args.shiftId }, include: { custodyPeriod: true },
+  });
+  const retired: string[] = [];
+  for (const { custodyPeriod: period } of links) {
+    if (period.status !== "OPEN" || period.holderType !== "USER"
+      || period.branchId !== args.branchId || period.cafeId !== args.cafeId) continue;
+    const active = await tx.shiftCustody.count({ where: {
+      custodyPeriodId: period.id,
+      shift: { status: { in: ["OPEN", "AWAITING_HANDOVER"] } },
+    } });
+    if (active) continue;
+    await tx.custodyPeriod.update({ where: { id: period.id }, data: {
+      status: "CLOSED", endedAt: args.at,
+      ...(period.scope === "CASH" ? { closingCashAmount: args.actualCash } : {}),
+    } });
+    retired.push(period.id);
+  }
+  return retired;
 }
 
 /**
@@ -275,10 +402,25 @@ export async function closeShiftWithSettlement(
     handoverException: false,
   };
 
-  return db.$transaction(async (tx) => {
-    if (!(await lockShift(tx, args.shiftId))) {
-      throw new ApiError(404, "الشيفت مش موجود");
-    }
+  return protectedTransaction(async (tx) => {
+    const actor = args.actor ?? await tx.user.findUnique({ where: { id: args.actorId } });
+    if (!actor) throw new ApiError(403, "مش مسموح تقفل الشيفت ده");
+    protectedContext(tx).scope = resolveReadScope({ id: actor.id, email: actor.email, name: actor.name, role: actor.role, cafeId: actor.cafeId, branchId: actor.branchId });
+    const scope = protectedContext(tx).scope;
+    const candidate = await tx.shift.findFirst({ where: { id: args.shiftId, ...scope }, select: { branchId: true, cafeId: true } });
+    if (!candidate) throw new ApiError(404, "الشيفت مش موجود");
+    const periods = await tx.custodyPeriod.findMany({ where: { cafeId: candidate.cafeId, branchId: candidate.branchId, status: "OPEN" }, select: { responsibleShiftId: true } });
+    await lockShifts(tx, [args.shiftId, ...periods.map(p => p.responsibleShiftId).filter((id): id is string => !!id)]);
+    if(await tx.amendmentSettlement.findFirst({where:{shiftId:args.shiftId,status:{in:['PENDING','UNKNOWN','OBSERVED']}},select:{id:true}}))throw new ApiError(409,'راجع تسويات تعديل الفواتير المعلقة قبل قفل الشيفت');
+    const reserved=await tx.$queryRaw<{id:string}[]>`SELECT s."id" FROM "AmendmentSettlement" s JOIN "OrderAmendment" a ON a."id"=s."amendmentId" WHERE a."originalShiftId"=${args.shiftId} AND s."status" IN ('PENDING','UNKNOWN','OBSERVED') LIMIT 1`;
+    if(reserved.length)throw new ApiError(409,'فاتورة من هذا الشيفت لديها تسوية تعديل معلقة');
+    await lockBranchAllocator(tx, candidate.branchId);
+    // Active serving/carry targets and orders contributing to this locked drawer.
+    const orders = await tx.order.findMany({ where: { cafeId: candidate.cafeId, branchId: candidate.branchId, OR: [
+      { status: { in: CARRIED_ORDER_STATUSES } }, { payments: { some: { shiftId: args.shiftId } } },
+    ] }, select: { id: true } });
+    await lockOrders(tx, orders.map(order => order.id));
+    await lockOrderPayments(tx, orders.map(order => order.id));
 
     const locked = await tx.shift.findUniqueOrThrow({
       where: { id: args.shiftId },
@@ -317,10 +459,18 @@ export async function closeShiftWithSettlement(
       config.enabled && config.configError?.code === "CYCLE_POLICY_UNSUPPORTED"
         ? config.configError
         : null;
-    const handoverRequired = config.enabled && cycleIssue === null;
+    const handoverEnabled = config.enabled && cycleIssue === null;
 
+    await assertOpeningReceiptEvidence(tx, locked.id);
+
+    // The EXCLUSIVE branch inventory lock, on every path and BEFORE the
+    // materials schedule is read. Ending uncounted custody must wait for
+    // in-flight stock movements, and a counted handover reads its blockers
+    // under it; HND-UX-004 adds that two closes at one branch must not both
+    // decide the same materials period is theirs to count.
+    await acquireInventoryExclusiveLock(tx, locked.branchId);
     let target: HandoverTarget | null = null;
-    if (handoverRequired) {
+    if (handoverEnabled) {
       const stated = args.handoverTarget ?? null;
       if (stated !== "SHIFT_TO_SHIFT" && stated !== "BRANCH_CUSTODY") {
         throw new ApiError(
@@ -329,7 +479,41 @@ export async function closeShiftWithSettlement(
         );
       }
       target = stated;
+    }
 
+    // HND-UX-004 — money is settled at every close; materials only when the
+    // owner's schedule says a count is due. When it is not due the close
+    // takes the ordinary uncounted path: no handover, no freeze, and the
+    // decision row says "not due" instead of a fabricated count.
+    //
+    // Ending employee custody for the night (BRANCH_CUSTODY) is a manager
+    // exception whether or not a count follows, so its grant is checked here,
+    // before the schedule can turn it into an uncounted close. It does NOT by
+    // itself make materials due: a weekly branch is not counted every night.
+    // The one exception is overnight drawer storage, whose record
+    // (CashStorage) exists only on a branch-custody handover, so a branch
+    // that stores night cash still hands the branch a counted shelf.
+    if (target === "BRANCH_CUSTODY" && !grants.handoverException) {
+      throw new ApiError(403, "تسليم عهدة الفرع محتاج موافقة مدير");
+    }
+    const closedAt = new Date();
+    const overnightStorage = target === "BRANCH_CUSTODY"
+      && (await tx.branchOpeningSettings.findUnique({ where: { branchId: locked.branchId }, select: { overnightCashEnabled: true } }))?.overnightCashEnabled === true;
+    const materials = handoverEnabled && target
+      ? await resolveMaterialsDecision(tx, {
+          branchId: locked.branchId,
+          at: closedAt,
+          fullCountDue: (await fullCountDueInTransaction(tx, {
+            cafeId: locked.cafeId, branchId: locked.branchId, at: closedAt, target,
+          })).due,
+          branchCustodyNeedsHandover: overnightStorage,
+        })
+      : null;
+    const handoverRequired = handoverEnabled && materials?.due === true;
+    if (!handoverRequired) target = null;
+
+    let carryEnabled = false;
+    if (handoverRequired) {
       // Authorization, before the lock and long before any write. Handing
       // stock to the next shift is an ordinary custodial act; ENDING employee
       // stock custody is not, and it takes the manager capability on top.
@@ -340,24 +524,39 @@ export async function closeShiftWithSettlement(
         throw new ApiError(403, "تسليم عهدة الفرع محتاج موافقة مدير");
       }
 
-      // The EXCLUSIVE branch inventory lock, BEFORE the blockers are read.
-      //
-      // Every ordinary stock mutator holds the SHARED form until its own
-      // commit, so this waits for all of them; every later one waits for this
-      // transaction and then sees the durable freeze. Taking it here rather
-      // than beside the freeze is the whole point: blockers read under it are
-      // answers about a shelf that cannot move while they are being read.
-      await acquireInventoryExclusiveLock(tx, locked.branchId);
-
+      // The EXCLUSIVE branch inventory lock is already held (above), BEFORE
+      // the blockers are read. Every ordinary stock mutator holds the SHARED
+      // form until its own commit, so it waited for all of them; every later
+      // one waits for this transaction and then sees the durable freeze.
+      // Blockers read under it are answers about a shelf that cannot move
+      // while they are being read.
       const blockers = await handoverStartBlockers(tx, {
         cafeId: locked.cafeId,
         branchId: locked.branchId,
       });
+      // Open orders stop the close unless the OWNER chose to have the
+      // incoming shift take them over. Every other blocker stands either way.
+      const carrySetting = await tx.cafeSettings.findUnique({
+        where: { cafeId: locked.cafeId },
+        select: { carryOpenOrdersOnHandover: true },
+      });
+      carryEnabled = carrySetting?.carryOpenOrdersOnHandover === true;
+      const standing = carryEnabled
+        ? blockers.filter((b) => !CARRYABLE_BLOCKER_CODES.has(b.code))
+        : blockers;
       // Nothing has been written yet. A refusal here leaves the shift OPEN
       // and fully operational rather than settled into a state it cannot
       // leave — which is the only ordering that makes "reject BEFORE
       // financial close" a true statement.
-      if (blockers.length > 0) throw new HandoverBlockedError(blockers);
+      if (standing.length > 0) throw new HandoverBlockedError(standing);
+    }
+
+    const openingSettings = await tx.branchOpeningSettings.findUnique({ where: { branchId: locked.branchId } });
+    if (args.cashDisposition) {
+      if (target !== 'BRANCH_CUSTODY') throw new ApiError(400, 'Cash storage requires a branch custody handover');
+      validateCashDisposition(args.actualCash, args.cashDisposition);
+    } else if (openingSettings?.overnightCashEnabled && target === 'BRANCH_CUSTODY') {
+      throw new ApiError(400, 'Declare the cash left in the drawer and transferred to treasury');
     }
 
     // The authoritative figure, freshened inside this transaction so a
@@ -365,7 +564,7 @@ export async function closeShiftWithSettlement(
     const fresh = await recomputeShiftTotals(args.shiftId, tx);
     if (!fresh) throw new ApiError(404, "الشيفت مش موجود");
 
-    const expectedCash = round2(Number(fresh.expectedCashAmount));
+    const expectedCash = round2(fresh.expectedCashAmount);
     const actualCash = round2(args.actualCash);
     const variance = cashVariance(actualCash, expectedCash);
     const kind = varianceKind(variance);
@@ -381,14 +580,13 @@ export async function closeShiftWithSettlement(
         // The authoritative per-method aggregates, from the same freshened
         // row `expectedCash` came from. Never a second formula, and never a
         // figure the client supplied.
-        CARD: Number(fresh.totalCardSales),
-        WALLET: Number(fresh.totalWalletSales),
+        CARD: fresh.totalCardSales,
+        WALLET: fresh.totalWalletSales,
       },
       args.tenders ?? {}
     );
 
     const status: ShiftStatus = handoverRequired ? "AWAITING_HANDOVER" : "CLOSED";
-    const closedAt = new Date();
 
     // Status-guarded, so a racing second close updates zero rows rather than
     // overwriting the first completed one. The lock above makes this the
@@ -473,8 +671,19 @@ export async function closeShiftWithSettlement(
     let freezeId: string | null = null;
     let requiredItemCount: number | null = null;
     let cashCustodyFinalization: CashCustodyFinalization | null = null;
+    let carriedOrders: CarriedOrderSummary[] = [];
 
     if (handoverRequired && target) {
+      // Before the freeze below snapshots the shelf: see `carryOpenOrders`.
+      if (carryEnabled) {
+        carriedOrders = await carryOpenOrders(tx, {
+          cafeId: locked.cafeId,
+          branchId: locked.branchId,
+          actorId: args.actorId,
+          at: closedAt,
+        });
+      }
+
       // BRANCH_CUSTODY is the target that ends employee custody of the
       // drawer, so the outgoing CASH period is discharged here at the counted
       // figure and NO successor is opened — nobody has been appointed to hold
@@ -503,6 +712,69 @@ export async function closeShiftWithSettlement(
       handoverId = created.handoverId;
       freezeId = created.freezeId;
       requiredItemCount = created.requiredItemCount;
+      if (target === 'BRANCH_CUSTODY' && args.cashDisposition) {
+        await recordNightCash(tx, { cafeId: locked.cafeId, branchId: locked.branchId,
+          shiftId: locked.id, handoverId, actorId: args.actorId, actualCash,
+          disposition: args.cashDisposition });
+      }
+
+      if (carriedOrders.length > 0) {
+        await tx.handoverCarriedOrder.createMany({
+          data: carriedOrders.map((o) => ({
+            cafeId: locked.cafeId,
+            branchId: locked.branchId,
+            shiftId: locked.id,
+            handoverId,
+            orderId: o.orderId,
+            orderNumber: o.orderNumber,
+            statusAtHandover: o.status,
+            paymentStatusAtHandover: o.paymentStatus,
+            remainingAtHandover: o.remaining,
+            stockDeductedAtHandover: o.stockDeductedAtHandover,
+          })),
+        });
+        await auditInTransaction(tx, {
+          cafeId: locked.cafeId,
+          userId: args.actorId,
+          action: HANDOVER_ORDERS_CARRIED_AUDIT_ACTION,
+          entity: "Shift",
+          entityId: locked.id,
+          details: {
+            branchId: locked.branchId,
+            shiftNumber: locked.shiftNumber,
+            handoverId,
+            handoverTarget: target,
+            unpaidTotal: round2(sumMoney(carriedOrders.map(o => o.remaining))),
+            orders: carriedOrders.map((o) => ({
+              orderId: o.orderId,
+              orderNumber: o.orderNumber,
+              status: o.status,
+              paymentStatus: o.paymentStatus,
+              remaining: o.remaining,
+              stockDeductedAtHandover: o.stockDeductedAtHandover,
+              deducted: o.deducted,
+            })),
+          },
+        });
+      }
+    }
+
+    const uncountedCustodyClosedIds = handoverRequired ? [] : await finalizeUncountedCustodies(tx, {
+      shiftId: locked.id, branchId: locked.branchId, cafeId: locked.cafeId, actualCash, at: closedAt,
+    });
+
+    // The schedule's answer becomes a fact of this close, due or not. After
+    // the handover exists, so a due decision names the handover it claimed
+    // its period for.
+    if (materials) {
+      await recordMaterialsDecision(tx, {
+        cafeId: locked.cafeId,
+        branchId: locked.branchId,
+        shiftId: locked.id,
+        handoverId,
+        at: closedAt,
+        decision: materials,
+      });
     }
 
     const evidence = {
@@ -523,6 +795,7 @@ export async function closeShiftWithSettlement(
       entityId: locked.id,
       details: {
         ...evidence,
+        uncountedCustodyClosedIds,
         closedByManager: args.closedByManager,
         varianceCaseId,
         // The whole close, reconstructible from one row: cash above, and
@@ -546,12 +819,15 @@ export async function closeShiftWithSettlement(
         resultingStatus: status,
         handoverRequired,
         handoverTarget: target,
+        // What the closer stated, even when the schedule made the close uncounted.
+        requestedHandoverTarget: args.handoverTarget ?? null,
         handoverId,
         freezeId,
         requiredItemCount,
         handoverConfigIssue: cycleIssue
           ? { code: cycleIssue.code, message: cycleIssue.message }
           : null,
+        materials: materials ? materialsSummary(materials) : null,
         cashCustodyFinalization: cashCustodyFinalization
           ? {
               closedCashCustodyId: cashCustodyFinalization.closedCashCustodyId,
@@ -592,7 +868,21 @@ export async function closeShiftWithSettlement(
       freezeId,
       requiredItemCount,
       handoverConfigIssue: cycleIssue,
+      materials: materials ? materialsSummary(materials) : null,
       cashCustodyFinalization,
+      carriedOrders,
     };
   });
+}
+
+function materialsSummary(m: ResolvedMaterialsDecision): ShiftCloseMaterials {
+  return {
+    due: m.due,
+    reason: m.reason,
+    cadence: m.schedule.cadence,
+    periodFrom: m.periodFrom,
+    periodTo: m.periodTo,
+    nextDueAt: m.nextDueAt ? m.nextDueAt.toISOString() : null,
+    fullCountDue: m.fullCountDue,
+  };
 }

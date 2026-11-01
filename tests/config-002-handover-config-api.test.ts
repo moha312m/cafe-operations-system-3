@@ -1,7 +1,7 @@
 import { after, before, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { db, fixture } from "./helpers/db";
-import { as, login, requireServer } from "./helpers/http";
+import { as, BASE, login, requireServer } from "./helpers/http";
 
 const OWNER = "owner@demo.com";
 const CASHIER = "cashier@demo.com";
@@ -31,7 +31,7 @@ after(async () => {
 
 describe("CONFIG-002 handover configuration API", () => {
   test("GET rejects an unauthenticated caller before reading branch configuration", async () => {
-    const response = await fetch("http://localhost:3100/api/branches/not-a-branch/handover-config");
+    const response = await fetch(`${BASE}/api/branches/not-a-branch/handover-config`);
 
     assert.equal(response.status, 401);
   });
@@ -45,7 +45,7 @@ describe("CONFIG-002 handover configuration API", () => {
   });
 
   test("PATCH requires stock_count.configure and an authenticated user", async () => {
-    const anonymous = await fetch(`http://localhost:3100/api/branches/${branchId}/handover-config`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: "{}" });
+    const anonymous = await fetch(`${BASE}/api/branches/${branchId}/handover-config`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: "{}" });
     assert.equal(anonymous.status, 401);
     const denied = await as(CASHIER, `/api/branches/${branchId}/handover-config`, { method: "PATCH", body: "{}" });
     assert.equal(denied.status, 403);

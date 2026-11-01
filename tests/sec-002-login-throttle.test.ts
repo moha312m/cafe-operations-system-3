@@ -138,8 +138,10 @@ describe("SEC-002 the login throttle", () => {
     assert.match(source, /\$\{email\.toLowerCase\(\)\}\|\$\{originOf\(request\)\}/);
   });
 
-  test("no schema or migration was required", () => {
+  test("login throttling adds no account lockout fields", () => {
     const schema = readFileSync(path.join(root, "prisma/schema.prisma"), "utf8");
-    assert.doesNotMatch(schema, /failedAttempts|lockedUntil/);
+    const userModel = schema.match(/model User\s*\{[\s\S]*?\n\}/)?.[0];
+    assert.ok(userModel, "User model must be present");
+    assert.doesNotMatch(userModel, /failedAttempts|lockedUntil/);
   });
 });

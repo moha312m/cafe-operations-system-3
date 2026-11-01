@@ -3,8 +3,9 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { requireKey, handleApiError, ApiError, requireFeature } from "@/lib/api";
 import { audit } from "@/lib/audit";
-import { round2, paymentStatusFor } from "@/lib/purchases";
+import { paymentStatusFor } from "@/lib/purchases";
 import type { Prisma } from "@prisma/client";
+import { PurchaseArithmeticError, purchaseLine, purchaseSubtotal, purchaseTotals } from "@/lib/purchase-arithmetic";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -45,6 +46,7 @@ export async function GET(_request: NextRequest, { params }: Params) {
         id: inv.id,
         invoiceNumber: inv.invoiceNumber,
         supplier: inv.supplier,
+        branchId: inv.branchId,
         branch: inv.branch.name,
         invoiceDate: inv.invoiceDate,
         status: inv.status,
@@ -72,6 +74,7 @@ export async function GET(_request: NextRequest, { params }: Params) {
           id: p.id,
           amount: Number(p.amount),
           method: p.method,
+          fundingSource: p.fundingSource,
           note: p.note,
           paidAt: p.paidAt,
           createdBy: p.createdBy?.name ?? null,
@@ -86,14 +89,14 @@ export async function GET(_request: NextRequest, { params }: Params) {
 const patchSchema = z.object({
   supplierId: z.string().nullable().optional(),
   invoiceDate: z.string().optional(),
-  discountAmount: z.number().min(0).optional(),
-  taxAmount: z.number().min(0).optional(),
+  discountAmount: z.number({ error: "القيمة المالية يجب أن تكون رقمًا محدودًا" }).min(0, "القيمة المالية لا يمكن أن تكون سالبة").optional(),
+  taxAmount: z.number({ error: "القيمة المالية يجب أن تكون رقمًا محدودًا" }).min(0, "القيمة المالية لا يمكن أن تكون سالبة").optional(),
   notes: z.string().max(500).nullable().optional(),
   items: z
     .array(z.object({
       inventoryItemId: z.string(),
-      quantity: z.number().positive(),
-      unitCost: z.number().min(0),
+      quantity: z.number({ error: "الكمية يجب أن تكون رقمًا محدودًا" }).positive("الكمية يجب أن تكون أكبر من صفر"),
+      unitCost: z.number({ error: "تكلفة الوحدة يجب أن تكون رقمًا محدودًا" }).min(0, "تكلفة الوحدة لا يمكن أن تكون سالبة"),
       expiryDate: z.string().optional(),
     }))
     .min(1)
@@ -118,7 +121,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
 
     // Recompute totals if items or charges changed.
     let subtotal = Number(inv.subtotalAmount);
-    let itemRows: Prisma.PurchaseInvoiceItemCreateManyInput[] | null = null;
+    let itemRows: (Prisma.PurchaseInvoiceItemCreateManyInput & ReturnType<typeof purchaseLine>)[] | null = null;
 
     if (data.items) {
       const itemIds = [...new Set(data.items.map((i) => i.inventoryItemId))];
@@ -127,29 +130,32 @@ export async function PATCH(request: NextRequest, { params }: Params) {
         select: { id: true, unit: true },
       });
       const invMap = new Map(invItems.map((i) => [i.id, i]));
-      subtotal = 0;
       itemRows = data.items.map((it) => {
         const invItem = invMap.get(it.inventoryItemId);
         if (!invItem) throw new ApiError(400, "في خامة مش موجودة في مخزون الفرع");
-        const totalCost = round2(it.quantity * it.unitCost);
-        subtotal = round2(subtotal + totalCost);
+        const line = purchaseLine(it.quantity, it.unitCost);
         return {
           cafeId: inv.cafeId, branchId: inv.branchId, purchaseInvoiceId: id,
-          inventoryItemId: it.inventoryItemId, quantity: it.quantity,
-          unit: invItem.unit, unitCost: it.unitCost, totalCost,
+          inventoryItemId: it.inventoryItemId, quantity: line.quantity,
+          unit: invItem.unit, unitCost: line.unitCost, totalCost: line.totalCost,
           expiryDate: it.expiryDate ? new Date(it.expiryDate) : null,
         };
       });
+      subtotal = purchaseSubtotal(itemRows);
     }
 
-    const discount = data.discountAmount ?? Number(inv.discountAmount);
-    const tax = data.taxAmount ?? Number(inv.taxAmount);
-    const total = round2(subtotal - discount + tax);
-    if (total < 0) throw new ApiError(400, "الخصم أكبر من قيمة الفاتورة");
-    const paid = Number(inv.paidAmount);
-    const remaining = round2(total - paid);
+    const total = await db.$transaction(async (tx) => {
+      // Totals are decided on the locked row: a concurrent supplier payment
+      // or confirmation must be visible here, not overwritten by a stale read.
+      await tx.$queryRaw`SELECT id FROM "PurchaseInvoice" WHERE id = ${id} FOR UPDATE`;
+      const current = await tx.purchaseInvoice.findUniqueOrThrow({ where: { id } });
+      if (current.status !== "DRAFT") throw new ApiError(400, "لا يمكن تعديل فاتورة مؤكدة أو ملغية");
+      if (!itemRows) subtotal = Number(current.subtotalAmount);
+      const { discount, tax, total, paid, remaining } = purchaseTotals(
+        subtotal, data.discountAmount ?? Number(current.discountAmount),
+        data.taxAmount ?? Number(current.taxAmount), Number(current.paidAmount),
+      );
 
-    await db.$transaction(async (tx) => {
       if (itemRows) {
         await tx.purchaseInvoiceItem.deleteMany({ where: { purchaseInvoiceId: id } });
         await tx.purchaseInvoiceItem.createMany({ data: itemRows });
@@ -164,10 +170,11 @@ export async function PATCH(request: NextRequest, { params }: Params) {
           discountAmount: discount,
           taxAmount: tax,
           totalAmount: total,
-          remainingAmount: Math.max(remaining, 0),
+          remainingAmount: remaining,
           paymentStatus: paymentStatusFor(total, paid),
         },
       });
+      return total;
     });
 
     await audit({
@@ -178,6 +185,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
 
     return NextResponse.json({ ok: true });
   } catch (error) {
+    if (error instanceof PurchaseArithmeticError) return handleApiError(new ApiError(400, error.message));
     return handleApiError(error);
   }
 }

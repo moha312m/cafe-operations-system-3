@@ -19,6 +19,7 @@
 // These run against the real API: the defect is in what the route persists.
 
 import { test, after, before, describe } from "node:test";
+import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { db, fixture, type Fixture } from "./helpers/db";
 import { requireServer, login, as } from "./helpers/http";
@@ -63,6 +64,7 @@ describe("STOCK-001 movement precision", () => {
     try {
       const r = await as(`${OWNER}`, `/api/inventory/${item.id}/movement`, {
         method: "POST",
+        headers: { "Idempotency-Key": randomUUID() },
         body: JSON.stringify({ type: "WASTE", quantity: 0.018, note: MARKER }),
       });
       assert.ok(r.status < 300, `movement failed: ${r.text}`);
@@ -92,6 +94,7 @@ describe("STOCK-001 movement precision", () => {
     try {
       const r = await as(`${OWNER}`, `/api/inventory/${item.id}/movement`, {
         method: "POST",
+        headers: { "Idempotency-Key": randomUUID() },
         body: JSON.stringify({ type: "PURCHASE", quantity: 1, unitCost: 450, note: MARKER }),
       });
       assert.ok(r.status < 300, `movement failed: ${r.text}`);
@@ -119,6 +122,7 @@ describe("STOCK-001 movement precision", () => {
     try {
       const r = await as(`${OWNER}`, `/api/inventory/transfer`, {
         method: "POST",
+        headers: { "Idempotency-Key": randomUUID() },
         body: JSON.stringify({
           inventoryItemId: source.id, toBranchId: other.id, quantity: 0.018, note: MARKER,
         }),

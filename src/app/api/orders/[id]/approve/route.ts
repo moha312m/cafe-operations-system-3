@@ -1,11 +1,13 @@
+import { finalizeOrderConsumption } from "@/lib/sale-consumption";
+import { protectedTransaction } from "@/lib/protected-transaction";
 import { NextResponse, type NextRequest } from "next/server";
-import { db } from "@/lib/db";
-import { getSession } from "@/lib/auth";
-import { handleApiError, ApiError, requireActiveSession } from "@/lib/api";
-import { audit } from "@/lib/audit";
+import { handleApiError, ApiError, requireActiveSession, resolveReadScope } from "@/lib/api";
+import { auditInTransaction } from "@/lib/audit";
 import { recomputeSessionTotals } from "@/lib/table-sessions";
 import { resolvePermissions } from "@/lib/perms/effective";
 import { canApproveOrder } from "@/lib/qr-approval";
+
+import { lockOrders, lockOrderPayments, lockTableSessions } from "@/lib/transaction-locks";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -17,57 +19,63 @@ export async function POST(_request: NextRequest, { params }: Params) {
     const session = await requireActiveSession();
     const { id } = await params;
 
-    const order = await db.order.findUnique({ where: { id } });
-    if (!order) throw new ApiError(404, "الطلب مش موجود");
-    if (order.status !== "PENDING_WAITER_APPROVAL") {
-      throw new ApiError(400, "الطلب ده مش مستني موافقة");
-    }
     const { keys } = await resolvePermissions(session);
-    if (!canApproveOrder(session, order, keys.has("qr_orders.approve"))) {
-      throw new ApiError(403, "ليس لديك صلاحية لتأكيد هذا الطلب");
-    }
+    return await protectedTransaction(async (tx) => {
+      await lockOrders(tx, [id]);
+      await lockOrderPayments(tx, [id]);
+      const order = await tx.order.findFirst({ where: { id, ...resolveReadScope(session) } });
+      if (!order) throw new ApiError(404, "الطلب مش موجود");
+      if (order.status !== "PENDING_WAITER_APPROVAL") {
+        throw new ApiError(400, "الطلب ده مش مستني موافقة");
+      }
+      if (!canApproveOrder(session, order, keys.has("qr_orders.approve"))) {
+        throw new ApiError(403, "ليس لديك صلاحية لتأكيد هذا الطلب");
+      }
 
-    const updated = await db.order.update({
-      where: { id },
-      data: {
-        status: "CONFIRMED",
-        approvalStatus: "APPROVED",
-        approvedById: session.id,
-        approvedAt: new Date(),
-      },
-      include: {
-        items: { include: { addOns: true } },
-        branch: { select: { id: true, name: true } },
-        approvedBy: { select: { id: true, name: true } },
-      },
-    });
-
-    // Approval makes the order count towards the table bill.
-    if (order.tableSessionId) await recomputeSessionTotals(order.tableSessionId);
-
-    const kitchen = await db.cafeSettings.findUnique({ where: { cafeId: order.cafeId }, select: { kitchenScreenEnabled: true } });
-    await audit({
-      cafeId: order.cafeId,
-      userId: session.id,
-      action: "QR_ORDER_APPROVED",
-      entity: "Order",
-      entityId: id,
-      details: {
-        branchId: order.branchId, orderId: id,
-        orderNumber: order.orderNumber, source: order.source,
-        approvedById: session.id, approvedByName: session.name,
-        oldValue: "PENDING_APPROVAL", newValue: "APPROVED",
-      },
-    });
-    if (kitchen?.kitchenScreenEnabled) {
-      await audit({
-        cafeId: order.cafeId, userId: session.id, action: "QR_ORDER_SENT_TO_KITCHEN",
-        entity: "Order", entityId: id,
-        details: { branchId: order.branchId, orderId: id, orderNumber: order.orderNumber },
+      if (order.tableSessionId) await lockTableSessions(tx, [order.tableSessionId]);
+      await finalizeOrderConsumption(tx, id, new Date());
+      const updated = await tx.order.update({
+        where: { id },
+        data: {
+          status: "CONFIRMED",
+          approvalStatus: "APPROVED",
+          approvedById: session.id,
+          approvedAt: new Date(),
+        },
+        include: {
+          items: { include: { addOns: true } },
+          branch: { select: { id: true, name: true } },
+          approvedBy: { select: { id: true, name: true } },
+        },
       });
-    }
 
-    return NextResponse.json({ order: updated });
+      // Approval makes the order count towards the table bill.
+      if (order.tableSessionId) await recomputeSessionTotals(order.tableSessionId, tx);
+
+      const kitchen = await tx.cafeSettings.findUnique({ where: { cafeId: order.cafeId }, select: { kitchenScreenEnabled: true } });
+      await auditInTransaction(tx, {
+        cafeId: order.cafeId,
+        userId: session.id,
+        action: "QR_ORDER_APPROVED",
+        entity: "Order",
+        entityId: id,
+        details: {
+          branchId: order.branchId, orderId: id,
+          orderNumber: order.orderNumber, source: order.source,
+          approvedById: session.id, approvedByName: session.name,
+          oldValue: "PENDING_APPROVAL", newValue: "APPROVED",
+        },
+      });
+      if (kitchen?.kitchenScreenEnabled) {
+        await auditInTransaction(tx, {
+          cafeId: order.cafeId, userId: session.id, action: "QR_ORDER_SENT_TO_KITCHEN",
+          entity: "Order", entityId: id,
+          details: { branchId: order.branchId, orderId: id, orderNumber: order.orderNumber },
+        });
+      }
+
+      return NextResponse.json({ order: updated });
+    }, resolveReadScope(session));
   } catch (error) {
     return handleApiError(error);
   }

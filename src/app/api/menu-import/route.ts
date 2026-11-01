@@ -9,6 +9,7 @@ import {
   requireFeature,
 } from "@/lib/api";
 import { audit } from "@/lib/audit";
+import { requireCatalogPriceAuthority } from "@/lib/price-authorization";
 import {
   validateRow,
   groupRows,
@@ -37,6 +38,7 @@ export async function POST(request: NextRequest) {
     await requireFeature(session, "excelImportEnabled");
     const body = bodySchema.parse(await request.json());
     const cafeId = resolveCafeId(session, body.cafeId);
+    await requireCatalogPriceAuthority(session, cafeId);
     const mode: ImportMode = body.mode;
 
     if (body.rows.length > MAX_IMPORT_ROWS) {

@@ -27,6 +27,7 @@
 // review was nested two levels down, inside a recipe's ingredient.
 
 import { test, after, before, describe } from "node:test";
+import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { db, fixture, tag, type Fixture } from "./helpers/db";
 import { requireServer, login, as } from "./helpers/http";
@@ -105,6 +106,7 @@ describe("LEDGER-004 internal version fields never reach a client", () => {
     const item = await ingredient("movement", "12.018");
     const r = await as(OWNER, `/api/inventory/${item.id}/movement`, {
       method: "POST",
+      headers: { "Idempotency-Key": randomUUID() },
       body: JSON.stringify({ type: "WASTE", quantity: 0.018, note: MARKER }),
     });
     assertClean("POST /api/inventory/[id]/movement", r);

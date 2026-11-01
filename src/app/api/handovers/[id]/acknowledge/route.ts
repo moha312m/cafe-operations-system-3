@@ -6,7 +6,7 @@ import {
   resolveCafeId,
   handleApiError,
 } from "@/lib/api";
-import { acknowledgeStockLine } from "@/lib/handover";
+import { acknowledgeStockLine, acknowledgeStockSheet } from "@/lib/handover";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -36,9 +36,18 @@ const acknowledgeSchema = z
     incomingCountedQuantity: z.number().finite().min(0).nullable().optional(),
     disputeReasonCodeId: z.string().min(1).optional(),
     disputeNote: z.string().max(500).optional(),
+    // HND-UX-003: an explicit refusal. A different quantity alone is accepted
+    // and recorded; only this (or a dispute reason) makes the line DISPUTED.
+    refuse: z.boolean().optional(),
     cafeId: z.string().optional(),
   })
   .strict();
+
+const sheetSchema = z.object({
+  countSessionId:z.string().min(1), countVersion:z.string().min(1), idempotencyKey:z.string().min(1).max(200), cafeId:z.string().optional(),
+  lines:z.array(z.object({stockCountLineId:z.string().min(1),incomingCountedQuantity:z.number().finite().min(0).max(999999999.999).nullable(),
+    disputeReasonCodeId:z.string().min(1).optional(),disputeNote:z.string().max(500).optional(),refuse:z.boolean().optional()}).strict()).min(1).max(2000),
+}).strict();
 
 // POST /api/handovers/:id/acknowledge — the arriving custodian signs for one
 // line, and may say the shelf does not match.
@@ -62,7 +71,13 @@ export async function POST(request: NextRequest, { params }: Params) {
     await requireFeature(session, "inventoryEnabled");
     const { id } = await params;
 
-    const body = acknowledgeSchema.parse(await request.json());
+    const raw:unknown = await request.json();
+    if(raw && typeof raw === 'object' && 'lines' in raw){
+      const body=sheetSchema.parse(raw);
+      const result=await acknowledgeStockSheet({...body,handoverId:id,acknowledgedById:session.id,cafeId:resolveCafeId(session,body.cafeId),viewerBranchId:session.branchId});
+      return NextResponse.json(result);
+    }
+    const body = acknowledgeSchema.parse(raw);
     const cafeId = resolveCafeId(session, body.cafeId);
 
     const result = await acknowledgeStockLine({
@@ -71,6 +86,7 @@ export async function POST(request: NextRequest, { params }: Params) {
       acknowledgedById: session.id,
       incomingCountedQuantity: body.incomingCountedQuantity,
       disputeReasonCodeId: body.disputeReasonCodeId,
+      refuse: body.refuse,
       disputeNote: body.disputeNote,
       cafeId,
       viewerBranchId: session.branchId,

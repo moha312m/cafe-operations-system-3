@@ -270,37 +270,44 @@ describe("CASHCLOSE-001 — cash variance is recorded as a fact", () => {
 
   // ───────────────────────────── the reason ──────────────────────────
 
-  test("a shortage without a reason is refused, and the shift stays open", async () => {
+  // HND-UX-004 changed this rule on the owner's instruction: a money
+  // difference is RECORDED and the close continues; an explanation is an
+  // optional note, not a refusal. These three tests used to assert a 400.
+  // What they still hold: nothing is invented — the note stays NULL — and
+  // the difference is not hidden, because its CASH case opens and stays OPEN
+  // for later review.
+
+  test("a shortage without a note is recorded and the close continues; the note stays NULL and the case opens", async () => {
     const d = await drawer();
     const r = await close(fx.cashier.email, d.shiftId, { actualCashAmount: 4970 });
 
-    assert.equal(r.status, 400, r.text);
+    assert.equal(r.status, 200, r.text);
     const row = await shiftRow(d.shiftId);
-    assert.equal(row.status, "OPEN", "a refused close commits nothing");
-    assert.equal(row.actualCashAmount, null);
-    assert.equal(row.cashDifference, null);
-    assert.equal(row.closedAt, null);
-    assert.deepEqual(await cashCases(d.shiftId), []);
+    assert.equal(row.status, "CLOSED");
+    assert.equal(Number(row.cashDifference), -30);
+    assert.equal(row.cashReasonNote, null, "no reason is fabricated");
+    assert.equal((await cashCases(d.shiftId)).length, 1, "the unexplained difference is an open case, not a hidden one");
   });
 
-  test("an overage without a reason is refused too", async () => {
+  test("an overage without a note is recorded the same way", async () => {
     const d = await drawer();
     const r = await close(fx.cashier.email, d.shiftId, { actualCashAmount: 5030 });
 
-    assert.equal(r.status, 400, r.text);
-    assert.equal((await shiftRow(d.shiftId)).status, "OPEN");
+    assert.equal(r.status, 200, r.text);
+    const row = await shiftRow(d.shiftId);
+    assert.equal(Number(row.cashDifference), 30);
+    assert.equal(row.cashReasonNote, null);
   });
 
-  test("a whitespace-only reason is not a reason", async () => {
+  test("a whitespace-only note is stored as no note", async () => {
     const d = await drawer();
     const r = await close(fx.cashier.email, d.shiftId, {
       actualCashAmount: 4970,
       reason: "   \t\n  ",
     });
 
-    assert.equal(r.status, 400, r.text);
+    assert.equal(r.status, 200, r.text);
     const row = await shiftRow(d.shiftId);
-    assert.equal(row.status, "OPEN");
     assert.equal(row.cashReasonNote, null);
   });
 
@@ -597,13 +604,8 @@ describe("CASHCLOSE-001 — cash variance is recorded as a fact", () => {
     });
     try {
       const d = await drawer();
-      const refused = await close(fx.cashier.email, d.shiftId, { actualCashAmount: 4970 });
-      assert.equal(
-        refused.status,
-        400,
-        "a 30 EGP shortage inside a 100 EGP bound STILL needs a reason — there is no tolerance here"
-      );
-
+      // HND-UX-004: no reason is required at any size, so the bound cannot
+      // be what decides; the note is simply recorded when given.
       const ok = await close(fx.cashier.email, d.shiftId, {
         actualCashAmount: 4970,
         reason: "عجز",
@@ -623,7 +625,7 @@ describe("CASHCLOSE-001 — cash variance is recorded as a fact", () => {
     }
   });
 
-  test("the close response speaks of facts, not of acceptability", async () => {
+  test("the counter's close response records their count without reconciliation", async () => {
     const d = await drawer();
     const r = await close(fx.cashier.email, d.shiftId, {
       actualCashAmount: 4970,
@@ -631,28 +633,22 @@ describe("CASHCLOSE-001 — cash variance is recorded as a fact", () => {
     });
     assert.equal(r.status, 200, r.text);
 
-    // `cashWithinTolerance` and `cashToleranceAmount` are T16 columns and are
-    // serialised with the rest of the row, so their NAMES appear. What must
-    // not appear is a VALUE in any of them: the assertion is that every
-    // acceptability-shaped field came back empty, which is the difference
-    // between a column that exists and a verdict this close reached.
+    // The counter's close response omits all reconciliation and verdict fields.
     const shift = r.body.shift!;
     const verdictKeys = Object.keys(shift).filter((k) =>
       /tolerance|acceptable|threshold|approved/i.test(k)
     );
     assert.deepEqual(
       verdictKeys.sort(),
-      ["cashToleranceAmount", "cashWithinTolerance"],
-      "no NEW acceptability field was introduced by T33"
+      [],
+      "the counter must not see reconciliation or verdict fields"
     );
-    for (const key of verdictKeys) {
-      assert.equal(shift[key], null, `${key} must carry no verdict`);
-    }
-
-    // And the figures that ARE disclosed are the factual ones.
-    assert.equal(Number(shift.expectedCashAmount), 5000);
+    assert.equal("expectedCashAmount" in shift, false);
     assert.equal(Number(shift.actualCashAmount), 4970);
-    assert.equal(Number(shift.cashDifference), -30);
+    assert.equal("cashDifference" in shift, false);
+    const stored = await db.shift.findUniqueOrThrow({ where: { id: d.shiftId } });
+    assert.equal(Number(stored.expectedCashAmount), 5000);
+    assert.equal(Number(stored.cashDifference), -30);
     assert.equal(shift.cashReasonNote, "عجز");
   });
 

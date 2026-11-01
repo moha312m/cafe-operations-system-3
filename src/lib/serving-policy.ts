@@ -17,6 +17,7 @@
 // components ask it rather than re-deriving it, so a branch cannot end up
 // obeying one rule on the kitchen screen and another in the API.
 
+import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import type { OrderType, ServingPaymentPolicy } from "@prisma/client";
 
@@ -42,9 +43,10 @@ export const POLICY_LABELS: Record<ServingPaymentPolicy, string> = {
  * decide whether money is collected.
  */
 export async function getEffectiveServingPolicy(
-  branchId: string
+  branchId: string,
+  client: Prisma.TransactionClient | typeof db = db
 ): Promise<EffectiveServingPolicy> {
-  const branch = await db.branch.findUnique({
+  const branch = await client.branch.findUnique({
     where: { id: branchId },
     select: {
       cafeId: true,
@@ -56,7 +58,7 @@ export async function getEffectiveServingPolicy(
 
   // A café row that predates CafeSettings falls back to the stricter rule:
   // never hand food over unpaid because a settings row is missing.
-  const settings = await db.cafeSettings.findUnique({
+  const settings = await client.cafeSettings.findUnique({
     where: { cafeId: branch.cafeId },
     select: { dineInServingPolicy: true, takeawayServingPolicy: true },
   });
@@ -84,8 +86,9 @@ export function policyForOrderType(
 /** Whether this order must be settled before it may be marked SERVED. */
 export async function requiresPaymentBeforeServing(
   branchId: string,
-  type: OrderType
+  type: OrderType,
+  client: Prisma.TransactionClient | typeof db = db
 ): Promise<boolean> {
-  const policy = await getEffectiveServingPolicy(branchId);
+  const policy = await getEffectiveServingPolicy(branchId, client);
   return policyForOrderType(policy, type) === "REQUIRE_PAYMENT_FIRST";
 }

@@ -6,7 +6,7 @@ MVP built with **Next.js 16 (App Router) · TypeScript · PostgreSQL · Prisma 6
 
 ```bash
 npm install
-# .env needs DATABASE_URL and AUTH_SECRET (see .env in repo)
+# .env needs DATABASE_URL and AUTH_SECRET (see .env.example)
 npx prisma migrate dev
 npx prisma db seed
 npm run dev
@@ -14,13 +14,10 @@ npm run dev
 
 ### Demo accounts (from the seed)
 
-| Role | Email | Password |
-|---|---|---|
-| Super Admin | admin@cafeops.dev | admin1234 |
-| Cafe Owner | owner@demo.com | owner1234 |
-| Branch Manager (Downtown) | manager@demo.com | manager123 |
-| Cashier (Downtown) | cashier@demo.com | cashier123 |
-| Kitchen/Barista (Downtown) | kitchen@demo.com | kitchen123 |
+The seed creates a super admin, a cafe owner, and Downtown branch manager,
+cashier and kitchen accounts for local development; their addresses and
+passwords are in `prisma/seed.ts`. They are not published here, and they must
+never exist in a hosted environment — the seed refuses `NODE_ENV=production`.
 
 ## Multi-tenancy model
 

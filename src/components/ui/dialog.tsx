@@ -43,10 +43,20 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
+  scrollable = true,
   ...props
 }: DialogPrimitive.Popup.Props & {
   showCloseButton?: boolean
+  /** Viewport-safe by default; custom sheets/navigation manage their own scrolling. */
+  scrollable?: boolean
 }) {
+  // Only lift direct footer children: never move actions out of a nested form.
+  const items = React.Children.toArray(children)
+  const footer = scrollable
+    ? items.find((item) => React.isValidElement(item) && item.type === DialogFooter)
+    : undefined
+  const body = footer ? items.filter((item) => item !== footer) : children
+
   return (
     <DialogPortal>
       <DialogOverlay />
@@ -57,24 +67,44 @@ function DialogContent({
           // becomes right:50% which combined with the physical translateX(-50%)
           // pushes the dialog fully off the left edge of narrow screens.
           "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover p-4 text-sm text-popover-foreground ring-1 ring-foreground/10 duration-100 outline-none sm:max-w-sm data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
-          className
+          className,
+          scrollable && "flex max-h-[calc(100dvh-2rem)] flex-col gap-0 overflow-hidden p-0 pt-10"
         )}
         {...props}
       >
-        {children}
+        {scrollable ? (
+          <div
+            data-slot="dialog-scroll-area"
+            className="grid min-h-0 min-w-0 gap-4 overflow-y-auto overscroll-contain p-4 pt-0 [overflow-wrap:anywhere]"
+            onFocusCapture={(event) => {
+              // Native textarea focus may reveal only the caret, leaving the
+              // rest of the field clipped beneath the fixed action region.
+              const target = event.target
+              requestAnimationFrame(() => {
+                if (target instanceof HTMLElement && target.isConnected) {
+                  target.scrollIntoView({ block: "nearest", inline: "nearest" })
+                }
+              })
+            }}
+          >
+            {body}
+          </div>
+        ) : children}
+        {footer && <div data-slot="dialog-actions" className="shrink-0 px-4 pb-4 pt-4">{footer}</div>}
         {showCloseButton && (
           <DialogPrimitive.Close
             data-slot="dialog-close"
             render={
               <Button
                 variant="ghost"
-                className="absolute top-2 end-2"
+                className="cashier-dialog-close absolute top-2 end-2"
                 size="icon-sm"
               />
             }
           >
             <XIcon
             />
+            <span className="cashier-dialog-back hidden">رجوع</span>
             <span className="sr-only">Close</span>
           </DialogPrimitive.Close>
         )}

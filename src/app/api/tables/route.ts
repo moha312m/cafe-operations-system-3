@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { requireKey, resolveCafeId, handleApiError } from "@/lib/api";
+import { requireKey, resolveCafeId, handleApiError, resolveReadScope } from "@/lib/api";
 import { sessionDisplayStatus, BLOCKING_ORDER_STATUSES } from "@/lib/table-sessions";
 
 // GET /api/tables — open table sessions (+ today's closed) for the table
@@ -11,7 +11,7 @@ export async function GET(request: NextRequest) {
     const session = await requireKey("tables.view");
     const params = request.nextUrl.searchParams;
     const cafeId = resolveCafeId(session, params.get("cafeId"));
-    const branchId = session.branchId ?? params.get("branchId") ?? undefined;
+    const branchId = resolveReadScope(session).branchId ?? params.get("branchId") ?? undefined;
     const tableNumber = params.get("tableNumber")?.trim();
 
     const startOfToday = new Date();

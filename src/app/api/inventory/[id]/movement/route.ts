@@ -1,19 +1,23 @@
+import { withIdempotency, authenticatedRequestScope, requestFingerprint, requestScope } from "@/lib/idempotency";
+import { recordFinishedGoodsReturn } from "@/lib/finished-goods-returns";
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { requireKey, handleApiError, ApiError } from "@/lib/api";
-import { audit } from "@/lib/audit";
+import { requireKey, handleApiError, ApiError, resolveReadScope } from "@/lib/api";
+import { auditInTransaction } from "@/lib/audit";
 import { round2, signedDelta, TXN_AUDIT_ACTION } from "@/lib/inventory";
-import { applyStockMutation } from "@/lib/ledger";
+import { applyStockMutation, lockItemForUpdate } from "@/lib/ledger";
+import { acquireInventorySharedLocks } from "@/lib/inventory-freeze";
 import { publicInventoryItem } from "@/lib/public-shape";
 import { round3 } from "@/lib/costing";
-import { findScopedItem } from "../route";
+import { findScopedItem } from "@/lib/inventory-scope";
 
 type Params = { params: Promise<{ id: string }> };
 
 // Manual stock movements. TRANSFER_IN/OUT are excluded here — those only
 // happen through /api/inventory/transfer so both branches stay in sync.
 const movementSchema = z.object({
+  orderItemId: z.string().optional(),
   type: z.enum(["PURCHASE", "USAGE", "WASTE", "ADJUSTMENT", "RETURN"]),
   quantity: z.number({ message: "الكمية يجب أن تكون رقم" }),
   unitCost: z.number().min(0).optional(),
@@ -22,10 +26,28 @@ const movementSchema = z.object({
 
 export async function POST(request: NextRequest, { params }: Params) {
   try {
-    const session = await requireKey("inventory.transactions");
     const { id } = await params;
-    const item = await findScopedItem(id, session);
     const data = movementSchema.parse(await request.json());
+    const linkedReturn = data.type === "RETURN" && !!data.orderItemId;
+    let session = await requireKey(linkedReturn ? "inventory.finished_returns" : "inventory.transactions");
+    if (data.type === "RETURN" && data.orderItemId) {
+      if (data.unitCost !== undefined) throw new ApiError(400, "تكلفة المرتجع من الاستهلاك الأصلي فقط");
+      const candidate = await db.orderItem.findFirst({ where: { id: data.orderItemId, finishedStockItemId: id, order: resolveReadScope(session) }, select: { orderId: true } });
+      if (!candidate) throw new ApiError(404, "صنف الطلب مش موجود في نطاقك");
+      const operation = "POST /api/inventory/finished-return:" + candidate.orderId;
+      const response = await withIdempotency(request, tx => authenticatedRequestScope(tx, session, operation, { kind: "order", id: candidate.orderId }), data, async tx => {
+        const idempotencyScope = await authenticatedRequestScope(tx, session, operation, { kind: "order", id: candidate.orderId });
+        const receipt = await recordFinishedGoodsReturn(tx, { actorSessionUser: session, orderItemId: data.orderItemId!, inventoryItemId: id, quantity: data.quantity, reason: data.note ?? "", idempotencyScope, idempotencyKey: request.headers.get("Idempotency-Key")!.trim(), requestHash: requestFingerprint(data) });
+        return NextResponse.json({ receipt });
+      }, { scope: resolveReadScope(session), authorize: async () => { session = await requireKey("inventory.finished_returns"); } });
+      if (response.headers.get("Idempotency-Replayed") === "true") {
+        const payload = await response.json();
+        return NextResponse.json({ ...payload, receipt: { ...payload.receipt, replayed: true } }, { status: response.status, headers: response.headers });
+      }
+      return response;
+    }
+    if (data.orderItemId) throw new ApiError(400, "ربط الطلب متاح للمرتجع المادي فقط");
+    const item = await findScopedItem(id, session);
 
     // ADJUSTMENT may be ±; everything else must be a positive amount.
     if (data.type !== "ADJUSTMENT" && data.quantity <= 0) {
@@ -36,28 +58,38 @@ export async function POST(request: NextRequest, { params }: Params) {
     }
 
     const delta = round3(signedDelta(data.type, data.quantity));
-    const current = Number(item.currentStock);
-    const newStock = round3(current + delta);
-    if (newStock < 0) {
-      throw new ApiError(400, "لا توجد كمية كافية في المخزون");
-    }
+    const movementOperation = "POST /api/inventory/movement:" + id;
+    // Re-authorized inside every idempotent phase, so a replay answers only
+    // an account that may still act on this item.
+    const movementScope = async () => {
+      const scoped = await findScopedItem(id, session);
+      return requestScope({ ...session, cafeId: scoped.cafeId, branchId: scoped.branchId }, movementOperation);
+    };
+    const effective = { inventoryItemId: id, type: data.type, quantity: delta, unitCost: data.unitCost ?? null, note: data.note ?? null };
 
-    // Value the movement: purchases use the entered cost (or current),
-    // consumption (usage/waste) is valued at the item's cost so waste
-    // reports are meaningful. Adjustments/returns follow any given cost.
-    const unitCost =
-      data.unitCost ??
-      (data.type === "PURCHASE" || data.type === "USAGE" || data.type === "WASTE"
-        ? Number(item.costPerUnit)
-        : undefined);
-    const totalCost =
-      unitCost !== undefined ? round2(Math.abs(delta) * unitCost) : null;
+    // The balance, ledger row, audit row and stored response commit together.
+    return await withIdempotency(request, movementScope, effective, async (tx) => {
+      if (data.type === "RETURN" && (await tx.productStockBinding.count({ where: { inventoryItemId: id } }) || await tx.orderItem.count({ where: { finishedStockItemId: id } }))) throw new ApiError(409, "مرتجع المنتج الجاهز لازم يرتبط بصنف الطلب الأصلي؛ رد الأموال لا يعيد المخزون");
+      // Decide on the locked balance, never on the one read before the
+      // transaction: a replay must not depend on what the movement consumed.
+      await acquireInventorySharedLocks(tx, [item.branchId]);
+      const locked = await lockItemForUpdate(tx, id);
+      if (round3(locked.currentStock + delta) < 0) {
+        throw new ApiError(400, "لا توجد كمية كافية في المخزون");
+      }
 
-    // Interactive form, not the array form this route used to use: an array
-    // `$transaction` cannot hold `SELECT … FOR UPDATE` across statements, so
-    // it could never satisfy the ledger contract.
-    const updated = await db.$transaction(async (tx) => {
-      await applyStockMutation(tx, {
+      // Value the movement: purchases use the entered cost (or current),
+      // consumption (usage/waste) is valued at the item's cost so waste
+      // reports are meaningful. Adjustments/returns follow any given cost.
+      const unitCost =
+        data.unitCost ??
+        (data.type === "PURCHASE" || data.type === "USAGE" || data.type === "WASTE"
+          ? locked.costPerUnit
+          : undefined);
+      const totalCost =
+        unitCost !== undefined ? round2(Math.abs(delta) * unitCost) : null;
+
+      const moved = await applyStockMutation(tx, {
         inventoryItemId: id,
         cafeId: item.cafeId,
         branchId: item.branchId,
@@ -72,27 +104,42 @@ export async function POST(request: NextRequest, { params }: Params) {
           data.type === "PURCHASE" && data.unitCost !== undefined ? data.unitCost : null,
         insufficientMessage: "لا توجد كمية كافية في المخزون",
       });
-      return tx.inventoryItem.findUniqueOrThrow({ where: { id } });
-    });
 
-    await audit({
-      cafeId: item.cafeId,
-      userId: session.id,
-      action: TXN_AUDIT_ACTION[data.type],
-      entity: "InventoryItem",
-      entityId: id,
-      details: {
-        name: item.name,
-        branchId: item.branchId,
-        type: data.type,
-        quantity: delta,
-        oldStock: current,
-        newStock,
-      },
-    });
+      await auditInTransaction(tx, {
+        cafeId: item.cafeId,
+        userId: session.id,
+        action: TXN_AUDIT_ACTION[data.type],
+        entity: "InventoryItem",
+        entityId: id,
+        details: {
+          name: item.name,
+          branchId: item.branchId,
+          type: data.type,
+          quantity: delta,
+          oldStock: moved.stockBefore,
+          newStock: moved.stockAfter,
+        },
+      });
 
-    return NextResponse.json({ item: publicInventoryItem(updated) });
+      const updated = await tx.inventoryItem.findUniqueOrThrow({ where: { id } });
+      return NextResponse.json({ item: publicInventoryItem(updated) });
+    }, { scope: { cafeId: item.cafeId, branchId: item.branchId }, authorize: async () => { session = await requireKey("inventory.transactions"); } });
   } catch (error) {
     return handleApiError(error);
   }
+}
+
+// Read-only physical-return eligibility and durable receipt history, including archived stock.
+export async function GET(request: NextRequest, { params }: Params) {
+  try {
+    const session = await requireKey("inventory.finished_returns");
+    const { id } = await params;
+    const scope = resolveReadScope(session);
+    const item = await db.inventoryItem.findFirst({ where: { id, ...scope } });
+    if (!item) throw new ApiError(404, "المخزون مش موجود في نطاقك");
+    const orderNumber = Number(request.nextUrl.searchParams.get("orderNumber"));
+    const lines = await db.orderItem.findMany({ where: { finishedStockItemId: id, stockModeSnapshot: "FINISHED_GOOD", stockAcceptedAt: { not: null }, voidedAt: null, kitchenStatus: "SERVED", order: { ...scope, status: "SERVED", ...(orderNumber > 0 ? { orderNumber } : {}) } }, orderBy: { order: { createdAt: "desc" } }, take: 100, include: { order: { select: { orderNumber: true } }, finishedGoodsReturns: { orderBy: { receivedAt: "desc" }, include: { inventoryTransaction: { select: { unitCost: true, totalCost: true } } } } } });
+    const linked = !!(await db.productStockBinding.count({ where: { inventoryItemId: id } }) || await db.orderItem.count({ where: { finishedStockItemId: id } }));
+    return NextResponse.json({ linked, lines: lines.map(line => ({ orderItemId: line.id, orderNumber: line.order.orderNumber, productName: line.productName, quantity: line.finishedStockQuantity, eligibleQuantity: (line.finishedStockQuantity ?? 0) - line.finishedGoodsReturns.reduce((sum, r) => sum + r.quantity, 0), receipts: line.finishedGoodsReturns.map(r => ({ receiptId: r.id, quantity: r.quantity, status: r.appliedAt ? "APPLIED" : "PENDING", valuation: !r.appliedAt ? "PENDING" : r.inventoryTransaction?.unitCost === null ? "UNVALUED" : "VALUED", totalCost: r.inventoryTransaction?.totalCost ?? null })) })) });
+  } catch (error) { return handleApiError(error); }
 }

@@ -4,6 +4,7 @@
 // (no stale JWT). Used by both API guards and the server layout that seeds
 // the client `can()`.
 
+import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import type { SessionUser } from "@/lib/auth";
 import { getCafeSettings } from "@/lib/cafe-settings";
@@ -29,14 +30,15 @@ function featureBlockedKeys(settings: Record<string, unknown>): Set<string> {
 
 // Resolve the acting user's final permission-key set.
 export async function resolvePermissions(
-  session: SessionUser
+  session: SessionUser,
+  client: Prisma.TransactionClient | typeof db = db
 ): Promise<EffectivePermissions> {
   // Super admin operates cross-tenant with every capability.
   if (session.role === "SUPER_ADMIN") {
-    return { keys: new Set([...CAFE_KEYS, "platform.manage"]), cafeRoleId: null };
+    return { keys: new Set([...CAFE_KEYS, "platform.manage", "inventory.finished_returns"]), cafeRoleId: null };
   }
 
-  const user = await db.user.findUnique({
+  const user = await client.user.findUnique({
     where: { id: session.id },
     select: {
       role: true,
@@ -79,10 +81,20 @@ export async function resolvePermissions(
   }
 
   // Feature-flag gate (Super-Admin controlled) — applies to everyone.
+  base.delete("inventory.finished_returns"); // Derived below; never a stored role/override grant.
   if (session.cafeId) {
-    const settings = await getCafeSettings(session.cafeId);
+    const settings = await getCafeSettings(session.cafeId, client);
+    // Derived capability for linked physical receipts only. Preserve underlying
+    // role/override grants, never general stock administration when disabled.
+    const history = settings.inventoryEnabled === false && (base.has("inventory.view") || base.has("inventory.transactions"))
+      ? await client.orderItem.count({ where: { stockModeSnapshot: "FINISHED_GOOD", stockAcceptedAt: { not: null }, order: { cafeId: session.cafeId, ...(session.branchId ? { branchId: session.branchId } : {}) } } }) > 0
+      : false;
+    const historicalView = history && base.has("inventory.view");
+    const finishedReturns = (settings.inventoryEnabled !== false || history) && base.has("inventory.transactions");
     const blocked = featureBlockedKeys(settings as unknown as Record<string, unknown>);
     for (const k of blocked) base.delete(k);
+    if (historicalView) base.add("inventory.view");
+    if (finishedReturns) base.add("inventory.finished_returns");
   }
 
   return { keys: base, cafeRoleId: user.cafeRoleId };

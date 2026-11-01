@@ -1,17 +1,17 @@
-// Minimal cookie-aware HTTP client for tests that must exercise a real API
+﻿// Minimal cookie-aware HTTP client for tests that must exercise a real API
 // route rather than a service function. SHIFT-003 is about what the server
 // hands the cashier's browser, so it can only be tested at this boundary.
 //
-// Credentials are the local seed fixtures from prisma/seed.ts — no secret is
+// Credentials are the local seed fixtures from prisma/seed.ts â€” no secret is
 // introduced here that the repository does not already contain.
 
 /**
  * The server these tests drive.
  *
  * There is no default. It used to fall back to `http://localhost:3000`, which
- * is the developer's own dev server — connected to the developer's own
+ * is the developer's own dev server â€” connected to the developer's own
  * database. A suite that reached that fallback would create fixtures in the
- * test database and then exercise the API against real café data, which is
+ * test database and then exercise the API against real cafÃ© data, which is
  * the split-brain failure TOOLING-005 exists to prevent.
  *
  * `npm test` sets this to the test server on :3100. Anything else refuses.
@@ -41,7 +41,7 @@ export async function requireServer() {
     });
     if (r.status === 404) {
       throw new Error(
-        `Dev server at ${BASE} is serving 404 for API routes — clear .next and restart`
+        `Dev server at ${BASE} is serving 404 for API routes â€” clear .next and restart`
       );
     }
   } catch (e) {
@@ -66,11 +66,13 @@ export async function as<T = Record<string, unknown>>(
   email: string,
   path: string,
   init: RequestInit = {}
-): Promise<{ status: number; body: T; text: string }> {
+): Promise<{ status: number; body: T; text: string; headers: Headers }> {
   const r = await fetch(`${BASE}${path}`, {
     ...init,
     headers: {
-      "Content-Type": "application/json",
+      ...(init.body instanceof FormData ? {} : { "Content-Type": "application/json" }),
+      ...(init.method === "POST" && /^\/api\/(orders$|payments$|tables\/[^/]+\/pay$|qr\/[^/]+\/orders$)/.test(path)
+        ? { "Idempotency-Key": crypto.randomUUID() } : {}),
       cookie: jars.get(email) ?? "",
       ...(init.headers ?? {}),
     },
@@ -78,5 +80,7 @@ export async function as<T = Record<string, unknown>>(
   const text = await r.text();
   let body: T;
   try { body = JSON.parse(text) as T; } catch { body = {} as T; }
-  return { status: r.status, body, text };
+  return { status: r.status, body, text, headers: r.headers };
 }
+
+

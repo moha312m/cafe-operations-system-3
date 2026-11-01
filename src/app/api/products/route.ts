@@ -1,3 +1,4 @@
+import { stockBindingsSchema, saveProductStockBindings } from "@/lib/product-stock-bindings";
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
@@ -8,10 +9,13 @@ import {
   ApiError,
 } from "@/lib/api";
 import { audit } from "@/lib/audit";
+import { requireCatalogPriceAuthority } from "@/lib/price-authorization";
+import { validCurrencyInput } from "@/lib/money";
 import { hasPermission } from "@/lib/permissions";
 import { configurationFinancials } from "@/lib/recipes";
 
 const productInclude = {
+  stockBindings: true,
   category: { select: { id: true, name: true } },
   variants: {
     orderBy: [{ sortOrder: "asc" as const }, { price: "asc" as const }],
@@ -34,11 +38,12 @@ export async function GET(request: NextRequest) {
 
     const products = await db.product.findMany({
       where: { cafeId },
-      include: productInclude,
+      include: { ...productInclude, stockBindings: { where: session.branchId ? { branchId: session.branchId } : {} } },
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
     });
 
-    if (!showCost) return NextResponse.json({ products });
+    const bindingStockItems = await db.inventoryItem.findMany({ where: { cafeId, ...(session.branchId ? { branchId: session.branchId } : {}), unit: "PIECE", isActive: true, archivedAt: null }, select: { id: true, name: true, branchId: true } });
+    if (!showCost) return NextResponse.json({ products, bindingStockItems });
 
     // A product row is not a sellable configuration when it has sizes. Do
     // not collapse different size recipes into one invented product margin;
@@ -51,14 +56,14 @@ export async function GET(request: NextRequest) {
         };
       }
       const financials = await configurationFinancials({
-        productId: p.id, variantId: null, sellingPrice: Number(p.basePrice),
+        productId: p.id, variantId: null, sellingPrice: Number(p.basePrice), branchId: session.branchId,
       });
       return {
         ...p, hasRecipe: financials.costStatus === "AVAILABLE", ...financials,
       };
     }));
 
-    return NextResponse.json({ products: enriched, costVisible: true });
+    return NextResponse.json({ products: enriched, bindingStockItems, costVisible: true });
   } catch (error) {
     return handleApiError(error);
   }
@@ -66,16 +71,18 @@ export async function GET(request: NextRequest) {
 
 const variantSchema = z.object({
   name: z.string().min(1),
-  price: z.number().min(0), // absolute سعر الحجم
+  price: z.number().min(0).refine(validCurrencyInput, "Invalid currency amount"), // absolute سعر الحجم
   isAvailable: z.boolean().default(true),
   sortOrder: z.number().int().default(0),
 });
 
 const createProductSchema = z.object({
+  stockMode: z.enum(["RECIPE", "FINISHED_GOOD"]).optional(),
+  stockBindings: stockBindingsSchema.optional(),
   name: z.string().min(1),
   description: z.string().optional(),
   categoryId: z.string(),
-  basePrice: z.number().min(0),
+  basePrice: z.number().min(0).refine(validCurrencyInput, "Invalid currency amount"),
   costPrice: z.number().min(0).nullable().optional(),
   imageUrl: z.string().url().optional().or(z.literal("")),
   showInCustomerMenu: z.boolean().default(true),
@@ -85,7 +92,7 @@ const createProductSchema = z.object({
   variants: z.array(variantSchema).default([]),
   addOnIds: z.array(z.string()).default([]),
   branchPrices: z
-    .array(z.object({ branchId: z.string(), price: z.number().min(0) }))
+    .array(z.object({ branchId: z.string(), price: z.number().min(0).refine(validCurrencyInput, "Invalid currency amount") }))
     .default([]),
   cafeId: z.string().optional(),
 });
@@ -95,6 +102,7 @@ export async function POST(request: NextRequest) {
     const session = await requirePermission("menu:manage");
     const data = createProductSchema.parse(await request.json());
     const cafeId = resolveCafeId(session, data.cafeId);
+    await requireCatalogPriceAuthority(session, cafeId);
 
     // Category, add-ons, and branches must belong to the same tenant.
     const category = await db.menuCategory.findFirst({
@@ -118,10 +126,12 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    const product = await db.product.create({
+    const product = await db.$transaction(async (tx) => {
+      const created = await tx.product.create({
       data: {
         cafeId,
         categoryId: data.categoryId,
+        stockMode: data.stockMode,
         name: data.name,
         description: data.description,
         basePrice: data.basePrice,
@@ -143,6 +153,9 @@ export async function POST(request: NextRequest) {
         branchPrices: { create: data.branchPrices },
       },
       include: productInclude,
+    });
+      if (data.stockBindings) await saveProductStockBindings(tx, created.id, cafeId, data.stockBindings, session.branchId);
+      return tx.product.findUniqueOrThrow({ where: { id: created.id }, include: productInclude });
     });
 
     await audit({

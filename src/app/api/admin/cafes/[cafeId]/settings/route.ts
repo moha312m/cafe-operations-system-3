@@ -26,6 +26,7 @@ const patchSchema = z.object({
   waiterApprovalEnabled: boolSchema.optional(),
   kitchenScreenEnabled: boolSchema.optional(),
   inventoryEnabled: boolSchema.optional(),
+  finishedGoodsSalesEnabled: boolSchema.optional(),
   shiftManagementEnabled: boolSchema.optional(),
   advancedReportsEnabled: boolSchema.optional(),
   excelImportEnabled: boolSchema.optional(),

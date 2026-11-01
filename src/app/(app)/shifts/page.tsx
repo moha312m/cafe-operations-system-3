@@ -54,12 +54,17 @@ type ShiftDetail = {
     totalWalletSales: string;
     totalDiscounts: string;
     totalRefunds: string;
+    totalCashPayouts?: string;
+  totalExpensePayouts?: string;
+  totalExpenseReturns?: string;
     orderCount: number;
     notes: string | null;
   };
   orders: {
     id: string; orderNumber: number; total: string; status: string;
     paymentStatus: string;
+    paidAmount: string;
+    payments: { method: string; amount: string }[];
   }[];
   payments: {
     id: string;
@@ -94,8 +99,9 @@ function diffBadge(diff: string | null) {
 }
 
 export default function ShiftReportsPage() {
-  const { cafe, user } = useApp();
+  const { cafe, user, canKey } = useApp();
   const currency = cafe?.currency ?? "USD";
+  const mayViewReports = canKey("shifts.view_reports");
   // Mirrors the server's rule (shifts:read). Presentation only — the request
   // is authorised again on arrival.
   const canManage =
@@ -112,14 +118,16 @@ export default function ShiftReportsPage() {
   const [refundTarget, setRefundTarget] = useState<RefundTarget | null>(null);
 
   useEffect(() => {
+    if (!mayViewReports) return;
     if (!user.branchId) {
       api<{ branches: Branch[] }>("/api/branches")
         .then((r) => setBranches(r.branches))
         .catch(() => {});
     }
-  }, [user.branchId]);
+  }, [mayViewReports, user.branchId]);
 
   const load = useCallback(async () => {
+    if (!mayViewReports) return;
     const params = new URLSearchParams();
     if (date) params.set("date", date);
     if (status !== "ALL") params.set("status", status);
@@ -132,7 +140,7 @@ export default function ShiftReportsPage() {
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "فشل تحميل الشيفتات");
     }
-  }, [date, status, branchId]);
+  }, [mayViewReports, date, status, branchId]);
 
   useEffect(() => {
     load();
@@ -158,6 +166,10 @@ export default function ShiftReportsPage() {
   const latestClosed = shifts
     .filter((s) => s.status === "CLOSED" && s.closedAt)
     .sort((a, b) => new Date(b.closedAt!).getTime() - new Date(a.closedAt!).getTime())[0] ?? null;
+
+  if (!mayViewReports) {
+    return <p className="rounded-xl border border-dashed p-8 text-center text-sm text-muted-foreground">ليس لديك صلاحية لعرض تقارير الشيفتات</p>;
+  }
 
   return (
     <div className="space-y-4">
@@ -315,6 +327,17 @@ export default function ShiftReportsPage() {
                   {t.shifts.details} #{detail.shift.shiftNumber} — {detail.shift.cashier.name}
                 </DialogTitle>
               </DialogHeader>
+              {detail.shift.status !== "OPEN" && (
+                <a
+                  data-testid="shift-report-link"
+                  href={`/reports/shift/${detail.shift.id}`}
+                  target="_blank"
+                  rel="noopener"
+                  className="inline-flex w-fit items-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium hover:bg-muted"
+                >
+                  📄 تقرير القفل (طباعة / واتساب)
+                </a>
+              )}
               <div className="space-y-4 text-sm">
                 <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 rounded-lg border bg-muted/30 p-3">
                   {[
@@ -324,6 +347,9 @@ export default function ShiftReportsPage() {
                     [t.shifts.walletSales, money(detail.shift.totalWalletSales, currency)],
                     [t.shifts.discounts, money(detail.shift.totalDiscounts, currency)],
                     [t.shifts.refunds, money(detail.shift.totalRefunds, currency)],
+                    ...(Number(detail.shift.totalCashPayouts ?? 0) ? [[t.shifts.supplierPayouts, money(detail.shift.totalCashPayouts ?? 0, currency)]] : []),
+                    ...(Number(detail.shift.totalExpensePayouts ?? 0) ? [[t.shifts.expensePayouts, money(detail.shift.totalExpensePayouts ?? 0, currency)]] : []),
+                    ...(Number(detail.shift.totalExpenseReturns ?? 0) ? [[t.shifts.expenseReturns, money(detail.shift.totalExpenseReturns ?? 0, currency)]] : []),
                     [t.shifts.orderCount, String(detail.shift.orderCount)],
                     [t.shifts.expectedCash, money(detail.shift.expectedCashAmount, currency)],
                     [
@@ -379,10 +405,8 @@ export default function ShiftReportsPage() {
                                 setRefundTarget({
                                   id: o.id,
                                   orderNumber: o.orderNumber,
-                                  total: o.total,
-                                  methods: detail.payments
-                                    .filter((p) => p.order?.orderNumber === o.orderNumber)
-                                    .map((p) => p.method),
+                                  total: o.paidAmount,
+                                  methods: o.payments.map((p) => p.method),
                                 })
                               }
                             >
