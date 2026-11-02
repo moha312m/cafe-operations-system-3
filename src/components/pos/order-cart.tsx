@@ -98,10 +98,10 @@ export function OrderCart({
   const itemCount = cart.reduce((sum, line) => sum + line.quantity, 0);
 
   return (
-    <aside id={id} className="cashier-cart flex w-full min-w-0 flex-col overflow-hidden rounded-xl border bg-card shadow-sm" aria-label="الطلب الحالي" aria-labelledby={headingId}>
+    <aside id={id} className="cashier-cart flex w-full min-w-0 flex-col overflow-hidden rounded-2xl border border-border/70 bg-card shadow-sm" aria-label="الطلب الحالي" aria-labelledby={headingId}>
       {/* Header (fixed) */}
       <div className="flex shrink-0 items-center justify-between border-b px-4 py-3">
-        <h2 id={headingId} ref={headingRef} tabIndex={-1} className="rounded font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">{t.pos.currentOrder}</h2>
+        <h2 id={headingId} ref={headingRef} tabIndex={-1} className="rounded text-lg font-bold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary">{t.pos.currentOrder}</h2>
         <Badge variant="secondary" className="tabular-nums">
           {itemCount} {t.pos.items}
         </Badge>
@@ -119,8 +119,9 @@ export function OrderCart({
         />
 
         {/* Customer profile + loyalty (phone lookup, points redemption) */}
-        <div className="border-t pt-3">
-          <CustomerLoyalty
+        <details className="rounded-xl bg-muted/35 px-3 py-2">
+          <summary className="cursor-pointer text-sm font-semibold">العميل وبرنامج الولاء {details.customerPhone && <bdi dir="ltr">· {details.customerPhone}</bdi>}{redeem.points > 0 && <span> · {redeem.points} نقطة مستخدمة</span>}</summary>
+          <div className="pt-3"><CustomerLoyalty
             branchId={branchId}
             phone={details.customerPhone}
             customerName={details.customerName}
@@ -130,8 +131,8 @@ export function OrderCart({
             redeem={redeem}
             onPhoneChange={(customerPhone) => onDetailsChange({ ...details, customerPhone })}
             onRedeemChange={onRedeemChange}
-          />
-        </div>
+          /></div>
+        </details>
 
         <div className="space-y-2 border-t pt-3">
           {discountControls}

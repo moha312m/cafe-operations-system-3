@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { Button } from "@/components/ui/button";
 import { useState } from "react";
 import { useApp } from "@/components/app-shell";
 import { money } from "@/lib/client";
@@ -21,7 +22,7 @@ export default function TrialBalancePage() {
   const [from, setFrom] = useState(`${today.slice(0, 7)}-01`);
   const [to, setTo] = useState(today);
   const valid = from <= to;
-  const { data, error, loading } = useAccountingData<Tb>(valid ? `/api/accounting/trial-balance?${new URLSearchParams({ from, to })}` : null);
+  const { data, error, loading, reload } = useAccountingData<Tb>(valid ? `/api/accounting/trial-balance?${new URLSearchParams({ from, to })}` : null);
   const fmt = (n: number) => money(n, currency);
 
   return (
@@ -42,7 +43,7 @@ export default function TrialBalancePage() {
           {data?.branchId && <li>انت شايف سطور فرعك بس؛ السطور اللي على مستوى الكافيه كله مش ظاهرة.</li>}
         </ul>
       </details>
-      {error && <p role="alert" className="rounded border p-3 text-destructive">{error}</p>}
+      {error && <div role="alert" className="workspace-state text-destructive"><p>{error}</p><Button variant="outline" disabled={loading} onClick={reload}>{loading ? "جارٍ إعادة التحميل…" : "إعادة المحاولة"}</Button></div>}
       {loading && <p role="status">جاري التحميل…</p>}
       {data && data.rows.length === 0 && <p className="text-muted-foreground">مفيش قيود في الفترة دي.</p>}
       {data && data.rows.length > 0 && (

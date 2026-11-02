@@ -1,10 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useRef,useState } from "react";
-import { toast } from "sonner";
+import { useState } from "react";
 import Link from "next/link";
+import { useWorkspaceRead } from "@/components/cafe/use-workspace-read";
 import { PageHeader, LoadingState } from "@/components/cafe/ui";
-import { api, money } from "@/lib/client";
+import { money } from "@/lib/client";
 import { dateStrInTz } from "@/lib/date-range";
 import { useApp } from "@/components/app-shell";
 import {ReportingControls,type ReportingMetadata} from '@/components/sales/reporting-controls';
@@ -101,42 +101,25 @@ export default function ReportsPage() {
   const { cafe, canKey, user } = useApp();
   const currency = cafe?.currency ?? "USD";
   const [filters,setFilters]=useState<Record<string,string>>({reportMode:'business',businessFrom:dateStrInTz(new Date()),businessTo:dateStrInTz(new Date())});
-  const [report, setReport] = useState<Report | null>(null);
-  const [error,setError]=useState(''),[loading,setLoading]=useState(false);
-
-  const loadId=useRef(0);
-  const load = useCallback(async () => {
-    const id=++loadId.current;
-    setLoading(true);
-    try {
-      const next=await api<Report>('/api/reports/daily?'+new URLSearchParams(Object.fromEntries(Object.entries(filters).filter(([,v])=>v))));
-      if(id===loadId.current){setReport(next);setError('');}
-    } catch (e) {
-      if(id===loadId.current){const message=e instanceof Error ? e.message : "فشل تحميل التقرير";setError(message);toast.error(message);}
-    }finally{
-      if(id===loadId.current)setLoading(false);
-    }
-  }, [filters]);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => load(), 0);
-    return () => clearTimeout(timer);
-  }, [load]);
+  const query='/api/reports/daily?'+new URLSearchParams(Object.fromEntries(Object.entries(filters).filter(([,v])=>v)));
+  const {data:report,error,loading,refresh:load}=useWorkspaceRead<Report>(query,`${user.id}:${user.cafeId}:${user.branchId}`);
 
   return (
-    <div className="min-w-0 max-w-6xl space-y-4">
-      {(user.role === "CAFE_OWNER" || user.role === "SUPER_ADMIN") && canKey("finance.view_revenue") && (
-        <><Link className="inline-block text-primary underline" href="/reports/historical-sales">المبيعات التاريخية المستوردة من Next Cup خلال السنة</Link><br/></>
-      )}
-      <Link className="inline-block text-primary underline" href="/reports/opening-receipts">تقرير استلام الكاش والخامات والمكان — المطابق والمؤجل والفروق</Link><br/>
-      <Link className="inline-block text-primary underline" href="/reports/employee-variances">تقرير فروق الموظفين — كاش وفيزا ومحفظة وخامات</Link>
-      <br/><Link className="inline-block text-primary underline" href="/reports/employee-actions">تقرير مسؤولية الموظفين عن الإلغاء والاسترداد</Link>
+    <div className="workspace-page min-w-0">
       <PageHeader title="تقرير قفلة اليوم">
         <TouchSelect aria-label="فرع التقرير" value={filters.branchId??''} onValueChange={v=>setFilters({...filters,branchId:v})}><option value="">كل الفروع المسموحة — كل فرع بساعاته</option>{report?.reporting.branches.map(b=><option key={b.id} value={b.id}>{b.name}</option>)}</TouchSelect>
       </PageHeader>
+      <details className="text-sm"><summary className="inline-flex cursor-pointer items-center gap-2 text-primary">تقارير مرتبطة</summary><nav aria-label="تقارير مرتبطة" className="mt-2 flex flex-wrap gap-4 rounded-xl bg-card p-4">
+      {(user.role === "CAFE_OWNER" || user.role === "SUPER_ADMIN") && canKey("finance.view_revenue") && (
+        <><Link className="inline-block text-primary underline" href="/reports/historical-sales">المبيعات التاريخية المستوردة من Next Cup خلال السنة</Link></>
+      )}
+      <Link className="inline-block text-primary underline" href="/reports/opening-receipts">تقرير استلام الكاش والخامات والمكان — المطابق والمؤجل والفروق</Link>
+      <Link className="inline-block text-primary underline" href="/reports/employee-variances">تقرير فروق الموظفين — كاش وفيزا ومحفظة وخامات</Link>
+      <Link className="inline-block text-primary underline" href="/reports/employee-actions">تقرير مسؤولية الموظفين عن الإلغاء والاسترداد</Link>
+      <Link href="/report-center" className="text-primary underline">كل التقارير</Link></nav></details>
       <ReportingControls filters={filters} onChange={setFilters} metadata={report?.reporting} onSaved={()=>void load()}/>
       {loading&&<LoadingState label="جاري تحديث فترة التقرير…" />}
-      {error&&<p role="alert" className="rounded border p-3 text-destructive">{error} — المعروض أدناه هو آخر تقرير ناجح. صحّح المدخلات لإعادة حسابه.</p>}
+      {error&&<p role="alert" className="rounded border p-3 text-destructive">{error} <button className="ms-3 underline" onClick={load}>إعادة المحاولة</button> {report ? "المعروض آخر تقرير ناجح لنفس النطاق؛ التصدير متوقف حتى التحديث." : "لم تتوفر بيانات لهذا النطاق."}</p>}
       <ReportOutputActions snapshot={report?.outputSnapshot} disabled={loading||!!error}/>
 
       {report && (

@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import {useWorkspaceRead} from "@/components/cafe/use-workspace-read";
 import Link from "next/link";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { t } from "@/lib/i18n";
-import { api } from "@/lib/client";
+
 import { TONE_SIDE, TONE_SURFACE, type Tone } from "@/components/ui/tone";
 import { TableInvoices } from "./table-invoices";
 import type { OrderType } from "./types";
@@ -73,22 +74,16 @@ export function OrderTypeSelector({
   const set = (patch: Partial<CustomerDetails>) =>
     onDetailsChange({ ...details, ...patch });
 
-  const [tables, setTables] = useState<SelectorTable[] | null>(null);
-  const [allowCustom, setAllowCustom] = useState(false);
+
   const [manual, setManual] = useState(false);
   // Once a table is chosen the grid folds into a one-line bar; this reopens it on demand.
   const [pickerOpen, setPickerOpen] = useState(false);
   // Bumped after an in-place invoice change (payment/close) to refetch the grid.
   const [localReload, setLocalReload] = useState(0);
 
-  useEffect(() => {
-    if (type !== "DINE_IN" || !branchId) return;
-    let stale = false;
-    api<{ tables: SelectorTable[]; allowCustomTables: boolean }>(`/api/tables/selector?branchId=${branchId}`)
-      .then((r) => { if (!stale) { setTables(r.tables); setAllowCustom(r.allowCustomTables); } })
-      .catch(() => { if (!stale) { setTables([]); setAllowCustom(true); } });
-    return () => { stale = true; };
-  }, [type, branchId, tableReloadKey, localReload]);
+  const tableRead=useWorkspaceRead<{tables:SelectorTable[];allowCustomTables:boolean}>(type==="DINE_IN"&&branchId?`/api/tables/selector?branchId=${branchId}`:null,`${branchId}:${tableReloadKey}:${localReload}`);
+  const tables=tableRead.data?.tables??null;
+  const allowCustom=tableRead.data?.allowCustomTables??false;
 
   const selected = details.tableNumber.trim();
   const selectedTbl = tables?.find((x) => x.tableNumber === selected) ?? null;
@@ -168,6 +163,8 @@ export function OrderTypeSelector({
                 تغيير الترابيزة
               </button>
             </div>
+          ) : tableRead.error ? (
+            <p role="alert" className="text-sm text-destructive">{tableRead.error} <button type="button" className="underline" onClick={tableRead.refresh}>إعادة المحاولة</button></p>
           ) : tables === null ? (
             <p className="text-xs text-muted-foreground">جاري تحميل الترابيزات…</p>
           ) : manual ? (
@@ -227,7 +224,7 @@ export function OrderTypeSelector({
 
           {/* فواتير الترابيزة — collapsible invoice cards for the selected table. */}
           {selected && branchId && (
-            <TableInvoices
+            <TableInvoices key={`${branchId}:${details.tableNumber}`}
               branchId={branchId}
               tableNumber={selected}
               reloadKey={tableReloadKey + localReload}

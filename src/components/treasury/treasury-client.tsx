@@ -9,13 +9,20 @@ export const field=nativeFieldClassName;
 export const button=nativeButtonClassName;
 export const date=(iso:string)=>new Date(iso).toLocaleString("ar-EG",{timeZone:"Africa/Cairo"});
 export const errorText=(e:unknown)=>e instanceof Error?e.message:"تعذر إكمال العملية";
-export function useTreasuryData<T>(path:string,version:number){
- const {user,canKey}=useApp(),owner=moneyIntentOwner(user),identity=owner+path,allowed=user.role==="CAFE_OWNER"&&canKey("treasury.view");
+export function useTreasuryData<T>(path:string,version:number,enabled=true){
+ const {user,canKey}=useApp(),owner=moneyIntentOwner(user),identity=owner+":"+user.role+":"+path,allowed=user.role==="CAFE_OWNER"&&canKey("treasury.view");
  const [state,setState]=useState<{identity:string;version:number;data?:T;error?:string}>({identity:"",version:-1});
- useEffect(()=>{if(!allowed)return;let live=true;api<T>(path).then(data=>{if(live)setState({identity,version,data})}).catch(e=>{if(live)setState({identity,version,error:errorText(e)})});return()=>{live=false}},[identity,path,version,allowed]);
- return {allowed,loading:state.identity!==identity||state.version!==version,data:state.identity===identity?state.data:undefined,error:state.identity===identity?state.error:undefined};
-}
-export function useMoneyCommand(documentPath:string,after:()=>void){
+ useEffect(()=>{
+  if(!allowed||!enabled)return;
+  const controller=new AbortController();let live=true;
+  api<T>(path,{signal:controller.signal,readTimeoutMs:20_000}).then(data=>{if(live)setState({identity,version,data})}).catch(e=>{if(live&&!controller.signal.aborted)setState({identity,version,error:errorText(e)})});
+  return()=>{live=false;controller.abort()};
+ },[identity,path,version,allowed,enabled]);
+ const data=allowed&&enabled&&state.identity===identity?state.data:undefined;
+ const loading=allowed&&enabled&&(state.identity!==identity||state.version!==version);
+ const error=allowed&&enabled&&state.identity===identity&&state.version===version?state.error:undefined;
+ return {allowed,loading,refreshing:loading&&!!data,data,error,phase:!allowed||!enabled?"idle":loading?data?"refresh":"loading":error?"error":"success"};
+}export function useMoneyCommand(documentPath:string,after:()=>void){
  const {user,canKey}=useApp(),owner=moneyIntentOwner(user),identity=owner+documentPath;
  const current=useRef(identity),live=useRef(true);current.current=identity;
  const [state,setState]=useState<{identity:string;ready:boolean;pending:MoneyIntent|null;busy:boolean;error:string;receipt?:{transferId?:string;action?:string;recordedAt?:string;id?:string};review?:Record<string,unknown>}>({identity:"",ready:false,pending:null,busy:false,error:""});
@@ -37,7 +44,7 @@ export function useMoneyCommand(documentPath:string,after:()=>void){
    setState({identity,ready:true,pending:keep?intent:null,busy:false,error:errorText(e)});if(!keep)after();
   }
  }
- async function reviewMetadata(){const intent=visible.pending;if(!intent?.path.includes("/accounts"))return;try{const result=intent.path==="/api/treasury/accounts"?await api<{accounts:Record<string,unknown>[]}>(intent.path+"?code="+encodeURIComponent(String(intent.body.code))):await api<{account:Record<string,unknown>}>(intent.path);if(!live.current||current.current!==identity)return;const account="accounts" in result?result.accounts[0]:result.account;if(!account)throw Error("لم يُعثر على الحساب؛ راجع القائمة قبل حسم الطلب");setState(s=>({...s,review:account,error:""}));}catch(e){if(live.current&&current.current===identity)setState(s=>({...s,error:errorText(e)}));}}
+ async function reviewMetadata(){const intent=visible.pending;if(!intent?.path.includes("/accounts"))return;try{const result=intent.path==="/api/treasury/accounts"?await api<{accounts:Record<string,unknown>[]}>(intent.path+"?code="+encodeURIComponent(String(intent.body.code)),{readTimeoutMs:20_000}):await api<{account:Record<string,unknown>}>(intent.path,{readTimeoutMs:20_000});if(!live.current||current.current!==identity)return;const account="accounts" in result?result.accounts[0]:result.account;if(!account)throw Error("لم يُعثر على الحساب؛ راجع القائمة قبل حسم الطلب");setState(s=>({...s,review:account,error:""}));}catch(e){if(live.current&&current.current===identity)setState(s=>({...s,error:errorText(e)}));}}
  function acknowledgeMetadata(){if(!visible.review||!visible.pending)return;try{if(!completeMoneyIntent(window.sessionStorage,owner,visible.pending))throw Error("هوية الطلب تغيرت");setState({identity,ready:true,pending:null,busy:false,error:""});after();}catch(e){setState(s=>({...s,error:errorText(e)}));}}
  return {...visible,blocked:!visible.ready||visible.busy||!!visible.pending,run,reviewMetadata,acknowledgeMetadata,can:(path:string)=>user.role==="CAFE_OWNER"&&canKey(permission(path))};
 }

@@ -102,21 +102,20 @@ export function StaleOrdersBanner({
 
   return (
     <div
-      role="alert"
+      role="status"
       data-testid="stale-orders-banner"
-      className="mb-6 rounded-xl border-2 border-orange-300 bg-orange-50 p-4 text-sm text-orange-950 dark:border-orange-900 dark:bg-orange-950/40 dark:text-orange-100 [@media(max-height:760px)]:mb-3 [@media(max-height:760px)]:p-2.5 [@media(max-height:760px)]:text-xs"
+      className="mb-4 rounded-lg border-s-4 border-caramel bg-caramel-soft px-4 py-2 text-sm text-caramel-ink"
     >
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <span className="font-semibold">
-          ⏰ في {summary.staleCount} أوردر منسي بقاله أكتر من {summary.staleMinutes} دقيقة
+      <div className="flex items-center gap-x-3 gap-y-1">
+        <span className="min-w-0 flex-1 font-semibold" title={`طلبات تجاوزت ${summary.staleMinutes} دقيقة`}>
+          {summary.staleCount} طلبات تحتاج متابعة
         </span>
-        <span className="flex-1" />
-        <button type="button" className="font-medium underline underline-offset-2" onClick={() => setOpen((v) => !v)}>
+        <button type="button" className="shrink-0 font-medium underline underline-offset-2" onClick={() => setOpen((v) => !v)}>
           {open ? "إخفاء القائمة" : "اعرض وحلّها"}
         </button>
         <button
           type="button"
-          className="text-xs opacity-70 hover:opacity-100"
+          className={"text-sm opacity-70 hover:opacity-100 "+(open?"":"hidden sm:block")}
           onClick={() => {
             sessionStorage.setItem(DISMISS_KEY, sig);
             setDismissed(sig);

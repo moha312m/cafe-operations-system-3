@@ -40,7 +40,7 @@ export default function LedgerPage() {
   }, []);
   const accounts = useAccountingData<{ accounts: Account[] }>("/api/accounting/accounts");
   const valid = !!account && from <= to;
-  const { data, error, loading } = useAccountingData<Ledger>(valid ? `/api/accounting/ledger?${new URLSearchParams({ accountId: account, from, to, page: String(page) })}` : null);
+  const { data, error, loading, reload } = useAccountingData<Ledger>(valid ? `/api/accounting/ledger?${new URLSearchParams({ accountId: account, from, to, page: String(page) })}` : null);
   const fmt = (n: number) => money(n, currency);
   const pages = data ? Math.max(1, Math.ceil(data.lineCount / data.pageSize)) : 1;
 
@@ -58,7 +58,8 @@ export default function LedgerPage() {
         <div className="space-y-1"><Label htmlFor="gl-to">إلى</Label><Input id="gl-to" type="date" dir="ltr" value={to} onChange={(e) => { setTo(e.target.value); setPage(1); }} /></div>
       </div>
       {!account && <p className="text-muted-foreground">اختار حساب علشان تشوف حركته.</p>}
-      {error && <p role="alert" className="rounded border p-3 text-destructive">{error}</p>}
+      {accounts.error && <div role="alert" className="workspace-state text-destructive"><p>{accounts.error}</p><Button variant="outline" disabled={accounts.loading} onClick={accounts.reload}>إعادة تحميل الحسابات</Button></div>}
+      {error && <div role="alert" className="workspace-state text-destructive"><p>{error}</p><Button variant="outline" disabled={loading} onClick={reload}>{loading ? "جارٍ إعادة التحميل…" : "إعادة المحاولة"}</Button></div>}
       {loading && <p role="status">جاري التحميل…</p>}
       {data && (
         <>

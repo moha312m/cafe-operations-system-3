@@ -42,14 +42,14 @@ export function CategoryTabs({
       aria-pressed={active === id}
       onClick={() => choose(id)}
       className={cn(
-        "category-choice flex min-h-14 min-w-0 items-center gap-2 rounded-xl border-2 px-3 py-2 text-start text-sm font-semibold transition-colors active:scale-[0.98]",
+        "category-choice flex min-h-12 min-w-28 items-center gap-2 rounded-xl border px-3 py-2 text-start text-sm font-semibold transition-colors",
         active === id
           ? "border-primary bg-primary text-primary-foreground"
           : "bg-card hover:bg-accent"
       )}
     >
       {icon && <span aria-hidden="true">{icon}</span>}
-      <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{label}{active === id && <span className="block text-xs">✓ محدد</span>}</span>
+      <span className="min-w-0 flex-1 whitespace-normal [overflow-wrap:normal]">{label}{active === id && <span className="block text-xs">✓ محدد</span>}</span>
       {counts.has(id) && (
         <span
           className={cn(
@@ -65,9 +65,9 @@ export function CategoryTabs({
 
   return (
     <Dialog open={panelOpen} onOpenChange={setPanelOpen}>
-    <section aria-label="تصنيفات المنتجات" className="cashier-categories shrink-0 space-y-2 rounded-xl border bg-card p-2">
+    <section aria-label="تصنيفات المنتجات" className="cashier-categories shrink-0 space-y-2 rounded-xl bg-card p-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="w-full min-w-0 text-sm [overflow-wrap:anywhere] sm:w-auto sm:flex-1">التصنيف المحدد: <strong>{selected}</strong></p>
+        <p className="w-full min-w-0 text-xs text-muted-foreground sm:w-auto sm:flex-1">التصنيف المحدد: <strong>{selected}</strong></p>
         <Button className="category-all-products" variant="outline" aria-pressed={active === "all"} onClick={() => choose("all")}>كل المنتجات{active === "all" && " ✓ محدد"}</Button>
         {categories.length > 0 && <DialogTrigger render={<Button variant="outline" aria-controls={dialogId} />} onClick={() => setQuery("")}>كل التصنيفات ({categories.length})</DialogTrigger>}
       </div>

@@ -44,9 +44,10 @@ export function QuickActions({
   useEffect(() => {
     if (!branchId) return;
     let cancelled = false;
+    const controller=new AbortController();
     const load = () =>
       api<{ window: "HOUR" | "ALL_DAY"; products: { productId: string }[] }>(
-        `/api/pos/quick-picks?branchId=${branchId}`
+        `/api/pos/quick-picks?branchId=${branchId}`,{signal:controller.signal,readTimeoutMs:20_000}
       )
         .then((r) => {
           if (cancelled) return;
@@ -58,6 +59,7 @@ export function QuickActions({
     const timer = setInterval(load, 15 * 60_000);
     return () => {
       cancelled = true;
+      controller.abort();
       clearInterval(timer);
     };
   }, [branchId]);
@@ -65,12 +67,13 @@ export function QuickActions({
   const digits = customerPhone.replace(/\D/g, "");
   useEffect(() => {
     let cancelled = false;
+    const controller=new AbortController();
     const timer = setTimeout(() => {
       if (digits.length < 10) {
         if (!cancelled) setLast(null);
         return;
       }
-      api<{ order: LastOrder | null }>(`/api/customers/last-order?phone=${encodeURIComponent(digits)}`)
+      api<{ order: LastOrder | null }>(`/api/customers/last-order?phone=${encodeURIComponent(digits)}`,{signal:controller.signal,readTimeoutMs:20_000})
         .then((r) => {
           if (!cancelled) setLast(r.order);
         })
@@ -80,6 +83,7 @@ export function QuickActions({
     }, 400);
     return () => {
       cancelled = true;
+      controller.abort();
       clearTimeout(timer);
     };
   }, [digits]);

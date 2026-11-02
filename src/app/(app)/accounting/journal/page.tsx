@@ -28,7 +28,7 @@ export default function JournalPage() {
   const [page, setPage] = useState(1);
   const valid = from <= to;
   const query = new URLSearchParams({ from, to, page: String(page), ...(sourceType ? { sourceType } : {}) });
-  const { data, error, loading } = useAccountingData<Journal>(valid ? `/api/accounting/journal?${query}` : null);
+  const { data, error, loading, reload } = useAccountingData<Journal>(valid ? `/api/accounting/journal?${query}` : null);
   const pages = data ? Math.max(1, Math.ceil(data.count / data.pageSize)) : 1;
 
   return (
@@ -45,7 +45,7 @@ export default function JournalPage() {
         </div>
       </div>
       {!valid && <p role="alert" className="text-destructive">تاريخ البداية بعد النهاية.</p>}
-      {error && <p role="alert" className="rounded border p-3 text-destructive">{error}</p>}
+      {error && <div role="alert" className="workspace-state text-destructive"><p>{error}</p><Button variant="outline" disabled={loading} onClick={reload}>{loading ? "جارٍ إعادة التحميل…" : "إعادة المحاولة"}</Button></div>}
       {loading && <p role="status">جاري التحميل…</p>}
       {data && data.entries.length === 0 && <p className="text-muted-foreground">مفيش قيود في الفترة دي.</p>}
       {data && data.entries.length > 0 && (

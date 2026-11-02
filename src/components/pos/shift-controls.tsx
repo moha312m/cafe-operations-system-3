@@ -1,7 +1,7 @@
 "use client";
 import { TouchNumberInput } from "@/components/pos/touch-number-input";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
@@ -86,6 +86,8 @@ export function ShiftControls({
   const router = useRouter();
   const [shift, setShift] = useState<Shift | null>(null);
   const [loading, setLoading] = useState(true);
+  const [readError,setReadError]=useState("");
+  const controllerRef=useRef<AbortController|null>(null);
   const [pendingShift, setPendingShift] = useState<Shift | null>(null);
   const [openDialog, setOpenDialog] = useState(false);
   const [openingCash, setOpeningCash] = useState("");
@@ -104,29 +106,33 @@ export function ShiftControls({
 
   const load = useCallback(async () => {
     if (!branchId) return;
-    setLoading(true);
+    controllerRef.current?.abort();
+    const controller=new AbortController();controllerRef.current=controller;
+    setLoading(true);setReadError("");
     try {
       const { shift, pendingShift } = await api<{ shift: Shift | null; pendingShift: Shift | null }>(
-        `/api/shifts/active?branchId=${branchId}`
+        `/api/shifts/active?branchId=${branchId}`,{signal:controller.signal,readTimeoutMs:20_000}
       );
+      if(controller.signal.aborted)return;
       setActive(shift);
       setPendingShift(pendingShift);
       if (!shift) {
-        api<{ stage: string }>(`/api/shifts/close-flow?branchId=${encodeURIComponent(branchId)}`)
-          .then((r) => setCloseStage(r.stage === "MATERIALS" ? "MATERIALS" : null))
-          .catch(() => setCloseStage(null));
+        api<{ stage: string }>(`/api/shifts/close-flow?branchId=${encodeURIComponent(branchId)}`,{signal:controller.signal,readTimeoutMs:20_000})
+          .then((r) => {if(!controller.signal.aborted)setCloseStage(r.stage === "MATERIALS" ? "MATERIALS" : null)})
+          .catch(() => {if(!controller.signal.aborted)setCloseStage(null)});
       } else {
         setCloseStage(null);
       }
-    } catch {
-      setActive(null);
+    } catch(error) {
+      if(!controller.signal.aborted){setActive(null);setReadError(error instanceof Error?error.message:"تعذر تحميل حالة الوردية");}
     } finally {
-      setLoading(false);
+      if(!controller.signal.aborted)setLoading(false);
     }
   }, [branchId, setActive]);
 
   useEffect(() => {
     load();
+    return ()=>controllerRef.current?.abort();
   }, [load]);
 
   async function openShift() {
@@ -174,6 +180,7 @@ export function ShiftControls({
 
   // Fixed-height placeholder while the first fetch resolves — keeps the
   // layout from collapsing/jumping when data arrives.
+  if(readError)return <div role="alert" className="rounded-xl bg-caramel-soft p-3 text-sm text-caramel-ink">{readError} <Button variant="outline" onClick={()=>void load()}>إعادة المحاولة</Button></div>;
   if (loading) {
     return (
       <div className="h-[52px] animate-pulse rounded-xl border border-dashed bg-muted/30" />

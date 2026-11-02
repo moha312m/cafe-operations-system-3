@@ -1,5 +1,7 @@
 "use client";
 
+import { currentWorkspaceHref } from "@/lib/workspace-navigation";
+import { LayoutDashboard, ReceiptText, Armchair, Coffee, ClipboardList, ChartNoAxesCombined, ScanSearch, Smartphone, BookOpen, FlaskConical, Building2, Users, Package, ShoppingCart, Truck, CreditCard, ClipboardCheck, Scale, Handshake, FileChartColumn, Wallet, Landmark, BookText, Calculator, Settings, ShieldCheck, History, PanelRightClose, PanelRightOpen, ChevronDown } from "lucide-react";
 import { createContext, useContext, useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -56,7 +58,6 @@ const NAV_GROUPS: { id: NavGroupId; label: string }[] = [
 const NAV_COLLAPSED_KEY = "nextcup.nav.collapsed";
 // Phones are handled by the drawer; this is the short-laptop case (e.g. 1080p
 // at 150% scaling inside a browser window), where every pixel of height counts.
-const SHORT_SCREEN = "(max-height: 760px)";
 
 // `feature` (when set) hides the item if the cafe has that module disabled.
 type NavItem = {
@@ -71,6 +72,16 @@ type NavItem = {
   feature?: (f: CafeFeatures) => boolean;
 };
 
+const NAV_ICONS: Record<string, React.ElementType> = {
+ "/dashboard":LayoutDashboard,"/pos":ReceiptText,"/tables":Armchair,"/tables/setup":Armchair,
+ "/current-shift":Coffee,"/kitchen":Coffee,"/orders":ClipboardList,"/sales":ChartNoAxesCombined,
+ "/tracing":ScanSearch,"/approvals":Smartphone,"/menu":BookOpen,"/recipe-review":FlaskConical,
+ "/branches":Building2,"/staff":Users,"/inventory":Package,"/purchases":ShoppingCart,"/suppliers":Truck,
+ "/customers":CreditCard,"/stock-counts":ClipboardCheck,"/variances":Scale,"/handovers":Handshake,
+ "/report-center":FileChartColumn,"/reports":FileChartColumn,"/expenses":Wallet,"/treasury":Landmark,
+ "/finance":Wallet,"/accounting":BookText,"/shifts":Calculator,"/settings":Settings,
+ "/roles-permissions":ShieldCheck,"/audit":History,
+};
 const NAV: NavItem[] = [
   { href: "/finance", label: "مساحة الماليات", icon: "💼", permission: "cost:read", group: "finance", anyKey: ["accounting.view", "expenses.view", "treasury.view"] },
   { href: "/report-center", label: "مركز التقارير", icon: "📊", permission: "reports:read", group: "reports" },
@@ -133,6 +144,7 @@ export function AppShell({
   const cashierTouch = ["/pos", "/orders", "/sales", "/tracing", "/tables", "/current-shift", "/close-shift", "/receipts", "/reports", "/handovers", "/stock-counts"].some(route => pathname === route || pathname.startsWith(route + "/"));
   const router = useRouter();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [rail, setRail] = useState(false);
   useEffect(() => {
     const desktop = window.matchMedia("(min-width: 768px)");
     const closeOnDesktop = () => { if (desktop.matches) setMobileNavOpen(false); };
@@ -160,7 +172,7 @@ export function AppShell({
   // section open (no hydration mismatch); after mount the saved choice is
   // applied, and on a short screen with no saved choice the sections start
   // collapsed. The section that holds the current page is always open.
-  const [collapsedGroups, setCollapsedGroups] = useState<NavGroupId[]>([]);
+  const [collapsedGroups, setCollapsedGroups] = useState<NavGroupId[]>(NAV_GROUPS.map(group=>group.id));
   useEffect(() => {
     const valid = (v: unknown): v is NavGroupId => NAV_GROUPS.some((g) => g.id === v);
     const timer = window.setTimeout(() => {
@@ -171,13 +183,12 @@ export function AppShell({
         if (Array.isArray(parsed)) saved = parsed.filter(valid);
       } catch { /* storage unavailable or corrupt: fall back to the default */ }
       if (saved) setCollapsedGroups(saved);
-      else if (window.matchMedia(SHORT_SCREEN).matches) setCollapsedGroups(NAV_GROUPS.map((g) => g.id));
+      else setCollapsedGroups(NAV_GROUPS.map((g) => g.id));
     }, 0);
     return () => window.clearTimeout(timer);
   }, []);
-  const activeGroup = navItems.find(
-    (item) => pathname === item.href || pathname.startsWith(item.href + "/")
-  )?.group;
+  const currentHref = currentWorkspaceHref(pathname, navItems.map(item => item.href));
+  const activeGroup = navItems.find(item => item.href === currentHref)?.group;
   function toggleGroup(id: NavGroupId) {
     setCollapsedGroups((current) => {
       const next = current.includes(id) ? current.filter((g) => g !== id) : [...current, id];
@@ -241,22 +252,27 @@ export function AppShell({
     (user.role === "CAFE_OWNER" || user.role === "BRANCH_MANAGER") && can("orders:read");
 
   const navLink = (item: NavItem) => {
-    const active = pathname === item.href || pathname.startsWith(item.href + "/");
+    const active = currentHref === item.href;
+    const ancestor = !active && pathname.startsWith(item.href + "/");
+    const Icon = NAV_ICONS[item.href] ?? BookOpen;
     return (
       <Link
         key={item.href}
         href={item.href}
         onClick={() => setMobileNavOpen(false)}
-        aria-current={active ? (pathname === item.href ? "page" : "location") : undefined}
+        aria-current={active ? "page" : undefined}
+        aria-label={item.label}
+        title={item.label}
         className={cn(
-          "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sidebar-ring [@media(max-height:760px)]:py-1.5",
+          "workspace-nav-link flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sidebar-ring",
+          ancestor && "border-s-2 border-sidebar-primary",
           active
             ? "bg-sidebar-primary text-sidebar-primary-foreground shadow-sm"
             : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
         )}
       >
-        <span className="text-base leading-none">{item.icon}</span>
-        <span className="flex-1">{item.label}</span>
+        <Icon aria-hidden="true" className="size-5 shrink-0" />
+        <span className="workspace-nav-label flex-1">{item.label}</span>
         {item.href === "/approvals" && pendingQr > 0 && (
           <span className="flex min-w-5 items-center justify-center rounded-full bg-red-500 px-1.5 text-xs font-bold text-white">
             {pendingQr}
@@ -270,12 +286,12 @@ export function AppShell({
     <>
           <div className="flex items-center gap-3 border-b border-sidebar-border px-5 py-5 [@media(max-height:760px)]:py-3">
             <span className="flex size-10 items-center justify-center rounded-xl bg-sidebar-primary text-xl text-sidebar-primary-foreground shadow-sm">
-              ☕
+              <Coffee className="size-6" aria-hidden="true" />
             </span>
-            <div className="min-w-0">
-              <p className="truncate font-heading text-sm font-bold text-sidebar-accent-foreground">
-                {cafe?.name ?? t.appName}
-              </p>
+            <div className="workspace-nav-label min-w-0">
+              <p className="font-heading text-base font-bold tracking-wider text-sidebar-accent-foreground" dir="ltr">NEXT CUP</p>
+              <p className="truncate text-xs" title={cafe?.name}>{cafe?.name ?? t.appName}</p>
+              {/^workspace\d{8}-/.test(cafe?.name ?? "") && <p className="mt-1 text-xs text-amber-200">بيانات اصطناعية · معاينة فقط</p>}
               <p className="truncate text-xs text-sidebar-muted-foreground">
                 {branchName ?? t.appName}
               </p>
@@ -288,7 +304,7 @@ export function AppShell({
               const items = navItems.filter((item) => item.group === group.id);
               if (items.length === 0) return null;
               const isCurrent = group.id === activeGroup;
-              const open = isCurrent || !collapsedGroups.includes(group.id);
+              const open = rail || isCurrent || !collapsedGroups.includes(group.id);
               // A collapsed section must not hide a waiting QR approval.
               const badge = !open && items.some((item) => item.href === "/approvals") ? pendingQr : 0;
               return (
@@ -299,7 +315,7 @@ export function AppShell({
                     aria-expanded={open}
                     aria-controls={`nav-group-${group.id}`}
                     aria-disabled={isCurrent || undefined}
-                    className="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-xs font-semibold text-sidebar-muted-foreground transition-colors hover:text-sidebar-accent-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sidebar-ring"
+                    className="workspace-nav-group flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-xs font-semibold text-sidebar-muted-foreground transition-colors hover:text-sidebar-accent-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sidebar-ring"
                   >
                     <span className="flex-1 text-start">{group.label}</span>
                     {badge > 0 && (
@@ -307,7 +323,7 @@ export function AppShell({
                         {badge}
                       </span>
                     )}
-                    <span aria-hidden="true" className="text-[10px] leading-none">{open ? "▾" : "◂"}</span>
+                    <ChevronDown aria-hidden="true" className={cn("size-3", !open && "rotate-90")} />
                   </button>
                   <div id={`nav-group-${group.id}`} hidden={!open} className="space-y-0.5">
                     {items.map(navLink)}
@@ -322,7 +338,7 @@ export function AppShell({
               <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-sidebar-accent-foreground/10 text-xs font-semibold text-sidebar-accent-foreground">
                 {initials}
               </span>
-              <div className="min-w-0">
+              <div className="workspace-nav-label min-w-0">
                 <p className="truncate text-sm font-medium text-sidebar-accent-foreground">{user.name}</p>
                 <p className="truncate text-xs text-sidebar-muted-foreground">
                   {ROLE_LABELS[user.role]}
@@ -342,8 +358,9 @@ export function AppShell({
   return (
     <AppContext.Provider value={{ user, cafe, branchName, can, canKey, permKeys, features }}>
       <CashierTouchViewport active={cashierTouch} />
-      <div className="flex min-h-screen w-full flex-col bg-workspace md:flex-row">
-        <aside className="sticky top-0 hidden h-dvh w-60 shrink-0 flex-col bg-sidebar text-sidebar-foreground md:flex print:hidden">
+      <div className="app-workspace flex min-h-screen w-full flex-col bg-workspace md:flex-row" data-nav-rail={rail}>
+        <aside className={cn("workspace-sidebar sticky top-0 hidden h-dvh shrink-0 flex-col bg-sidebar text-sidebar-foreground md:flex print:hidden", rail ? "w-20" : "w-64")}>
+          <button type="button" className="mx-3 mt-3 flex min-h-10 items-center justify-center gap-2 rounded-lg border border-sidebar-border text-sm hover:bg-sidebar-accent" aria-label={rail ? "توسيع التنقل" : "طي التنقل"} aria-expanded={!rail} onClick={()=>setRail(value=>!value)}>{rail ? <PanelRightOpen className="size-5"/> : <><PanelRightClose className="size-5"/><span>طي التنقل</span></>}</button>
           {sidebarContent}
         </aside>
         <Dialog open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
@@ -359,7 +376,7 @@ export function AppShell({
           </DialogContent>
         </Dialog>
 
-        <main key={`${user.cafeId}:${user.branchId}:${user.role}`} className="min-w-0 flex-1 overflow-x-hidden p-4 md:p-6 lg:p-8">
+        <main key={`${user.id}:${user.cafeId}:${user.branchId}:${user.role}:${permKeys.join(",")}`} className="workspace-content min-w-0 flex-1 p-4 md:p-6 lg:p-8">
           {showStaleBanner && (
             <StaleOrdersBanner pathname={pathname} showBranch={!user.branchId} currency={cafe?.currency ?? "EGP"} />
           )}

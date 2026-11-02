@@ -76,6 +76,8 @@ export default function TableSetupPage() {
   const [error, setError] = useState("");
   const inFlight = useRef(false);
   const loadVersion = useRef(0);
+  const loadController=useRef<AbortController|null>(null);
+  const [branchRetry,setBranchRetry]=useState(0);
   const invalidateLoad = useCallback(() => { ++loadVersion.current; }, []);
 
   const canManage = canKey("tables.manage");
@@ -87,11 +89,14 @@ export default function TableSetupPage() {
 
   const load = useCallback(async () => {
     const version = ++loadVersion.current;
-    if (!branchId) { setTables([]); setSummary(null); return; }
+    if (!branchId) { setTables([]); setSummary(null); setBranchRetry(value=>value+1); return; }
+    loadController.current?.abort();
+    const controller=new AbortController();loadController.current=controller;
     setTables(null);
     try {
       const data = await api<{ summary: Summary; tables: CafeTable[]; occupiedNumbers: string[] }>(
-        `/api/tables/config?branchId=${branchId}&includeArchived=1`
+        `/api/tables/config?branchId=${branchId}&includeArchived=1`,
+        {signal:controller.signal,readTimeoutMs:20_000}
       );
       if (version !== loadVersion.current) return;
       setTables(data.tables);
@@ -107,16 +112,17 @@ export default function TableSetupPage() {
   useEffect(() => {
     if (!canManage || !enabled) return;
     const timer = window.setTimeout(() => void load(), 0);
-    return () => { window.clearTimeout(timer); invalidateLoad(); };
+    return () => { window.clearTimeout(timer); invalidateLoad(); loadController.current?.abort(); };
   }, [canManage, enabled, load, invalidateLoad]);
 
   useEffect(() => {
-    if (!user.branchId) {
-      api<{ branches: Branch[] }>("/api/branches")
-        .then((r) => { setBranches(r.branches); if (!branchId && r.branches[0]) setBranchId(r.branches[0].id); })
-        .catch(() => {});
-    }
-  }, [user.branchId, branchId]);
+    if (user.branchId || !canManage || !enabled) return;
+    const controller=new AbortController();
+    api<{branches:Branch[]}>("/api/branches",{signal:controller.signal,readTimeoutMs:20_000})
+      .then(r=>{if(!controller.signal.aborted){setBranches(r.branches);if(!branchId&&r.branches[0])setBranchId(r.branches[0].id);}})
+      .catch(error=>{if(!controller.signal.aborted)setError(error instanceof Error?error.message:"تعذر تحميل الفروع");});
+    return ()=>controller.abort();
+  },[user.branchId,branchId,branchRetry,canManage,enabled]);
 
   const filtered = useMemo(() => {
     if (!tables) return [];
@@ -246,7 +252,7 @@ export default function TableSetupPage() {
   const emptyBranch = tables !== null && tables.length === 0;
 
   return (
-    <>
+    <div className="workspace-page">
       <PageHeader title="إدارة الترابيزات" subtitle="أضف وعدّل الترابيزات والمنطقة والكراسي. الإزالة تعني الأرشفة مع حفظ السجل السابق.">
         <div className="flex flex-wrap items-center gap-2">
           {canKey("tables.view") && <Link href="/tables" className="inline-flex min-h-11 items-center px-2 text-sm underline">جلسات الترابيزات</Link>}
@@ -274,8 +280,8 @@ export default function TableSetupPage() {
 
       {/* Toolbar: search + status chips + view toggle */}
       {!emptyBranch && (
-        <div className="mt-5 flex flex-wrap items-center gap-2">
-          <label className="text-xs">بحث الترابيزات<Input aria-label="بحث الترابيزات" placeholder="رقم أو اسم أو منطقة…" className="w-56" value={q} onChange={(e) => setQ(e.target.value)} /></label>
+        <div className="workspace-toolbar">
+          <label className="text-sm">بحث الترابيزات<Input aria-label="بحث الترابيزات" placeholder="رقم أو اسم أو منطقة…" className="w-56" value={q} onChange={(e) => setQ(e.target.value)} /></label>
           <div role="group" aria-label="تصفية حالة الترابيزات" className="flex max-w-full flex-wrap gap-1 rounded-xl border border-border bg-card p-1 text-sm">
             {FILTERS.map((f) => (
               <button key={f.key} aria-pressed={filter === f.key} onClick={() => setFilter(f.key)}
@@ -300,7 +306,7 @@ export default function TableSetupPage() {
 
       <div className="mt-4">
         {tables === null ? (
-          <LoadingState />
+          error ? <div className="workspace-state" role="status">لم تتوفر قائمة الترابيزات. استخدم إعادة التحميل أعلاه.</div> : <LoadingState />
         ) : emptyBranch ? (
           <div className="rounded-2xl border border-dashed border-border bg-card p-12 text-center">
             <p className="text-4xl">🍽️</p>
@@ -496,6 +502,6 @@ export default function TableSetupPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </>
+    </div>
   );
 }

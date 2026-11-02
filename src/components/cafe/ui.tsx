@@ -19,13 +19,13 @@ export function PageHeader({
   children?: React.ReactNode;
 }) {
   return (
-    <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+    <div className="workspace-header mb-6 flex flex-wrap items-center justify-between gap-4">
       <div className="min-w-0">
-        <h1 className="font-heading text-2xl leading-snug font-bold tracking-normal text-foreground">
+        <h1 className="font-heading text-[1.75rem] leading-snug font-bold tracking-normal text-foreground">
           {title}
         </h1>
         {subtitle && (
-          <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>
+          <p className="mt-2 text-base leading-relaxed text-muted-foreground">{subtitle}</p>
         )}
       </div>
       {children && <div className="flex flex-wrap items-center gap-2">{children}</div>}
@@ -61,7 +61,7 @@ export function StatCard({
   const inner = (
     <div className="flex h-full items-start justify-between gap-3 rounded-2xl border border-border bg-card p-4 shadow-sm transition-shadow hover:shadow-md">
       <div className="min-w-0">
-        <p className="text-xs font-medium leading-snug text-muted-foreground">{label}</p>
+        <p className="text-sm font-medium leading-snug text-muted-foreground">{label}</p>
         <p className="mt-1.5 text-2xl font-bold tabular-nums text-foreground">{value}</p>
         {hint && <div className="mt-1 text-xs text-muted-foreground">{hint}</div>}
       </div>
@@ -94,7 +94,7 @@ export function Panel({
     <section className={cn("rounded-2xl border border-border bg-card text-card-foreground shadow-sm", className)}>
       {(title || action) && (
         <header className="flex items-center justify-between gap-2 border-b border-border/70 px-5 py-3.5">
-          {title && <h2 className="font-heading text-sm leading-snug font-semibold text-card-foreground">{title}</h2>}
+          {title && <h2 className="font-heading text-base leading-snug font-semibold text-card-foreground">{title}</h2>}
           {action}
         </header>
       )}

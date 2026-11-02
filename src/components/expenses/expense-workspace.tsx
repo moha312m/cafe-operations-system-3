@@ -63,20 +63,22 @@ export function ExpenseWorkspace() {
   useEffect(() => {
     if (!view) return;
     let live = true;
-    api<Metadata>("/api/expenses/categories")
+    const controller = new AbortController();
+    api<Metadata>("/api/expenses/categories", {signal:controller.signal,readTimeoutMs:20_000})
       .then(r => { if (live) { setMetadata(r); setSetupError(""); } })
       .catch(e => { if (live) setSetupError(message(e)); });
-    return () => { live = false; };
+    return () => { live = false; controller.abort(); };
   }, [view, version]);
   useEffect(() => {
     if (!view) return;
     let live = true;
     const q = new URLSearchParams({ page: String(page), ...(search ? { q: search } : {}), ...(filterCategory ? { categoryId: filterCategory } : {}), ...(branchId ? { branchId } : {}), ...(from ? { from } : {}), ...(to ? { to } : {}) });
-    api<Listing>(`/api/expenses?${q}`)
+    const controller = new AbortController();
+    api<Listing>(`/api/expenses?${q}`, {signal:controller.signal,readTimeoutMs:20_000})
       .then(r => { if (live) { setListing(r); setReadError(""); } })
       .catch(e => { if (live) { setReadError(message(e)); setListing(null); } })
       .finally(() => { if (live) setLoading(false); });
-    return () => { live = false; };
+    return () => { live = false; controller.abort(); };
   }, [branchId, from, to, page, version, view, search, filterCategory]);
   function refresh() { setLoading(true); setVersion(v => v + 1); }
   async function pay(event: FormEvent) {
@@ -112,12 +114,12 @@ export function ExpenseWorkspace() {
     catch (e) { setCategoryError(message(e)); } finally { setCategoryBusy(false); }
   }
   if (!view) return <p role="alert">ليس لديك صلاحية عرض المصروفات.</p>;
-  return <main dir="rtl" className="mx-auto max-w-5xl space-y-5">
+  return <main dir="rtl" className="workspace-page">
     <PageHeader title="المصروفات التشغيلية" subtitle="سجل المصروفات وردود النقد من درج الوردية" />
     <div className="flex flex-wrap items-center gap-3"><Link href="/finance" className="text-primary underline">مساحة الماليات ←</Link>{manage && <button className={nativePrimaryButtonClassName} onClick={() => setCreateOpen(true)}>{uncertain ? "استعادة نتيجة المصروف المعلق" : "+ إضافة مصروف"}</button>}{user.role === "CAFE_OWNER" && manage && <button className={button} onClick={() => setCategoriesOpen(true)}>تصنيفات المصروفات</button>}</div>
     <p>مصروف تشغيلي مدفوع فورًا من درجك الحالي بالجنيه المصري. المشتريات وسداد الموردين والسلف والأجور والأصول ومسحوبات المالك لها مسارات منفصلة.</p>
-    <div className="grid gap-3 sm:grid-cols-2"><label>بحث في المصروفات<input className={field} maxLength={120} value={search} onChange={e => { setSearch(e.target.value); setPage(1); setLoading(true); }} /></label><label>التصنيف<select className={field} value={filterCategory} onChange={e => { setFilterCategory(e.target.value); setPage(1); setLoading(true); }}><option value="">كل التصنيفات</option>{metadata.categories.map(c => <option key={c.id} value={c.id}>{c.nameAr}{c.archivedAt ? " — مؤرشف" : ""}</option>)}</select></label></div>
-    <div className="grid gap-3 sm:grid-cols-3">
+    <div className="workspace-toolbar"><label>بحث في المصروفات<input className={field} maxLength={120} value={search} onChange={e => { setSearch(e.target.value); setPage(1); setLoading(true); }} /></label><label>التصنيف<select className={field} value={filterCategory} onChange={e => { setFilterCategory(e.target.value); setPage(1); setLoading(true); }}><option value="">كل التصنيفات</option>{metadata.categories.map(c => <option key={c.id} value={c.id}>{c.nameAr}{c.archivedAt ? " — مؤرشف" : ""}</option>)}</select></label></div>
+    <div className="grid gap-3 rounded-xl bg-card p-4 sm:grid-cols-3">
       <div><label htmlFor="expense-branch">الفرع</label><select id="expense-branch" className={field} value={branchId} disabled={!!user.branchId || busy || uncertain || !intentReady} onChange={e => { setBranchId(e.target.value); setPage(1); setLoading(true); }}>
         <option value="">كل الفروع — اختر فرعًا للصرف</option>{metadata.branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
       </select></div>
@@ -145,7 +147,7 @@ export function ExpenseWorkspace() {
     {readError && <p role="alert">{readError} <button className={button} onClick={refresh}>إعادة التحميل</button></p>}
     {loading ? <p role="status">جارٍ تحميل المصروفات…</p> : listing && <section aria-label="سجل المصروفات" className="space-y-3">
       <p>إجمالي المصروفات في النطاق: {money(listing.totals.paid, "EGP")}؛ النقد المردود لهذه المصروفات: {money(listing.totals.returned, "EGP")}.</p>
-      {listing.expenses.length === 0 ? <p>لا توجد مصروفات في النطاق المحدد.</p> : <ul className="space-y-2">{listing.expenses.map(e => <li key={e.id} className="rounded-lg border p-3">
+      {listing.expenses.length === 0 ? <p>لا توجد مصروفات في النطاق المحدد.</p> : <ul className="space-y-2">{listing.expenses.map(e => <li key={e.id} className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-card p-4">
         <Link className="font-semibold underline" href={`/expenses/${e.id}`}>{e.categoryName} — {money(e.amount, "EGP")}</Link><p>{e.description}</p><p className="text-sm">{date(e.occurredAt)} — {e.actorName}؛ مردود {money(e.returnedAmount, "EGP")}</p>
       </li>)}</ul>}
       <div className="flex items-center gap-3"><button className={button} disabled={page === 1} onClick={() => { setPage(p => p - 1); setLoading(true); }}>السابق</button><span>صفحة {page}</span><button className={button} disabled={page * listing.pageSize >= listing.count} onClick={() => { setPage(p => p + 1); setLoading(true); }}>التالي</button></div>
@@ -190,11 +192,12 @@ export function ExpenseDetail({ id }: { id: string }) {
   useEffect(() => {
     if (!view) return;
     let live = true;
-    api<{ expense: Expense; drawerStatus: string }>(`/api/expenses/${id}`)
+    const controller = new AbortController();
+    api<{ expense: Expense; drawerStatus: string }>(`/api/expenses/${id}`, {signal:controller.signal,readTimeoutMs:20_000})
       .then(r => { if (live) { setData(r); setError(""); } })
       .catch(e => { if (live) setError(message(e)); })
       .finally(() => { if (live) setLoading(false); });
-    return () => { live = false; };
+    return () => { live = false; controller.abort(); };
   }, [id, version, view]);
   async function receive(event: FormEvent) {
     event.preventDefault(); if (!intentReady) return;

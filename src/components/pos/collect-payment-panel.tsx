@@ -96,10 +96,13 @@ export function CollectPaymentPanel({
   const [redeemError, setRedeemError] = useState<string | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const targetController=useRef<AbortController|null>(null);
   async function loadTarget() {
+    targetController.current?.abort();const controller=new AbortController();targetController.current=controller;setError(null);
     const r = await api<{ target: OrderTarget; loyalty: LoyaltyCalcSettings }>(
-      `/api/payments/collect-info?orderId=${orderId}`
+      `/api/payments/collect-info?orderId=${orderId}`,{signal:controller.signal,readTimeoutMs:20_000}
     );
+    if(controller.signal.aborted)throw new DOMException("تم إلغاء القراءة السابقة","AbortError");
     setTarget(r.target);
     setLoyalty(r.loyalty);
     // Linked customer loads automatically — no retyping the phone.
@@ -113,7 +116,8 @@ export function CollectPaymentPanel({
   useEffect(() => {
     loadTarget()
       .then((t) => setAmount(String(t.remainingAmount)))
-      .catch((e) => setError(e instanceof Error ? e.message : "فشل التحميل"));
+      .catch((e) => {if(e?.name!=="AbortError")setError(e instanceof Error ? e.message : "فشل التحميل")});
+    return ()=>targetController.current?.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderId]);
 
@@ -126,16 +130,18 @@ export function CollectPaymentPanel({
     const digits = phone.replace(/\D/g, "");
     if (digits.length < 10) return;
     if (timer.current) clearTimeout(timer.current);
+    const controller=new AbortController();
     timer.current = setTimeout(async () => {
       try {
         const r = await api<{ customer: LookupCustomer | null }>(
-          `/api/customers/lookup?phone=${encodeURIComponent(phone)}`
+          `/api/customers/lookup?phone=${encodeURIComponent(phone)}`,{signal:controller.signal,readTimeoutMs:20_000}
         );
+        if(controller.signal.aborted)return;
         setCustomer(r.customer);
         setLooked(true);
-      } catch { setLooked(false); }
+      } catch { if(!controller.signal.aborted)setLooked(false); }
     }, 400);
-    return () => { if (timer.current) clearTimeout(timer.current); };
+    return () => { controller.abort(); if (timer.current) clearTimeout(timer.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phone, target?.customer]);
 
@@ -239,7 +245,7 @@ export function CollectPaymentPanel({
         {collectionError && <p role="alert" className="text-destructive">{collectionError} — المبلغ والبيانات محفوظة. إعادة نفس المحاولة لا تسجل دفعة أخرى.</p>}
         {busy && <p role="status">جاري تسجيل الدفع…</p>}
         {error ? (
-          <p className="text-sm text-destructive">{error}</p>
+          <div role="alert" className="space-y-3 text-sm text-destructive"><p>{error}</p><Button variant="outline" onClick={()=>void loadTarget().then(t=>setAmount(String(t.remainingAmount))).catch(e=>{if(e?.name!=="AbortError")setError(e instanceof Error?e.message:"فشل التحميل")})}>إعادة المحاولة</Button></div>
         ) : !target ? (
           <p className="text-sm text-muted-foreground">جاري التحميل…</p>
         ) : (

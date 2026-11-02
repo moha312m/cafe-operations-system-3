@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { Button } from "@/components/ui/button";
 import { useApp } from "@/components/app-shell";
 import { money } from "@/lib/client";
 import { formatTime } from "@/lib/i18n";
@@ -30,8 +31,8 @@ const showValue = (v: unknown) => (v === null || v === undefined || v === "" ? "
 export function JournalEntryView({ id }: { id: string }) {
   const { cafe } = useApp();
   const currency = cafe?.currency ?? "EGP";
-  const { data, error, loading } = useAccountingData<Entry>(`/api/accounting/journal/${id}`);
-  if (error) return <p role="alert" className="rounded border p-3 text-destructive">{error}</p>;
+  const { data, error, loading, reload } = useAccountingData<Entry>(`/api/accounting/journal/${id}`);
+  if (error) return <div role="alert" className="workspace-state text-destructive"><p>{error}</p><Button variant="outline" disabled={loading} onClick={reload}>{loading ? "جارٍ إعادة التحميل…" : "إعادة المحاولة"}</Button></div>;
   if (!data) return <p role="status">{loading ? "جاري التحميل…" : ""}</p>;
   const fmt = (n: number) => money(n, currency);
 

@@ -23,7 +23,7 @@ export function AccountingShell({ children }: { children: React.ReactNode }) {
     return <p role="alert" className="rounded-lg border p-4">ليس لديك صلاحية عرض المحاسبة.</p>;
   }
   return (
-    <div className="max-w-6xl space-y-4">
+    <div className="workspace-page">
       <PageHeader title="المحاسبة والماليات">
         <span className="rounded-full border border-caramel-line bg-caramel-soft px-3 py-1 text-sm font-medium text-caramel-ink" data-testid="shadow-badge">تجريبي — غير معتمد</span>
       </PageHeader>
@@ -31,7 +31,7 @@ export function AccountingShell({ children }: { children: React.ReactNode }) {
         دي دفاتر تجريبية للمراجعة بس، ومش دفاتر رسمية. الأرقام محتاجة مراجعة المحاسب، ومفيش تاريخ بداية ولا أرصدة افتتاحية معتمدة لحد دلوقتي.
       </p>
       {canKey("expenses.view") && <Link href="/expenses" className="underline">تسجيل ومراجعة مصروفات الدرج</Link>}
-      <nav aria-label="أقسام المحاسبة" className="flex flex-wrap gap-2 border-b pb-2">
+      <nav aria-label="أقسام المحاسبة" className="workspace-tabs">
         {TABS.map((tab) => {
           const active = tab.href === "/accounting" ? pathname === tab.href : pathname === tab.href || pathname.startsWith(tab.href + "/");
           return (

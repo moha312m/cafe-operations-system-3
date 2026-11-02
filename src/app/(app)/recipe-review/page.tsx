@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import { api, money } from "@/lib/client";
 import { useApp } from "@/components/app-shell";
+import { useWorkspaceRead } from "@/components/cafe/use-workspace-read";
 import { PageHeader, LoadingState, EmptyState } from "@/components/cafe/ui";
 import { RecipeEditor } from "@/components/menu/recipe-editor";
 import { RecipeExchange } from "@/components/recipe-import/recipe-exchange";
@@ -143,39 +144,21 @@ function isShown(row: Row, filter: BoardFilter) {
 
 function UnavailableValue({ row }: { row: Row }) {
   const label = row.costStatus === "NOT_APPLICABLE" ? "لا تنطبق" : "التكلفة غير متاحة";
-  return <span className="text-xs text-muted-foreground">{label}</span>;
+  return <span className="text-sm text-muted-foreground">{label}</span>;
 }
 
 export default function RecipeReviewPage() {
-  const { cafe, can } = useApp();
+  const { cafe, can, user } = useApp();
   const currency = cafe?.currency ?? "EGP";
   const canManageRecipes = can("recipe:manage");
   const canManageInventory = can("inventory:manage");
-  const [data, setData] = useState<Payload | null>(null);
+
   const [filter, setFilter] = useState<BoardFilter>("ALL");
   const [category, setCategory] = useState("ALL");
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
   const [editorRow, setEditorRow] = useState<Row | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    try {
-      setLoadError(null);
-      setData(await api<Payload>("/api/recipes/review"));
-    } catch (error) {
-      // The server is the authority here and refuses this board to anyone
-      // without profit visibility. Say so plainly instead of leaving an
-      // unauthorised user watching a spinner that will never resolve.
-      const message = error instanceof Error ? error.message : "فشل تحميل دقة وتكلفة المنتجات";
-      setLoadError(message);
-      toast.error(message);
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const {data,error:loadError,loading,refresh:load}=useWorkspaceRead<Payload>("/api/recipes/review",`${user.id}:${user.cafeId}:${user.branchId}`);
 
   const categories = useMemo(
     () => [...new Set((data?.rows ?? []).map((row) => row.category).filter(Boolean) as string[])].sort(),
@@ -221,20 +204,14 @@ export default function RecipeReviewPage() {
     }
   }
 
-  if (loadError) {
-    return (
-      <EmptyState
-        icon="🔒"
-        message={`${loadError} — شاشة التكلفة والربحية متاحة لمن لديه صلاحية عرض الأرباح فقط.`}
-      />
-    );
-  }
-  if (!data) return <LoadingState />;
+  if (loadError) return <section className="workspace-state" role="alert"><h1 className="text-2xl font-bold">تعذر تحميل دقة الوصفات</h1><p className="my-4">{loadError}</p><Button onClick={load}>إعادة المحاولة</Button></section>;
+  if (!data) return <LoadingState label="جارٍ تحميل الوصفات والتكلفة…" />;
 
   const s = data.summary;
 
   return (
-    <>
+    <div className="workspace-page">
+      {loading && <LoadingState label="جارٍ تحديث الوصفات…" />}
       <PageHeader
         title="دقة وتكلفة المنتجات"
         subtitle="تكلفة وربحية كل منتج وحجم من وصفته الفعلية فقط — بدون بدائل أو متوسطات مضللة"
@@ -248,7 +225,7 @@ export default function RecipeReviewPage() {
       <div className="mb-4 grid grid-cols-2 gap-2 lg:grid-cols-4">
         {[
           ["الأصناف والأحجام المباعة", String(s.sellableConfigurations)],
-          ["تكلفتها موثوقة", String(s.costAvailable)],
+          ["تكلفتها متاحة من الوصفة", String(s.costAvailable)],
           ["تحتاج مراجعة", String(s.needsReview)],
           ["مؤهلة لحساب الفروقات", `${s.varianceEligiblePct}%`],
         ].map(([label, value]) => (
@@ -422,6 +399,6 @@ export default function RecipeReviewPage() {
           )}
         </DialogContent>
       </Dialog>
-    </>
+    </div>
   );
 }

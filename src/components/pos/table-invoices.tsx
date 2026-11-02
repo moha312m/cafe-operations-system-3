@@ -66,6 +66,8 @@ export function TableInvoices({
   const canClose = canKey("tables.close");
   const canManage = canKey("tables.manage");
   const canRedeem = canKey("loyalty.redeem_points");
+  const [readError,setReadError]=useState("");
+  const readController=useRef<AbortController|null>(null);
   const [summary, setSummary] = useState<SessionSummary | null>(null);
   const [invoices, setInvoices] = useState<Invoice[] | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -91,16 +93,18 @@ export function TableInvoices({
     const digits = tiPhone.replace(/\D/g, "");
     if (digits.length < 10) return;
     if (tiTimer.current) clearTimeout(tiTimer.current);
+    const controller=new AbortController();
     tiTimer.current = setTimeout(async () => {
       try {
         const r = await api<{ customer: typeof tiCustomer; loyalty: NonNullable<typeof tiLoyalty> }>(
-          `/api/customers/lookup?phone=${encodeURIComponent(tiPhone)}`
+          `/api/customers/lookup?phone=${encodeURIComponent(tiPhone)}`,{signal:controller.signal,readTimeoutMs:20_000}
         );
+        if(controller.signal.aborted)return;
         setTiCustomer(r.customer);
         setTiLoyalty(r.loyalty);
       } catch { /* quiet */ }
     }, 400);
-    return () => { if (tiTimer.current) clearTimeout(tiTimer.current); };
+    return () => { controller.abort(); if (tiTimer.current) clearTimeout(tiTimer.current); };
   }, [tiPhone]);
 
   const tiPointsNum = Math.floor(Number(tiPoints) || 0);
@@ -110,10 +114,13 @@ export function TableInvoices({
 
   const load = useCallback(async () => {
     if (!branchId || !tableNumber) { setSummary(null); setInvoices(null); return; }
+    readController.current?.abort();
+    const controller=new AbortController();readController.current=controller;setReadError("");
     try {
       const data = await api<{ session: SessionSummary | null; invoices?: Invoice[] }>(
-        `/api/tables/session?branchId=${branchId}&tableNumber=${encodeURIComponent(tableNumber)}`
+        `/api/tables/session?branchId=${branchId}&tableNumber=${encodeURIComponent(tableNumber)}`,{signal:controller.signal,readTimeoutMs:20_000}
       );
+      if(controller.signal.aborted)return;
       setSummary(data.session);
       const inv = data.invoices ?? [];
       setInvoices(inv);
@@ -125,13 +132,13 @@ export function TableInvoices({
       } else if (!latest) {
         initFor.current = null;
       }
-    } catch {
-      // e.g. no permission — hide silently
-      setSummary(null); setInvoices([]);
+    } catch(error) {
+      if(controller.signal.aborted)return;
+      setSummary(null);setInvoices(null);setReadError(error instanceof Error?error.message:"تعذر تحميل فواتير الترابيزة");
     }
   }, [branchId, tableNumber]);
 
-  useEffect(() => { load(); }, [load, reloadKey]);
+  useEffect(() => { void load(); return ()=>readController.current?.abort(); }, [load, reloadKey]);
 
   function toggle(id: string) {
     setExpanded((prev) => {
@@ -199,7 +206,8 @@ export function TableInvoices({
     }
   }
 
-  if (invoices === null) return null; // not loaded / no table
+  if(readError)return <div role="alert" className="rounded-xl bg-caramel-soft p-3 text-sm text-caramel-ink">{readError} <Button variant="outline" onClick={()=>void load()}>إعادة المحاولة</Button></div>;
+  if (invoices === null) return <p role="status" className="text-sm text-muted-foreground">جارٍ تحميل فواتير الترابيزة…</p>;
 
   return (
     <div className="space-y-2 border-t pt-3">

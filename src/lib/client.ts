@@ -82,9 +82,50 @@ async function requestKey(path: string, body: string) {
   } };
 }
 
-export async function api<T>(
+export type ApiOptions = {
+  method?: string;
+  body?: unknown;
+  idempotencyKey?: string;
+  /** Opt-in cancellation/deadline for GETs only. Financial writes ignore both. */
+  signal?: AbortSignal;
+  readTimeoutMs?: number;
+};
+
+export async function api<T>(path: string, options: ApiOptions = {}): Promise<T> {
+  if ((options.method ?? "GET").toUpperCase() !== "GET" ||
+      (!options.signal && options.readTimeoutMs === undefined)) {
+    return sendApi<T>(path, options);
+  }
+  const controller = new AbortController();
+  const deadline = options.readTimeoutMs;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: () => void = () => {};
+  const cancelled = new Promise<never>((_, reject) => {
+    onAbort = () => {
+      controller.abort();
+      reject(new DOMException("تم إلغاء القراءة السابقة", "AbortError"));
+    };
+    if (options.signal?.aborted) onAbort();
+    else options.signal?.addEventListener("abort", onAbort, { once: true });
+    if (deadline !== undefined) timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error("انتهت مهلة تحميل البيانات. تحقق من الاتصال ثم أعد المحاولة."));
+    }, Math.max(1, deadline));
+  });
+  try {
+    // The race bounds body parsing too, even if a transport ignores abort.
+    if (options.signal?.aborted) return await cancelled;
+    return await Promise.race([sendApi<T>(path, options, controller.signal), cancelled]);
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+async function sendApi<T>(
   path: string,
-  options: { method?: string; body?: unknown; idempotencyKey?: string } = {}
+  options: ApiOptions = {},
+  signal?: AbortSignal
 ): Promise<T> {
   const method = options.method ?? "GET";
   const body = options.body ? JSON.stringify(options.body) : undefined;
@@ -94,13 +135,16 @@ export async function api<T>(
   const key = options.idempotencyKey ?? pending?.key;
   const res = await fetch(path, {
     method,
+    ...(signal ? { signal } : {}),
     headers: { ...(body ? { "Content-Type": "application/json" } : {}), ...(key ? { "Idempotency-Key": key } : {}) },
     body,
   });
+  if(signal?.aborted)throw new DOMException("تم إلغاء القراءة السابقة","AbortError");
   const data = await res.json().catch((error) => {
     if (protectedPost && res.ok) throw error;
     return {};
   });
+  if(signal?.aborted)throw new DOMException("تم إلغاء القراءة السابقة","AbortError");
   if (res.ok || (res.status < 500 && res.status !== 409)) pending?.clear();
   if (!res.ok) {
     if (res.status === 401 && typeof window !== "undefined") {

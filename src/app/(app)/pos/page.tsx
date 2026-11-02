@@ -6,7 +6,8 @@ import {priceAmendment} from '@/lib/order-amendment-math';
 import { Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
-import { api, money } from "@/lib/client";
+import { api, money, ApiRequestError } from "@/lib/client";
+import { RefreshCw, Search, ShoppingBag } from "lucide-react";
 import { t } from "@/lib/i18n";
 import { branchShift, round2 as r2 } from "@/lib/pricing";
 import { computeCharges, type ChargeSettings } from "@/lib/charges";
@@ -53,6 +54,10 @@ import {
   type Variant,
 } from "@/components/pos/types";
 
+const EMPTY_CATEGORIES: Category[] = [];
+const EMPTY_PRODUCTS: Product[] = [];
+const EMPTY_BRANCHES: Branch[] = [];
+
 const EMPTY_MIXED = { CASH: "", CARD: "", WALLET: "" };
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -80,32 +85,38 @@ export default function PosPage() {
 function CollectionModeParams({
   onParams,
 }: {
-  onParams: (sp: URLSearchParams) => void;
+  onParams: (sp: URLSearchParams) => void | (() => void);
 }) {
   const searchParams = useSearchParams();
   useEffect(() => {
-    onParams(new URLSearchParams(searchParams.toString()));
+    return onParams(new URLSearchParams(searchParams.toString()));
   }, [searchParams, onParams]);
   return null;
 }
 
 function PosPageInner() {
   const router = useRouter();
-  const { cafe, user, canKey } = useApp();
+  const { cafe, user, can, canKey, permKeys } = useApp();
   const canDiscount = canKey("pos.apply_discount");
   const canCreateOrder = canKey("pos.create_order");
   const currency = cafe?.currency ?? "USD";
   const taxRate = cafe?.taxRate ?? 0;
 
   // ── Menu data ────────────────────────────────────────────────
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [branches, setBranches] = useState<Branch[]>([]);
+  const menuIdentity = `${user.cafeId}:${user.id}:${user.branchId}:${user.role}:${canCreateOrder}:${permKeys.join(",")}`;
+  const [menuVersion, setMenuVersion] = useState(0);
+  const [menuState, setMenuState] = useState<{ identity: string; version: number; categories?: Category[]; products?: Product[]; branches?: Branch[]; error?: string; denied?: boolean }>({ identity: "", version: -1 });
+  const menu = menuState.identity === menuIdentity && menuState.version === menuVersion ? menuState : null;
+  const categories = menu?.categories ?? EMPTY_CATEGORIES;
+  const products = menu?.products ?? EMPTY_PRODUCTS;
+  const branches = menu?.branches ?? EMPTY_BRANCHES;
+  const menuReady = !!menu && !menu.error;
+  const menuLoading = canCreateOrder && !menu;
+  const refreshMenu = () => setMenuVersion(value => value + 1);
   const [selectedBranchId, setBranchId] = useState<string>(user.branchId ?? "");
   const canChooseBranch = user.role === "CAFE_OWNER" && !user.branchId;
   const branchId = canChooseBranch ? selectedBranchId : (user.branchId ?? "");
   const [activeCategory, setActiveCategory] = useState<string>("all");
-  const [menuReady, setMenuReady] = useState(false);
   const [compactView, setCompactView] = useState<"products" | "cart">("products");
   const workspaceId = useId();
   const productsId = `${workspaceId}-products`;
@@ -168,7 +179,11 @@ function PosPageInner() {
   );
   const [collectionMode, setCollectionMode] = useState<CollectionMode>("NOW");
   const [paidInput, setPaidInput] = useState("");
-  const [finSettings, setFinSettings] = useState<ChargeSettings | null>(null);
+  const [settingsVersion, setSettingsVersion] = useState(0);
+  const settingsIdentity = `${menuIdentity}:${branchId}:${settingsVersion}`;
+  const [settingsState, setSettingsState] = useState<{ identity: string; data?: ChargeSettings; error?: string }>({ identity: "" });
+  const finSettings = settingsState.identity === settingsIdentity ? settingsState.data ?? null : null;
+  const settingsError = settingsState.identity === settingsIdentity ? settingsState.error : undefined;
   const [submitting, setSubmitting] = useState(false);
   const submissionInFlight = useRef(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -186,6 +201,7 @@ function PosPageInner() {
   const [collectTableBanner, setCollectTableBanner] = useState<string | null>(null);
 
   const applyCollectionParams = useCallback((sp: URLSearchParams) => {
+    const controller = new AbortController();
     const orderParam = sp.get("collectOrderId");
     const sessionParam = sp.get("collectTableSessionId");
     const tableParam = sp.get("table");
@@ -198,15 +214,17 @@ function PosPageInner() {
     } else if (sessionParam) {
       // Resolve the session to its table, then open its invoice cards.
       api<{ target: { tableNumber: string } }>(
-        `/api/payments/collect-info?tableSessionId=${sessionParam}`
+        `/api/payments/collect-info?tableSessionId=${sessionParam}`, { signal: controller.signal, readTimeoutMs: 20_000 }
       )
         .then((r) => {
+          if (controller.signal.aborted) return;
           setOrderType("DINE_IN");
           setDetails((d) => ({ ...d, tableNumber: r.target.tableNumber }));
           setCollectTableBanner(r.target.tableNumber);
         })
-        .catch((e) => toast.error(e instanceof Error ? e.message : "فشل تحميل حساب الترابيزة"));
+        .catch((e) => { if (!controller.signal.aborted) toast.error(e instanceof Error ? e.message : "فشل تحميل حساب الترابيزة"); });
     }
+    return () => controller.abort();
   }, []);
 
   function exitCollectionMode() {
@@ -230,29 +248,37 @@ function PosPageInner() {
   const [itemNote, setItemNote] = useState("");
 
   useEffect(() => {
+    if (!canCreateOrder) return;
+    const controller = new AbortController();
+    let live = true;
+    const read = { signal: controller.signal, readTimeoutMs: 20_000 };
     Promise.all([
-      api<{ categories: Category[] }>("/api/categories"),
-      api<{ products: Product[] }>("/api/products"),
-      api<{ branches: Branch[] }>("/api/branches"),
-    ])
-      .then(([c, p, b]) => {
-        setCategories(c.categories.filter((x) => x.isActive));
-        setMenuReady(true);
-        setProducts(p.products);
-        setBranches(b.branches);
-        if (canChooseBranch && b.branches.length > 0) setBranchId(b.branches[0].id);
-      })
-      .catch((e) => toast.error(e.message));
-  }, [user.branchId, canChooseBranch]);
+      api<{ categories: Category[] }>("/api/categories", read),
+      api<{ products: Product[] }>("/api/products", read),
+      api<{ branches: (Branch & { isActive?: boolean })[] }>("/api/branches", read),
+    ]).then(([c, p, b]) => {
+      if (!live) return;
+      const activeBranches = b.branches.filter(branch => branch.isActive !== false);
+      setMenuState({ identity: menuIdentity, version: menuVersion, categories: c.categories.filter(x => x.isActive), products: p.products, branches: activeBranches });
+      if (canChooseBranch) setBranchId(current => activeBranches.some(branch => branch.id === current) ? current : activeBranches[0]?.id ?? "");
+    }).catch((error: unknown) => {
+      if (!live || controller.signal.aborted) return;
+      setMenuState({ identity: menuIdentity, version: menuVersion, error: error instanceof Error ? error.message : "تعذر تحميل قائمة البيع", denied: error instanceof ApiRequestError && error.status === 403 });
+    });
+    return () => { live = false; controller.abort(); };
+  }, [menuIdentity, menuVersion, canCreateOrder, canChooseBranch]);
 
-  // Branch tax/service settings drive the live totals (server recomputes
-  // authoritatively on submit).
+  // Only the current branch read may supply preview tax/service settings.
+  // Cancellation is limited to reads; financial submission keys remain untouched.
   useEffect(() => {
-    if (!branchId) return;
-    api<{ settings: ChargeSettings }>(`/api/branches/${branchId}/financial-settings`)
-      .then((r) => setFinSettings(r.settings))
-      .catch(() => setFinSettings(null));
-  }, [branchId]);
+    if (!branchId || !canCreateOrder) return;
+    const controller = new AbortController();
+    let live = true;
+    api<{ settings: ChargeSettings }>(`/api/branches/${branchId}/financial-settings`, { signal: controller.signal, readTimeoutMs: 20_000 })
+      .then(r => { if (live) setSettingsState({ identity: settingsIdentity, data: r.settings }); })
+      .catch((error: unknown) => { if (live && !controller.signal.aborted) setSettingsState({ identity: settingsIdentity, error: error instanceof Error ? error.message : "تعذر تحميل إعدادات الفرع" }); });
+    return () => { live = false; controller.abort(); };
+  }, [branchId, canCreateOrder, settingsIdentity]);
 
   // POS shows only showInPOS products, priced for the selected branch:
   // a branch override shifts the base and every variant equally.
@@ -280,6 +306,7 @@ function PosPageInner() {
     for (const p of posProducts) {
       counts.set(p.category.id, (counts.get(p.category.id) ?? 0) + 1);
     }
+    counts.set("all", posProducts.length);
     return counts;
   }, [posProducts]);
 
@@ -453,13 +480,14 @@ function PosPageInner() {
     if (!canCreateOrder) return "ليس لديك صلاحية إنشاء طلب";
     if (needsShift && !shiftActive) return t.shifts.mustOpen;
     if (cart.length === 0) return t.pos.validation.emptyCart;
-    if (!branchId) return t.pos.validation.noBranch;
+    if (!branchId || !branches.some(branch => branch.id === branchId)) return t.pos.validation.noBranch;
+    if (!finSettings) return settingsError ? "تعذر التحقق من الضرائب والخدمة؛ أعد تحميل إعدادات الفرع قبل التحصيل" : "جارٍ التحقق من إعدادات الضرائب والخدمة…";
     if (orderType === "DINE_IN" && !details.tableNumber.trim())
       return t.pos.validation.needTable;
     if (orderType === "DELIVERY" && !details.customerName.trim())
       return t.pos.validation.needCustomer;
     return null;
-  }, [canCreateOrder, needsShift, shiftActive, cart.length, branchId, orderType, details,discountError]);
+  }, [canCreateOrder, needsShift, shiftActive, cart.length, branchId, branches, finSettings, settingsError, orderType, details,discountError]);
 
   function changeMixed(field: SplitMethod, value: string) {
     setMixed((prev) => ({ ...prev, [field]: value }));
@@ -558,7 +586,11 @@ function PosPageInner() {
 
   // ── Render ───────────────────────────────────────────────────
   return (
-    <div className="flex flex-col gap-4">
+    <div className="cashier-page flex min-w-0 flex-col gap-4">
+      <header className="flex flex-wrap items-center justify-between gap-3">
+        <div><p className="mb-1 hidden text-xs font-semibold text-primary md:block">نقطة البيع</p><h1 className="text-[28px] font-bold leading-snug">الكاشير</h1><p className="mt-1 hidden text-sm text-muted-foreground md:block">اختر المنتجات، راجع الطلب ثم حصّل.</p></div>
+        <div className="flex items-center gap-2"><span className="hidden rounded-full bg-primary/8 px-3 py-2 text-sm text-primary md:inline-flex">{branches.find(branch => branch.id === branchId)?.name ?? "نطاق الفرع"}</span><Button variant="outline" aria-label="تحديث قائمة البيع" disabled={menuLoading} onClick={refreshMenu}><RefreshCw aria-hidden="true" className="size-4" /> تحديث</Button></div>
+      </header>
       {receiptPaymentId && (
         <PaymentReceiptPreview key={receiptPaymentId} paymentId={receiptPaymentId} scope="order" onClose={() => setReceiptPaymentId(null)} />
       )}
@@ -575,11 +607,11 @@ function PosPageInner() {
         )}
 
         {canOperateShift && branchId && (
-          <ShiftControls
+          <details className="cashier-shift-context rounded-xl bg-card px-3"><summary className="flex cursor-pointer items-center justify-between gap-2 text-sm"><span>{shiftActive ? "الوردية مفتوحة" : "راجع حالة الوردية قبل التحصيل"}</span><span className="text-primary">تفاصيل الوردية</span></summary><ShiftControls
             branchId={branchId}
             currency={currency}
             onActiveChange={setShiftActive}
-          />
+          /></details>
         )}
 
         {/* تحصيل دفع mode banner — deep-linked table collection */}
@@ -599,7 +631,7 @@ function PosPageInner() {
 
         {/* Single-order collection dialog (/pos?collectOrderId=…) */}
         {collectOrderId && (
-          <CollectPaymentPanel
+          <CollectPaymentPanel key={collectOrderId}
             orderId={collectOrderId}
             currency={currency}
             needsShift={needsShift}
@@ -609,6 +641,7 @@ function PosPageInner() {
           />
         )}
 
+        {settingsError && <p role="alert" className="rounded-xl bg-caramel-soft p-3 text-sm text-caramel-ink">تعذر تحميل إعدادات الضرائب والخدمة: {settingsError}. التحصيل متوقف حتى التحقق من إعدادات الفرع؛ بيانات الطلب محفوظة. <Button variant="outline" onClick={() => setSettingsVersion(value => value + 1)}>إعادة تحميل إعدادات الفرع</Button></p>}
         {submitError && <p role="alert" className="rounded-lg border border-destructive p-3">{submitError} — البيانات محفوظة للمراجعة وإعادة المحاولة.</p>}
         {submitting && <p role="status">جاري حفظ الطلب وتسجيل الدفع…</p>}
       </div>
@@ -620,10 +653,8 @@ function PosPageInner() {
       <div id={productsId} role="region" aria-labelledby={`${productsId}-heading`} className="cashier-catalog flex min-w-0 flex-1 flex-col gap-3">
         <h2 id={`${productsId}-heading`} className="sr-only">المنتجات والتصنيفات</h2>
         <div className="flex shrink-0 flex-wrap items-center gap-2">
-          <div className="relative min-w-48 flex-1">
-            <span className="pointer-events-none absolute start-3 top-1/2 -translate-y-1/2 text-muted-foreground">
-              🔍
-            </span>
+          <div className="relative min-w-0 flex-1">
+            <Search aria-hidden="true" className="pointer-events-none absolute start-3 top-1/2 size-5 -translate-y-1/2 text-muted-foreground" />
             <Input
               ref={productSearchRef}
               placeholder={t.pos.searchProducts}
@@ -635,7 +666,7 @@ function PosPageInner() {
           </div>
           {canChooseBranch && branches.length > 1 && (
             <Select value={branchId} onValueChange={(v) => setBranchId(v ?? "")}>
-              <SelectTrigger className="h-10 w-40">
+              <SelectTrigger className="h-10 w-32">
                 <SelectValue placeholder={t.common.branch}>
                   {branches.find((b) => b.id === branchId)?.name}
                 </SelectValue>
@@ -651,28 +682,36 @@ function PosPageInner() {
           )}
         </div>
 
-        <CategoryTabs
+        {menuReady && branchId && canCreateOrder && <CategoryTabs
           key={`${branchId}:${categories.length}`}
           categories={categories}
           active={activeCategory}
           counts={countsByCategory}
           onChange={selectCategory}
-        />
+        />}
+        {menuReady && branchId && <div className="flex shrink-0 items-center justify-between gap-2 text-sm"><h3 className="font-semibold">{activeCategory === "all" ? "قائمة المنتجات" : categories.find(category => category.id === activeCategory)?.name ?? "المنتجات"}</h3><span className="text-muted-foreground">{visibleProducts.length} منتج مطابق</span></div>}
 
-        <QuickActions
+
+
+        <ProductGrid
+          products={visibleProducts}
+          state={!canCreateOrder || menu?.denied ? "denied" : menuLoading ? "loading" : menu?.error ? "error" : !branchId || !branches.some(branch => branch.id === branchId) ? "no-branch" : posProducts.length === 0 ? "empty" : visibleProducts.length === 0 ? "filtered" : "ready"}
+          error={menu?.error}
+          onRetry={refreshMenu}
+          onClear={() => { setSearch(""); selectCategory("all"); }}
+          canManageMenu={can("menu:manage")}
+          currency={currency}
+          onSelect={handleSelectProduct}
+        />
+        {menuReady && canCreateOrder && branchId && <details className="shrink-0 rounded-lg bg-card px-3 text-sm"><summary className="cursor-pointer text-primary">اختصارات البيع وتكرار آخر طلب</summary><QuickActions
           branchId={branchId}
           products={posProducts}
           customerPhone={details.customerPhone}
           showPicks={search.trim() === "" && activeCategory === "all"}
           onSelect={handleSelectProduct}
           onRepeat={repeatOrder}
-        />
+        /></details>}
 
-        <ProductGrid
-          products={visibleProducts}
-          currency={currency}
-          onSelect={handleSelectProduct}
-        />
       </div>
 
       {/* Sticky order cart */}
@@ -728,7 +767,7 @@ function PosPageInner() {
 
       <div className="cashier-compact-checkout space-y-2 rounded-xl border bg-card p-3">
         <div className="flex items-center justify-between gap-2 text-lg font-bold"><span>الإجمالي النهائي</span><span>{money(total,currency)}</span></div>
-        <Button aria-controls={orderId} className="min-h-14 w-full text-base" onClick={() => showCompactWorkspace("cart")}>مراجعة الطلب والدفع ({cart.reduce((sum,line) => sum + line.quantity,0)})</Button>
+        <Button aria-controls={orderId} className="min-h-14 w-full text-base" onClick={() => showCompactWorkspace("cart")}><ShoppingBag aria-hidden="true" className="size-5" /> مراجعة الطلب والدفع ({cart.reduce((sum,line) => sum + line.quantity,0)})</Button>
       </div>
 
       {/* Variant / add-ons / note dialog */}

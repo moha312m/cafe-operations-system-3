@@ -92,19 +92,22 @@ export function CustomerLoyalty({
     setPointsInput("");
     if (!looksComplete || !branchId) return;
     if (timer.current) clearTimeout(timer.current);
+    const controller=new AbortController();
     timer.current = setTimeout(async () => {
       try {
         const r = await api<{ customer: LookupCustomer | null; loyalty: LoyaltyCalcSettings }>(
-          `/api/customers/lookup?phone=${encodeURIComponent(phone)}`
+          `/api/customers/lookup?phone=${encodeURIComponent(phone)}`,{signal:controller.signal,readTimeoutMs:20_000}
         );
+        if(controller.signal.aborted)return;
         setCustomer(r.customer);
         setLoyalty(r.loyalty);
         setLooked(true);
       } catch {
+        if(controller.signal.aborted)return;
         setLooked(false); // invalid number or no permission — stay quiet
       }
     }, 400);
-    return () => { if (timer.current) clearTimeout(timer.current); };
+    return () => { controller.abort(); if (timer.current) clearTimeout(timer.current); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phone, branchId]);
 

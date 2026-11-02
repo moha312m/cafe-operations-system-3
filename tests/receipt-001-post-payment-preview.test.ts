@@ -55,7 +55,7 @@ function host(relative: string, name: string, props: Record<string, any> = {}) {
     if (url.includes("/session")) return { session: { id: "table-1", tableNumber: "101", remainingAmount: 40, totalAmount: 40, paidAmount: 0, invoiceCount: 1 }, invoices: [{ ...target, id: target.orderId, remainingAmount: 40, items: [] }] };
     if (url === "/api/products") return { products: [product] };
     if (url === "/api/categories") return { categories: [] };
-    if (url === "/api/branches") return { branches: [] };
+    if (url === "/api/branches") return { branches: [{id:"branch-1",name:"Synthetic branch",isActive:true}] };
     if (url.includes("financial-settings")) return { settings: { taxEnabled: false, serviceChargeEnabled: false } };
     if (url.includes("loyalty")) return { settings: { enabled: false } };
     return {};
@@ -65,14 +65,14 @@ function host(relative: string, name: string, props: Record<string, any> = {}) {
   const mockedRequire = (id: string): any => {
     if (id === "react") return hooks;
     if (id === "react/jsx-runtime") return require(id);
-    if (id === "@/components/app-shell") return { useApp: () => ({ cafe: { currency: "EGP", taxRate: 0, features: {} }, user: { id: "cashier", role: "CAFE_OWNER", branchId: "branch-1" }, canKey: () => true, can: () => true, features: {} }) };
+    if (id === "@/components/app-shell") return { useApp: () => ({ cafe: { currency: "EGP", taxRate: 0, features: {} }, user: { id: "cashier", cafeId:"cafe-1", role: "CAFE_OWNER", branchId: "branch-1" }, permKeys:[], canKey: () => true, can: () => true, features: {} }) };
     if (id === "@/lib/client") return { api, money: (n: unknown) => `${n} EGP` };
     if (id === "sonner") return { toast: { success() {}, error() {}, warning() {} } };
     if (id === "next/navigation") return { useRouter: () => ({ push() {}, replace() {} }), useSearchParams: () => new URLSearchParams() };
     if (id.startsWith("@/lib/") || id === "@/components/pos/types") return require(path.join(root, "src", id.slice(2)));
     return new Proxy({}, { get: (_, key) => String(key) });
   };
-  vm.runInNewContext(code, { exports, require: mockedRequire, URLSearchParams, Intl, Date, console,
+  vm.runInNewContext(code, { exports, require: mockedRequire, URLSearchParams, AbortController, DOMException, Intl, Date, console,
     setTimeout: (fn: () => void) => { timers.set(++timerId, fn); return timerId; }, clearTimeout: (id: number) => timers.delete(id),
     window: { open: () => { throw new Error("Unexpected popup"); }, print: () => printed.push("outer") },
   });
