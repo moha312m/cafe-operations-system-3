@@ -67,7 +67,7 @@ export function CategoryTabs({
     <Dialog open={panelOpen} onOpenChange={setPanelOpen}>
     <section aria-label="تصنيفات المنتجات" className="cashier-categories shrink-0 space-y-2 rounded-xl border bg-card p-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="min-w-0 flex-1 text-sm [overflow-wrap:anywhere]">التصنيف المحدد: <strong>{selected}</strong></p>
+        <p className="w-full min-w-0 text-sm [overflow-wrap:anywhere] sm:w-auto sm:flex-1">التصنيف المحدد: <strong>{selected}</strong></p>
         <Button className="category-all-products" variant="outline" aria-pressed={active === "all"} onClick={() => choose("all")}>كل المنتجات{active === "all" && " ✓ محدد"}</Button>
         {categories.length > 0 && <DialogTrigger render={<Button variant="outline" aria-controls={dialogId} />} onClick={() => setQuery("")}>كل التصنيفات ({categories.length})</DialogTrigger>}
       </div>

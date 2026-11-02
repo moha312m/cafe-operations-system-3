@@ -32,6 +32,8 @@ test('Step 1 table rename serialization and transactional audit rollback', {
     const tableNumber = tag + '-' + suffix;
     const r = await request('/api/tables/config', 'POST', { branchId: f.branchId, tableNumber, seatsCount: 4 });
     assert.equal(r.status, 201, JSON.stringify(r.data)); retained.push(r.data.id);
+    // Compile and validate PATCH on this owned fixture before measuring lock queues.
+    assert.equal((await patch(r.data.id, { displayName: null })).status, 200);
     return { id: r.data.id as string, tableNumber };
   }
   async function order(tableNumber: string, suffix: string) {
@@ -48,7 +50,7 @@ test('Step 1 table rename serialization and transactional audit rollback', {
   try {
     await t.test('rename and session creation share the parent lock in both queue orders', async () => {
       for (const first of ['rename', 'session'] as const) {
-        const table = await create(first), renamed = tag + '-new-' + first;
+        const table = await create(first), renamed = tag + '-n-' + first;
         const billOrder = await order(first === 'rename' ? renamed : table.tableNumber, 'order-' + first);
         let release!: () => void, acquired!: (pid: number) => void, failed!: (error: unknown) => void;
         const held = new Promise<void>(r => { release = r; });
@@ -108,8 +110,8 @@ test('Step 1 table rename serialization and transactional audit rollback', {
       assert.equal(await db.cafeTable.count({ where: { branchId: f.branchId, tableNumber: { in: [String(bulkFrom), String(bulkFrom + 1)] } } }), 0);
       const countBefore = await db.auditLog.count({ where: { cafeId: f.cafeId } });
       const hook = 'step1_audit_' + tag;
-      // Both values are generated or verified cuid identities; never interpolate input.
-      assert.match(f.cafeId, /^[a-z0-9]+$/); assert.match(hook, /^[a-z0-9_]+$/);
+      // The guard verified this synthetic namespace; both SQL values exclude quotes.
+      assert.match(f.cafeId, /^wr_[a-f0-9]{32}$/); assert.match(hook, /^[a-z0-9_]+$/);
       let installed = false, created = false;
       try {
         await db.$executeRawUnsafe(`CREATE FUNCTION "${hook}"() RETURNS trigger LANGUAGE plpgsql AS $hook$
