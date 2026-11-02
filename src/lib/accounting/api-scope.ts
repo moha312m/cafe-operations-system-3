@@ -3,12 +3,20 @@
 // and a branch-assigned reader is always narrowed to their own branch —
 // whatever the request asks for.
 import type { NextRequest } from "next/server";
-import { requireKey, resolveCafeId } from "@/lib/api";
+import { ApiError, requireKey, resolveCafeId, resolveReadScope } from "@/lib/api";
+import { db } from "@/lib/db";
 import type { Scope } from "@/lib/accounting/queries";
 
 export async function accountingScope(request: NextRequest, key = "accounting.view") {
   const session = await requireKey(key);
+  const readScope = resolveReadScope(session);
   const cafeId = resolveCafeId(session, request.nextUrl.searchParams.get("cafeId"));
-  const scope: Scope = { cafeId, ...(session.branchId ? { branchId: session.branchId } : {}) };
+  const requestedBranch = request.nextUrl.searchParams.get("branchId");
+  let branchId = readScope.branchId;
+  if (!branchId && requestedBranch) {
+    if (!await db.branch.findFirst({ where: { id: requestedBranch, cafeId }, select: { id: true } })) throw new ApiError(403, "الفرع خارج نطاق الكافيه");
+    branchId = requestedBranch;
+  }
+  const scope: Scope = { cafeId, ...(branchId ? { branchId } : {}) };
   return { session, scope };
 }

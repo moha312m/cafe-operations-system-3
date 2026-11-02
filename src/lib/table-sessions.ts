@@ -1,6 +1,7 @@
 import { lockTableSessions } from "@/lib/transaction-locks";
 import { decimal, money, moneyMax } from "@/lib/money";
 import { protectedTransaction } from "@/lib/protected-transaction";
+import { assertTableAvailable } from "@/lib/table-configuration";
 // ── Table session engine ─────────────────────────────────────────────
 // A session opens automatically with the first dine-in order for a table
 // and gathers every subsequent order until staff closes it. Totals are
@@ -110,14 +111,12 @@ export async function attachOrderToTableSession(order: {
   // takes them with it rather than leaving a record of something that did
   // not happen — the reason `auditInTransaction` exists.
   //
-  // The lookup below still takes no lock, so two waiters ringing up the same
-  // table can both find nothing and both create. `TableSession_one_open_per_branch_table`
-  // (M24) makes the database refuse the second one — but a refusal is the
-  // wrong answer to give a waiter. The customer is at ONE table and expects
-  // ONE bill, so the loser retries, finds the bill the winner just opened,
-  // and joins it. The transaction has already rolled back, so the retry is
-  // starting clean (R-POS-02B2).
+  // The Branch parent lock now serializes the vacant-table gap with table
+  // configuration and transfers. Callers acquire it before Orders/Payments;
+  // the standalone path acquires it below. The unique open-session index
+  // and retry remain a second line of defence (R-POS-02B2).
   const work = async (tx: Prisma.TransactionClient) => {
+    await assertTableAvailable(tx, order.cafeId, order.branchId, tableNumber);
     let session = await tx.tableSession.findFirst({
       where: { cafeId: order.cafeId, branchId: order.branchId, tableNumber, status: "OPEN" },
     });

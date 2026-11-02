@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { toast } from "sonner";
 import { api } from "@/lib/client";
 import { useApp } from "@/components/app-shell";
@@ -31,10 +32,12 @@ type Form = {
 };
 const EMPTY: Form = { tableNumber: "", displayName: "", area: "", seatsCount: "", sortOrder: "", isActive: true };
 
-type StatusFilter = "ALL" | "ACTIVE" | "INACTIVE" | "ARCHIVED";
+type StatusFilter = "ALL" | "ACTIVE" | "VACANT" | "OCCUPIED" | "INACTIVE" | "ARCHIVED";
 const FILTERS: { key: StatusFilter; label: string }[] = [
   { key: "ALL", label: "الكل" },
   { key: "ACTIVE", label: "النشطة" },
+  { key: "VACANT", label: "المتاحة" },
+  { key: "OCCUPIED", label: "المشغولة" },
   { key: "INACTIVE", label: "الموقوفة" },
   { key: "ARCHIVED", label: "المؤرشفة" },
 ];
@@ -49,7 +52,7 @@ function visualOf(t: CafeTable, occupied: boolean): Visual {
   return "inactive";
 }
 const VISUAL: Record<Visual, { card: string; badge: string; label: string; ring: string }> = {
-  active:   { card: "border-emerald-500/40", badge: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400", label: "نشطة", ring: "text-emerald-600 dark:text-emerald-400" },
+  active:   { card: "border-emerald-500/40", badge: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400", label: "متاحة", ring: "text-emerald-600 dark:text-emerald-400" },
   occupied: { card: "border-blue-500/50", badge: "bg-blue-500/15 text-blue-700 dark:text-blue-400", label: "مشغولة الآن", ring: "text-blue-600 dark:text-blue-400" },
   inactive: { card: "border-amber-500/40", badge: "bg-amber-500/12 text-amber-700 dark:text-amber-400", label: "موقوفة", ring: "text-amber-600 dark:text-amber-400" },
   archived: { card: "border-border opacity-60", badge: "bg-foreground/8 text-muted-foreground", label: "مؤرشفة", ring: "text-muted-foreground" },
@@ -69,29 +72,42 @@ export default function TableSetupPage() {
   const [bulkOpen, setBulkOpen] = useState(false);
   const [bulk, setBulk] = useState({ from: "1", to: "15", namePrefix: "", area: "", seatsCount: "" });
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const inFlight = useRef(false);
+  const loadVersion = useRef(0);
+  const invalidateLoad = useCallback(() => { ++loadVersion.current; }, []);
 
   const canManage = canKey("tables.manage");
   const canCreate = canKey("tables.create");
   const canEdit = canKey("tables.edit");
-  const canArchive = canKey("tables.archive");
+  const canArchive = canEdit && canKey("tables.archive");
   const canBulk = canKey("tables.bulk_create");
   const enabled = features?.enableTables ?? true;
 
   const load = useCallback(async () => {
+    const version = ++loadVersion.current;
     if (!branchId) { setTables([]); setSummary(null); return; }
+    setTables(null);
     try {
       const data = await api<{ summary: Summary; tables: CafeTable[]; occupiedNumbers: string[] }>(
         `/api/tables/config?branchId=${branchId}&includeArchived=1`
       );
+      if (version !== loadVersion.current) return;
       setTables(data.tables);
       setSummary(data.summary);
       setOccupied(new Set(data.occupiedNumbers ?? []));
+      setError("");
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "فشل تحميل الترابيزات");
+      if (version !== loadVersion.current) return;
+      setError(e instanceof Error ? e.message : "فشل تحميل الترابيزات");
     }
   }, [branchId]);
 
-  useEffect(() => { if (canManage && enabled) load(); }, [canManage, enabled, load]);
+  useEffect(() => {
+    if (!canManage || !enabled) return;
+    const timer = window.setTimeout(() => void load(), 0);
+    return () => { window.clearTimeout(timer); invalidateLoad(); };
+  }, [canManage, enabled, load, invalidateLoad]);
 
   useEffect(() => {
     if (!user.branchId) {
@@ -106,24 +122,28 @@ export default function TableSetupPage() {
     const needle = q.trim().toLowerCase();
     return tables.filter((t) => {
       if (filter === "ACTIVE" && !(t.isActive && !t.archivedAt)) return false;
+      if (filter === "VACANT" && !(t.isActive && !t.archivedAt && !occupied.has(t.tableNumber))) return false;
+      if (filter === "OCCUPIED" && !(t.isActive && !t.archivedAt && occupied.has(t.tableNumber))) return false;
       if (filter === "INACTIVE" && !(!t.isActive && !t.archivedAt)) return false;
       if (filter === "ARCHIVED" && !t.archivedAt) return false;
-      if (needle && !`${t.tableNumber} ${t.displayName ?? ""}`.toLowerCase().includes(needle)) return false;
+      if (needle && !`${t.tableNumber} ${t.displayName ?? ""} ${t.area ?? ""}`.toLowerCase().includes(needle)) return false;
       return true;
     });
-  }, [tables, q, filter]);
+  }, [tables, q, filter, occupied]);
 
   async function save() {
-    if (!form) return;
+    if (!form || inFlight.current) return;
     if (!form.tableNumber.trim()) return toast.error("رقم الترابيزة مطلوب");
+    inFlight.current = true;
     setBusy(true);
+    setError("");
     try {
       const body = {
         branchId,
         tableNumber: form.tableNumber.trim(),
-        displayName: form.displayName.trim() || undefined,
-        area: form.area.trim() || undefined,
-        seatsCount: form.seatsCount ? Number(form.seatsCount) : undefined,
+        displayName: form.displayName.trim() || (form.id ? null : undefined),
+        area: form.area.trim() || (form.id ? null : undefined),
+        seatsCount: form.seatsCount ? Number(form.seatsCount) : (form.id ? null : undefined),
         sortOrder: form.sortOrder ? Number(form.sortOrder) : undefined,
         isActive: form.isActive,
       };
@@ -133,18 +153,22 @@ export default function TableSetupPage() {
       setForm(null);
       load();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "فشل الحفظ");
+      const message = e instanceof Error ? e.message : "فشل الحفظ";
+      setError(message); toast.error(message);
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   }
 
   async function bulkCreate() {
+    if (inFlight.current) return;
     if (!branchId) return toast.error("اختار الفرع");
     const from = Number(bulk.from), to = Number(bulk.to);
     if (!Number.isFinite(from) || !Number.isFinite(to)) return toast.error("أرقام غير صحيحة");
     if (from > to) return toast.error("رقم البداية يجب أن يكون أقل من أو يساوي رقم النهاية");
-    setBusy(true);
+    inFlight.current = true;
+    setBusy(true); setError("");
     try {
       const res = await api<{ created: number; skipped: number }>("/api/tables/config/bulk", {
         method: "POST",
@@ -163,8 +187,10 @@ export default function TableSetupPage() {
       setBulkOpen(false);
       load();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "فشل الإنشاء");
+      const message = e instanceof Error ? e.message : "فشل الإنشاء";
+      setError(message); toast.error(message);
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   }
@@ -178,14 +204,19 @@ export default function TableSetupPage() {
   }
 
   async function patch(t: CafeTable, body: Record<string, unknown>, ok: string) {
-    setBusy(true);
+    if (inFlight.current) return;
+    if (body.archived === true && !window.confirm(`أرشفة الترابيزة ${t.tableNumber} وإزالتها من الاستخدام؟ ستبقى الفواتير والجلسات السابقة محفوظة.`)) return;
+    inFlight.current = true;
+    setBusy(true); setError("");
     try {
       await api(`/api/tables/config/${t.id}`, { method: "PATCH", body });
       toast.success(ok);
       load();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "فشل التحديث");
+      const message = e instanceof Error ? e.message : "فشل التحديث";
+      setError(message); toast.error(message);
     } finally {
+      inFlight.current = false;
       setBusy(false);
     }
   }
@@ -215,8 +246,9 @@ export default function TableSetupPage() {
 
   return (
     <>
-      <PageHeader title="إعداد الترابيزات" subtitle="إدارة ترابيزات كل فرع">
+      <PageHeader title="إدارة الترابيزات" subtitle="أضف وعدّل الترابيزات والمنطقة والكراسي. الإزالة تعني الأرشفة مع حفظ السجل السابق.">
         <div className="flex flex-wrap items-center gap-2">
+          {canKey("tables.view") && <Link href="/tables" className="inline-flex min-h-11 items-center px-2 text-sm underline">جلسات الترابيزات</Link>}
           {!user.branchId && branches.length > 0 && (
             <Select value={branchId} onValueChange={(v) => setBranchId(v ?? "")}>
               <SelectTrigger className="w-44"><SelectValue>{branches.find((b) => b.id === branchId)?.name}</SelectValue></SelectTrigger>
@@ -227,6 +259,8 @@ export default function TableSetupPage() {
           {canCreate && <Button onClick={() => setForm({ ...EMPTY })}>+ إضافة ترابيزة</Button>}
         </div>
       </PageHeader>
+      {error && <div role="alert" className="my-3 rounded-lg border border-destructive p-3 text-sm text-destructive">{error} <Button variant="outline" size="sm" onClick={() => void load()} disabled={busy}>إعادة تحميل</Button></div>}
+      <p className="my-3 text-sm text-muted-foreground">لا يمكن تغيير رقم ترابيزة مشغولة أو إيقافها أو أرشفتها حتى إغلاق جلستها. استرجاع المؤرشفة يعيدها موقوفة؛ فعّلها عند جاهزيتها.</p>
 
       {summary && (
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -240,7 +274,7 @@ export default function TableSetupPage() {
       {/* Toolbar: search + status chips + view toggle */}
       {!emptyBranch && (
         <div className="mt-5 flex flex-wrap items-center gap-2">
-          <Input placeholder="ابحث برقم أو اسم الترابيزة…" className="w-56" value={q} onChange={(e) => setQ(e.target.value)} />
+          <label className="text-xs">بحث الترابيزات<Input aria-label="بحث الترابيزات" placeholder="رقم أو اسم أو منطقة…" className="w-56" value={q} onChange={(e) => setQ(e.target.value)} /></label>
           <div className="flex rounded-xl border border-border bg-card p-0.5 text-sm">
             {FILTERS.map((f) => (
               <button key={f.key} onClick={() => setFilter(f.key)}
@@ -308,13 +342,13 @@ export default function TableSetupPage() {
                         <Button size="sm" variant="outline" className="h-7 px-2 text-xs" disabled={busy} onClick={() => setForm(editForm(t))}>تعديل</Button>
                       )}
                       {!t.archivedAt && canArchive && (
-                        <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" disabled={busy}
+                        <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" disabled={busy || (t.isActive && occupied.has(t.tableNumber))}
                           onClick={() => patch(t, { isActive: !t.isActive }, t.isActive ? "تم إيقاف الترابيزة" : "تم تفعيل الترابيزة")}>
                           {t.isActive ? "إيقاف" : "تفعيل"}
                         </Button>
                       )}
                       {canArchive && (
-                        <Button size="sm" variant="ghost" className={cn("h-7 px-2 text-xs", !t.archivedAt && "text-destructive")} disabled={busy}
+                        <Button size="sm" variant="ghost" className={cn("h-7 px-2 text-xs", !t.archivedAt && "text-destructive")} disabled={busy || (!t.archivedAt && occupied.has(t.tableNumber))}
                           onClick={() => patch(t, { archived: !t.archivedAt }, t.archivedAt ? "تم استرجاع الترابيزة" : "تم أرشفة الترابيزة")}>
                           {t.archivedAt ? "استرجاع" : "أرشفة"}
                         </Button>
@@ -355,13 +389,13 @@ export default function TableSetupPage() {
                             <Button size="sm" variant="ghost" disabled={busy} onClick={() => setForm(editForm(t))}>تعديل</Button>
                           )}
                           {!t.archivedAt && canArchive && (
-                            <Button size="sm" variant="ghost" disabled={busy}
+                            <Button size="sm" variant="ghost" disabled={busy || (t.isActive && occupied.has(t.tableNumber))}
                               onClick={() => patch(t, { isActive: !t.isActive }, t.isActive ? "تم إيقاف الترابيزة" : "تم تفعيل الترابيزة")}>
                               {t.isActive ? "إيقاف" : "تفعيل"}
                             </Button>
                           )}
                           {canArchive && (
-                            <Button size="sm" variant="ghost" className={t.archivedAt ? "" : "text-destructive"} disabled={busy}
+                            <Button size="sm" variant="ghost" className={t.archivedAt ? "" : "text-destructive"} disabled={busy || (!t.archivedAt && occupied.has(t.tableNumber))}
                               onClick={() => patch(t, { archived: !t.archivedAt }, t.archivedAt ? "تم استرجاع الترابيزة" : "تم أرشفة الترابيزة")}>
                               {t.archivedAt ? "استرجاع" : "أرشفة"}
                             </Button>
@@ -383,33 +417,34 @@ export default function TableSetupPage() {
           {form && (
             <>
               <DialogHeader><DialogTitle>{form.id ? "تعديل ترابيزة" : "إضافة ترابيزة"}</DialogTitle></DialogHeader>
+              {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
               <div className="space-y-3">
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1.5">
                     <Label>رقم الترابيزة</Label>
-                    <Input dir="ltr" value={form.tableNumber} onChange={(e) => setForm({ ...form, tableNumber: e.target.value })} />
+                    <Input aria-label="رقم الترابيزة" maxLength={20} dir="ltr" value={form.tableNumber} disabled={!!form.id && occupied.has(tables?.find(t => t.id === form.id)?.tableNumber ?? '')} onChange={(e) => setForm({ ...form, tableNumber: e.target.value })} />
                   </div>
                   <div className="space-y-1.5">
                     <Label>ترتيب الظهور</Label>
-                    <Input type="number" dir="ltr" value={form.sortOrder} onChange={(e) => setForm({ ...form, sortOrder: e.target.value })} />
+                    <Input aria-label="ترتيب الظهور" type="number" dir="ltr" value={form.sortOrder} onChange={(e) => setForm({ ...form, sortOrder: e.target.value })} />
                   </div>
                 </div>
                 <div className="space-y-1.5">
                   <Label>اسم الترابيزة (اختياري)</Label>
-                  <Input value={form.displayName} onChange={(e) => setForm({ ...form, displayName: e.target.value })} />
+                  <Input aria-label="اسم الترابيزة" maxLength={60} value={form.displayName} onChange={(e) => setForm({ ...form, displayName: e.target.value })} />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1.5">
                     <Label>المنطقة</Label>
-                    <Input value={form.area} onChange={(e) => setForm({ ...form, area: e.target.value })} />
+                    <Input aria-label="المنطقة" maxLength={60} value={form.area} onChange={(e) => setForm({ ...form, area: e.target.value })} />
                   </div>
                   <div className="space-y-1.5">
                     <Label>عدد الكراسي</Label>
-                    <Input type="number" dir="ltr" value={form.seatsCount} onChange={(e) => setForm({ ...form, seatsCount: e.target.value })} />
+                    <Input aria-label="عدد الكراسي" min={0} max={100} type="number" dir="ltr" value={form.seatsCount} onChange={(e) => setForm({ ...form, seatsCount: e.target.value })} />
                   </div>
                 </div>
                 <label className="flex items-center gap-2 text-sm">
-                  <input type="checkbox" checked={form.isActive} onChange={(e) => setForm({ ...form, isActive: e.target.checked })} />
+                  <input type="checkbox" checked={form.isActive} disabled={!!form.id && (!canArchive || occupied.has(tables?.find(t => t.id === form.id)?.tableNumber ?? ''))} onChange={(e) => setForm({ ...form, isActive: e.target.checked })} />
                   نشطة
                 </label>
               </div>
@@ -426,29 +461,30 @@ export default function TableSetupPage() {
       <Dialog open={bulkOpen} onOpenChange={(o) => !o && !busy && setBulkOpen(false)}>
         <DialogContent className="max-w-md">
           <DialogHeader><DialogTitle>إنشاء ترابيزات دفعة واحدة</DialogTitle></DialogHeader>
+          {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label>من رقم</Label>
-                <Input type="number" dir="ltr" value={bulk.from} onChange={(e) => setBulk({ ...bulk, from: e.target.value })} />
+                <Input aria-label="من رقم" min={0} type="number" dir="ltr" value={bulk.from} onChange={(e) => setBulk({ ...bulk, from: e.target.value })} />
               </div>
               <div className="space-y-1.5">
                 <Label>إلى رقم</Label>
-                <Input type="number" dir="ltr" value={bulk.to} onChange={(e) => setBulk({ ...bulk, to: e.target.value })} />
+                <Input aria-label="إلى رقم" min={0} type="number" dir="ltr" value={bulk.to} onChange={(e) => setBulk({ ...bulk, to: e.target.value })} />
               </div>
             </div>
             <div className="space-y-1.5">
               <Label>بادئة الاسم (اختياري)</Label>
-              <Input placeholder="مثال: ترابيزة" value={bulk.namePrefix} onChange={(e) => setBulk({ ...bulk, namePrefix: e.target.value })} />
+              <Input aria-label="بادئة الاسم" maxLength={40} placeholder="مثال: ترابيزة" value={bulk.namePrefix} onChange={(e) => setBulk({ ...bulk, namePrefix: e.target.value })} />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label>المنطقة (اختياري)</Label>
-                <Input value={bulk.area} onChange={(e) => setBulk({ ...bulk, area: e.target.value })} />
+                <Input aria-label="المنطقة للدفعة" maxLength={60} value={bulk.area} onChange={(e) => setBulk({ ...bulk, area: e.target.value })} />
               </div>
               <div className="space-y-1.5">
                 <Label>عدد الكراسي (اختياري)</Label>
-                <Input type="number" dir="ltr" value={bulk.seatsCount} onChange={(e) => setBulk({ ...bulk, seatsCount: e.target.value })} />
+                <Input aria-label="عدد الكراسي للدفعة" min={0} max={100} type="number" dir="ltr" value={bulk.seatsCount} onChange={(e) => setBulk({ ...bulk, seatsCount: e.target.value })} />
               </div>
             </div>
             {bulkPreview && <p className="rounded-lg bg-blue-500/10 px-2.5 py-1.5 text-xs text-blue-700 dark:text-blue-400">{bulkPreview}</p>}

@@ -34,11 +34,11 @@ export function outputValue(value:unknown):OutputValue{
 }
 
 export function reportOutputModel(report:ReportOutput):OutputModel{
- const period=report.reporting as {mode?:string;windows?:{branchId?:string;startLocal:string;endLocal:string;timezone:string;from:string;to:string;warnings:string[]}[];branches?:{id:string;name:string}[]};
+ const period=report.reporting as {mode?:string;boundary?:string;windows?:{branchId?:string;startLocal:string;endLocal:string;timezone:string;from:string;to:string;warnings:string[]}[];branches?:{id:string;name:string}[]};
  const info=(label:string,value:unknown,key='')=>({label,key,value:outputValue(value)});
  const periods=period?.windows?.length?period.windows.flatMap((w,i)=>[info(`الفترة ${i+1} — ${period.branches?.find(b=>b.id===w.branchId)?.name??w.branchId??''}`,`${w.startLocal.replace('T',' ')} → ${w.endLocal.replace('T',' ')} · ${w.timezone}`),info(`الفترة ${i+1} UTC`,`${w.from} → ${w.to}`),...w.warnings.map(warning=>info('ملاحظة التوقيت الصيفي',warning))]):[info('الفترة',JSON.stringify(report.reporting))];
  const metrics=Object.entries(report.metrics).flatMap(([section,value])=>value&&typeof value==='object'?Object.entries(value as Record<string,unknown>).map(([k,v])=>{const key=section+'.'+k;return info(report.labels?.[key]??key,v,key);}):[info(report.labels?.[section]??section,value,section)]);
- const summary=[info('التقرير',report.title),info('نوع الفترة',period?.mode??''),info('وقت إنشاء اللقطة',report.generatedAt),info('الحدود','البداية مشمولة والنهاية مستبعدة'),...periods,...metrics];
+ const summary=[info('التقرير',report.title),info('نوع الفترة',period?.mode??''),info('وقت إنشاء اللقطة',report.generatedAt),info('الحدود',period?.boundary??'البداية مشمولة والنهاية مستبعدة'),...periods,...metrics];
  const grouped=new Map<string,Record<string,unknown>[]>();
  for(const row of report.rows){const {section,...rest}=row,key=typeof section==='string'?section:'rows';grouped.set(key,[...(grouped.get(key)??[]),rest]);}
  const tables=[...grouped].map(([key,rows])=>{const columns=[...new Set(rows.flatMap(r=>Object.keys(r)))];return {key,title:SECTION_LABELS[key]??key,columns,rows:rows.map(r=>columns.map(c=>outputValue(r[c])))};});
@@ -48,7 +48,7 @@ export function reportOutputModel(report:ReportOutput):OutputModel{
 // A text cell that a spreadsheet could read as a formula is prefixed with '.
 // Real numbers are written bare so they stay numeric (a negative number is
 // not a formula).
-const csvCell=(value:OutputValue)=>{if(typeof value==='number')return String(value);let text=String(value??'');if(/^[=+@\-\t\r]/.test(text))text="'"+text;return '"'+text.replaceAll('"','""')+'"';};
+const csvCell=(value:OutputValue)=>{if(typeof value==='number')return String(value);let text=String(value??'');if(/^[\u0000-\u0020\uFEFF]*[=+@-]|^[\t\r\n]/.test(text))text="'"+text;return '"'+text.replaceAll('"','""')+'"';};
 
 export function reportOutputFiles(report:ReportOutput){
  const model=reportOutputModel(report);

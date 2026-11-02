@@ -67,10 +67,14 @@ type NavItem = {
   group?: NavGroupId;
   ownerOnly?: boolean;
   key?: string; // optional new granular permission key (wins over `permission`)
+  anyKey?: string[];
   feature?: (f: CafeFeatures) => boolean;
 };
 
 const NAV: NavItem[] = [
+  { href: "/finance", label: "مساحة الماليات", icon: "💼", permission: "cost:read", group: "finance", anyKey: ["accounting.view", "expenses.view", "treasury.view"] },
+  { href: "/report-center", label: "مركز التقارير", icon: "📊", permission: "reports:read", group: "reports" },
+  { href: "/tables/setup", label: "إدارة الترابيزات", icon: "🪑", permission: "orders:create", group: "daily", key: "tables.manage", feature: f => f.enableTables },
   { href: "/treasury", label: "الحسابات والتحويلات", icon: "🏦", permission: "cost:read", group: "finance", key: "treasury.view", ownerOnly: true },
   { href: "/dashboard", label: t.nav.dashboard, icon: "📊", permission: "dashboard:read" },
   { href: "/pos", label: t.nav.pos, icon: "🧾", permission: "orders:create", group: "daily" },
@@ -148,7 +152,7 @@ export function AppShell({
       // An explicit `key` (new granular gate) wins; else fall back to the
       // legacy permission bridge.
       (!item.ownerOnly || user.role === "CAFE_OWNER") &&
-      (item.key ? canKey(item.key) : can(item.permission)) &&
+      (item.anyKey ? item.anyKey.some(canKey) : item.key ? canKey(item.key) : can(item.permission)) &&
       (!item.feature || !features || item.feature(features))
   );
 

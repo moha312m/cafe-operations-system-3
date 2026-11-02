@@ -14,7 +14,7 @@ import {reportEventWhere} from './report-window-scope';
 import {signReportOutput} from './report-output';
 
 const day=z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(s=>{const d=new Date(s+'T00:00:00Z');return Number.isFinite(d.getTime())&&d.toISOString().slice(0,10)===s;});
-const filters=z.object({q:z.string().max(100).optional(),branchId:z.string().max(100).optional(),userId:z.string().max(100).optional(),from:day.optional(),to:day.optional(),business:z.enum(['0','1']).default('0'),status:z.enum(['UNPAID','PARTIAL','PAID','PENDING_COLLECTION','REFUNDED']).optional(),action:z.string().max(80).optional(),page:z.coerce.number().int().min(1).max(10000).default(1)});
+const filters=z.object({q:z.string().trim().max(100).optional(),branchId:z.string().max(100).optional(),userId:z.string().max(100).optional(),from:day.optional(),to:day.optional(),business:z.enum(['0','1']).default('0'),status:z.enum(['UNPAID','PARTIAL','PAID','PENDING_COLLECTION','REFUNDED']).optional(),paymentMethod:z.enum(['CASH','CARD','WALLET']).optional(),action:z.string().max(80).optional(),page:z.coerce.number().int().min(1).max(10000).default(1)});
 export function salesFilters(params:URLSearchParams,actor:SessionUser){
  const f=filters.parse(Object.fromEntries(params));const scope=resolveReadScope(actor);
  if(f.branchId&&scope.branchId&&f.branchId!==scope.branchId)throw new ApiError(403,'الفرع خارج نطاقك');
@@ -26,7 +26,7 @@ export function salesFilters(params:URLSearchParams,actor:SessionUser){
 export async function listSales(actor:SessionUser,params:URLSearchParams){
  await salesAuthority(actor,'sales.view');const {f,scope,period}=salesFilters(params,actor);
  const reporting=await resolveReportingSelection(actor,params,{optional:true});
- const where:Prisma.OrderWhereInput={...scope,...(reporting?{AND:[reportEventWhere(reporting.windows)]}:period?{createdAt:period}:{}),...(f.status?{paymentStatus:f.status}:{}),...(f.userId?{createdById:f.userId}:{}),...(f.q?{OR:[{id:{contains:f.q}},...(/^\d+$/.test(f.q)&&Number(f.q)<2147483647?[{orderNumber:Number(f.q)}]:[])]}:{})};
+ const where:Prisma.OrderWhereInput={...scope,...(reporting?{AND:[reportEventWhere(reporting.windows)]}:period?{createdAt:period}:{}),...(f.status?{paymentStatus:f.status}:{}),...(f.paymentMethod?{payments:{some:{method:f.paymentMethod,status:'PAID',type:'COLLECTION'}}}:{}),...(f.userId?{createdById:f.userId}:{}),...(f.q?{OR:[{id:{contains:f.q}},...(/^\d+$/.test(f.q)&&Number(f.q)<2147483647?[{orderNumber:Number(f.q)}]:[])]}:{})};
  const [orders,count,totals,branches,users]=await Promise.all([
   db.order.findMany({where,orderBy:[{createdAt:'desc'},{id:'desc'}],skip:(f.page-1)*30,take:30,include:{items:{where:{voidedAt:null},include:{addOns:true}},payments:true,createdBy:{select:{id:true,name:true}},branch:{select:{id:true,name:true}},revisions:{orderBy:{number:'desc'},take:1,select:{originalShiftId:true,postingShiftId:true}}}}),
   db.order.count({where}),db.order.aggregate({where,_sum:{subtotal:true,discountAmount:true,taxAmount:true,serviceChargeAmount:true,total:true,paidAmount:true,remainingAmount:true}}),

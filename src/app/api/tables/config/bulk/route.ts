@@ -1,10 +1,11 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
-import { db } from "@/lib/db";
 import {
   requireKey, resolveCafeId, resolveBranchId, handleApiError, ApiError, requireFeature,
 } from "@/lib/api";
-import { audit } from "@/lib/audit";
+import { auditInTransaction } from "@/lib/audit";
+import { protectedTransaction } from "@/lib/protected-transaction";
+import { lockBranchAllocator } from "@/lib/transaction-locks";
 
 const bulkSchema = z.object({
   branchId: z.string().optional(),
@@ -32,8 +33,10 @@ export async function POST(request: NextRequest) {
 
     const wanted = Array.from({ length: count }, (_, i) => String(data.from + i));
 
-    // Skip numbers that already exist in this branch.
-    const existing = await db.cafeTable.findMany({
+    return await protectedTransaction(async (tx) => {
+    await lockBranchAllocator(tx, branchId);
+    // Skip numbers that already exist in this branch, including archives.
+    const existing = await tx.cafeTable.findMany({
       where: { branchId, tableNumber: { in: wanted } },
       select: { tableNumber: true },
     });
@@ -41,7 +44,7 @@ export async function POST(request: NextRequest) {
     const toCreate = wanted.filter((n) => !existingSet.has(n));
 
     if (toCreate.length > 0) {
-      await db.cafeTable.createMany({
+      await tx.cafeTable.createMany({
         data: toCreate.map((tableNumber) => ({
           cafeId, branchId, tableNumber,
           displayName: data.namePrefix ? `${data.namePrefix} ${tableNumber}` : null,
@@ -53,13 +56,14 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    await audit({
+    await auditInTransaction(tx, {
       cafeId, userId: session.id, action: "TABLES_BULK_CREATED",
       entity: "CafeTable", entityId: null,
       details: { branchId, from: data.from, to: data.to, created: toCreate.length, skipped: existingSet.size },
     });
 
     return NextResponse.json({ created: toCreate.length, skipped: existingSet.size });
+    }, { cafeId, branchId });
   } catch (error) {
     return handleApiError(error);
   }

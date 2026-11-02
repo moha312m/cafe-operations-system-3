@@ -2,9 +2,11 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import {
-  requireKey, resolveCafeId, resolveBranchId, handleApiError, ApiError, requireFeature,
+  requireKey, resolveCafeId, resolveBranchId, resolveReadScope, handleApiError, ApiError, requireFeature,
 } from "@/lib/api";
-import { audit } from "@/lib/audit";
+import { auditInTransaction } from "@/lib/audit";
+import { protectedTransaction } from "@/lib/protected-transaction";
+import { lockBranchAllocator } from "@/lib/transaction-locks";
 
 
 // GET /api/tables/config — configured tables for a branch (+ summary cards)
@@ -13,10 +15,11 @@ import { audit } from "@/lib/audit";
 export async function GET(request: NextRequest) {
   try {
     const session = await requireKey("tables.manage");
+    const scope = resolveReadScope(session);
     await requireFeature(session, "enableTables");
     const params = request.nextUrl.searchParams;
     const cafeId = resolveCafeId(session, params.get("cafeId"));
-    const branchId = session.branchId ?? params.get("branchId") ?? undefined;
+    const branchId = scope.branchId ?? params.get("branchId") ?? undefined;
     const includeArchived = params.get("includeArchived") === "1";
 
     const tables = await db.cafeTable.findMany({
@@ -82,12 +85,14 @@ export async function POST(request: NextRequest) {
     const cafeId = resolveCafeId(session, data.cafeId);
     const branchId = resolveBranchId(session, data.branchId);
 
-    const clash = await db.cafeTable.findUnique({
+    return await protectedTransaction(async (tx) => {
+    await lockBranchAllocator(tx, branchId);
+    const clash = await tx.cafeTable.findUnique({
       where: { branchId_tableNumber: { branchId, tableNumber: data.tableNumber } },
     });
     if (clash) throw new ApiError(409, "رقم الترابيزة موجود بالفعل في هذا الفرع");
 
-    const table = await db.cafeTable.create({
+    const table = await tx.cafeTable.create({
       data: {
         cafeId, branchId,
         tableNumber: data.tableNumber,
@@ -99,13 +104,14 @@ export async function POST(request: NextRequest) {
       },
     });
 
-    await audit({
+    await auditInTransaction(tx, {
       cafeId, userId: session.id, action: "TABLE_CREATED",
       entity: "CafeTable", entityId: table.id,
       details: { branchId, tableId: table.id, tableNumber: table.tableNumber },
     });
 
     return NextResponse.json({ id: table.id }, { status: 201 });
+    }, { cafeId, branchId });
   } catch (error) {
     return handleApiError(error);
   }
