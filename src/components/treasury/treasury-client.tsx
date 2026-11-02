@@ -1,10 +1,12 @@
 "use client";
+import { nativeFieldClassName } from "@/components/ui/input";
+import { nativeButtonClassName } from "@/components/ui/button";
 import { useEffect,useRef,useState } from "react";
 import { api,ApiRequestError } from "@/lib/client";
 import { useApp } from "@/components/app-shell";
 import { moneyIntentOwner,loadMoneyDocumentIntent,beginMoneyIntent,completeMoneyIntent,keepMoneyIntent,type MoneyIntent } from "@/lib/treasury-intent";
-export const field="w-full rounded-lg border bg-background p-2 disabled:opacity-60";
-export const button="rounded-lg border px-4 py-2 disabled:opacity-50";
+export const field=nativeFieldClassName;
+export const button=nativeButtonClassName;
 export const date=(iso:string)=>new Date(iso).toLocaleString("ar-EG",{timeZone:"Africa/Cairo"});
 export const errorText=(e:unknown)=>e instanceof Error?e.message:"تعذر إكمال العملية";
 export function useTreasuryData<T>(path:string,version:number){

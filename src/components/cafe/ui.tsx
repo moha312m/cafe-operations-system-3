@@ -35,11 +35,11 @@ export function PageHeader({
 
 // ── Stat card ────────────────────────────────────────────────
 const ACCENTS: Record<string, string> = {
-  emerald: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
-  amber: "bg-amber-500/10 text-amber-600 dark:text-amber-400",
-  red: "bg-red-500/10 text-red-600 dark:text-red-400",
-  blue: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
-  violet: "bg-violet-500/10 text-violet-600 dark:text-violet-400",
+  emerald: "bg-sage-soft text-sage-ink",
+  amber: "bg-caramel-soft text-caramel-ink",
+  red: "bg-clay-soft text-clay-ink",
+  blue: "bg-tide-soft text-tide-ink",
+  violet: "bg-tide-soft text-tide-ink",
   slate: "bg-foreground/5 text-foreground/70",
 };
 
@@ -53,7 +53,7 @@ export function StatCard({
 }: {
   label: string;
   value: string | number;
-  icon?: string;
+  icon?: React.ReactNode;
   hint?: React.ReactNode;
   accent?: keyof typeof ACCENTS;
   href?: string;
@@ -154,7 +154,7 @@ export function StatusPill({ active, labels }: { active: boolean; labels: { on: 
 // ── Empty / loading states ───────────────────────────────────
 export function EmptyState({ message, icon = "🗂️" }: { message: string; icon?: string }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-2 py-12 text-center">
+    <div role="status" className="flex flex-col items-center justify-center gap-2 py-12 text-center">
       <span className="text-3xl opacity-50">{icon}</span>
       <p className="text-sm text-muted-foreground">{message}</p>
     </div>
@@ -163,7 +163,7 @@ export function EmptyState({ message, icon = "🗂️" }: { message: string; ico
 
 export function LoadingState({ label = t.common.loading }: { label?: string }) {
   return (
-    <div className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
+    <div role="status" aria-live="polite" className="flex items-center justify-center gap-2 py-12 text-sm text-muted-foreground">
       <span className="size-4 animate-spin rounded-full border-2 border-border border-t-foreground/60" />
       {label}
     </div>

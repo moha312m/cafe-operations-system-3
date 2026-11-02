@@ -4,6 +4,7 @@
 // and the permission gate. The API enforces access; this only avoids
 // rendering a page the reader cannot load.
 import Link from "next/link";
+import { PageHeader } from "@/components/cafe/ui";
 import { usePathname } from "next/navigation";
 import { useApp } from "@/components/app-shell";
 
@@ -23,11 +24,10 @@ export function AccountingShell({ children }: { children: React.ReactNode }) {
   }
   return (
     <div className="max-w-6xl space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-2xl font-semibold">المحاسبة والماليات</h1>
-        <span className="rounded-full border border-amber-500 bg-amber-50 px-3 py-1 text-sm font-medium text-amber-900 dark:bg-amber-950 dark:text-amber-100" data-testid="shadow-badge">تجريبي — غير معتمد</span>
-      </div>
-      <p className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 dark:bg-amber-950/40 dark:text-amber-100">
+      <PageHeader title="المحاسبة والماليات">
+        <span className="rounded-full border border-caramel-line bg-caramel-soft px-3 py-1 text-sm font-medium text-caramel-ink" data-testid="shadow-badge">تجريبي — غير معتمد</span>
+      </PageHeader>
+      <p className="rounded-xl border border-caramel-line bg-caramel-soft p-4 text-sm text-caramel-ink">
         دي دفاتر تجريبية للمراجعة بس، ومش دفاتر رسمية. الأرقام محتاجة مراجعة المحاسب، ومفيش تاريخ بداية ولا أرصدة افتتاحية معتمدة لحد دلوقتي.
       </p>
       {canKey("expenses.view") && <Link href="/expenses" className="underline">تسجيل ومراجعة مصروفات الدرج</Link>}

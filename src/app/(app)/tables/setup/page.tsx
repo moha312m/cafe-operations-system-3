@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { Armchair, CircleCheck, CirclePause, Grid2X2, List, MapPin, UtensilsCrossed } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/client";
 import { useApp } from "@/components/app-shell";
@@ -52,9 +53,9 @@ function visualOf(t: CafeTable, occupied: boolean): Visual {
   return "inactive";
 }
 const VISUAL: Record<Visual, { card: string; badge: string; label: string; ring: string }> = {
-  active:   { card: "border-emerald-500/40", badge: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400", label: "متاحة", ring: "text-emerald-600 dark:text-emerald-400" },
-  occupied: { card: "border-blue-500/50", badge: "bg-blue-500/15 text-blue-700 dark:text-blue-400", label: "مشغولة الآن", ring: "text-blue-600 dark:text-blue-400" },
-  inactive: { card: "border-amber-500/40", badge: "bg-amber-500/12 text-amber-700 dark:text-amber-400", label: "موقوفة", ring: "text-amber-600 dark:text-amber-400" },
+  active:   { card: "border-sage-line", badge: "bg-sage-soft text-sage-ink", label: "متاحة", ring: "text-sage-ink" },
+  occupied: { card: "border-tide-line", badge: "bg-tide-soft text-tide-ink", label: "مشغولة الآن", ring: "text-tide-ink" },
+  inactive: { card: "border-caramel-line", badge: "bg-caramel-soft text-caramel-ink", label: "موقوفة", ring: "text-caramel-ink" },
   archived: { card: "border-border opacity-60", badge: "bg-foreground/8 text-muted-foreground", label: "مؤرشفة", ring: "text-muted-foreground" },
 };
 
@@ -264,10 +265,10 @@ export default function TableSetupPage() {
 
       {summary && (
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <StatCard label="إجمالي الترابيزات" value={summary.total} icon="🍽️" accent="blue" />
-          <StatCard label="الترابيزات النشطة" value={summary.active} icon="✅" accent="emerald" />
-          <StatCard label="الترابيزات الموقوفة" value={summary.inactive} icon="🚫" accent={summary.inactive > 0 ? "amber" : "slate"} />
-          <StatCard label="المشغولة حاليًا" value={summary.occupied} icon="🔴" accent={summary.occupied > 0 ? "violet" : "slate"} />
+          <StatCard label="إجمالي الترابيزات" value={summary.total} icon={<UtensilsCrossed className="size-5" aria-hidden="true" />} accent="blue" />
+          <StatCard label="الترابيزات النشطة" value={summary.active} icon={<CircleCheck className="size-5" aria-hidden="true" />} accent="emerald" />
+          <StatCard label="الترابيزات الموقوفة" value={summary.inactive} icon={<CirclePause className="size-5" aria-hidden="true" />} accent={summary.inactive > 0 ? "amber" : "slate"} />
+          <StatCard label="المشغولة حاليًا" value={summary.occupied} icon={<UtensilsCrossed className="size-5" aria-hidden="true" />} accent={summary.occupied > 0 ? "violet" : "slate"} />
         </div>
       )}
 
@@ -275,23 +276,23 @@ export default function TableSetupPage() {
       {!emptyBranch && (
         <div className="mt-5 flex flex-wrap items-center gap-2">
           <label className="text-xs">بحث الترابيزات<Input aria-label="بحث الترابيزات" placeholder="رقم أو اسم أو منطقة…" className="w-56" value={q} onChange={(e) => setQ(e.target.value)} /></label>
-          <div className="flex rounded-xl border border-border bg-card p-0.5 text-sm">
+          <div role="group" aria-label="تصفية حالة الترابيزات" className="flex max-w-full flex-wrap gap-1 rounded-xl border border-border bg-card p-1 text-sm">
             {FILTERS.map((f) => (
-              <button key={f.key} onClick={() => setFilter(f.key)}
-                className={cn("rounded-lg px-3 py-1.5 font-medium transition-colors",
-                  filter === f.key ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground")}>
+              <button key={f.key} aria-pressed={filter === f.key} onClick={() => setFilter(f.key)}
+                className={cn("min-h-10 rounded-lg px-3 py-1.5 font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
+                  filter === f.key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}>
                 {f.label}
               </button>
             ))}
           </div>
-          <div className="ms-auto flex rounded-xl border border-border bg-card p-0.5 text-sm">
-            <button onClick={() => setView("grid")}
-              className={cn("rounded-lg px-3 py-1.5 font-medium transition-colors", view === "grid" ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground")}>
-              ▦ عرض كمربعات
+          <div className="ms-auto flex max-w-full flex-wrap gap-1 rounded-xl border border-border bg-card p-1 text-sm">
+            <button aria-pressed={view === "grid"} onClick={() => setView("grid")}
+              className={cn("min-h-10 rounded-lg px-3 py-1.5 font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring", view === "grid" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}>
+              <Grid2X2 className="me-1 inline size-4" aria-hidden="true" /> عرض كمربعات
             </button>
-            <button onClick={() => setView("list")}
-              className={cn("rounded-lg px-3 py-1.5 font-medium transition-colors", view === "list" ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground")}>
-              ☰ عرض كجدول
+            <button aria-pressed={view === "list"} onClick={() => setView("list")}
+              className={cn("min-h-10 rounded-lg px-3 py-1.5 font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring", view === "list" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}>
+              <List className="me-1 inline size-4" aria-hidden="true" /> عرض كجدول
             </button>
           </div>
         </div>
@@ -319,21 +320,21 @@ export default function TableSetupPage() {
               const meta = VISUAL[v];
               return (
                 <div key={t.id}
-                  className={cn("group flex flex-col rounded-2xl border-2 bg-card p-4 shadow-sm transition-all hover:shadow-md", meta.card)}>
+                  className={cn("group flex min-w-0 flex-col break-words rounded-2xl border-2 bg-card p-4 shadow-sm transition-all hover:shadow-md", meta.card)}>
                   <div className="flex items-start justify-between gap-2">
                     <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-medium", meta.badge)}>{meta.label}</span>
                     <span className="text-[11px] text-muted-foreground">#{t.sortOrder}</span>
                   </div>
 
-                  <div className="flex flex-col items-center py-3 text-center">
-                    <span className="text-3xl leading-none">🍽️</span>
-                    <span className={cn("mt-1.5 font-heading text-2xl font-bold tabular-nums text-foreground")}>ترابيزة {t.tableNumber}</span>
-                    <span className="mt-0.5 text-xs text-muted-foreground">{t.displayName || "بدون اسم"}</span>
+                  <div className="flex min-w-0 flex-col items-center py-3 text-center">
+                    <UtensilsCrossed className="size-8 text-primary" aria-hidden="true" />
+                    <span className={cn("mt-1.5 max-w-full break-words font-heading text-2xl font-bold tabular-nums text-foreground")}>ترابيزة <bdi dir="ltr">{t.tableNumber}</bdi></span>
+                    <span className="mt-0.5 max-w-full break-words text-xs text-muted-foreground">{t.displayName || "بدون اسم"}</span>
                   </div>
 
-                  <div className="flex items-center justify-center gap-3 border-t border-border/60 pt-2 text-xs text-muted-foreground">
-                    <span>📍 {t.area || "بدون منطقة"}</span>
-                    <span>🪑 {t.seatsCount != null ? `${t.seatsCount} كراسي` : "—"}</span>
+                  <div className="flex flex-wrap items-center justify-center gap-3 border-t border-border/60 pt-2 text-xs text-muted-foreground">
+                    <span><MapPin className="me-1 inline size-3" aria-hidden="true" /> {t.area || "بدون منطقة"}</span>
+                    <span><Armchair className="me-1 inline size-3" aria-hidden="true" /> {t.seatsCount != null ? `${t.seatsCount} كراسي` : "—"}</span>
                   </div>
 
                   {(canEdit || canArchive) && (

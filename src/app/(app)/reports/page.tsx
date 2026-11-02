@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef,useState } from "react";
 import { toast } from "sonner";
 import Link from "next/link";
+import { PageHeader, LoadingState } from "@/components/cafe/ui";
 import { api, money } from "@/lib/client";
 import { dateStrInTz } from "@/lib/date-range";
 import { useApp } from "@/components/app-shell";
@@ -123,19 +124,18 @@ export default function ReportsPage() {
   }, [load]);
 
   return (
-    <div className="max-w-4xl space-y-4">
+    <div className="min-w-0 max-w-6xl space-y-4">
       {(user.role === "CAFE_OWNER" || user.role === "SUPER_ADMIN") && canKey("finance.view_revenue") && (
         <><Link className="inline-block text-primary underline" href="/reports/historical-sales">المبيعات التاريخية المستوردة من Next Cup خلال السنة</Link><br/></>
       )}
       <Link className="inline-block text-primary underline" href="/reports/opening-receipts">تقرير استلام الكاش والخامات والمكان — المطابق والمؤجل والفروق</Link><br/>
       <Link className="inline-block text-primary underline" href="/reports/employee-variances">تقرير فروق الموظفين — كاش وفيزا ومحفظة وخامات</Link>
       <br/><Link className="inline-block text-primary underline" href="/reports/employee-actions">تقرير مسؤولية الموظفين عن الإلغاء والاسترداد</Link>
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">تقرير قفلة اليوم</h1>
+      <PageHeader title="تقرير قفلة اليوم">
         <TouchSelect aria-label="فرع التقرير" value={filters.branchId??''} onValueChange={v=>setFilters({...filters,branchId:v})}><option value="">كل الفروع المسموحة — كل فرع بساعاته</option>{report?.reporting.branches.map(b=><option key={b.id} value={b.id}>{b.name}</option>)}</TouchSelect>
-      </div>
+      </PageHeader>
       <ReportingControls filters={filters} onChange={setFilters} metadata={report?.reporting} onSaved={()=>void load()}/>
-      {loading&&<p role="status">جاري تحديث فترة التقرير…</p>}
+      {loading&&<LoadingState label="جاري تحديث فترة التقرير…" />}
       {error&&<p role="alert" className="rounded border p-3 text-destructive">{error} — المعروض أدناه هو آخر تقرير ناجح. صحّح المدخلات لإعادة حسابه.</p>}
       <ReportOutputActions snapshot={report?.outputSnapshot} disabled={loading||!!error}/>
 

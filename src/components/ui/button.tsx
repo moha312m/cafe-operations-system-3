@@ -55,4 +55,8 @@ function Button({
   )
 }
 
-export { Button, buttonVariants }
+const nativeButtonSize = "h-auto min-h-10 max-w-full whitespace-normal px-4 py-2"
+const nativeButtonClassName = cn(buttonVariants({ variant: "outline" }), nativeButtonSize)
+const nativePrimaryButtonClassName = cn(buttonVariants({ variant: "default" }), nativeButtonSize)
+
+export { Button, buttonVariants, nativeButtonClassName, nativePrimaryButtonClassName }

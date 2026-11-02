@@ -3,6 +3,7 @@ import { useRef, useState } from "react";
 import { parseRecipeFile } from "@/lib/recipe-file";
 import { toast } from "sonner";
 import { api } from "@/lib/client";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
@@ -75,7 +76,7 @@ export function RecipeExchange({ onImported }: { onImported: () => void | Promis
         <p className="text-sm text-muted-foreground">أدخل المكونات والكميات الفعلية لكل وحدة مباعة. الاستيراد يخص الوصفات فقط؛ تبقى الأسعار والتكاليف والمخزون كما هي. الوصفات الجديدة أو المتغيرة تحتاج تأكيدًا بعد المراجعة.</p>
         <div className="flex flex-wrap gap-2"><Button variant="outline" disabled={busy} onClick={() => void download(true)}>تحميل القالب والمراجع</Button>
           <input ref={input} type="file" accept=".xlsx,.csv" disabled={busy} className="hidden" onChange={e => { const file = e.target.files?.[0]; if (file) void readFile(file); }} />
-          <Button variant="outline" disabled={busy} onClick={() => input.current?.click()}>اختيار ملف</Button><span className="self-center text-sm">{fileName}</span>
+          <Button variant="outline" disabled={busy} onClick={() => input.current?.click()}>اختيار ملف</Button><span className="min-w-0 break-all self-center text-sm" dir="auto">{fileName}</span>
         </div>
         <p className="text-xs text-muted-foreground">عدل Recipes فقط. استخدم المعرفات والأسماء وفرع المكون من أوراق المراجع. احذف صفوف القالب غير المطلوبة وأكمل الكميات والوحدات والهدر. الحد: 1000 صف، 5 ميجابايت.</p>
         <fieldset disabled={busy} className="space-y-2 rounded-lg border p-3"><legend className="px-1 text-sm font-semibold">اختر طريقة الاستيراد صراحة</legend>
@@ -88,7 +89,7 @@ export function RecipeExchange({ onImported }: { onImported: () => void | Promis
         {preview && <div className="space-y-3">
           <p className="text-sm">{preview.stats.total} صف — {preview.stats.recipes} وصفة — {preview.stats.errors} صف به أخطاء</p>
           {!!preview.stats.errors && <p className="text-sm text-destructive">صحح كل الأخطاء في الملف وأعد رفعه. لا يتم استيراد أي وصفة من ملف به أخطاء.</p>}
-          <div className="max-h-64 overflow-auto rounded-lg border"><table className="w-full text-right text-sm"><thead><tr className="border-b"><th className="p-2">الصنف</th><th className="p-2">النطاق</th><th className="p-2">النتيجة</th></tr></thead><tbody>{preview.groups.map((g, i) => <tr key={i} className="border-b"><td className="p-2">{g.name}</td><td className="p-2">{g.scope}</td><td className="p-2">{actions[g.action] ?? g.action}{g.requiresConfirmation && ["CREATE", "REPLACE"].includes(g.action) ? " — يحتاج تأكيدًا جديدًا" : ""}</td></tr>)}</tbody></table></div>
+          <div className="max-h-64 overflow-auto rounded-lg border"><Table><TableHeader><TableRow><TableHead>الصنف</TableHead><TableHead>النطاق</TableHead><TableHead>النتيجة</TableHead></TableRow></TableHeader><TableBody>{preview.groups.map((g, i) => <TableRow key={i}><TableCell>{g.name}</TableCell><TableCell>{g.scope}</TableCell><TableCell>{actions[g.action] ?? g.action}{g.requiresConfirmation && ["CREATE", "REPLACE"].includes(g.action) ? " — يحتاج تأكيدًا جديدًا" : ""}</TableCell></TableRow>)}</TableBody></Table></div>
           <ul className="max-h-48 overflow-auto space-y-1 text-sm text-destructive">{preview.rows.filter(r => r.errors.length).map(r => <li key={r.rowNumber}>صف {r.rowNumber}: {r.errors.join("؛ ")}</li>)}</ul>
           <Button disabled={busy || !!preview.stats.errors || !preview.previewToken} onClick={() => void commit()}>{busy ? "جارٍ الاستيراد…" : mode === "replace" ? "تأكيد الاستبدال والاستيراد" : "تأكيد استيراد الجديد فقط"}</Button>
         </div>}

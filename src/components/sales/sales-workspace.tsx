@@ -10,6 +10,9 @@ import {api} from '@/lib/client';
 import {useApp} from '@/components/app-shell';
 import {formatDateTime,formatMoney} from '@/lib/i18n';
 import {Button} from '@/components/ui/button';
+import {nativeFieldClassName} from '@/components/ui/input';
+import {cn} from '@/lib/utils';
+import {PageHeader} from '@/components/cafe/ui';
 import {Dialog,DialogContent,DialogTitle} from '@/components/ui/dialog';
 import type {AmendmentInput,Proposed} from '@/lib/order-amendments';
 import {ReportingControls,type ReportingMetadata} from './reporting-controls';
@@ -27,9 +30,9 @@ const initial:List={orders:[],count:0,page:1,totals:{},branches:[],users:[]};
 const statusName:Record<string,string>={PAID:'مدفوع',UNPAID:'غير مدفوع',PARTIAL:'مدفوع جزئيًا',REFUNDED:'مرتجع',PENDING_COLLECTION:'بانتظار التحصيل',READY:'جاهز للتنفيذ',PENDING_APPROVAL:'بانتظار الموافقة',SETTLING:'تسوية جارية',COMMITTED:'مكتمل',CANCELLED:'ملغي',PENDING:'بانتظار التأكيد',OBSERVED:'حركة مؤكدة — احفظ التعديل',UNKNOWN:'غير مؤكد — مراجعة المدير',FAILED:'فشل دون حركة أموال',CONFIRMED:'تسوية محفوظة'};
 const money=(value:string|number|null|undefined)=>formatMoney(Number(value??0));
 const discountName:Record<string,string>={NONE:'بدون',PERCENT:'نسبة %',FIXED:'مبلغ ج.م'};
-const inputClass='rounded-md border bg-background px-2 py-2 text-sm min-w-0';
+const inputClass=cn(nativeFieldClassName, "w-auto");
 function DiscountInput({value,onChange,label}:{value:{type:string;value:string};onChange:(v:{type:'NONE'|'PERCENT'|'FIXED';value:string})=>void;label:string}){
- return <div className="flex gap-1"><TouchSelect className={inputClass} aria-label={label+' نوع'} value={value.type} onValueChange={touchValue => onChange({type:touchValue as 'NONE'|'PERCENT'|'FIXED',value:'0'})}><option value="NONE">بدون خصم</option><option value="PERCENT">نسبة %</option><option value="FIXED">مبلغ ج.م</option></TouchSelect><TouchNumberInput className={inputClass+' w-24'} type="number" min="0" step="0.01" aria-label={label+' قيمة'} value={value.value} disabled={value.type==='NONE'} onValueChange={touchValue => onChange({type:value.type as 'NONE'|'PERCENT'|'FIXED',value:touchValue})}/></div>;
+ return <div className="flex min-w-0 flex-wrap gap-2"><TouchSelect className={inputClass} aria-label={label+' نوع'} value={value.type} onValueChange={touchValue => onChange({type:touchValue as 'NONE'|'PERCENT'|'FIXED',value:'0'})}><option value="NONE">بدون خصم</option><option value="PERCENT">نسبة %</option><option value="FIXED">مبلغ ج.م</option></TouchSelect><TouchNumberInput className={inputClass+' w-24'} type="number" min="0" step="0.01" aria-label={label+' قيمة'} value={value.value} disabled={value.type==='NONE'} onValueChange={touchValue => onChange({type:value.type as 'NONE'|'PERCENT'|'FIXED',value:touchValue})}/></div>;
 }
 export function SalesWorkspace(){
  const {canKey,can,user}=useApp();const search=useSearchParams();
@@ -49,7 +52,7 @@ export function SalesWorkspace(){
  async function action(id:string,body:object){await api('/api/sales/amendments/'+id,{method:'POST',body:body});if(detail)await reloadDetail(detail.order.id);await load();}
  async function showReceipt(revision:number){if(!detail)return;await run(async()=>{setReceipt(await api('/api/sales/'+detail.order.id+'/receipt',{method:'POST',body:{revision,reprint:revision<detail.order.revision,logPrint:false}}));});}
  return <div className="space-y-4" dir="rtl">
-  <div className="flex flex-wrap items-center justify-between gap-3"><div><h1 className="text-2xl font-bold">المبيعات</h1><p className="text-sm text-muted-foreground">ابحث عن الفاتورة وافتح تفاصيلها أو إيصالها أو إجراءاتها المسموحة</p></div><div className="flex items-center gap-3">{canKey('audit.view')&&<Link href="/tracing" className="underline">التتبّع</Link>}{can('orders:create')&&<Link href="/pos" className="inline-flex min-h-11 items-center rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground">+ بيع جديد</Link>}</div></div>
+  <PageHeader title="المبيعات" subtitle="ابحث عن الفاتورة وافتح تفاصيلها أو إيصالها أو إجراءاتها المسموحة"><div className="flex items-center gap-3">{canKey('audit.view')&&<Link href="/tracing" className="underline">التتبّع</Link>}{can('orders:create')&&<Link href="/pos" className="inline-flex min-h-11 items-center rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground">+ بيع جديد</Link>}</div></PageHeader>
   <ReportingControls filters={filters} onChange={f=>{setFilters(f);setPage(1);}} metadata={list.reporting} onSaved={()=>void load()}/>
   <form className="flex flex-wrap gap-2" onSubmit={e=>{e.preventDefault();void load();}}>
    <label className="flex flex-col gap-1 text-xs">بحث الفواتير<input className={inputClass} aria-label="بحث رقم الطلب" placeholder="رقم الفاتورة أو معرّف الطلب" value={filters.q??''} onChange={e=>{setFilters({...filters,q:e.target.value});setPage(1);}}/></label>

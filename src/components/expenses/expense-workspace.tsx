@@ -1,5 +1,8 @@
 "use client";
+import { nativeFieldClassName } from "@/components/ui/input";
+import { nativeButtonClassName, nativePrimaryButtonClassName } from "@/components/ui/button";
 import Link from "next/link";
+import { PageHeader } from "@/components/cafe/ui";
 import { useEffect, useState, type FormEvent } from "react";
 import { api, ApiRequestError, money } from "@/lib/client";
 import { useApp } from "@/components/app-shell";
@@ -12,8 +15,8 @@ type Expense = ReturnType<typeof expenseDto>;
 type Category = { id: string; code: string; nameAr: string; archivedAt: string | null };
 type Metadata = { categories: Category[]; branches: { id: string; name: string }[] };
 type Listing = { expenses: Expense[]; count: number; pageSize: number; totals: { paid: number; returned: number } };
-const field = "w-full rounded-lg border bg-background p-2 disabled:opacity-60";
-const button = "rounded-lg border px-4 py-2 disabled:opacity-50";
+const field = nativeFieldClassName;
+const button = nativeButtonClassName;
 const message = (error: unknown) => error instanceof Error ? error.message : "تعذر إكمال الطلب";
 const uncertainResult = (error: unknown) => !(error instanceof ApiRequestError) || error.status >= 500 || error.status === 409;
 const date = (iso: string) => new Date(iso).toLocaleString("ar-EG", { timeZone: "Africa/Cairo" });
@@ -110,8 +113,8 @@ export function ExpenseWorkspace() {
   }
   if (!view) return <p role="alert">ليس لديك صلاحية عرض المصروفات.</p>;
   return <main dir="rtl" className="mx-auto max-w-5xl space-y-5">
-    <h1 className="text-2xl font-bold">المصروفات التشغيلية</h1>
-    <div className="flex flex-wrap items-center gap-3"><Link href="/finance" className="text-primary underline">مساحة الماليات ←</Link>{manage && <button className={button + " bg-primary text-primary-foreground"} onClick={() => setCreateOpen(true)}>{uncertain ? "استعادة نتيجة المصروف المعلق" : "+ إضافة مصروف"}</button>}{user.role === "CAFE_OWNER" && manage && <button className={button} onClick={() => setCategoriesOpen(true)}>تصنيفات المصروفات</button>}</div>
+    <PageHeader title="المصروفات التشغيلية" subtitle="سجل المصروفات وردود النقد من درج الوردية" />
+    <div className="flex flex-wrap items-center gap-3"><Link href="/finance" className="text-primary underline">مساحة الماليات ←</Link>{manage && <button className={nativePrimaryButtonClassName} onClick={() => setCreateOpen(true)}>{uncertain ? "استعادة نتيجة المصروف المعلق" : "+ إضافة مصروف"}</button>}{user.role === "CAFE_OWNER" && manage && <button className={button} onClick={() => setCategoriesOpen(true)}>تصنيفات المصروفات</button>}</div>
     <p>مصروف تشغيلي مدفوع فورًا من درجك الحالي بالجنيه المصري. المشتريات وسداد الموردين والسلف والأجور والأصول ومسحوبات المالك لها مسارات منفصلة.</p>
     <div className="grid gap-3 sm:grid-cols-2"><label>بحث في المصروفات<input className={field} maxLength={120} value={search} onChange={e => { setSearch(e.target.value); setPage(1); setLoading(true); }} /></label><label>التصنيف<select className={field} value={filterCategory} onChange={e => { setFilterCategory(e.target.value); setPage(1); setLoading(true); }}><option value="">كل التصنيفات</option>{metadata.categories.map(c => <option key={c.id} value={c.id}>{c.nameAr}{c.archivedAt ? " — مؤرشف" : ""}</option>)}</select></label></div>
     <div className="grid gap-3 sm:grid-cols-3">
