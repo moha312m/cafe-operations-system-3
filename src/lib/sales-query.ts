@@ -36,7 +36,46 @@ export async function listSales(actor:SessionUser,params:URLSearchParams){
   db.user.findMany({where:{...(scope.cafeId?{cafeId:scope.cafeId}:{}),...(scope.branchId?{branchId:scope.branchId}:{})},select:{id:true,name:true},take:500}),
  ],{isolationLevel:'RepeatableRead'});
  const reportingMetadata=reporting??{mode:'legacy',windows:[],branches:branches.map(b=>({id:b.id,name:b.name,versions:b.reportingVersions})),outsideCounts:[],coverageNote:'سجل الفواتير بحسب فلاتر التاريخ السابقة. اختر أيام العمل لاستخدام ساعات تقارير الفروع.'};
- const outputSnapshot=signReportOutput(actor.id,{context:{'نطاق التصدير':'صفحة الفواتير المعروضة','الفلاتر':JSON.stringify(f)},preserveStrings:true,title:'المبيعات — أحدث قيم الفواتير؛ صفحة '+f.page,reporting:{invoiceScopeFingerprint:JSON.stringify([actor.id,scope.cafeId,resolveReadScope(actor).branchId??null,actor.role,[...keys].sort()]),filters:f,period:reporting?{mode:reporting.mode,windows:reporting.windows,branches:reporting.branches.map(b=>({id:b.id,name:b.name}))}: {mode:'legacy',from:period?.gte??null,to:period?.lt??null,boundary:'[start,end)',label:period?'فترة الفلاتر السابقة':'جميع التواريخ'}},metrics:{latestInvoices:totals._sum,count,page:f.page,pageSize:30},rows:orders.map(o=>({orderNumber:o.orderNumber,id:o.id,createdAt:o.createdAt,branchId:o.branchId,total:o.total,paidAmount:o.paidAmount,remainingAmount:o.remainingAmount})),generatedAt:new Date().toISOString()});
+ const cairoTime=new Intl.DateTimeFormat('sv-SE',{timeZone:'Africa/Cairo',dateStyle:'short',timeStyle:'short'});
+ const paymentLabels:Record<string,string>={PAID:'مدفوع',UNPAID:'غير مدفوع',PARTIAL:'مدفوع جزئيًا',REFUNDED:'مرتجع',PENDING_COLLECTION:'بانتظار التحصيل'};
+ const amount=(value:Prisma.Decimal|null)=>value?.toFixed(2)??0;
+ const summary=totals._sum;
+ const outputSnapshot=signReportOutput(actor.id,{
+  readerFriendly:true,
+  title:'سجل المبيعات',
+  context:{
+   'نطاق التفاصيل':'الصفحة المعروضة فقط',
+   'نطاق الإجماليات':'جميع الفواتير المطابقة للفلاتر',
+   'الفرع':scope.branchId?branches.find(b=>b.id===scope.branchId)?.name??'غير متاح':'كل الفروع المسموحة',
+   'من تاريخ':f.businessFrom??f.from??f.date??'—',
+   'إلى تاريخ':f.businessTo??f.to??f.date??'—',
+   'وقت التصدير — القاهرة':cairoTime.format(new Date()),
+  },
+  reporting:{invoiceScopeFingerprint:JSON.stringify([actor.id,scope.cafeId,resolveReadScope(actor).branchId??null,actor.role,[...keys].sort()]),filters:f,mode:reporting?.mode,windows:reporting?.windows,branches:reporting?.branches,label:period?(f.business==='1'?'أيام العمل':'أيام القاهرة المدنية'):'جميع التواريخ'},
+  metrics:{
+   'إجمالي الفواتير (ج.م)':amount(summary.total),
+   'المحصّل (ج.م)':amount(summary.paidAmount),
+   'المتبقي (ج.م)':amount(summary.remainingAmount),
+   'قبل الخصومات (ج.م)':amount(summary.subtotal),
+   'الخصومات (ج.م)':amount(summary.discountAmount),
+   'الضريبة (ج.م)':amount(summary.taxAmount),
+   'الخدمة (ج.م)':amount(summary.serviceChargeAmount),
+   'عدد الفواتير المطابقة':count,
+   'عدد الفواتير في الملف':orders.length,
+   'رقم الصفحة':f.page,
+  },
+  rows:orders.map(o=>({
+   'رقم الفاتورة':o.orderNumber,
+   'التاريخ والوقت — القاهرة':cairoTime.format(o.createdAt),
+   'الفرع':o.branch.name,
+   'الموظف':o.createdBy?.name??'—',
+   'حالة الدفع':paymentLabels[o.paymentStatus]??'غير متاح',
+   'الإجمالي (ج.م)':amount(o.total),
+   'المحصّل (ج.م)':amount(o.paidAmount),
+   'المتبقي (ج.م)':amount(o.remainingAmount),
+  })),
+  generatedAt:new Date().toISOString(),
+ });
  return {orders:orders.map(o=>redactInvoiceCustomer({...o,netCollected:collectedAmountExact(o.payments).toFixed(2)},keys.has('customers.view'))),count,page:f.page,pageSize:30,totals:totals._sum,branches,users,reporting:reportingMetadata,outputSnapshot};
 }
 export async function saleDetail(actor:SessionUser,id:string){

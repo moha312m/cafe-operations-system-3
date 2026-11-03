@@ -22,3 +22,16 @@ test('wide analytical records print as readable field/value details instead of a
  const files=reportOutputFiles({title:'وردية',reporting:{},metrics:{},generatedAt:'2026-11-03',preserveStrings:true,rows:[row]});
  assert.ok(files.html.includes('<dl>'));assert.ok(files.html.includes('حقل 14'));assert.ok(files.html.includes('قيمة 14'));
 });
+
+test('reader-facing sales output labels totals and page scope without exposing internal metadata',()=>{
+ const report={title:'سجل المبيعات',readerFriendly:true,reporting:{label:'جميع التواريخ',invoiceScopeFingerprint:'private',filters:{sort:'newest'}},
+  metrics:{'إجمالي الفواتير (ج.م)':'60.00'},context:{'نطاق التفاصيل':'الصفحة المعروضة فقط'},generatedAt:'2026-11-03',
+  rows:[{'رقم الفاتورة':26,'الفرع':'الفرع الرئيسي','الإجمالي (ج.م)':'60.00'}]};
+ const model=reportOutputModel(report);
+ assert.equal(model.summary[1].value,60);
+ assert.deepEqual(model.tables[0].rows[0],[26,'الفرع الرئيسي',60]);
+ const files=reportOutputFiles(report);
+ for(const value of ['private','newest','المفتاح']) assert.ok(!files.csv.includes(value));
+ assert.ok(files.csv.includes('الصفحة المعروضة فقط'));
+ assert.equal(Buffer.from(files.xlsx,'base64').subarray(0,2).toString(),'PK');
+});

@@ -5,7 +5,7 @@
 import { crc32, deflateRawSync } from "node:zlib";
 
 export type XlsxCell = string | number | boolean | null | undefined;
-export type XlsxSheet = { name: string; rows: XlsxCell[][]; headerRows?: number[] };
+export type XlsxSheet = { name: string; rows: XlsxCell[][]; headerRows?: number[]; readable?: boolean };
 
 const xml = (s: string) =>
   s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F￾￿]/g, "")
@@ -30,7 +30,15 @@ function worksheet(sheet: XlsxSheet) {
     const style = headers.has(r) ? ' s="1"' : "";
     return `<row r="${r + 1}">${row.map((v, c) => cell(column(c) + (r + 1), v, style)).join("")}</row>`;
   }).join("");
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView rightToLeft="1" workbookViewId="0"/></sheetViews>${rows ? `<sheetData>${rows}</sheetData>` : "<sheetData/>"}</worksheet>`;
+  const widths: number[] = [];
+  if (sheet.readable) {
+    for (const row of sheet.rows) row.forEach((value, index) => {
+      widths[index] = Math.min(58, Math.max(widths[index] ?? 14, String(value ?? "").length + 6));
+    });
+  }
+  const cols = widths.length ? `<cols>${widths.map((width, i) => `<col min="${i + 1}" max="${i + 1}" width="${width}" customWidth="1"/>`).join("")}</cols>` : "";
+  const pane = sheet.readable ? '<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>' : "";
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView rightToLeft="1" workbookViewId="0">${pane}</sheetView></sheetViews>${cols}${rows ? `<sheetData>${rows}</sheetData>` : "<sheetData/>"}</worksheet>`;
 }
 
 // Excel sheet names: at most 31 characters, none of []:*?/\ and unique.

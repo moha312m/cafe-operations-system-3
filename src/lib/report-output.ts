@@ -3,7 +3,7 @@ import {resolveAuthSecret} from './auth';
 import {buildXlsx} from './xlsx';
 export type ReportOutput={title:string;reporting:unknown;metrics:Record<string,unknown>;rows:Record<string,unknown>[];generatedAt:string;
  /** Human labels for metric keys ("section.key"); exports fall back to the key. */
- labels?:Record<string,string>;context?:Record<string,string>;preserveStrings?:boolean};
+ labels?:Record<string,string>;context?:Record<string,string>;preserveStrings?:boolean;readerFriendly?:boolean};
 export function signReportOutput(actorId:string,report:ReportOutput){const payload=Buffer.from(JSON.stringify({actorId,expires:Date.now()+30*60000,report})).toString('base64url');return payload+'.'+createHmac('sha256',resolveAuthSecret()).update(payload).digest('base64url');}
 export function verifyReportOutput(actorId:string,token:string):ReportOutput{
  if(token.length>2000000)throw Error('حجم التقرير أكبر من المسموح');const [payload,signature,...extra]=token.split('.');if(!payload||!signature||extra.length)throw Error('توقيع التقرير غير صالح');
@@ -38,9 +38,10 @@ export function reportOutputModel(report:ReportOutput):OutputModel{
  const period=report.reporting as {mode?:string;boundary?:string;windows?:{branchId?:string;startLocal:string;endLocal:string;timezone:string;from:string;to:string;warnings:string[]}[];branches?:{id:string;name:string}[]};
  const info=(label:string,value:unknown,key='')=>({label,key,value:output(value)});
  const publicPeriod=report.reporting&&typeof report.reporting==='object'?Object.fromEntries(Object.entries(report.reporting).filter(([key])=>!['scopeFingerprint','invoiceScopeFingerprint','requestedCafeId'].includes(key))):report.reporting;
- const periods=period?.windows?.length?period.windows.flatMap((w,i)=>[info(`الفترة ${i+1} — ${period.branches?.find(b=>b.id===w.branchId)?.name??w.branchId??''}`,`${w.startLocal.replace('T',' ')} → ${w.endLocal.replace('T',' ')} · ${w.timezone}`),info(`الفترة ${i+1} UTC`,`${w.from} → ${w.to}`),...w.warnings.map(warning=>info('ملاحظة التوقيت الصيفي',warning))]):[info('الفترة',JSON.stringify(publicPeriod))];
+ const periods=period?.windows?.length?period.windows.flatMap((w,i)=>[info(`الفترة ${i+1} — ${period.branches?.find(b=>b.id===w.branchId)?.name??w.branchId??''}`,`${w.startLocal.replace('T',' ')} → ${w.endLocal.replace('T',' ')} · ${w.timezone}`),info(`الفترة ${i+1} UTC`,`${w.from} → ${w.to}`),...w.warnings.map(warning=>info('ملاحظة التوقيت الصيفي',warning))]):[info('الفترة',report.readerFriendly ? (period as {label?:string})?.label : JSON.stringify(publicPeriod))];
  const metrics=Object.entries(report.metrics).flatMap(([section,value])=>value&&typeof value==='object'?Object.entries(value as Record<string,unknown>).map(([k,v])=>{const key=section+'.'+k;return info(report.labels?.[key]??key,v,key);}):[info(report.labels?.[section]??section,value,section)]);
- const summary=[info('التقرير',report.title),info('نوع الفترة',period?.mode??''),info('وقت إنشاء اللقطة',report.generatedAt),info('الحدود',period?.boundary??'البداية مشمولة والنهاية مستبعدة'),...periods,...Object.entries(report.context??{}).map(([label,value])=>info(label,value)),...metrics];
+ const metadata=[info('التقرير',report.title),info('نوع الفترة',period?.mode??''),info('وقت إنشاء اللقطة',report.generatedAt),info('الحدود',period?.boundary??'البداية مشمولة والنهاية مستبعدة'),...periods,...Object.entries(report.context??{}).map(([label,value])=>info(label,value)),...metrics];
+ const summary=report.readerFriendly ? [info('التقرير',report.title),...metrics,...Object.entries(report.context??{}).map(([label,value])=>info(label,value)),...periods] : metadata;
  const grouped=new Map<string,Record<string,unknown>[]>();
  for(const row of report.rows){const {section,...rest}=row,key=typeof section==='string'?section:'rows';grouped.set(key,[...(grouped.get(key)??[]),rest]);}
  const tables=[...grouped].map(([key,rows])=>{const columns=[...new Set(rows.flatMap(r=>Object.keys(r)))];return {key,title:SECTION_LABELS[key]??key,columns,rows:rows.map(r=>columns.map(c=>output(r[c])))};});
@@ -55,7 +56,8 @@ const csvCell=(value:OutputValue)=>{if(typeof value==='number')return String(val
 export function reportOutputFiles(report:ReportOutput){
  const model=reportOutputModel(report);
  const line=(cells:OutputValue[])=>cells.map(csvCell).join(',');
- const csv='\uFEFF'+[line(['البند','القيمة','المفتاح']),...model.summary.map(s=>line([s.label,s.value,s.key])),...model.tables.flatMap(t=>['',line([t.title]),line(t.columns),...t.rows.map(line)])].join('\r\n');
+ const summaryRows=[report.readerFriendly?['البند','القيمة']:['البند','القيمة','المفتاح'],...model.summary.map(s=>report.readerFriendly?[s.label,s.value]:[s.label,s.value,s.key])];
+ const csv='\uFEFF'+[...summaryRows.map(line),...model.tables.flatMap(t=>['',line([t.title]),line(t.columns),...t.rows.map(line)])].join('\r\n');
  const show=(v:OutputValue)=>escape(v??'');
  const printedTables=model.tables.map(t=>{
   const heading='<h2>'+escape(t.title)+'</h2>';
@@ -63,6 +65,6 @@ export function reportOutputFiles(report:ReportOutput){
   return heading+'<table><thead><tr>'+t.columns.map(c=>'<th>'+escape(c)+'</th>').join('')+'</tr></thead><tbody>'+t.rows.map(r=>'<tr>'+r.map(v=>'<td dir="auto"'+(typeof v==='number'?' class="n"':'')+'>'+show(v)+'</td>').join('')+'</tr>').join('')+'</tbody></table>';
  }).join('');
  const html='<!doctype html><html dir="rtl" lang="ar"><meta charset="utf-8"><title>'+escape(model.title)+'</title><style>@page{size:A4 landscape;margin:12mm}thead{display:table-header-group}body{font:16px Arial;padding:20px}table{width:100%;table-layout:fixed;border-collapse:collapse;overflow-wrap:anywhere;margin-bottom:16px}td,th{border:1px solid #888;padding:8px;text-align:start}tr{break-inside:avoid}p{overflow-wrap:anywhere}td.n{font-variant-numeric:tabular-nums}.record{border:1px solid #888;padding:12px;margin-block:16px}.record h3{break-after:avoid}.record dl>div{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr);gap:12px;padding:8px;border-top:1px solid #ddd;break-inside:avoid}.record dt,.record dd{margin:0;overflow-wrap:anywhere;white-space:pre-wrap}</style><h1>'+escape(model.title)+'</h1><p>لقطة التقرير ونطاقها المبينان أدناه؛ لا تعدّ التحصيلات مبيعات جديدة.</p><table>'+model.summary.map(s=>'<tr><th>'+escape(s.label)+'</th><td dir="auto"'+(typeof s.value==='number'?' class="n"':'')+'>'+show(s.value)+'</td></tr>').join('')+'</table>'+printedTables+'</html>';
- const xlsx=buildXlsx([{name:'الملخص',headerRows:[0],rows:[['البند','القيمة','المفتاح'],...model.summary.map(s=>[s.label,s.value,s.key])]},...model.tables.map(t=>({name:t.title,headerRows:[0],rows:[t.columns,...t.rows]}))]).toString('base64');
+ const xlsx=buildXlsx([{name:'الملخص',readable:report.readerFriendly,headerRows:[0],rows:summaryRows},...model.tables.map(t=>({name:t.title,readable:report.readerFriendly,headerRows:[0],rows:[t.columns,...t.rows]}))]).toString('base64');
  return {csv,html,xlsx};
 }
