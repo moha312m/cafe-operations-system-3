@@ -1,5 +1,5 @@
 "use client";
-import {useEffect,useRef,useState} from 'react';
+import {useEffect,useRef,useState,Children,isValidElement,type ReactNode} from 'react';
 import Link from 'next/link';
 import {usePathname,useRouter,useSearchParams} from 'next/navigation';
 import {useApp} from '@/components/app-shell';
@@ -42,9 +42,9 @@ function ReportInner({kind,identity}:{kind:SalesReportKind;identity:string}){
   <form key={query} onSubmit={e=>{e.preventDefault();apply(e.currentTarget);}} className="workspace-surface grid min-w-0 gap-3 p-4 sm:grid-cols-2 xl:grid-cols-4">
    {fields.map(([key,label])=><label key={key} className="min-w-0 space-y-1 text-sm">{label}<input className={selectClass} name={key} type="date" required defaultValue={params.get(key)??''}/></label>)}
    <label className="space-y-1 text-sm">نوع الفترة<select className={selectClass} name="dayMode" defaultValue={params.get('dayMode')??'calendar'}><option value="calendar">أيام القاهرة المدنية</option><option value="business">أيام العمل — ساعات الفروع</option></select></label>
-   <label className="space-y-1 text-sm">الفرع<select className={selectClass} name="branchId" defaultValue={user.branchId??params.get('branchId')??''} disabled={!!user.branchId}><option value="">كل الفروع المسموحة</option>{user.branchId&&!options&&<option value={user.branchId}>الفرع المعين</option>}{options?.branches.map(b=><option key={b.id} value={b.id}>{b.name}</option>)}</select></label>
+   <label className="space-y-1 text-sm">الفرع<DraftReportSelect className={selectClass} name="branchId" initialValue={user.branchId??params.get('branchId')??''} disabled={!!user.branchId}><option value="">كل الفروع المسموحة</option>{user.branchId&&!options&&<option value={user.branchId}>الفرع المعين</option>}{options?.branches.map(b=><option key={b.id} value={b.id}>{b.name}</option>)}</DraftReportSelect></label>
    <label className="space-y-1 text-sm">بحث في النتائج<input className={selectClass} name="q" maxLength={100} defaultValue={params.get('q')??''} placeholder="اسم، SKU أو مرجع"/></label>
-   {kind==='product-sales'&&<><label className="space-y-1 text-sm">التصنيف الحالي<select className={selectClass} name="categoryId" defaultValue={params.get('categoryId')??''}><option value="">كل التصنيفات</option>{options?.categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</select></label><label className="space-y-1 text-sm">طريقة العرض<select className={selectClass} name="view" defaultValue={params.get('view')??'product'}>{[['product','منتج / حجم'],['lines','بنود الفواتير'],['date','تاريخ القاهرة'],['category','التصنيف'],['brand','العلامة — فحص التغطية'],['cost','التكلفة — فحص التغطية']].map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></label></>}
+   {kind==='product-sales'&&<><label className="space-y-1 text-sm">التصنيف الحالي<DraftReportSelect className={selectClass} name="categoryId" initialValue={params.get('categoryId')??''}><option value="">كل التصنيفات</option>{options?.categories.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}</DraftReportSelect></label><label className="space-y-1 text-sm">طريقة العرض<select className={selectClass} name="view" defaultValue={params.get('view')??'product'}>{[['product','منتج / حجم'],['lines','بنود الفواتير'],['date','تاريخ القاهرة'],['category','التصنيف'],['brand','العلامة — فحص التغطية'],['cost','التكلفة — فحص التغطية']].map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></label></>}
    {['product-sales','shift-sales','sales-payments','sales-staff'].includes(kind)&&<label className="space-y-1 text-sm">معرف الوردية<input className={selectClass} name="shiftId" maxLength={100} defaultValue={params.get('shiftId')??''} placeholder="من تفاصيل الوردية"/></label>}
    {kind==='sales-staff'&&<label className="space-y-1 text-sm">أساس إسناد الموظف<select className={selectClass} name="basis" defaultValue={params.get('basis')??'creator'}><option value="creator">منشئ البيع — createdAt</option><option value="collector">المحصّل — paidAt</option><option value="server">مقدم الطلب — servedAt</option></select></label>}
    {['sales-staff','sales-payments','shift-sales'].includes(kind)&&<label className="space-y-1 text-sm">معرف الموظف<input className={selectClass} name="actorId" maxLength={100} defaultValue={params.get('actorId')??''}/></label>}
@@ -69,4 +69,11 @@ function ReportInner({kind,identity}:{kind:SalesReportKind;identity:string}){
   </>}
   <Dialog open={!!detail} onOpenChange={open=>{if(!open)setDetail(null);}}><DialogContent finalFocus={returnFocus} className="max-h-[90dvh] overflow-y-auto sm:max-w-3xl" dir="rtl"><DialogTitle>تفاصيل السجل</DialogTitle>{detail&&<div className="space-y-4"><dl className="grid min-w-0 gap-3 sm:grid-cols-2">{[...(data?.columns.map(c=>[c.label,detail.cells[c.key]])??[]),...Object.entries(detail.details??{})].map(([label,value])=><div key={label} className="min-w-0"><dt className="text-sm text-muted-foreground">{label}</dt><dd className="break-all tabular-nums"><bdi>{value??'غير متاح'}</bdi></dd></div>)}</dl><div className="flex flex-col gap-2">{detail.href&&<Link className="min-h-11 text-primary underline" href={detail.href}>فتح المصدر الأصلي</Link>}{detail.links?.map((link,index)=><Link key={index} className="min-h-11 break-all text-sm text-primary underline" href={link.href}>{link.label}</Link>)}</div><Button variant="outline" onClick={()=>setDetail(null)}>إغلاق التفاصيل</Button></div>}</DialogContent></Dialog>
  </div>;
+}
+
+/** Keep the draft selection when authorized option metadata arrives after the first render. */
+function DraftReportSelect({initialValue,children,...props}:{initialValue:string;children:ReactNode;name:string;className:string;disabled?:boolean}){
+ const [value,setValue]=useState(initialValue);
+ const available=Children.toArray(children).some(child=>isValidElement<{value?:string}>(child)&&child.props.value===value);
+ return <select {...props} value={value} onChange={event=>setValue(event.target.value)}>{value&&!available&&<option value={value}>النطاق المحدد</option>}{children}</select>;
 }
