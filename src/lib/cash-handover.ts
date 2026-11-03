@@ -29,13 +29,18 @@ export async function recordCashHandover(tx: Prisma.TransactionClient, args: {
   const variance = proposed === null ? null : money(money(countedInput).minus(h.outgoingShift.actualCashAmount!)).toNumber();
   let caseId: string|null = null;
   if (variance !== null && variance !== 0) {
-    if (!args.cashReasonCodeId || !args.cashReasonNote?.trim()) throw new ApiError(400,'لازم تحدد سبب فرق النقدية بين المسلم والمستلم وتكتب ملاحظة');
-    const reason = await tx.reasonCode.findFirst({where:{id:args.cashReasonCodeId,cafeId:h.cafeId,domain:'HANDOVER',isActive:true},select:{id:true}});
-    if (!reason) throw new ApiError(400,'سبب فرق التسليم مش صالح للكافيه');
+    // A receipt difference is a recorded observation, not a manager exception.
+    // A reason/note may be supplied independently; neither is invented or required.
+    const reasonCodeId = args.cashReasonCodeId ?? null;
+    const note = args.cashReasonNote?.trim() || null;
+    if (reasonCodeId) {
+      const reason = await tx.reasonCode.findFirst({where:{id:reasonCodeId,cafeId:h.cafeId,domain:'HANDOVER',isActive:true},select:{id:true}});
+      if (!reason) throw new ApiError(400,'سبب فرق التسليم مش صالح للكافيه');
+    }
     const exception = await tx.openingException.create({data:{cafeId:h.cafeId,branchId:h.branchId,
       shiftId:h.outgoingShiftId,custodyPeriodId:h.outgoingCashCustodyId,handoverId:h.id,kind:'CASH_MISMATCH',
-      proposedAmount:proposed,actualAmount:counted,varianceAmount:variance,reasonCodeId:reason.id,
-      note:args.cashReasonNote.trim(),authorizedById:actorId},select:{id:true}});
+      proposedAmount:proposed,actualAmount:counted,varianceAmount:variance,reasonCodeId,
+      note,authorizedById:actorId},select:{id:true}});
     caseId=(await openVarianceCase(tx,{cafeId:h.cafeId,branchId:h.branchId,type:'OPENING_EXCEPTION',
       shiftId:h.outgoingShiftId,custodyPeriodId:h.outgoingCashCustodyId,source:{kind:'OPENING',openingExceptionId:exception.id},
       amountVariance:variance,financialImpact:{available:true,value:Math.abs(variance)},confidence:'VERIFIED',

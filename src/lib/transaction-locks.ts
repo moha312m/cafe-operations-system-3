@@ -3,7 +3,7 @@ import { ApiError } from "@/lib/api";
 import { assertOpeningReady } from "@/lib/opening-readiness";
 import { protectedContext, optionalProtectedContext } from "@/lib/protected-transaction";
 
-export function scopedLockPredicate(tx: Prisma.TransactionClient, alias: "s" | "o" | "p" | "c" | "t" | "i") {
+export function scopedLockPredicate(tx: Prisma.TransactionClient, alias: "s" | "o" | "p" | "c" | "t" | "i" | "v") {
   const scope = protectedContext(tx).scope;
   const name = Prisma.raw(alias); // closed, code-owned alias set; never request input
   const conditions: Prisma.Sql[] = [];
@@ -93,6 +93,15 @@ export async function lockTableSessions(tx: Prisma.TransactionClient, ids: strin
   if (rows.length !== sorted.length) throw new ApiError(404, "حساب الترابيزة مش موجود في نطاقك");
   remember(tx, "TableSession", sorted, rows.map(row => row.id), 5);
 }
+/** A supplier invoice ranks after table sessions and before inventory, the
+ * order confirmation already takes (invoice claim, then stock rows). */
+export async function lockPurchaseInvoice(tx: Prisma.TransactionClient, id: string) {
+  const ids = newLocks(tx, "PurchaseInvoice", [id], 5.5);
+  if (!ids.length) return;
+  const rows = await tx.$queryRaw<{ id: string }[]>`SELECT v."id" FROM "PurchaseInvoice" v WHERE v."id"=${id} AND ${scopedLockPredicate(tx, "v")} FOR UPDATE OF v`;
+  if (rows.length !== 1) throw new ApiError(404, "الفاتورة غير موجودة");
+  remember(tx, "PurchaseInvoice", ids, rows.map(row => row.id), 5.5);
+}
 export async function lockBranchAllocator(tx: Prisma.TransactionClient, branchId: string) {
   const scope = protectedContext(tx).scope;
   if (scope.branchId && branchId !== scope.branchId) throw new ApiError(404, "الفرع مش موجود في نطاقك");
@@ -122,4 +131,27 @@ export async function requireCashCustodyInTx(tx: Prisma.TransactionClient, branc
   const shift = await requireOpenPostingShift(tx, candidate.id, branchId);
   if (shift.cashierId !== userId) throw new ApiError(409, "عهدة الشيفت اتغيرت");
   return shift;
+}
+
+/** Original expense follows the Shift and precedes inventory. */
+export async function lockOperatingExpense(tx: Prisma.TransactionClient, id: string) {
+  const ids = newLocks(tx, "OperatingExpense", [id], 5.5);
+  if (!ids.length) return;
+  const scope = protectedContext(tx).scope;
+  const rows = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "OperatingExpense" WHERE "id"=${id} AND "cafeId"=${scope.cafeId ?? ""} AND (${scope.branchId ?? null}::text IS NULL OR "branchId"=${scope.branchId ?? null}) FOR UPDATE`;
+  if (rows.length !== 1) throw new ApiError(404, "المصروف غير موجود في نطاقك");
+  remember(tx, "OperatingExpense", ids, ids, 5.5);
+}
+
+/** ACC-02A only: transfer 7 -> sorted accounts 8; never drawer/invoice locks. */
+export async function lockMoneyTransfer(tx: Prisma.TransactionClient,id:string) {
+ const ids=newLocks(tx,"MoneyTransfer",[id],7);if(!ids.length)return;
+ const scope=protectedContext(tx).scope;
+ const rows=await tx.$queryRaw<{id:string}[]>`SELECT t."id" FROM "MoneyTransfer" t WHERE t."id"=${id} AND t."cafeId"=${scope.cafeId??""} AND (${scope.branchId??null}::text IS NULL OR (EXISTS(SELECT 1 FROM "MoneyAccount" a WHERE a."id"=t."fromAccountId" AND a."branchId"=${scope.branchId??null}) AND EXISTS(SELECT 1 FROM "MoneyAccount" a WHERE a."id"=t."toAccountId" AND a."branchId"=${scope.branchId??null}))) FOR NO KEY UPDATE OF t`;
+ if(rows.length!==1)throw new ApiError(404,"التحويل غير موجود في نطاقك");remember(tx,"MoneyTransfer",ids,ids,7,"FOR NO KEY UPDATE");
+}
+export async function lockMoneyAccounts(tx:Prisma.TransactionClient,requested:string[]) {
+ const ids=newLocks(tx,"MoneyAccount",requested,8);if(!ids.length)return;const scope=protectedContext(tx).scope;
+ const rows=await tx.$queryRaw<{id:string}[]>`SELECT "id" FROM "MoneyAccount" WHERE "id" IN (${Prisma.join(ids)}) AND "cafeId"=${scope.cafeId??""} AND (${scope.branchId??null}::text IS NULL OR "branchId"=${scope.branchId??null}) ORDER BY "id" FOR NO KEY UPDATE`;
+ if(rows.length!==ids.length)throw new ApiError(404,"الحساب غير موجود في نطاقك");remember(tx,"MoneyAccount",ids,rows.map(r=>r.id),8,"FOR NO KEY UPDATE");
 }

@@ -312,18 +312,21 @@ test("contract: close-readiness is a GET-only, READ ONLY, tenant/branch/permissi
   assert.match(code, /line: \{ session: scope \}/);
 });
 
-test("contract: the shift controls never prefill a figure from an expected value and never submit on their own", () => {
-  const src = read("src/components/pos/shift-controls.tsx");
-  // The only sources a count field may take: cleared, the user's own keypad/typing, or the user's own restored draft.
-  for (const m of src.matchAll(/set(ActualCash|ActualCard|ActualWallet)\(([^)]*)\)/g)) assert.match(m[2], /^(""|''|touchValue|restored\.[A-Za-z]+)$/, `unexpected prefill: ${m[0]}`);
-  assert.doesNotMatch(src, /setActual(Cash|Card|Wallet)\([^)]*expected/i);
+// HND-UX-004 moved the close out of the POS dialog onto its own two-screen
+// page. The contract is unchanged and now reads the screen that submits:
+// no figure is prefilled from an expected value, and exactly one place in
+// the app submits a close. The POS controls only link to that page.
+test("contract: the close screen never prefills a figure from an expected value, and is the only place that submits a close", () => {
+  const src = read("src/components/pos/shift-close-flow.tsx");
+  // The only sources a money field may take: the user's own typing/keypad/calculator, or their own restored draft.
+  assert.match(src, /useState\(restored\?\.actualCash \?\? ""\)/, "the cash field starts blank or from this person's own draft");
+  for (const m of src.matchAll(/set(Cash|Card|Wallet)\(([^)]*)\)/g)) assert.match(m[2], /^(value)$/, `unexpected prefill: ${m[0]}`);
+  assert.doesNotMatch(src, /set(Cash|Card|Wallet)\([^)]*expected/i);
+  assert.match(src, /onValueChange=\{setCash\}/);
   const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
   assert.equal([...code.matchAll(/\/close`/g)].length, 1, "exactly one place submits a close");
-  assert.equal([...code.matchAll(/closeShift\b/g)].length, 2, "closeShift is declared once and wired to the confirm button once");
-  assert.doesNotMatch(code.slice(code.indexOf("async function openCloseDialog"), code.indexOf("async function closeShift")), /\/close`|closeShift\(|method: "POST"/);
-  // the readiness read is a GET (no method option) made through the sequence-guarded loader
-  const readinessCode = code.slice(code.indexOf("const readinessLoader"), code.indexOf("const loadReadiness"));
-  assert.match(readinessCode, /close-readiness/);
-  assert.match(readinessCode, /createReadinessLoader/);
-  assert.doesNotMatch(readinessCode, /method:|POST|\/close`/);
+  const controls = read("src/components/pos/shift-controls.tsx").replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+  assert.equal([...controls.matchAll(/\/close`/g)].length, 0, "the POS controls no longer submit a close");
+  assert.match(controls, /href=\{closeHref\}/);
+  assert.match(controls, /إنهاء الشيفت/);
 });

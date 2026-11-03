@@ -4,7 +4,8 @@ import { z } from "zod";
 import { requireKey, handleApiError, ApiError, resolveReadScope } from "@/lib/api";
 import { auditInTransaction } from "@/lib/audit";
 
-import { lockOrders, lockTableSessions } from "@/lib/transaction-locks";
+import { lockBranchAllocator, lockOrders, lockTableSessions } from "@/lib/transaction-locks";
+import { assertTableAvailable } from "@/lib/table-configuration";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -19,8 +20,10 @@ export async function POST(request: NextRequest, { params }: Params) {
     const { tableNumber } = bodySchema.parse(await request.json());
 
     return await protectedTransaction(async (tx) => {
-      const candidate = await tx.tableSession.findFirst({ where: { id, ...resolveReadScope(session) }, select: { id: true } });
+      const candidate = await tx.tableSession.findFirst({ where: { id, ...resolveReadScope(session) }, select: { id: true, branchId: true, cafeId: true } });
       if (!candidate) throw new ApiError(404, "الحساب مش موجود");
+      await lockBranchAllocator(tx, candidate.branchId);
+      await assertTableAvailable(tx, candidate.cafeId, candidate.branchId, tableNumber);
       const members = await tx.order.findMany({ where: { tableSessionId: id, ...resolveReadScope(session) }, select: { id: true } });
       await lockOrders(tx, members.map((order) => order.id));
       await lockTableSessions(tx, [id]);

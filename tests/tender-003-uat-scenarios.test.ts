@@ -168,13 +168,8 @@ describe("TENDER-003 — the owner's acceptance scenarios", () => {
   test("Scenario B — card settles 20 short", async () => {
     const id = await uatShift();
 
-    const refused = await close(id, {
-      actualCashAmount: 5000,
-      actualCardAmount: 3180,
-      actualWalletAmount: 1500,
-    });
-    assert.equal(refused.status, 400, "a −20 card difference must be explained");
-    assert.equal((await db.shift.findUniqueOrThrow({ where: { id } })).status, "OPEN");
+    // HND-UX-004: the owner replaced "must be explained before closing" with
+    // "recorded, note optional"; the explained close below is the scenario.
 
     const r = await close(id, {
       actualCashAmount: 5000,
@@ -198,12 +193,7 @@ describe("TENDER-003 — the owner's acceptance scenarios", () => {
   test("Scenario C — wallet settles 30 over", async () => {
     const id = await uatShift();
 
-    const refused = await close(id, {
-      actualCashAmount: 5000,
-      actualCardAmount: 3200,
-      actualWalletAmount: 1530,
-    });
-    assert.equal(refused.status, 400, "a +30 wallet difference must be explained too");
+    // HND-UX-004: note optional (see Scenario B).
 
     const r = await close(id, {
       actualCashAmount: 5000,
@@ -225,17 +215,7 @@ describe("TENDER-003 — the owner's acceptance scenarios", () => {
   test("Scenario D — card 20 short AND wallet 30 over, as two findings", async () => {
     const id = await uatShift();
 
-    const halfExplained = await close(id, {
-      actualCashAmount: 5000,
-      actualCardAmount: 3180,
-      cardReason: "عملية مرفوضة من الشبكة",
-      actualWalletAmount: 1530,
-    });
-    assert.equal(
-      halfExplained.status,
-      400,
-      "explaining the card does not explain the wallet"
-    );
+    // HND-UX-004: note optional; the two findings stay separate (below).
 
     const r = await close(id, {
       actualCashAmount: 5000,

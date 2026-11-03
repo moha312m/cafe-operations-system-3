@@ -566,50 +566,52 @@ function PosPageInner() {
         <CollectionModeParams onParams={applyCollectionParams} />
       </Suspense>
 
-      {!canChooseBranch && !branchId && (
-        <p role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900">
-          حسابك غير معيّن على فرع. اطلب من المدير تعيين الفرع قبل فتح الشيفت.
-        </p>
-      )}
-
-      {canOperateShift && branchId && (
-        <ShiftControls
-          branchId={branchId}
-          currency={currency}
-          onActiveChange={setShiftActive}
-        />
-      )}
-
-      {/* تحصيل دفع mode banner — deep-linked table collection */}
-      {collectTableBanner && (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-500/50 bg-amber-500/10 px-4 py-2.5">
-          <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">
-            💵 وضع تحصيل الدفع — ترابيزة {collectTableBanner}
-            <span className="ms-2 font-normal text-amber-700/80 dark:text-amber-400/80">
-              فواتير الترابيزة والتحصيل في لوحة الكاشير الجانبية
-            </span>
-          </p>
-          <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={exitCollectionMode}>
-            رجوع لإنشاء طلب
-          </Button>
-        </div>
-      )}
-
-      {/* Single-order collection dialog (/pos?collectOrderId=…) */}
-      {collectOrderId && (
-        <CollectPaymentPanel
-          orderId={collectOrderId}
-          currency={currency}
-          needsShift={needsShift}
-          shiftActive={shiftActive}
-          onDone={exitCollectionMode}
-          onClose={exitCollectionMode}
-        />
-      )}
-
-      {submitError && <p role="alert" className="rounded-lg border border-destructive p-3">{submitError} — البيانات محفوظة للمراجعة وإعادة المحاولة.</p>}
-      {submitting && <p role="status">جاري حفظ الطلب وتسجيل الدفع…</p>}
       <fieldset disabled={submitting} aria-busy={submitting} className="cashier-workspace min-w-0" data-compact-view={compactView}>
+      <div className="cashier-lead flex min-w-0 shrink-0 flex-col gap-3">
+        {!canChooseBranch && !branchId && (
+          <p role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900">
+            حسابك غير معيّن على فرع. اطلب من المدير تعيين الفرع قبل فتح الشيفت.
+          </p>
+        )}
+
+        {canOperateShift && branchId && (
+          <ShiftControls
+            branchId={branchId}
+            currency={currency}
+            onActiveChange={setShiftActive}
+          />
+        )}
+
+        {/* تحصيل دفع mode banner — deep-linked table collection */}
+        {collectTableBanner && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-500/50 bg-amber-500/10 px-4 py-2.5">
+            <p className="text-sm font-semibold text-amber-800 dark:text-amber-300">
+              💵 وضع تحصيل الدفع — ترابيزة {collectTableBanner}
+              <span className="ms-2 font-normal text-amber-700/80 dark:text-amber-400/80">
+                فواتير الترابيزة والتحصيل في لوحة الكاشير الجانبية
+              </span>
+            </p>
+            <Button size="sm" variant="outline" className="h-7 px-2 text-xs" onClick={exitCollectionMode}>
+              رجوع لإنشاء طلب
+            </Button>
+          </div>
+        )}
+
+        {/* Single-order collection dialog (/pos?collectOrderId=…) */}
+        {collectOrderId && (
+          <CollectPaymentPanel
+            orderId={collectOrderId}
+            currency={currency}
+            needsShift={needsShift}
+            shiftActive={shiftActive}
+            onDone={exitCollectionMode}
+            onClose={exitCollectionMode}
+          />
+        )}
+
+        {submitError && <p role="alert" className="rounded-lg border border-destructive p-3">{submitError} — البيانات محفوظة للمراجعة وإعادة المحاولة.</p>}
+        {submitting && <p role="status">جاري حفظ الطلب وتسجيل الدفع…</p>}
+      </div>
       <div className="cashier-compact-tabs gap-2" aria-label="عرض الكاشير">
         <Button aria-controls={productsId} aria-pressed={compactView === "products"} variant={compactView === "products" ? "default" : "outline"} onClick={() => showCompactWorkspace("products")}>المنتجات والتصنيفات</Button>
         <Button aria-controls={orderId} aria-pressed={compactView === "cart"} variant={compactView === "cart" ? "default" : "outline"} onClick={() => showCompactWorkspace("cart")}>الطلب والدفع ({cart.reduce((sum,line) => sum + line.quantity,0)})</Button>

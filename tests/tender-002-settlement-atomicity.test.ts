@@ -449,11 +449,11 @@ describe("TENDER-002 — the close and every tender's evidence commit together",
   });
 
   test("a refused close writes no settlement and no audit at all", async () => {
-    // A missing reason is caught before the transaction opens, so there is
-    // nothing to roll back — asserted so the guard cannot later be moved
-    // inside and start leaving half-written evidence behind.
+    // An invalid count is caught before the transaction opens, so there is
+    // nothing to roll back. (HND-UX-004 made a missing reason a recorded
+    // fact, so the refusal now comes from a count the schema refuses.)
     const t = await till();
-    const r = await close(fx.cashier.email, t.shiftId, settle({ actualCardAmount: 3180 }));
+    const r = await close(fx.cashier.email, t.shiftId, settle({ actualCardAmount: 3180, actualCashAmount: -1 }));
 
     assert.equal(r.status, 400, r.text);
     assert.deepEqual(await recons(t.shiftId), []);

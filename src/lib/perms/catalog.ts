@@ -17,7 +17,7 @@ export type ModuleCode =
   | "SHIFTS" | "FINANCE" | "USERS" | "EDIT_CENTER" | "AUDIT"
   | "SETTINGS" | "CUSTOMER_ORDERS" | "EXCEL" | "HANDOVER" | "REPORTS"
   | "AI_ASSISTANT" | "BRANCHES" | "CUSTOMERS"
-  | "STOCK_COUNT" | "VARIANCE";
+  | "STOCK_COUNT" | "VARIANCE" | "ACCOUNTING";
 
 export type PermModule = {
   code: ModuleCode;
@@ -56,6 +56,7 @@ export const MODULES: PermModule[] = [
   { code: "EXPENSES", label: "المصاريف", icon: "💸" },
   { code: "SHIFTS", label: "الشيفتات", icon: "🕒", feature: "shiftManagementEnabled" },
   { code: "FINANCE", label: "المالية", icon: "💰" },
+  { code: "ACCOUNTING", label: "المحاسبة (تجريبي)", icon: "📒" },
   { code: "SALES", label: "المبيعات", icon: "📈" },
   { code: "REPORTS", label: "التقارير", icon: "🧮" },
   { code: "USERS", label: "المستخدمين", icon: "👥", feature: "staffManagementEnabled" },
@@ -77,6 +78,12 @@ export const MODULE_MAP: Record<ModuleCode, PermModule> = Object.fromEntries(
 // The full key catalog. `sensitive` marks operations that grant money,
 // access, or the ability to grant access to others.
 export const PERMISSION_KEYS: PermKey[] = [
+  { key: "treasury.view", module: "FINANCE", label: "عرض الحسابات والتحويلات", sensitive: true },
+  { key: "treasury.manage_accounts", module: "FINANCE", label: "إدارة الحسابات", sensitive: true },
+  { key: "treasury.transfer_create", module: "FINANCE", label: "إنشاء تحويل داخلي", sensitive: true },
+  { key: "treasury.transfer_dispatch", module: "FINANCE", label: "توثيق خروج الأموال", sensitive: true },
+  { key: "treasury.transfer_receive", module: "FINANCE", label: "توثيق استلام الأموال", sensitive: true },
+  { key: "treasury.transfer_cancel", module: "FINANCE", label: "إلغاء مسودة تحويل", sensitive: true },
   // Dashboard
   { key: "dashboard.view", module: "DASHBOARD", label: "عرض لوحة التحكم" },
 
@@ -154,6 +161,17 @@ export const PERMISSION_KEYS: PermKey[] = [
   { key: "tender_reconciliation.view", module: "FINANCE", label: "عرض تسويات الكارت والمحفظة" },
   { key: "tender_reconciliation.submit", module: "FINANCE", label: "تسجيل تسوية كارت/محفظة", sensitive: true },
   { key: "tender_reconciliation.approve", module: "FINANCE", label: "اعتماد تسوية الدفع", sensitive: true },
+
+  // Accounting — the shadow books. Each power is its own key: reading the
+  // books, exporting them, running the projection, reversing an entry,
+  // reconciling, setting up the chart and periods, and closing a period.
+  { key: "accounting.view", module: "ACCOUNTING", label: "عرض الدفاتر التجريبية", sensitive: true },
+  { key: "accounting.export", module: "ACCOUNTING", label: "تصدير تقارير المحاسبة", sensitive: true },
+  { key: "accounting.project", module: "ACCOUNTING", label: "تشغيل الترحيل التجريبي", sensitive: true },
+  { key: "accounting.reverse", module: "ACCOUNTING", label: "عكس قيد محاسبي", sensitive: true },
+  { key: "accounting.reconcile", module: "ACCOUNTING", label: "مطابقة الحسابات", sensitive: true },
+  { key: "accounting.setup", module: "ACCOUNTING", label: "إعداد الدفاتر ودليل الحسابات", sensitive: true },
+  { key: "accounting.close", module: "ACCOUNTING", label: "قفل فترة محاسبية", sensitive: true },
 
   // Stock count — physical counting, recount, and confirmation.
   // `confirm`, `correct` and `approve_correction` are withheld from the

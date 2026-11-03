@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { DEFAULT_TZ } from "@/lib/date-range";
+import { DEFAULT_TZ, zonedBusinessDayStart } from "@/lib/date-range";
 
 // The shift close report: what the drawer held against what it should have,
 // what was sold, and what was handed on to the next shift. Built only from
@@ -24,6 +24,9 @@ export type ShiftReport = {
     withinTolerance: boolean | null;
     tolerance: number | null;
     reasonNote: string | null;
+    supplierPayouts?: number;
+    expensePayouts?: number;
+    expenseReturns?: number;
   };
   sales: {
     total: number; cash: number; card: number; wallet: number;
@@ -93,6 +96,9 @@ export async function buildShiftReport(shiftId: string, cafeId: string): Promise
       withinTolerance: shift.cashWithinTolerance,
       tolerance: num(shift.cashToleranceAmount),
       reasonNote: shift.cashReasonNote,
+      supplierPayouts: num(shift.totalCashPayouts)!,
+      expensePayouts: num(shift.totalExpensePayouts)!,
+      expenseReturns: num(shift.totalExpenseReturns)!,
     },
     sales: {
       total: num(shift.totalSales)!,
@@ -160,4 +166,194 @@ export function shiftReportTemplateParams(report: ShiftReport, reportUrl: string
     reportUrl ?? "—",
   ];
   return params.map((p) => p.replace(/\s+/g, " ").trim().slice(0, 900) || "—");
+}
+
+// ── HND-UX-004 · materials evidence on the same shift report ──
+//
+// The owner reviews materials where they already review money: this report.
+// Built from committed rows only — the close's materials decision, the
+// handover's CURRENT count round and that round's receiving signatures. The
+// WhatsApp template above is untouched; this is a separate projection.
+//
+// Three facts stay apart: what was observed (counts and differences), whose
+// custody it was (the covered shifts), and liability — which this system
+// never decides. A DAILY/WEEKLY count covers every shift since the previous
+// handed-over count; the difference is the PERIOD's, shown with the shifts it
+// covers, and is not assigned to the shift that happened to count it.
+//
+// Quantities are per item in that item's own unit and are never summed
+// across units. Cost appears only when the line carries a trusted impact;
+// otherwise it is "not available", never zero. Expected quantities and
+// differences go to oversight only (`withFigures`).
+
+export type ShiftMaterialsReport = {
+  decision: null | {
+    due: boolean;
+    reason: string;
+    cadence: string;
+    periodFrom: string | null;
+    periodTo: string | null;
+    coverageFrom: string | null;
+    decidedAt: string;
+    nextDueAt: string | null;
+    satisfiedAt: string | null;
+  };
+  coveredShifts: Array<{ id: string; shiftNumber: number; cashierName: string; financiallyClosedAt: string | null }>;
+  handover: null | {
+    id: string;
+    status: string;
+    submittedAt: string | null;
+    acceptedAt: string | null;
+    outgoingName: string;
+    incomingName: string | null;
+    outgoingNote: string | null;
+    countStatus: string | null;
+    evidence: "SYSTEM_MATCH" | "OUTGOING_DECLARED" | "MANAGER_CONFIRMED" | "PENDING" | null;
+  };
+  lines: Array<{
+    lineId: string;
+    name: string;
+    unit: string;
+    counted: number | null;
+    expected: number | null;
+    difference: number | null;
+    costImpact: number | null;
+    costAvailable: boolean;
+    note: string | null;
+    hasCase: boolean;
+    receiving: null | {
+      decision: string;
+      incomingCounted: number | null;
+      handedOver: number | null;
+      difference: number | null;
+      acknowledgedAt: string;
+      acknowledgedByName: string;
+    };
+  }>;
+  withFigures: boolean;
+};
+
+export async function buildShiftMaterialsReport(
+  shiftId: string,
+  cafeId: string,
+  opts: { withFigures: boolean },
+): Promise<ShiftMaterialsReport> {
+  const decision = await db.shiftMaterialsDecision.findFirst({
+    where: { shiftId, cafeId },
+    select: { due: true, reason: true, cadence: true, periodFrom: true, periodTo: true, coverageFrom: true, decidedAt: true, nextDueAt: true, satisfiedAt: true, branchId: true },
+  });
+  const handover = await db.handoverSession.findFirst({
+    where: { outgoingShiftId: shiftId, cafeId },
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true, status: true, submittedAt: true, acceptedAt: true, outgoingNote: true, stockCountSessionId: true,
+      outgoingUser: { select: { name: true } }, incomingUser: { select: { name: true } },
+    },
+  });
+  const session = handover?.stockCountSessionId
+    ? await db.stockCountSession.findUnique({
+        where: { id: handover.stockCountSessionId },
+        select: {
+          id: true, status: true, confirmedById: true,
+          lines: {
+            orderBy: { inventoryItem: { name: "asc" } },
+            select: {
+              id: true, unit: true, countedQuantity: true, effectiveCountedQuantity: true, expectedQuantity: true,
+              varianceQuantity: true, costImpact: true, costImpactAvailable: true, reasonNote: true,
+              inventoryItem: { select: { name: true } },
+            },
+          },
+        },
+      })
+    : null;
+  let evidence: NonNullable<ShiftMaterialsReport["handover"]>["evidence"] = null;
+  if (session) {
+    if (!["CONFIRMED", "LOCKED"].includes(session.status)) evidence = "PENDING";
+    else if (session.confirmedById) evidence = "MANAGER_CONFIRMED";
+    else {
+      const audit = await db.auditLog.findFirst({
+        where: { entity: "StockCountSession", entityId: session.id, action: { in: ["COUNT_SYSTEM_VALIDATED", "COUNT_OUTGOING_DECLARED"] } },
+        orderBy: { createdAt: "desc" },
+        select: { action: true },
+      });
+      evidence = audit?.action === "COUNT_SYSTEM_VALIDATED" ? "SYSTEM_MATCH" : audit ? "OUTGOING_DECLARED" : null;
+    }
+  }
+  const lineIds = session?.lines.map((l) => l.id) ?? [];
+  const [acks, cases] = session && handover
+    ? await Promise.all([
+        db.handoverStockAcknowledgement.findMany({
+          where: { handoverId: handover.id, line: { sessionId: session.id } },
+          select: {
+            stockCountLineId: true, decision: true, incomingCountedQuantity: true, handedOverQuantity: true,
+            varianceQuantity: true, acknowledgedAt: true, acknowledgedBy: { select: { name: true } },
+          },
+        }),
+        db.varianceCase.findMany({ where: { stockCountLineId: { in: lineIds } }, select: { stockCountLineId: true } }),
+      ])
+    : [[], []];
+  const ackByLine = new Map(acks.map((a) => [a.stockCountLineId, a]));
+  const caseLines = new Set(cases.map((c) => c.stockCountLineId));
+
+  // The shifts this count's observation covers: every financial close at the
+  // branch since the previous handed-over count, up to this close. With no
+  // earlier count on record (a branch's first scheduled count), the claimed
+  // period's first business day is the honest start.
+  const coverageStart = decision?.coverageFrom
+    ?? (decision?.periodFrom ? zonedBusinessDayStart(decision.periodFrom, DEFAULT_TZ) : null);
+  const coveredShifts = decision && coverageStart
+    ? await db.shift.findMany({
+        where: { cafeId, branchId: decision.branchId, financiallyClosedAt: { gt: coverageStart, lte: decision.decidedAt } },
+        orderBy: { financiallyClosedAt: "asc" },
+        take: 60,
+        select: { id: true, shiftNumber: true, financiallyClosedAt: true, cashier: { select: { name: true } } },
+      })
+    : [];
+
+  const f = opts.withFigures;
+  return {
+    decision: decision ? {
+      due: decision.due, reason: decision.reason, cadence: decision.cadence,
+      periodFrom: decision.periodFrom, periodTo: decision.periodTo,
+      coverageFrom: decision.coverageFrom?.toISOString() ?? null,
+      decidedAt: decision.decidedAt.toISOString(),
+      nextDueAt: decision.nextDueAt?.toISOString() ?? null,
+      satisfiedAt: decision.satisfiedAt?.toISOString() ?? null,
+    } : null,
+    coveredShifts: coveredShifts.map((s) => ({ id: s.id, shiftNumber: s.shiftNumber, cashierName: s.cashier.name, financiallyClosedAt: s.financiallyClosedAt?.toISOString() ?? null })),
+    handover: handover ? {
+      id: handover.id, status: handover.status,
+      submittedAt: handover.submittedAt?.toISOString() ?? null,
+      acceptedAt: handover.acceptedAt?.toISOString() ?? null,
+      outgoingName: handover.outgoingUser.name,
+      incomingName: handover.incomingUser?.name ?? null,
+      outgoingNote: handover.outgoingNote,
+      countStatus: session?.status ?? null,
+      evidence,
+    } : null,
+    lines: (session?.lines ?? []).map((line) => {
+      const ack = ackByLine.get(line.id);
+      return {
+        lineId: line.id,
+        name: line.inventoryItem.name,
+        unit: line.unit,
+        counted: num(line.effectiveCountedQuantity ?? line.countedQuantity),
+        expected: f ? num(line.expectedQuantity) : null,
+        difference: f && line.countedQuantity !== null ? num(line.varianceQuantity) : null,
+        costImpact: f && line.costImpactAvailable ? num(line.costImpact) : null,
+        costAvailable: f && line.costImpactAvailable,
+        note: line.reasonNote,
+        hasCase: f && caseLines.has(line.id),
+        receiving: ack ? {
+          decision: ack.decision,
+          incomingCounted: num(ack.incomingCountedQuantity),
+          handedOver: f ? num(ack.handedOverQuantity) : null,
+          difference: f ? num(ack.varianceQuantity) : null,
+          acknowledgedAt: ack.acknowledgedAt.toISOString(),
+          acknowledgedByName: ack.acknowledgedBy.name,
+        } : null,
+      };
+    }),
+    withFigures: f,
+  };
 }

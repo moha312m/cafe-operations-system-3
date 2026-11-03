@@ -112,6 +112,7 @@ export async function PUT(request: NextRequest, { params }: Params) {
       if (escalates) throw new ApiError(403, "لا يمكنك منح صلاحيات لا تملكها بنفسك");
 
       await db.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${id} FOR NO KEY UPDATE`;
         await tx.userPermissionOverride.deleteMany({ where: { userId: id } });
         if (cleaned.length > 0) {
           await tx.userPermissionOverride.createMany({

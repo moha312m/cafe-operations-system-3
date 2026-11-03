@@ -401,11 +401,13 @@ describe("CASHCLOSE-002 — the close and its evidence commit together", () => {
   });
 
   test("a refused close writes no audit at all", async () => {
-    // A reason that is missing is caught before the transaction opens, so
-    // there is nothing to roll back — asserted so the guard cannot later be
-    // moved inside and start leaving half-written evidence behind.
+    // An invalid count is caught before the transaction opens, so there is
+    // nothing to roll back — asserted so the guard cannot later be moved
+    // inside and start leaving half-written evidence behind. (HND-UX-004 made
+    // a missing variance reason a recorded fact rather than a refusal, so this
+    // test now uses a count the schema refuses.)
     const d = await drawer();
-    const r = await close(fx.cashier.email, d.shiftId, { actualCashAmount: 4970 });
+    const r = await close(fx.cashier.email, d.shiftId, { actualCashAmount: -1 });
 
     assert.equal(r.status, 400, r.text);
     assert.deepEqual(await shiftAudits(d.shiftId), []);

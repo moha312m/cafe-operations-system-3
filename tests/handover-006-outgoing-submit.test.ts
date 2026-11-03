@@ -976,11 +976,13 @@ describe("submit", () => {
 
     const refused = await refusalFrom(h.handoverId);
     assert.equal(refused.status, 409);
+    // HND-UX-004: an unexplained difference is no longer a refusal; it is
+    // still named in the position (`linesMissingReason`).
     assert.deepEqual(codesOf(refused), [
       "COUNT_NOT_CONFIRMED",
       "REQUIRED_ITEMS_MISSING",
-      "VARIANCE_REASON_MISSING",
     ]);
+    assert.equal(refused.position.stock.linesMissingReason.length, 1);
     assert.equal(
       new Set(codesOf(refused)).size,
       refused.refusals.length,
@@ -1095,7 +1097,11 @@ describe("submit", () => {
     );
   });
 
-  test("an inside-tolerance non-zero variance still requires a reason", async () => {
+  // HND-UX-004 changed this rule on the owner's instruction: an unexplained
+  // difference — inside tolerance or not — is recorded and the handover
+  // continues. Tolerance still does not hide it: the line stays named in
+  // `linesMissingReason` and in the submit audit, for later review.
+  test("an inside-tolerance non-zero variance without a reason is recorded, named, and does not refuse", async () => {
     const h = await freshHandover();
     // A bound so wide the difference below is comfortably inside it.
     const rule = await db.toleranceRule.create({
@@ -1108,15 +1114,14 @@ describe("submit", () => {
         { itemId: items.charlie.id, counted: 7, expected: 7 },
       ]);
 
-      const refused = await refusalFrom(h.handoverId);
-      assert.deepEqual(
-        codesOf(refused),
-        ["VARIANCE_REASON_MISSING"],
-        "tolerance answers a different question and may not excuse a missing reason",
-      );
-      const missing = refused.refusals.find((r) => r.code === "VARIANCE_REASON_MISSING")!;
-      assert.equal(missing.ids.length, 1);
-      assert.deepEqual(missing.ids, refused.position.stock.linesMissingReason);
+      const r = await post<{ status: string; position: { stock: { linesMissingReason: string[]; nonZeroVarianceLines: number } } }>(
+        fx.cashier.email, { action: "submit", handoverId: h.handoverId });
+      assert.equal(r.status, 200, r.text);
+      assert.equal(r.body.status, "OUTGOING_SUBMITTED");
+      assert.equal(r.body.position.stock.nonZeroVarianceLines, 1);
+      assert.equal(r.body.position.stock.linesMissingReason.length, 1, "tolerance does not hide the unexplained line");
+      const audit = await db.auditLog.findFirstOrThrow({ where: { entity: "HandoverSession", entityId: h.handoverId, action: "HANDOVER_SUBMITTED" } });
+      assert.equal((audit.details as { unexplainedVarianceLines?: number }).unexplainedVarianceLines, 1);
     } finally {
       await db.toleranceRule.delete({ where: { id: rule.id } });
     }
@@ -1266,6 +1271,8 @@ describe("submit", () => {
 
   test("a refused submit writes nothing", async () => {
     const h = await freshHandover();
+    // Refused because the count is not confirmed (HND-UX-004 made a missing
+    // variance reason a recorded fact, so it can no longer be the trigger).
     const sessionId = await boundCount(
       h,
       [
@@ -1273,6 +1280,7 @@ describe("submit", () => {
         { itemId: items.bravo.id, counted: 4, expected: 4 },
         { itemId: items.charlie.id, counted: 7, expected: 7 },
       ],
+      "SUBMITTED",
     );
     const handoverBefore = await db.handoverSession.findUniqueOrThrow({
       where: { id: h.handoverId },
@@ -1836,7 +1844,6 @@ describe("routes", () => {
     assert.deepEqual(r.body.refusals.map((x) => x.code).sort(), [
       "COUNT_NOT_CONFIRMED",
       "REQUIRED_ITEMS_MISSING",
-      "VARIANCE_REASON_MISSING",
     ]);
     assert.ok(r.body.error, "the ordinary { error } shape is preserved beside the list");
     assert.equal(r.body.position.required.total, 3);
@@ -2009,8 +2016,13 @@ async function walkTheRealPath(h: Handover, reasonCodeId: string) {
   });
   assert.equal(lines.length, 3);
 
-  // One deliberate, real difference; the rest exact.
+  // One deliberate, real difference; one exact; and — since HND-UX-004
+  // records a COMPLETE count with differences as the outgoing declaration
+  // without a manager — one shelf nobody reached, which is the state that
+  // still goes to manager confirmation and so keeps this path reachable.
+  const unreached = lines.find((line) => line.inventoryItemId !== items.alpha.id)!.id;
   for (const line of lines) {
+    if (line.id === unreached) continue;
     const counted = line.inventoryItemId === items.alpha.id ? 3 : 0;
     const r = await patchLine(fx.manager.email, sessionId, line.id, counted);
     assert.ok(r.status < 300, `capture failed: ${r.text}`);

@@ -31,7 +31,11 @@ export default function LoginPage() {
         method: "POST",
         body: { email, password },
       });
-      router.push(user.role === "SUPER_ADMIN" ? "/admin/dashboard" : "/dashboard");
+      // HND-UX-004: the next employee on a shared till comes back to the
+      // handover they were sent to receive. Same-origin relative paths only.
+      const next = new URLSearchParams(window.location.search).get("next");
+      const safeNext = next && next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/\\") ? next : null;
+      router.push(user.role === "SUPER_ADMIN" ? "/admin/dashboard" : safeNext ?? "/dashboard");
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "فشل تسجيل الدخول");

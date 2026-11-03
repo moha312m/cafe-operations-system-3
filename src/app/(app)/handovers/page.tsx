@@ -151,12 +151,17 @@ function HandoversWorkspace() {
         embedded
         expectedBranchId={branchId}
         reviewSessionId={handovers.find(row => row.id === selectedId && row.branchId === branchId)?.stockCountSessionId}
+        listedStatus={handovers.find(row => row.id === selectedId && row.branchId === branchId)?.status}
+        listedHandover={handovers.find(row => row.id === selectedId && row.branchId === branchId) ?? null}
+        listLoading={loading}
         handoverId={selectedId}
         onClose={() => setSelectedId(null)}
         onChanged={load}
       />
-      <OpeningVerificationPanel key={`opening:${branchId}:${selectedId ?? "list"}`} branchId={branchId} />
-      <PlaceReceiptPanel key={`place:${branchId}:${selectedId ?? "list"}`} branchId={branchId} />
+      <div className="grid items-start gap-3 lg:grid-cols-3" data-testid="handover-auxiliary-panels">
+        <OpeningVerificationPanel key={`opening:${branchId}:${selectedId ?? "list"}`} branchId={branchId} />
+        <PlaceReceiptPanel key={`place:${branchId}:${selectedId ?? "list"}`} branchId={branchId} />
+      </div>
     </main>
   );
 }

@@ -23,6 +23,7 @@
 // unusable would satisfy every assertion about absence and still be a defect.
 
 import { after, before, describe, test } from "node:test";
+import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import bcrypt from "bcryptjs";
 import { PrismaClient } from "@prisma/client";
@@ -893,6 +894,7 @@ describe("SH-22 Half A concurrency", () => {
       acceptToBranch(r.handoverId),
       as(fx.manager.email, `/api/inventory/${items.alpha.id}/movement`, {
         method: "POST",
+        headers: { "Idempotency-Key": randomUUID() },
         body: JSON.stringify({ type: "PURCHASE", quantity: 5, unitCost: 450 }),
       }),
     ]);
@@ -1084,6 +1086,7 @@ describe("SH-22 Half B concurrency", () => {
       verifyOpening(v),
       as(fx.manager.email, `/api/inventory/${items.alpha.id}/movement`, {
         method: "POST",
+        headers: { "Idempotency-Key": randomUUID() },
         body: JSON.stringify({ type: "PURCHASE", quantity: 4, unitCost: 450 }),
       }),
     ]);

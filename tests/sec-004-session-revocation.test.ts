@@ -136,6 +136,29 @@ test("logout rejects the exact captured cookie at auth/me and branch mutation; s
   assert.equal((await fetch(BASE + "/api/auth/me", { headers: { cookie: fresh } })).status, 200);
 });
 
+test("the printable receipt and shift-report pages refuse a logged-out or deactivated cookie", async () => {
+  // These two pages read the database themselves instead of going through an
+  // API route, so they need the same live check. A missing id is enough: the
+  // session check runs first, and a page that skipped it would answer "not
+  // found" instead of refusing.
+  const pages = ["/receipts/payment/sec004-missing", "/reports/shift/sec004-missing"];
+  const read = (cookie: string, page: string) => fetch(BASE + page, { headers: { cookie } }).then(r => r.text());
+
+  const live = await capturedManagerCookie();
+  for (const page of pages) assert.doesNotMatch(await read(live, page), /سجّل دخولك الأول|الحساب موقوف/, page);
+
+  const revoked = await capturedManagerCookie();
+  await fetch(BASE + "/api/auth/logout", { method: "POST", headers: { cookie: revoked } });
+  for (const page of pages) assert.match(await read(revoked, page), /سجّل دخولك الأول/, page);
+
+  await setUserActive(fx.manager.id, false);
+  try {
+    for (const page of pages) assert.match(await read(live, page), /الحساب موقوف/, page);
+  } finally {
+    await setUserActive(fx.manager.id, true);
+  }
+});
+
 test("removing branches.manage denies the existing session's PATCH and POST while viewing remains authorized", async () => {
   const cookie = await capturedManagerCookie();
   await db.userPermissionOverride.create({ data: { userId: fx.manager.id, permissionKey: "branches.manage", allowed: false } });

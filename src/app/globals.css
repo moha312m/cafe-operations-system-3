@@ -2,6 +2,10 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
+/* artifacts/ holds ~77k evidence files; scanning them makes PostCSS time out in dev. */
+@source not "../../artifacts";
+@source not "../../local-restore";
+
 /* Cashier controls retain the same sizing for touch, keyboard and mouse. */
 html[data-cashier-touch="true"] :is(button, [role="button"], a[href], select, summary, [role="option"], [role="tab"], [role="menuitem"], input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]), textarea) {
   min-height: 48px;
@@ -20,6 +24,7 @@ html[data-cashier-touch="true"] label:has(> input:is([type="checkbox"], [type="r
 html[data-cashier-touch="true"] input:is([type="checkbox"], [type="radio"]) { width: 24px; height: 24px; flex-shrink: 0; }
 html[data-cashier-touch="true"] nav { gap: 8px; }
 html[data-cashier-touch="true"] nav a { margin-bottom: 8px; }
+@media (max-height: 760px) { html[data-cashier-touch="true"] aside nav :is(a[href], button) { min-height: 36px; padding-block: 0.375rem; margin-bottom: 2px; } }
 html[data-cashier-touch="true"] :is([class~="gap-1"], [class~="gap-1.5"]) { gap: 8px; }
 html[data-cashier-touch="true"] [data-slot="dialog-content"] {
   top: calc(var(--cashier-viewport-top, 0px) + var(--cashier-viewport-height, 100dvh) / 2);
@@ -38,10 +43,11 @@ html[data-cashier-touch="true"] .touch-number > input { width: 3rem; }
 .cashier-products { max-height: 55dvh; min-height: 180px; }
 .cashier-compact-tabs, .cashier-compact-checkout { display: none; }
 @media (min-width: 1100px) {
-  .cashier-workspace { grid-template-columns: minmax(0, 1fr) minmax(370px, 420px); align-items: start; }
-  .cashier-catalog, .cashier-cart { height: var(--cashier-workspace-height, calc(100dvh - 6rem)); }
+  .cashier-workspace { grid-template-columns: minmax(0, 1fr) minmax(400px, 460px); align-items: start; }
+  .cashier-lead, .cashier-catalog { grid-column: 1; }
+  .cashier-catalog, .cashier-cart { height: var(--cashier-workspace-height, calc(100dvh - 6rem)); min-height: 40rem; }
   .cashier-catalog { overflow: hidden; }
-  .cashier-cart { position: sticky; top: 1rem; }
+  .cashier-cart { grid-column: 2; grid-row: 1 / span 2; position: sticky; top: 1rem; }
   .cashier-products { max-height: none; min-height: 0; }
 }
 @media (max-width: 1099px) {
@@ -56,6 +62,9 @@ html[data-cashier-touch="true"] .touch-number > input { width: 3rem; }
   .cashier-categories :is(.category-pages, .category-navigation) { display: none; }
   .cashier-workspace[data-compact-view="products"] .cashier-cart { display: none; }
   .cashier-workspace[data-compact-view="cart"] :is(.cashier-catalog, .cashier-compact-checkout) { display: none; }
+  /* The sticky checkout dock carries the collection controls and the final total (~250px), so the cart needs
+     room beside it: scroll the page rather than leave a few pixels of cart above the dock. */
+  .cashier-workspace[data-compact-view="cart"] { min-height: 36rem; }
 }
 @media (max-height: 500px) {
   html[data-cashier-touch="true"] [data-slot="dialog-content"] { padding-top: 3.5rem; }
@@ -72,6 +81,12 @@ html[data-cashier-touch="true"] .touch-number > input { width: 3rem; }
 }
 
 @custom-variant dark (&:is(.dark *));
+
+/* Warm espresso-slate bar for progress banners and sticky summaries. */
+@utility surface-espresso {
+  background-image: linear-gradient(to right, #273330, #344b44);
+  color: #faf8f5;
+}
 
 @theme inline {
   --color-background: var(--background);
@@ -98,6 +113,27 @@ html[data-cashier-touch="true"] .touch-number > input { width: 3rem; }
   --color-input: var(--input);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
+  --color-sage: var(--sage);
+  --color-sage-hover: var(--sage-hover);
+  --color-sage-soft: var(--sage-soft);
+  --color-sage-line: var(--sage-line);
+  --color-sage-ink: var(--sage-ink);
+  --color-caramel: var(--caramel);
+  --color-caramel-soft: var(--caramel-soft);
+  --color-caramel-line: var(--caramel-line);
+  --color-caramel-ink: var(--caramel-ink);
+  --color-tide: var(--tide);
+  --color-tide-soft: var(--tide-soft);
+  --color-tide-line: var(--tide-line);
+  --color-tide-ink: var(--tide-ink);
+  --color-clay: var(--clay);
+  --color-clay-soft: var(--clay-soft);
+  --color-clay-line: var(--clay-line);
+  --color-clay-ink: var(--clay-ink);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -120,35 +156,59 @@ html[data-cashier-touch="true"] .touch-number > input { width: 3rem; }
 }
 
 :root {
-  --background: oklch(1 0 0);
-  --workspace: var(--color-slate-50);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
+  /* Eye-comfort warm palette: no pure white, no neon. Oat canvas, ivory cards,
+     stone borders. Sage / caramel / tide (slate blue) / clay (terracotta) each
+     come as base + soft fill + line + ink, so components never need a hex. */
+  --background: #f3efea;
+  --workspace: #f3efea;
+  --foreground: #232927;
+  --card: #faf8f5;
+  --card-foreground: #232927;
+  --popover: #faf8f5;
+  --popover-foreground: #232927;
+  --primary: #3b7a6c;
+  --primary-foreground: #faf8f5;
+  --secondary: #ebe6de;
+  --secondary-foreground: #232927;
+  --muted: #ebe6de;
+  --muted-foreground: #5f655f;
+  --accent: #ebe6de;
+  --accent-foreground: #232927;
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+  --sage: #3b7a6c;
+  --sage-hover: #2e6357;
+  --sage-soft: #eff5f2;
+  --sage-line: #b8d4ca;
+  --sage-ink: #235347;
+  --caramel: #b87339;
+  --caramel-soft: #f8f1e7;
+  --caramel-line: #e2c7a8;
+  --caramel-ink: #5c3a1b;
+  --tide: #436882;
+  --tide-soft: #eff3f6;
+  --tide-line: #c5d5e2;
+  --tide-ink: #2f526b;
+  --clay: #ad4c48;
+  --clay-soft: #f6e9e8;
+  --clay-line: #dfbfbd;
+  --clay-ink: #843532;
+  --success: #10b981;
+  --success-foreground: #ffffff;
+  --warning: #f59e0b;
+  --warning-foreground: #0f1419;
+  --border: #e2dbd0;
+  --input: #d8d0c5;
+  --ring: #3b7a6c;
   --chart-1: oklch(0.87 0 0);
   --chart-2: oklch(0.556 0 0);
   --chart-3: oklch(0.439 0 0);
   --chart-4: oklch(0.371 0 0);
   --chart-5: oklch(0.269 0 0);
   --radius: 0.625rem;
-  --sidebar: #0f172a;
-  --sidebar-foreground: var(--color-slate-300);
-  --sidebar-muted-foreground: var(--color-slate-400);
-  --sidebar-primary: var(--color-emerald-700);
+  --sidebar: #232a27;
+  --sidebar-foreground: #d9d4ca;
+  --sidebar-muted-foreground: #a6a89f;
+  --sidebar-primary: #3b7a6c;
   --sidebar-primary-foreground: var(--color-white);
   --sidebar-accent: rgb(255 255 255 / 5%);
   --sidebar-accent-foreground: var(--color-white);
@@ -173,6 +233,30 @@ html[data-cashier-touch="true"] .touch-number > input { width: 3rem; }
   --accent: oklch(0.269 0 0);
   --accent-foreground: oklch(0.985 0 0);
   --destructive: oklch(0.704 0.191 22.216);
+  --success: #10b981;
+  --success-foreground: #ffffff;
+  --warning: #f59e0b;
+  --warning-foreground: #0f1419;
+  --sage: #4f9a88;
+  --sage-hover: #5fae9b;
+  --sage-soft: rgb(79 154 136 / 14%);
+  --sage-line: rgb(79 154 136 / 45%);
+  --sage-ink: #a8dec9;
+  --caramel: #d29a5f;
+  --caramel-soft: rgb(210 154 95 / 14%);
+  --caramel-line: rgb(210 154 95 / 45%);
+  --caramel-ink: #efcd9f;
+  --tide: #6b9bb8;
+  --tide-soft: rgb(107 155 184 / 14%);
+  --tide-line: rgb(107 155 184 / 45%);
+  --tide-ink: #b9d4e6;
+  --clay: #d27a75;
+  --clay-soft: rgb(210 122 117 / 14%);
+  --clay-line: rgb(210 122 117 / 45%);
+  --clay-ink: #f0bdba;
+  --surface-dark: #0f1419;
+  --surface-card: #181f26;
+  --surface-elevated: #26303c;
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);

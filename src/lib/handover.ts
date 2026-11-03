@@ -68,11 +68,14 @@ import { Prisma as SQL } from "@prisma/client";
 import { isDatabaseContention } from "@/lib/database-errors";
 import { audit, auditInTransaction } from "@/lib/audit";
 import { round3 } from "@/lib/costing";
+import { requestFingerprint } from "@/lib/idempotency";
+import { assertHandoverCountActor, currentUnsignedCountEvidence, COUNT_SYSTEM_VALIDATED, COUNT_OUTGOING_DECLARED } from "@/lib/handover-count-validation";
+import { markMaterialsSatisfied } from "@/lib/materials-schedule";
 import { db } from "@/lib/db";
 import { protectedTransaction, protectedContext, optionalProtectedContext } from "@/lib/protected-transaction";
 import { lockShifts, lockOrders, lockOrderPayments, assertFinancialLocks } from "@/lib/transaction-locks";
 import { isBranchStaff, resolveStaffBranchInTransaction } from "@/lib/staff-branch";
-import { ledgerDeltaAbove, lockItemForUpdate } from "@/lib/ledger";
+import { applyStockMutation, ledgerDeltaAbove, lockItemForUpdate } from "@/lib/ledger";
 import { rebaseFromCountInTransaction, type RebaseResult } from "@/lib/stock-rebase";
 import type { HandoverBlocker } from "@/lib/handover-blockers";
 import {
@@ -99,6 +102,7 @@ import {
   COUNT_STARTED_AUDIT_ACTION,
   lockCountSession,
   redactCountTargets,
+  submitHandoverCountInTransaction,
 } from "@/lib/stock-count";
 import { buildStockBoundary, persistStockBoundary } from "@/lib/handover-boundary";
 import { openHandoverVarianceCases } from "@/lib/stock-variance-attribution";
@@ -945,6 +949,13 @@ export async function deriveClosingPosition(
 //
 // `DRAFT → OUTGOING_SUBMITTED`, and the three questions that gate it.
 //
+// HND-UX-004 replaced the rule below. A non-zero variance no longer REQUIRES
+// a reason at submit: the owner chose to record differences and continue,
+// with an optional note, and review them later in the shift report. The
+// difference itself is never dropped — it is on the line, in the position
+// (`linesMissingReason` still names the unexplained ones) and in the audit.
+// The historical rule, kept for context:
+//
 // THE RULE THAT IS EASY TO GET WRONG. Every non-zero variance requires a
 // reason, regardless of the tolerance verdict. Tolerance is the answer to "is
 // this worth investigating" — it decides whether a case opens, and a café
@@ -1027,7 +1038,18 @@ export async function submitHandover(args: {
   cafeId: string;
   viewerBranchId: string | null;
 }): Promise<SubmitHandoverResult> {
-  return db.$transaction(async (tx) => {
+  return db.$transaction((tx) => submitHandoverInTransaction(tx, args));
+}
+
+async function submitHandoverInTransaction(tx: Prisma.TransactionClient, args: {
+  handoverId: string;
+  outgoingUserId: string;
+  cafeId: string;
+  viewerBranchId: string | null;
+  /** HND-UX-004 optional note, written once with the transition. */
+  note?: string | null;
+}): Promise<SubmitHandoverResult> {
+  {
     if (!(await lockHandover(tx, args.handoverId))) {
       throw new ApiError(404, HANDOVER_NOT_FOUND);
     }
@@ -1056,6 +1078,7 @@ export async function submitHandover(args: {
       throw new ApiError(409, "التسليم مش في حالة تسمح بالتسليم");
     }
 
+    await assertCurrentHandoverCountValidation(tx, handover.id);
     const position = await deriveClosingPosition(tx, handover.id);
 
     // Every predicate is evaluated. None of them returns early, because the
@@ -1110,14 +1133,8 @@ export async function submitHandover(args: {
       });
     }
 
-    if (position.stock.linesMissingReason.length > 0) {
-      refusals.push({
-        code: "VARIANCE_REASON_MISSING",
-        count: position.stock.linesMissingReason.length,
-        message: `في فروقات من غير سبب (${position.stock.linesMissingReason.length}) — كل فرق لازم يتقال سببه`,
-        ids: position.stock.linesMissingReason,
-      });
-    }
+    // VARIANCE_REASON_MISSING is no longer a refusal (HND-UX-004). The
+    // unexplained lines stay named in `position.stock.linesMissingReason`.
 
     if (refusals.length > 0) {
       refusals.sort((a, b) => a.code.localeCompare(b.code));
@@ -1126,9 +1143,14 @@ export async function submitHandover(args: {
 
     // The guard and the write are one statement, so two callers racing cannot
     // both see DRAFT and both transition.
+    const submittedAt = new Date();
     const moved = await tx.handoverSession.updateMany({
       where: { id: handover.id, status: "DRAFT" },
-      data: { status: "OUTGOING_SUBMITTED", submittedAt: new Date() },
+      data: {
+        status: "OUTGOING_SUBMITTED",
+        submittedAt,
+        ...(args.note?.trim() ? { outgoingNote: args.note.trim() } : {}),
+      },
     });
     if (moved.count === 0) {
       // Somebody else moved it between the lock being released upstream and
@@ -1152,18 +1174,138 @@ export async function submitHandover(args: {
         requiredTotal: position.required.total,
         requiredSatisfied: position.required.satisfied,
         nonZeroVarianceLines: position.stock.nonZeroVarianceLines,
+        unexplainedVarianceLines: position.stock.linesMissingReason.length,
         // Counts and ids. A submit record is not a place to publish figures
         // the incoming reviewer has not been shown yet.
         openVarianceCaseIds: position.openVarianceCaseIds,
       },
     });
+    // The materials period this handover claimed is now satisfied by a
+    // handed-over count (HND-UX-004).
+    await markMaterialsSatisfied(tx, { handoverId: handover.id, at: submittedAt });
 
     return {
       status: "OUTGOING_SUBMITTED" as const,
       position,
       alreadySubmitted: false,
     };
-  });
+  }
+}
+
+// ──────────────── HND-UX-004 · «إنهاء التسليم», one server act ─────────────
+//
+// The outgoing employee's second screen ends with ONE action. It used to be
+// three requests (submit the count, wait for a manager when anything
+// differed, submit the handover), and a cashier with a recorded difference
+// could not finish without somebody else. Now:
+//
+//   1. every required line must carry a saved observation — a blank is a gap,
+//      not a zero, and is refused by name (explicit 0 is a count);
+//   2. the count is submitted under the handover/count locks; matching
+//      evidence keeps COUNT_SYSTEM_VALIDATED, and complete evidence that
+//      differs is recorded as COUNT_OUTGOING_DECLARED — never as a match and
+//      never with a manager's name on it;
+//   3. the handover moves DRAFT → OUTGOING_SUBMITTED with the optional note.
+//
+// All of it is one transaction, so a failure leaves the count as it was. It
+// is NOT the whole two-screen journey: money committed at the close, which
+// is why this function never touches the shift's money. A retry after a lost
+// response finds OUTGOING_SUBMITTED (or later) and answers from it rather
+// than submitting twice.
+
+export class HandoverCountIncompleteError extends ApiError {
+  readonly itemNames: string[];
+  constructor(itemNames: string[]) {
+    super(409, `لسه في خامات ما اتسجلتش (${itemNames.length}): ${itemNames.join("، ")}`);
+    this.name = "HandoverCountIncompleteError";
+    this.itemNames = itemNames;
+  }
+}
+
+export type FinishOutgoingResult = {
+  status: HandoverStatus;
+  alreadySubmitted: boolean;
+  systemValidated: boolean;
+  recordedDifferences: number;
+};
+
+const FINISHED_STATUSES: readonly HandoverStatus[] = ["OUTGOING_SUBMITTED", "INCOMING_REVIEW", "ACCEPTED", "COMPLETED"];
+
+export async function finishOutgoingHandover(args: {
+  handoverId: string;
+  actorId: string;
+  cafeId: string;
+  viewerBranchId: string | null;
+  note?: string | null;
+}): Promise<FinishOutgoingResult> {
+  return db.$transaction(async (tx) => {
+    if (!(await lockHandover(tx, args.handoverId))) throw new ApiError(404, HANDOVER_NOT_FOUND);
+    const handover = await tx.handoverSession.findUniqueOrThrow({
+      where: { id: args.handoverId },
+      select: { id: true, cafeId: true, branchId: true, status: true, stockCountSessionId: true },
+    });
+    if (handover.cafeId !== args.cafeId) throw new ApiError(404, HANDOVER_NOT_FOUND);
+    if (args.viewerBranchId !== null && handover.branchId !== args.viewerBranchId) {
+      throw new ApiError(403, FOREIGN_BRANCH);
+    }
+    const counted = async () => {
+      if (!handover.stockCountSessionId) return { systemValidated: false, recordedDifferences: 0 };
+      const session = await tx.stockCountSession.findUnique({
+        where: { id: handover.stockCountSessionId },
+        select: { confirmedById: true, lines: { select: { disposition: true } } },
+      });
+      const systemValidated = session?.confirmedById === null && !!await tx.auditLog.findFirst({
+        where: { entity: "StockCountSession", entityId: handover.stockCountSessionId, action: COUNT_SYSTEM_VALIDATED },
+        select: { id: true },
+      });
+      return {
+        systemValidated,
+        recordedDifferences: session?.lines.filter((l) => l.disposition === "VARIANCE_RECORDED").length ?? 0,
+      };
+    };
+    // A retry of a submission that already happened, or one somebody else
+    // made: the truthful answer is the state that exists.
+    if (FINISHED_STATUSES.includes(handover.status)) {
+      return { status: handover.status, alreadySubmitted: true, ...(await counted()) };
+    }
+    if (handover.status !== "DRAFT") throw new ApiError(409, "التسليم مش في حالة تسمح بالتسليم");
+    if (!handover.stockCountSessionId) throw new ApiError(409, "ابدأ جرد الخامات الأول");
+
+    // Same order as every other handover-bound count write: handover, then count.
+    await tx.$queryRaw`SELECT "id" FROM "StockCountSession" WHERE "id"=${handover.stockCountSessionId} FOR UPDATE`;
+    const lines = await tx.stockCountLine.findMany({
+      where: { sessionId: handover.stockCountSessionId },
+      select: { ...EFFECTIVE_EVIDENCE_SELECT, inventoryItem: { select: { name: true } } },
+      orderBy: { inventoryItem: { name: "asc" } },
+    });
+    const missing = lines.filter((line) => !hasAuthoritativeObservation(line)).map((line) => line.inventoryItem.name);
+    if (missing.length > 0) throw new HandoverCountIncompleteError(missing);
+
+    const submitted = await submitHandoverCountInTransaction(tx, {
+      sessionId: handover.stockCountSessionId,
+      submittedById: args.actorId,
+      cafeId: args.cafeId,
+      viewerBranchId: args.viewerBranchId,
+    });
+    if (submitted.status !== "CONFIRMED") {
+      // Complete but not current — a stale ledger cursor, a pending
+      // correction or an open dispute. Not a numerical difference to wave on.
+      throw new ApiError(409, "الجرد اتغير أو مستني مراجعة — حدّث الصفحة وراجع الكميات");
+    }
+    const result = await submitHandoverInTransaction(tx, {
+      handoverId: handover.id,
+      outgoingUserId: args.actorId,
+      cafeId: args.cafeId,
+      viewerBranchId: args.viewerBranchId,
+      note: args.note ?? null,
+    });
+    return {
+      status: result.status,
+      alreadySubmitted: result.alreadySubmitted,
+      systemValidated: submitted.systemValidated === true,
+      recordedDifferences: submitted.recordedDifferences ?? 0,
+    };
+  }, { timeout: 30000 });
 }
 
 // ─────────────────────── SH-18 · the incoming blind review ───────────────
@@ -1214,7 +1356,7 @@ const BLIND_HANDOVER_LINE_SELECT = {
   countedAt: true,
   counterId: true,
   reasonCodeId: true,
-  inventoryItem: { select: { id: true, name: true, category: true, unit: true } },
+  inventoryItem: { select: { id: true, name: true, category: true, unit: true, isCritical: true } },
 } satisfies Prisma.StockCountLineSelect;
 
 // The drift guard, at module load. If somebody adds a blind field to
@@ -1263,6 +1405,9 @@ export type IncomingHandoverView = {
     status: StockCountStatus;
     type: StockCountType;
     confirmedAt: Date | null;
+    systemValidated: boolean;
+    outgoingDeclared: boolean;
+    countVersion: string;
     /** Pre-acknowledgement, no quantity key exists on these objects at all. */
     lines: unknown[];
   } | null;
@@ -1289,7 +1434,15 @@ export async function incomingHandoverView(
   viewerId: string,
   scope: { cafeId: string; viewerBranchId: string | null; allowOutgoingDraft?: boolean; allowCompletedRead?: boolean }
 ): Promise<IncomingHandoverView> {
-  const handover = await db.handoverSession.findUnique({
+  return db.$transaction(tx => incomingHandoverViewWithClient(handoverId, viewerId, scope, tx), {isolationLevel:'RepeatableRead'});
+}
+
+async function incomingHandoverViewWithClient(
+  handoverId: string,
+  viewerId: string,
+  scope: { cafeId: string; viewerBranchId: string | null; allowOutgoingDraft?: boolean; allowCompletedRead?: boolean }
+, client:Prisma.TransactionClient):Promise<IncomingHandoverView>{
+  const handover = await client.handoverSession.findUnique({
     where: { id: handoverId },
     select: {
       id: true,
@@ -1311,8 +1464,6 @@ export async function incomingHandoverView(
         },
         orderBy: { itemNameSnapshot: "asc" },
       },
-      // Existence, not content. One row is enough to answer the question.
-      stockAcknowledgements: { select: { id: true }, take: 1 },
     },
   });
   if (!handover || handover.cafeId !== scope.cafeId) {
@@ -1328,12 +1479,15 @@ export async function incomingHandoverView(
     throw new ApiError(409, "التسليم مش في مرحلة مراجعة");
   }
 
-  const acknowledged = handover.stockAcknowledgements.length > 0;
+  // Existence, not content, and only for the round now in front of the reviewer: a signature on a
+  // superseded round must not disclose the replacement's figures before its own first look.
+  const acknowledged = handover.stockCountSessionId !== null
+    && (await client.handoverStockAcknowledgement.findFirst({ where: { handoverId: handover.id, line: { sessionId: handover.stockCountSessionId } }, select: { id: true } })) !== null;
 
   const session =
     handover.stockCountSessionId === null
       ? null
-      : await db.stockCountSession.findUnique({
+      : await client.stockCountSession.findUnique({
           where: { id: handover.stockCountSessionId },
           select: {
             id: true,
@@ -1341,6 +1495,7 @@ export async function incomingHandoverView(
             type: true,
             mode: true,
             confirmedAt: true,
+            confirmedById: true,
             initiatedById: true,
             handoverId: true,
             lines: {
@@ -1366,7 +1521,7 @@ export async function incomingHandoverView(
         : bound.lines;
 
   return {
-    segregatedReturns: await db.finishedGoodsReturn.findMany({ where: { cafeId: handover.cafeId, branchId: handover.branchId, deferredHandoverId: handover.id, appliedAt: null }, select: { id: true, quantity: true, inventoryItemId: true } }),
+    segregatedReturns: await client.finishedGoodsReturn.findMany({ where: { cafeId: handover.cafeId, branchId: handover.branchId, deferredHandoverId: handover.id, appliedAt: null }, select: { id: true, quantity: true, inventoryItemId: true } }),
     handoverId: handover.id,
     status: handover.status,
     branchId: handover.branchId,
@@ -1387,6 +1542,10 @@ export async function incomingHandoverView(
             status: bound.status,
             type: bound.type,
             confirmedAt: bound.confirmedAt,
+            countVersion: await handoverCountVersion(client,bound.id),
+            systemValidated: bound.confirmedById===null && ['CONFIRMED','LOCKED'].includes(bound.status) && !!await client.auditLog.findFirst({where:{cafeId:handover.cafeId,entity:'StockCountSession',entityId:bound.id,action:COUNT_SYSTEM_VALIDATED},select:{id:true}}),
+            // HND-UX-004: recorded as the outgoing employee observed it, with differences.
+            outgoingDeclared: bound.confirmedById===null && ['CONFIRMED','LOCKED'].includes(bound.status) && !!await client.auditLog.findFirst({where:{cafeId:handover.cafeId,entity:'StockCountSession',entityId:bound.id,action:COUNT_OUTGOING_DECLARED},select:{id:true}}),
             lines,
           },
   };
@@ -1420,6 +1579,9 @@ export async function listHandoversForViewer(args: {
       outgoingUserId: true,
       stockCountSessionId: true,
       requiredItemCount: true,
+      outgoingUser: { select: { name: true } },
+      outgoingShift: { select: { shiftNumber: true } },
+      stockCountSession: { select: { status: true } },
       submittedAt: true,
       createdAt: true,
     },
@@ -1478,17 +1640,24 @@ const NO_BOUND_COUNT = "مفيش جرد مربوط بالتسليم ده";
 const OLD_SESSION_LINE = "السطر ده من جرد قديم — الجرد الحالي هو اللي بيتراجع";
 const ALREADY_ACKNOWLEDGED = "السطر ده متسجل استلامه قبل كده";
 
-export async function acknowledgeStockLine(args: {
+type StockLineAcknowledgementArgs = {
   handoverId: string;
   stockCountLineId: string;
   acknowledgedById: string;
   incomingCountedQuantity?: number | null;
   disputeReasonCodeId?: string;
   disputeNote?: string;
+  /** HND-UX-003 explicit refusal. A dispute reason implies it too. */
+  refuse?: boolean;
   cafeId: string;
   viewerBranchId: string | null;
-}): Promise<AcknowledgeStockLineResult> {
-  return db.$transaction(async (tx) => {
+};
+
+export async function acknowledgeStockLine(args: StockLineAcknowledgementArgs): Promise<AcknowledgeStockLineResult> {
+  return db.$transaction(tx => acknowledgeStockLineInTransaction(tx,args));
+}
+
+async function acknowledgeStockLineInTransaction(tx: Prisma.TransactionClient, args: StockLineAcknowledgementArgs): Promise<AcknowledgeStockLineResult> {
     if (!(await lockHandover(tx, args.handoverId))) {
       throw new ApiError(404, HANDOVER_NOT_FOUND);
     }
@@ -1569,28 +1738,36 @@ export async function acknowledgeStockLine(args: {
     let disputeReasonCodeId: string | null = null;
     let disputeNote: string | null = null;
 
+    // HND-UX-003. A receiver who counts a different quantity ACCEPTS what
+    // they counted: the difference is recorded on this row and the handover
+    // continues; acceptance then makes the counted figure the new balance.
+    // Refusing is a separate, explicit act and still needs a HANDOVER reason.
+    // An explicit `refuse` is ALWAYS a refusal — matching quantity or no
+    // independent count included: a person who said "I do not accept this"
+    // must never be recorded as having accepted it. The earlier API's shape
+    // (a dispute reason with no `refuse` flag) keeps its old meaning: it
+    // disputes a difference and is ignored on a match.
     if (
       args.incomingCountedQuantity !== undefined &&
       args.incomingCountedQuantity !== null
     ) {
       incomingCountedQuantity = round3(args.incomingCountedQuantity);
       varianceQuantity = round3(incomingCountedQuantity - handedOverQuantity);
-      if (varianceQuantity !== 0) {
-        // Inside the lock, so the reason cannot be deactivated between the
-        // check and the write. A missing one raises 400 and the whole
-        // transaction rolls back, leaving no row and no transition.
-        await assertHandoverReason(
-          tx,
-          args.disputeReasonCodeId,
-          handover.cafeId,
-          "سبب الاختلاف"
-        );
-        decision = "DISPUTED";
-        disputeReasonCodeId = args.disputeReasonCodeId ?? null;
-        disputeNote = args.disputeNote ?? null;
-      }
-      // variance === 0 stays ACCEPTED. A dispute reason may have been sent
-      // and is ignored: there is nothing to disagree about.
+    }
+    const refuse = args.refuse === true || (!!args.disputeReasonCodeId && varianceQuantity !== null && varianceQuantity !== 0);
+    if (refuse) {
+      // Inside the lock, so the reason cannot be deactivated between the
+      // check and the write. A missing one raises 400 and the whole
+      // transaction rolls back, leaving no row and no transition.
+      await assertHandoverReason(
+        tx,
+        args.disputeReasonCodeId,
+        handover.cafeId,
+        "سبب الاعتراض"
+      );
+      decision = "DISPUTED";
+      disputeReasonCodeId = args.disputeReasonCodeId ?? null;
+      disputeNote = args.disputeNote ?? null;
     }
 
     // A courtesy check under the lock; the database's own
@@ -1617,6 +1794,7 @@ export async function acknowledgeStockLine(args: {
           handoverId: handover.id,
           stockCountLineId: args.stockCountLineId,
           acknowledgedById: args.acknowledgedById,
+          acknowledgedAt: new Date(),
           incomingCountedQuantity,
           handedOverQuantity,
           varianceQuantity,
@@ -1665,7 +1843,100 @@ export async function acknowledgeStockLine(args: {
     });
 
     return { handedOverQuantity, varianceQuantity, decision };
-  });
+}
+
+
+
+/** A manager-confirmed count retains its recorded authority; a system result
+ * must still match its current round. Pending edits never bypass either. */
+async function assertCurrentHandoverCountValidation(tx:Prisma.TransactionClient,handoverId:string){
+  const h=await tx.handoverSession.findUnique({where:{id:handoverId},select:{stockCountSessionId:true}});
+  if(!h?.stockCountSessionId)return;
+  const count=await tx.stockCountSession.findUnique({where:{id:h.stockCountSessionId},select:{status:true,confirmedById:true}});
+  if(!count || count.status!=='CONFIRMED')return;
+  await tx.$queryRaw`SELECT "id" FROM "StockCountSession" WHERE "id"=${h.stockCountSessionId} FOR UPDATE`;
+  if(await tx.stockCountCorrection.count({where:{line:{sessionId:h.stockCountSessionId},status:'PENDING_APPROVAL'}}))throw new ApiError(409,'في تصحيحات جرد مستنية الاعتماد');
+  const signatures=await tx.handoverStockAcknowledgement.findMany({where:{handoverId,line:{sessionId:h.stockCountSessionId}},select:{acknowledgedAt:true,line:{select:{updatedAt:true}}}});
+  if(signatures.some(a=>a.line.updatedAt>a.acknowledgedAt))throw new ApiError(409,'الجرد اتغير بعد توقيع الاستلام — يلزم جرد ومراجعة جديدة');
+  if(count.confirmedById===null){
+    // Either the system match or the recorded outgoing declaration (HND-UX-004),
+    // and only while its evidence still describes the current round.
+    if(!await currentUnsignedCountEvidence(tx,h.stockCountSessionId))throw new ApiError(409,'دليل الجرد اتغير بعد تسجيله — لازم مراجعة الجرد الحالي');
+  }
+}
+
+/** Opaque source revision: contains no theoretical/count quantities. */
+export async function handoverCountVersion(client:Prisma.TransactionClient|typeof db,sessionId:string):Promise<string>{
+ const source=await client.stockCountSession.findUnique({where:{id:sessionId},select:{id:true,updatedAt:true,confirmedAt:true,
+  lines:{orderBy:{id:'asc'},select:{id:true,updatedAt:true,recounts:{orderBy:{id:'asc'},select:{id:true}},corrections:{orderBy:{id:'asc'},select:{id:true,status:true,approvedAt:true}}}}}});
+ if(!source)throw new ApiError(409,NO_BOUND_COUNT);
+ return requestFingerprint(JSON.parse(JSON.stringify(source)));
+}
+
+export type StockSheetDecision = {
+  stockCountLineId: string;
+  incomingCountedQuantity: number | null;
+  disputeReasonCodeId?: string;
+  disputeNote?: string;
+  refuse?: boolean;
+};
+type StockSheetResult = { lines: (AcknowledgeStockLineResult & {stockCountLineId:string})[]; alreadyAcknowledged:boolean };
+
+/** One explicit consent, one atomic set of individual evidence rows. Audit
+ * stores the exact request/result under the handover lock, so a lost response
+ * can be replayed without claiming a different signature was recorded. */
+export async function acknowledgeStockSheet(args: {
+  handoverId:string; countSessionId:string; countVersion:string; lines:StockSheetDecision[];
+  acknowledgedById:string; idempotencyKey:string; cafeId:string; viewerBranchId:string|null;
+}): Promise<StockSheetResult> {
+  if (!args.idempotencyKey || args.idempotencyKey.length>200 || !args.lines.length || args.lines.length>2000 ||
+      new Set(args.lines.map(l=>l.stockCountLineId)).size!==args.lines.length || args.lines.some(l=>
+        !l.stockCountLineId || (l.incomingCountedQuantity!==null &&
+        (!Number.isFinite(l.incomingCountedQuantity)||l.incomingCountedQuantity<0||l.incomingCountedQuantity>999999999.999)))) {
+    throw new ApiError(400,'راجع سطور الاستلام والكميات ومفتاح المحاولة');
+  }
+  const decisions=[...args.lines].sort((a,b)=>a.stockCountLineId.localeCompare(b.stockCountLineId));
+  const requestHash=requestFingerprint({countSessionId:args.countSessionId,countVersion:args.countVersion,lines:decisions});
+  return db.$transaction(async tx=>{
+    // Same actor-before-handover order as custody acceptance/assignment edits.
+    await resolveStaffBranchInTransaction(tx,args.acknowledgedById);
+    if(!await lockHandover(tx,args.handoverId))throw new ApiError(404,HANDOVER_NOT_FOUND);
+    const h=await tx.handoverSession.findUniqueOrThrow({where:{id:args.handoverId},select:LOCKED_HANDOVER_SELECT});
+    if(h.cafeId!==args.cafeId)throw new ApiError(404,HANDOVER_NOT_FOUND);
+    if(args.viewerBranchId && h.branchId!==args.viewerBranchId)throw new ApiError(403,FOREIGN_BRANCH);
+    await assertHandoverCountActor(tx,{actorId:args.acknowledgedById,cafeId:h.cafeId,branchId:h.branchId,key:'handover.accept'});
+    if(h.stockCountSessionId!==args.countSessionId)throw new ApiError(409,OLD_SESSION_LINE);
+    const prior=await tx.auditLog.findMany({where:{cafeId:h.cafeId,entity:'HandoverSession',entityId:h.id,action:'HANDOVER_SHEET_ACKNOWLEDGED',userId:args.acknowledgedById}});
+    const saved=prior.find(a=>(a.details as {idempotencyKey?:string}|null)?.idempotencyKey===args.idempotencyKey);
+    if(saved){
+      const details=saved.details as {requestHash?:string;result?:StockSheetResult};
+      if(details.requestHash!==requestHash || !details.result)throw new ApiError(409,'مفتاح المحاولة مستخدم لاستلام مختلف');
+      return {...details.result,alreadyAcknowledged:true};
+    }
+    if(!ACKNOWLEDGEABLE_STATUSES.includes(h.status))throw new ApiError(409,NOT_IN_REVIEW);
+    const recipient=await resolveIncomingShift(tx,h,undefined);
+    if(recipient.cashierId!==args.acknowledgedById)throw new ApiError(403,'توقيع الاستلام لصاحب الشيفت المستلم فقط');
+    await tx.$queryRaw`SELECT "id" FROM "StockCountSession" WHERE "id"=${args.countSessionId} FOR UPDATE`;
+    if(args.countVersion!==await handoverCountVersion(tx,args.countSessionId))throw new ApiError(409,'نسخة الجرد اتغيرت — حدّث ورقة الاستلام وراجعها');
+    const session=await tx.stockCountSession.findUnique({where:{id:args.countSessionId},select:{status:true,handoverId:true,accountabilityContext:true,cafeId:true,branchId:true}});
+    if(!session || session.status!=='CONFIRMED' || session.handoverId!==h.id || session.accountabilityContext!=='HANDOVER' || session.cafeId!==h.cafeId || session.branchId!==h.branchId)throw new ApiError(409,COUNT_NOT_CONFIRMED);
+    if(await tx.stockCountCorrection.count({where:{line:{sessionId:args.countSessionId},status:'PENDING_APPROVAL'}}))throw new ApiError(409,'في تصحيحات جرد مستنية الاعتماد');
+    const all=await tx.stockCountLine.findMany({where:{sessionId:args.countSessionId},select:{...EFFECTIVE_EVIDENCE_SELECT,inventoryItemId:true}});
+    const existing=await tx.handoverStockAcknowledgement.findMany({where:{handoverId:h.id,line:{sessionId:args.countSessionId}},select:{stockCountLineId:true}});
+    const signed=new Set(existing.map(a=>a.stockCountLineId));
+    const unsigned=all.filter(l=>hasAuthoritativeObservation(l)&&!signed.has(l.id));
+    if(unsigned.length!==decisions.length || decisions.some(l=>!unsigned.some(u=>u.id===l.stockCountLineId)))throw new ApiError(409,'راجع كل السطور غير المستلمة مرة واحدة — فيه سطر ناقص أو مسجل بالفعل');
+    for(const line of [...unsigned].sort((a,b)=>a.inventoryItemId.localeCompare(b.inventoryItemId)))await lockItemForUpdate(tx,line.inventoryItemId);
+    const results:StockSheetResult['lines']=[];
+    for(const decision of decisions){
+      const result=await acknowledgeStockLineInTransaction(tx,{...args,...decision});
+      results.push({...result,stockCountLineId:decision.stockCountLineId});
+    }
+    const result:StockSheetResult={lines:results,alreadyAcknowledged:false};
+    await auditInTransaction(tx,{cafeId:h.cafeId,userId:args.acknowledgedById,action:'HANDOVER_SHEET_ACKNOWLEDGED',entity:'HandoverSession',entityId:h.id,
+      details:{branchId:h.branchId,countSessionId:args.countSessionId,countVersion:args.countVersion,idempotencyKey:args.idempotencyKey,requestHash,decisions,result,consentedAt:new Date().toISOString()}});
+    return result;
+  },{timeout:20000});
 }
 
 // ────────────────────────── SH-19 · the recount request ──────────────────
@@ -2389,6 +2660,7 @@ export async function acceptHandover(args: {
       incomingShiftId: args.incomingShiftId,
     });
     await prepareHandoverInventoryLocks(tx, handover, evidence.acceptedSessionId, evidence.incomingShiftId);
+    await assertCurrentHandoverCountValidation(tx, handover.id);
     evidence = await resolveAcceptableEvidence(tx, handover, { cafeId: args.cafeId, viewerBranchId: args.viewerBranchId, incomingShiftId: args.incomingShiftId });
 
     // No `exception`: an ordinary accept has no manager authority to carry,
@@ -2528,6 +2800,7 @@ export async function overrideAcceptHandover(args: {
       viewerBranchId: args.viewerBranchId,
     });
     await prepareHandoverInventoryLocks(tx, handover, evidence.acceptedSessionId, evidence.incomingShiftId);
+    await assertCurrentHandoverCountValidation(tx, handover.id);
     evidence = await resolveAcceptableEvidence(tx, handover, { cafeId: args.cafeId, viewerBranchId: args.viewerBranchId });
 
     // The recipient is the arriving shift's cashier. When the caller named
@@ -2680,6 +2953,23 @@ async function runAcceptance(
     actorId: args.incomingUserId,
     idempotencyKey: `${handover.id}:rebase`,
     freezeToken: handover.id,
+  });
+  // ── 6a. HND-UX-003: the receiver's accepted count becomes the balance ──
+  //
+  // The rebase above set the shelf to the OUTGOING declaration. Where the
+  // receiver independently counted a different quantity and accepted it, the
+  // shelf is moved once more, to what they counted, under the same freeze
+  // token. Both observations stay on record (the count line and the
+  // acknowledgement); this only makes the next handover start from the
+  // receiver's own figure, so a shortage they already recorded at receipt is
+  // not found again and charged to them at their own close. A receipt with
+  // no independent count (NULL) moves nothing.
+  const receivingAdjustments = await applyAcceptedReceivingCounts(tx, {
+    cafeId: handover.cafeId,
+    branchId: handover.branchId,
+    handoverId: handover.id,
+    acceptedSessionId,
+    actorId: args.incomingUserId,
   });
   await checkpoint(6);
 
@@ -2971,6 +3261,8 @@ async function runAcceptance(
         itemsSkipped: rebase.itemsSkipped,
         alreadyRebased: rebase.alreadyRebased,
       },
+      // HND-UX-003: receiver-counted quantities applied after the rebase.
+      receivingAdjustments,
       varianceCaseIds: variance.caseIds,
       spanIds: variance.spanIds,
       outgoingStockCustodyId: evidence.outgoingStockCustodyId,
@@ -3021,6 +3313,42 @@ async function runAcceptance(
   }
 
   return result;
+}
+
+async function applyAcceptedReceivingCounts(
+  tx: Prisma.TransactionClient,
+  args: { cafeId: string; branchId: string; handoverId: string; acceptedSessionId: string; actorId: string },
+): Promise<{ acknowledgementId: string; inventoryItemId: string; quantity: number; transactionId: string }[]> {
+  const rows = await tx.handoverStockAcknowledgement.findMany({
+    where: {
+      handoverId: args.handoverId,
+      decision: "ACCEPTED",
+      incomingCountedQuantity: { not: null },
+      varianceQuantity: { not: 0 },
+      line: { sessionId: args.acceptedSessionId },
+    },
+    select: { id: true, varianceQuantity: true, line: { select: { inventoryItemId: true } } },
+  });
+  const applied: { acknowledgementId: string; inventoryItemId: string; quantity: number; transactionId: string }[] = [];
+  for (const row of [...rows].sort((a, b) => a.line.inventoryItemId.localeCompare(b.line.inventoryItemId))) {
+    const quantity = round3(Number(row.varianceQuantity));
+    if (quantity === 0) continue;
+    const mutation = await applyStockMutation(tx, {
+      inventoryItemId: row.line.inventoryItemId,
+      // A physical count becoming the baseline, which is what COUNT_REBASE
+      // means; the note says whose count it was.
+      type: "COUNT_REBASE",
+      quantity,
+      cafeId: args.cafeId,
+      branchId: args.branchId,
+      createdById: args.actorId,
+      note: `HANDOVER_RECEIVING_COUNT handover=${args.handoverId} acknowledgement=${row.id}`,
+      allowNegative: true,
+      freezeToken: args.handoverId,
+    });
+    applied.push({ acknowledgementId: row.id, inventoryItemId: row.line.inventoryItemId, quantity, transactionId: mutation.transactionId });
+  }
+  return applied;
 }
 
 /**
@@ -3492,6 +3820,7 @@ export async function acceptToBranchCustody(args: {
       viewerBranchId: args.viewerBranchId,
     });
     await prepareHandoverInventoryLocks(tx, handover, evidence.acceptedSessionId);
+    await assertCurrentHandoverCountValidation(tx, handover.id);
     evidence = await resolveBranchAcceptableEvidence(tx, handover, { cafeId: args.cafeId, viewerBranchId: args.viewerBranchId });
 
     return runBranchAcceptance(tx, evidence, {

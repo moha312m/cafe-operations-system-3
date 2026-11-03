@@ -5,6 +5,7 @@
 // the item's own most recent delivery. Deliveries here go through the real
 // movement route, so the threshold is read from genuine ledger rows.
 import { test, after, before, describe } from "node:test";
+import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { db, teardownTaggedCafe } from "./helpers/db";
 import { requireServer, as } from "./helpers/http";
@@ -30,7 +31,7 @@ const setPolicy = (body: object, email = fx.owner.email) =>
   as<Policy>(email, POLICY, { method: "PATCH", body: JSON.stringify(body) });
 const move = async (id: string, type: "PURCHASE" | "USAGE", quantity: number) => {
   const r = await as(fx.owner.email, `/api/inventory/${id}/movement`, {
-    method: "POST", body: JSON.stringify({ type, quantity }),
+    method: "POST", headers: { "Idempotency-Key": randomUUID() }, body: JSON.stringify({ type, quantity }),
   });
   assert.equal(r.status, 200, `${type} ${quantity}: ${r.text}`);
 };

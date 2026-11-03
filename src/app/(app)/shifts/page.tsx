@@ -54,6 +54,9 @@ type ShiftDetail = {
     totalWalletSales: string;
     totalDiscounts: string;
     totalRefunds: string;
+    totalCashPayouts?: string;
+  totalExpensePayouts?: string;
+  totalExpenseReturns?: string;
     orderCount: number;
     notes: string | null;
   };
@@ -344,6 +347,9 @@ export default function ShiftReportsPage() {
                     [t.shifts.walletSales, money(detail.shift.totalWalletSales, currency)],
                     [t.shifts.discounts, money(detail.shift.totalDiscounts, currency)],
                     [t.shifts.refunds, money(detail.shift.totalRefunds, currency)],
+                    ...(Number(detail.shift.totalCashPayouts ?? 0) ? [[t.shifts.supplierPayouts, money(detail.shift.totalCashPayouts ?? 0, currency)]] : []),
+                    ...(Number(detail.shift.totalExpensePayouts ?? 0) ? [[t.shifts.expensePayouts, money(detail.shift.totalExpensePayouts ?? 0, currency)]] : []),
+                    ...(Number(detail.shift.totalExpenseReturns ?? 0) ? [[t.shifts.expenseReturns, money(detail.shift.totalExpenseReturns ?? 0, currency)]] : []),
                     [t.shifts.orderCount, String(detail.shift.orderCount)],
                     [t.shifts.expectedCash, money(detail.shift.expectedCashAmount, currency)],
                     [

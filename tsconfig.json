@@ -39,6 +39,7 @@
     ".next-touch/dev/types/**/*.ts"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "artifacts/finance-integration-20261031/candidate"
   ]
 }

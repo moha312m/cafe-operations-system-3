@@ -230,6 +230,15 @@ enum SubscriptionStatus {
 // ─────────────────────────── Tenancy core ────────────────────────────
 
 model Cafe {
+  moneyAccounts MoneyAccount[]
+  moneyTransfers MoneyTransfer[]
+  moneyMovements MoneyMovement[]
+
+  expenseCategories ExpenseCategory[]
+  operatingExpenses OperatingExpense[]
+  operatingExpenseReturns OperatingExpenseReturn[]
+
+  accountingEntity AccountingEntity?
   branchOpeningSettings BranchOpeningSettings[]
   cashStorages CashStorage[]
   cashStorageMovements CashStorageMovement[]
@@ -427,6 +436,12 @@ model CafeSettings {
 }
 
 model Branch {
+  moneyAccounts MoneyAccount[]
+
+  operatingExpenses OperatingExpense[]
+  operatingExpenseReturns OperatingExpenseReturn[]
+
+  journalLines JournalLine[]
   stockBindings ProductStockBinding[] @relation("FinishedBindingBranch")
   inventorySaleIdentityItems InventoryItem[] @relation("InventorySaleIdentityBranch")
   reportingVersions BranchReportingVersion[]
@@ -463,6 +478,18 @@ model Branch {
   stockCountModeOverride            StockCountMode?
   periodicFullCountScheduleOverride PeriodicFullCountSchedule?
   periodicFullCountWeekdayOverride  Int?
+
+  // HND-UX-004. How often the owner-selected handover items are counted, kept
+  // apart from the optional periodic FULL count above. EVERY_SHIFT is the
+  // behaviour every branch had before this setting existed. DAILY/WEEKLY need
+  // a local cutoff ("HH:MM"): the first shift closing at or after it claims
+  // that business day (or week). `materialsScheduleSince` is when the current
+  // cadence started, so periods before it are never owed.
+  materialsCountCadence  MaterialsCountCadence    @default(EVERY_SHIFT)
+  materialsCountWeekday  Int?
+  materialsCountCutoff   String?
+  materialsScheduleSince DateTime?
+  materialsDecisions     ShiftMaterialsDecision[]
 
   cafe                    Cafe                     @relation(fields: [cafeId], references: [id], onDelete: Cascade)
   users                   User[]
@@ -656,6 +683,20 @@ model BranchFinancialSettings {
 }
 
 model User {
+  moneyAccountsCreated MoneyAccount[] @relation("MoneyAccountCreator")
+  moneyOpeningsApproved MoneyAccount[] @relation("MoneyOpeningApprover")
+  moneyTransfersCreated MoneyTransfer[] @relation("MoneyTransferCreator")
+  moneyTransfersDispatched MoneyTransfer[] @relation("MoneyTransferDispatcher")
+  moneyTransfersReceived MoneyTransfer[] @relation("MoneyTransferReceiver")
+  moneyTransfersCancelled MoneyTransfer[] @relation("MoneyTransferCanceller")
+  moneyMovements MoneyMovement[]
+
+  operatingExpenses OperatingExpense[]
+  operatingExpenseReturns OperatingExpenseReturn[]
+  expenseCategories ExpenseCategory[]
+
+  journalEntries JournalEntry[] @relation("JournalEntryCreator")
+  accountingPeriodsClosed AccountingPeriod[] @relation("AccountingPeriodCloser")
   finishedGoodsReturns FinishedGoodsReturn[] @relation("FinishedReturnActor")
   branchOpeningSettingsUpdated BranchOpeningSettings[]
   cashStoragesDeclared CashStorage[]
@@ -1441,8 +1482,14 @@ model OrderTrace {
 // كل المبالغ EGP، والأرقام التجميعية بتتحدّث مع كل دفع/مرتجع.
 
 model Shift {
+  operatingExpenses OperatingExpense[]
+  operatingExpenseReturns OperatingExpenseReturn[]
+  totalExpensePayouts Decimal @default(0) @db.Decimal(12, 2)
+  totalExpenseReturns Decimal @default(0) @db.Decimal(12, 2)
+
   cashStorage CashStorage?
   openingCashReceipt OpeningCashReceipt?
+  purchasePayments PurchasePayment[]
 
   id                 String    @id @default(cuid())
   cafeId             String
@@ -1480,6 +1527,8 @@ model Shift {
   totalCardSales      Decimal           @default(0) @db.Decimal(10, 2)
   totalWalletSales    Decimal           @default(0) @db.Decimal(10, 2)
   totalRefunds        Decimal           @default(0) @db.Decimal(10, 2)
+  /// Supplier payments handed out of this drawer; expectedCash already nets them.
+  totalCashPayouts    Decimal           @default(0) @db.Decimal(10, 2)
   totalDiscounts      Decimal           @default(0) @db.Decimal(10, 2)
   orderCount          Int               @default(0)
   status              ShiftStatus       @default(OPEN)
@@ -1517,6 +1566,7 @@ model Shift {
   inventoryTransactions     InventoryTransaction[] @relation("InventoryTransactionShift")
   servedOrders              Order[]                @relation("OrderServedShift")
   carriedOrders             HandoverCarriedOrder[]
+  materialsDecision         ShiftMaterialsDecision?
 
   @@unique([branchId, shiftNumber])
   @@index([cafeId])
@@ -1844,6 +1894,9 @@ enum CountLineDisposition {
   RECOUNT_REQUIRED
   RESOLVED_WITHIN_TOLERANCE // terminal
   VARIANCE_CONFIRMED // terminal
+  // HND-UX-004: an outgoing handover difference recorded as observed, with no
+  // manager acceptance. Terminal so the count can be handed over; never a match.
+  VARIANCE_RECORDED // terminal
 }
 
 enum TheoreticalConfidence {
@@ -2405,6 +2458,47 @@ enum OpeningExceptionKind {
   MANAGER_ADJUSTMENT
 }
 
+enum MaterialsCountCadence {
+  EVERY_SHIFT
+  DAILY
+  WEEKLY
+}
+
+/// HND-UX-004. What one shift close decided about counting materials, kept
+/// immutable. A due DAILY/WEEKLY decision claims the business periods from
+/// `periodFrom` to `periodTo`; a partial unique index (migration) lets only one
+/// close claim a period, so two closes or retries cannot satisfy it twice.
+/// NOT_DUE rows record the schedule answer and the next due time instead of
+/// fabricating a count. `satisfiedAt` is set when the outgoing count is handed over.
+model ShiftMaterialsDecision {
+  id           String                @id @default(cuid())
+  cafeId       String
+  branchId     String
+  shiftId      String                @unique
+  handoverId   String?               @unique
+  cadence      MaterialsCountCadence
+  weekday      Int?
+  cutoff       String?
+  timezone     String
+  due          Boolean
+  /// EVERY_SHIFT | PERIOD_DUE | FULL_COUNT_DUE | NOT_DUE
+  reason       String
+  fullCountDue Boolean               @default(false)
+  periodFrom   String?
+  periodTo     String?
+  /// The previous verified count this one is measured from, when known.
+  coverageFrom DateTime?
+  nextDueAt    DateTime?
+  satisfiedAt  DateTime?
+  decidedAt    DateTime              @default(now())
+
+  branch   Branch           @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  shift    Shift            @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  handover HandoverSession? @relation(fields: [handoverId], references: [id], onDelete: SetNull)
+
+  @@index([branchId, cadence, periodTo])
+}
+
 enum StockAckDecision {
   ACCEPTED
   DISPUTED
@@ -2472,6 +2566,9 @@ model HandoverSession {
   cashVerifiedAt      DateTime?
   cashVerifiedById    String?
 
+  /// HND-UX-004 optional note the outgoing employee left with the materials.
+  outgoingNote String?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -2506,6 +2603,7 @@ model HandoverSession {
   openingExceptions           OpeningException[]
   inventoryFreeze             InventoryFreeze?
   carriedOrders               HandoverCarriedOrder[]
+  materialsDecision           ShiftMaterialsDecision?
 
   @@index([cafeId, status])
   @@index([branchId, createdAt])
@@ -2759,9 +2857,9 @@ model OpeningException {
   actualAmount   Decimal? @db.Decimal(10, 2)
   varianceAmount Decimal? @db.Decimal(10, 2)
 
-  /// Non-nullable, per spec §17. An exception is somebody overriding what the
-  /// records say; a stated reason is the minimum of what that costs.
-  reasonCodeId   String
+  /// Optional for recorded handover CASH_MISMATCH observations. Other exception
+  /// kinds retain their required reason through service and database guards.
+  reasonCodeId   String?
   note           String?
   authorizedById String
 
@@ -2774,9 +2872,8 @@ model OpeningException {
   custodyPeriod CustodyPeriod?   @relation(fields: [custodyPeriodId], references: [id], onDelete: Restrict)
   handover      HandoverSession? @relation(fields: [handoverId], references: [id], onDelete: SetNull)
 
-  /// Restrict, unlike the SetNull elsewhere: there is no valid state for this
-  /// row without a reason, so the reason cannot be retired out from under it.
-  reasonCode   ReasonCode @relation(fields: [reasonCodeId], references: [id])
+  /// Preserve supplied reason history; an unexplained cash observation stays null.
+  reasonCode   ReasonCode? @relation(fields: [reasonCodeId], references: [id], onDelete: Restrict)
   authorizedBy User       @relation(fields: [authorizedById], references: [id])
 
   varianceCase VarianceCase?
@@ -2937,6 +3034,16 @@ enum PurchasePaymentMethod {
   BANK_TRANSFER // تحويل بنكي
 }
 
+// Where the money for a supplier payment came from. Only DRAWER touches a
+// shift: it is cash handed out of an open drawer, so it lowers that shift's
+// expected cash. NULL on rows recorded before this existed — the source was
+// never asked, and guessing one would invent cash movements.
+enum PurchasePaymentFunding {
+  DRAWER // من درج الكاشير
+  SAFE // من الخزنة
+  BANK // من حساب بنكي / كارت / محفظة الكافيه
+}
+
 // Raw-material suppliers (cafe-scoped).
 model Supplier {
   id        String   @id @default(cuid())
@@ -3030,6 +3137,10 @@ model PurchasePayment {
   purchaseInvoiceId String
   amount            Decimal               @db.Decimal(12, 2)
   method            PurchasePaymentMethod @default(CASH)
+  fundingSource     PurchasePaymentFunding?
+  /// The open shift whose drawer paid, set exactly when fundingSource = DRAWER
+  /// (enforced by a CHECK constraint).
+  shiftId           String?
   paidAt            DateTime              @default(now())
   note              String?
   createdByUserId   String?
@@ -3037,10 +3148,12 @@ model PurchasePayment {
 
   invoice   PurchaseInvoice @relation(fields: [purchaseInvoiceId], references: [id], onDelete: Cascade)
   createdBy User?           @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+  shift     Shift?          @relation(fields: [shiftId], references: [id], onDelete: Restrict)
 
   @@index([cafeId])
   @@index([branchId])
   @@index([purchaseInvoiceId])
+  @@index([shiftId])
   @@index([cafeId, paidAt])
 }
 
@@ -3606,4 +3719,395 @@ model FinishedGoodsReturn {
   @@index([branchId, appliedAt], map: "FinishedGoodsReturn_branch_pending_idx")
   @@index([deferredHandoverId, appliedAt], map: "FinishedGoodsReturn_handover_pending_idx")
   @@index([inventoryTransactionId], map: "FinishedGoodsReturn_ledger_idx")
+}
+
+// ───────────────────────────── Accounting ledger (F5) ─────────────────────────────
+// One books per café (owner decision D3: all branches are one company). The
+// ledger is append-only: entries and lines are never updated or deleted (DB
+// triggers), a correction is a reversing entry, every entry balances at
+// commit (deferred constraint trigger), and an entry can only land in an OPEN
+// period that contains its date. cafeId is repeated on every row so the
+// tenant can be checked by trigger and purged by café. No business flow posts
+// here yet: F5 is the core, exercised on synthetic data only.
+
+enum AccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  REVENUE
+  EXPENSE
+}
+
+enum BalanceSide {
+  DEBIT
+  CREDIT
+}
+
+enum AccountingPeriodStatus {
+  OPEN
+  CLOSED
+}
+
+model AccountingEntity {
+  id               String   @id @default(cuid())
+  cafeId           String   @unique
+  name             String
+  currency         String
+  /// Next gapless entry number; taken under this row's lock by the posting service.
+  nextEntryNumber  Int      @default(1)
+  createdAt        DateTime @default(now())
+
+  cafe     Cafe                @relation(fields: [cafeId], references: [id], onDelete: Restrict)
+  accounts AccountingAccount[]
+  periods  AccountingPeriod[]
+  entries  JournalEntry[]
+}
+
+model AccountingAccount {
+  id            String      @id @default(cuid())
+  cafeId        String
+  entityId      String
+  code          String
+  name          String
+  type          AccountType
+  normalBalance BalanceSide
+  /// Stable handle the posting rules map to (e.g. CASH_DRAWER); null for accounts an accountant adds.
+  systemKey     String?
+  /// Header accounts group others and never take lines.
+  isPostable    Boolean     @default(true)
+  isActive      Boolean     @default(true)
+  parentId      String?
+  createdAt     DateTime    @default(now())
+
+  entity   AccountingEntity    @relation(fields: [entityId], references: [id], onDelete: Restrict)
+  parent   AccountingAccount?  @relation("AccountTree", fields: [parentId], references: [id], onDelete: NoAction)
+  children AccountingAccount[] @relation("AccountTree")
+  lines    JournalLine[]
+
+  @@unique([entityId, code])
+  @@unique([entityId, systemKey])
+  @@index([cafeId])
+}
+
+model AccountingPeriod {
+  id         String                 @id @default(cuid())
+  cafeId     String
+  entityId   String
+  /// Inclusive local calendar dates (Africa/Cairo business dates).
+  startsOn   DateTime               @db.Date
+  endsOn     DateTime               @db.Date
+  status     AccountingPeriodStatus @default(OPEN)
+  closedAt   DateTime?
+  closedById String?
+  createdAt  DateTime               @default(now())
+
+  entity   AccountingEntity @relation(fields: [entityId], references: [id], onDelete: Restrict)
+  closedBy User?            @relation("AccountingPeriodCloser", fields: [closedById], references: [id], onDelete: Restrict)
+  entries  JournalEntry[]
+
+  @@unique([entityId, startsOn])
+  @@index([cafeId])
+}
+
+model JournalEntry {
+  id           String   @id @default(cuid())
+  cafeId       String
+  entityId     String
+  periodId     String
+  number       Int
+  /// The accounting date (local business date), which picks the period.
+  entryDate    DateTime @db.Date
+  postedAt     DateTime @default(now())
+  description  String
+  /// What produced the entry, kept as a snapshot so it survives the source row.
+  sourceType   String
+  sourceId     String?
+  /// Idempotency: one entry per source event per entity.
+  sourceKey    String
+  /// SHA-256 of the canonical lines; a replay with a different payload is refused.
+  payloadHash  String
+  reversalOfId String?  @unique
+  createdById  String?
+
+  entity     AccountingEntity @relation(fields: [entityId], references: [id], onDelete: Restrict)
+  period     AccountingPeriod @relation(fields: [periodId], references: [id], onDelete: Restrict)
+  createdBy  User?            @relation("JournalEntryCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  reversalOf JournalEntry?    @relation("JournalReversal", fields: [reversalOfId], references: [id], onDelete: NoAction)
+  reversedBy JournalEntry?    @relation("JournalReversal")
+  lines      JournalLine[]
+
+  @@unique([entityId, number])
+  @@unique([entityId, sourceKey])
+  @@index([cafeId])
+  @@index([periodId])
+  @@index([entityId, entryDate])
+}
+
+model JournalLine {
+  id        String  @id @default(cuid())
+  cafeId    String
+  entryId   String
+  accountId String
+  /// Branch dimension; null for café-wide lines.
+  branchId  String?
+  debit     Decimal @default(0) @db.Decimal(14, 2)
+  credit    Decimal @default(0) @db.Decimal(14, 2)
+  memo      String?
+
+  entry   JournalEntry      @relation(fields: [entryId], references: [id], onDelete: Restrict)
+  account AccountingAccount @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  branch  Branch?           @relation(fields: [branchId], references: [id], onDelete: Restrict)
+
+  @@index([cafeId])
+  @@index([entryId])
+  @@index([accountId])
+}
+
+// Shadow projection runs and the issues they found (G1). Issues persist
+// across runs until a later run over the same window no longer sees them, so
+// the close checklist and the accounting overview read durable state rather
+// than the last call's return value.
+enum ProjectionIssueKind {
+  UNPOSTABLE // the source cannot be expressed as an entry (MIXED tender, unknown cost, ...)
+  CHANGED // the source changed after its entry was posted
+  DISAPPEARED // a posted source is no longer an event (e.g. the order is no longer SERVED)
+  FAILED // posting raised an unexpected error
+  LATE_EVENT // the event belongs to a period that is already closed
+  ASSUMED_DATE // posted on a fallback date because the event-time evidence is missing
+}
+
+enum ProjectionIssueSeverity {
+  BLOCKING
+  WARNING
+}
+
+model AccountingProjectionRun {
+  id          String    @id @default(cuid())
+  cafeId      String
+  entityId    String
+  windowFrom  DateTime
+  windowTo    DateTime
+  startedAt   DateTime  @default(now())
+  finishedAt  DateTime?
+  posted      Int       @default(0)
+  replayed    Int       @default(0)
+  skipped     Int       @default(0)
+  issueCount  Int       @default(0)
+  actorId     String?
+
+  @@index([cafeId, startedAt])
+}
+
+model AccountingProjectionIssue {
+  id          String                  @id @default(cuid())
+  cafeId      String
+  entityId    String
+  sourceKey   String
+  sourceType  String
+  sourceId    String
+  kind        ProjectionIssueKind
+  severity    ProjectionIssueSeverity
+  reason      String
+  /// Event instant the issue concerns; scopes resolution to a run's window.
+  eventAt     DateTime
+  branchId    String?
+  firstSeenAt DateTime                @default(now())
+  lastSeenAt  DateTime                @default(now())
+  lastRunId   String?
+  resolvedAt  DateTime?
+
+  @@unique([entityId, sourceKey, kind])
+  @@index([cafeId, resolvedAt])
+}
+
+// ACC-01A: append-only evidence for immediate paid operating expenses.
+model ExpenseCategory {
+  id String @id @default(cuid())
+  cafeId String
+  code String
+  nameAr String
+  archivedAt DateTime?
+  createdById String
+  createdAt DateTime @default(now())
+  cafe Cafe @relation(fields: [cafeId], references: [id], onDelete: Restrict)
+  createdBy User @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  expenses OperatingExpense[]
+  @@unique([cafeId, code])
+  @@index([cafeId, archivedAt])
+}
+model OperatingExpense {
+  id String @id @default(cuid())
+  cafeId String
+  branchId String
+  shiftId String
+  categoryId String
+  categoryCodeSnapshot String
+  categoryNameSnapshot String
+  amount Decimal @db.Decimal(12, 2)
+  currency String @default("EGP")
+  description String
+  documentReference String?
+  actorId String
+  actorNameSnapshot String
+  occurredAt DateTime @default(now())
+  idempotencyScope String
+  idempotencyKey String
+  requestHash String
+  cafe Cafe @relation(fields: [cafeId], references: [id], onDelete: Restrict)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  shift Shift @relation(fields: [shiftId], references: [id], onDelete: Restrict)
+  category ExpenseCategory @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  actor User @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  returns OperatingExpenseReturn[]
+  @@unique([idempotencyScope, idempotencyKey])
+  @@index([cafeId, branchId, occurredAt])
+  @@index([shiftId])
+}
+model OperatingExpenseReturn {
+  id String @id @default(cuid())
+  expenseId String
+  cafeId String
+  branchId String
+  shiftId String
+  amount Decimal @db.Decimal(12, 2)
+  currency String @default("EGP")
+  reason String
+  documentReference String?
+  actorId String
+  actorNameSnapshot String
+  occurredAt DateTime @default(now())
+  idempotencyScope String
+  idempotencyKey String
+  requestHash String
+  expense OperatingExpense @relation(fields: [expenseId], references: [id], onDelete: Restrict)
+  cafe Cafe @relation(fields: [cafeId], references: [id], onDelete: Restrict)
+  branch Branch @relation(fields: [branchId], references: [id], onDelete: Restrict)
+  shift Shift @relation(fields: [shiftId], references: [id], onDelete: Restrict)
+  actor User @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  @@unique([idempotencyScope, idempotencyKey])
+  @@index([cafeId, branchId, occurredAt])
+  @@index([shiftId])
+  @@index([expenseId])
+}
+
+// ACC-02A: operational recorded transfers, not the general ledger.
+enum MoneyAccountKind {
+  TREASURY
+  BANK
+  WALLET
+}
+enum MoneyOpeningState {
+  UNSET
+  APPROVED
+}
+enum MoneyTransferChannel {
+  INTERNAL
+  INSTAPAY
+}
+enum MoneyTransferStatus {
+  DRAFT
+  IN_TRANSIT
+  RECEIVED
+  CANCELLED
+}
+enum MoneyMovementKind {
+  OPENING
+  TRANSFER_OUT
+  TRANSFER_IN
+}
+model MoneyAccount {
+  id String @id @default(cuid())
+  cafeId String
+  branchId String?
+  code String @db.VarChar(30)
+  name String @db.VarChar(100)
+  kind MoneyAccountKind
+  currency String @default("EGP")
+  instaPayEnabled Boolean @default(false)
+  isActive Boolean @default(true)
+  openingState MoneyOpeningState @default(UNSET)
+  openingAt DateTime?
+  openingReference String? @db.VarChar(160)
+  openingApprovedById String?
+  openingApprovedAt DateTime?
+  createdById String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  version Int @default(0)
+  cafe Cafe @relation(fields:[cafeId],references:[id],onDelete:Restrict,onUpdate:Restrict)
+  branch Branch? @relation(fields:[branchId,cafeId],references:[id,cafeId],onDelete:Restrict,onUpdate:Restrict)
+  createdBy User @relation("MoneyAccountCreator",fields:[createdById],references:[id],onDelete:Restrict,onUpdate:Restrict)
+  openingApprovedBy User? @relation("MoneyOpeningApprover",fields:[openingApprovedById],references:[id],onDelete:Restrict,onUpdate:Restrict)
+  outgoingTransfers MoneyTransfer[] @relation("MoneyTransferFrom")
+  incomingTransfers MoneyTransfer[] @relation("MoneyTransferTo")
+  movements MoneyMovement[]
+  @@unique([cafeId,code])
+  @@unique([cafeId,id])
+  @@index([cafeId,branchId,isActive])
+  @@index([cafeId,kind])
+}
+model MoneyTransfer {
+  id String @id @default(cuid())
+  cafeId String
+  fromAccountId String
+  toAccountId String
+  amount Decimal @db.Decimal(12,2)
+  currency String @default("EGP")
+  channel MoneyTransferChannel
+  status MoneyTransferStatus @default(DRAFT)
+  reference String? @db.VarChar(160)
+  note String @db.VarChar(1000)
+  fromNameSnapshot String @db.VarChar(100)
+  toNameSnapshot String @db.VarChar(100)
+  creationKey String @db.VarChar(128)
+  creationFingerprint String @db.VarChar(64)
+  createdById String
+  createdAt DateTime @default(now())
+  dispatchedById String?
+  dispatchedAt DateTime?
+  dispatchKey String? @db.VarChar(128)
+  dispatchFingerprint String? @db.VarChar(64)
+  dispatchReference String? @db.VarChar(160)
+  receivedById String?
+  receivedAt DateTime?
+  receiveKey String? @db.VarChar(128)
+  receiveFingerprint String? @db.VarChar(64)
+  receiveReference String? @db.VarChar(160)
+  cancelledById String?
+  cancelledAt DateTime?
+  cancelKey String? @db.VarChar(128)
+  cancelFingerprint String? @db.VarChar(64)
+  cancelReason String? @db.VarChar(1000)
+  cafe Cafe @relation(fields:[cafeId],references:[id],onDelete:Restrict,onUpdate:Restrict)
+  fromAccount MoneyAccount @relation("MoneyTransferFrom",fields:[cafeId,fromAccountId],references:[cafeId,id],onDelete:Restrict,onUpdate:Restrict)
+  toAccount MoneyAccount @relation("MoneyTransferTo",fields:[cafeId,toAccountId],references:[cafeId,id],onDelete:Restrict,onUpdate:Restrict)
+  createdBy User @relation("MoneyTransferCreator",fields:[createdById],references:[id],onDelete:Restrict,onUpdate:Restrict)
+  dispatchedBy User? @relation("MoneyTransferDispatcher",fields:[dispatchedById],references:[id],onDelete:Restrict,onUpdate:Restrict)
+  receivedBy User? @relation("MoneyTransferReceiver",fields:[receivedById],references:[id],onDelete:Restrict,onUpdate:Restrict)
+  cancelledBy User? @relation("MoneyTransferCanceller",fields:[cancelledById],references:[id],onDelete:Restrict,onUpdate:Restrict)
+  movements MoneyMovement[]
+  @@unique([cafeId,createdById,creationKey])
+  @@unique([cafeId,id])
+  @@index([cafeId,status,createdAt])
+  @@index([fromAccountId,createdAt])
+  @@index([toAccountId,createdAt])
+}
+model MoneyMovement {
+  id String @id @default(cuid())
+  cafeId String
+  accountId String
+  transferId String?
+  kind MoneyMovementKind
+  signedAmount Decimal @db.Decimal(12,2)
+  occurredAt DateTime
+  actorId String
+  createdAt DateTime @default(now())
+  sourceKey String @unique @db.VarChar(200)
+  openingReference String? @db.VarChar(160)
+  cafe Cafe @relation(fields:[cafeId],references:[id],onDelete:Restrict,onUpdate:Restrict)
+  account MoneyAccount @relation(fields:[cafeId,accountId],references:[cafeId,id],onDelete:Restrict,onUpdate:Restrict)
+  transfer MoneyTransfer? @relation(fields:[cafeId,transferId],references:[cafeId,id],onDelete:Restrict,onUpdate:Restrict)
+  actor User @relation(fields:[actorId],references:[id],onDelete:Restrict,onUpdate:Restrict)
+  @@index([accountId,occurredAt,id])
+  @@index([cafeId,occurredAt])
 }

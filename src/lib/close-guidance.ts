@@ -5,6 +5,7 @@
 // was notified — there is no notification capability behind these messages, and the wording says so.
 
 import { COUNT_STATUS_LABEL, COUNT_TYPE_LABEL, type CountStatus, type CountType } from "../components/stock-counts/stock-count-labels";
+import { handoverBlockMessage } from "@/components/handovers/workflow-state";
 
 export type GuidanceBlocker = { code: string; count: number; messageAr: string; ids: string[]; refs?: string[] };
 
@@ -317,12 +318,10 @@ export function countAction(branchId: string, handoverId: string, view: Handover
   return { label: "متابعة التسليم", href };
 }
 
-export function handoverPhaseLabel(status: string | null | undefined): { label: string; complete: boolean } {
+export function handoverPhaseLabel(status: string | null | undefined, options?: { countStatus?: string | null; outgoingName?: string; outgoingShiftNumber?: number | null }): { label: string; complete: boolean } {
   if (status === "ACCEPTED" || status === "COMPLETED") return { label: "التسليم اكتمل", complete: true };
-  if (status === "REJECTED") return { label: "التسليم اترفض — محتاج إعادة جرد", complete: false };
-  if (status === "OUTGOING_SUBMITTED" || status === "INCOMING_REVIEW") return { label: "التسليم اتقدّم — مستني المستلم", complete: false };
   if (status === "MANAGER_EXCEPTION") return { label: "التسليم عند المدير (استثناء)", complete: false };
-  return { label: "التسليم لم يكتمل — الجرد لسه مطلوب", complete: false };
+  return { label: handoverBlockMessage({ status: status ?? "DRAFT", countStatus: options?.countStatus ?? null, outgoingName: options?.outgoingName || "المُسلّم", outgoingShiftNumber: options?.outgoingShiftNumber ?? null }), complete: false };
 }
 
 // ── Browser-tab storage scope ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────

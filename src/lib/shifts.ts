@@ -1,3 +1,4 @@
+import { drawerExpected, expenseAggregate } from "@/lib/expense-rules";
 import { decimal, money, sumMoney } from "@/lib/money";
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
@@ -44,7 +45,7 @@ export function redactBlindCount<T extends {
     "expectedCashAmount", "cashDifference", "cashWithinTolerance",
     "cashToleranceAmount", "cashVarianceCaseId", "totalSales",
     "totalCashSales", "totalCardSales", "totalWalletSales",
-    "totalDiscounts", "totalRefunds", "orderCount",
+    "totalDiscounts", "totalRefunds", "totalCashPayouts", "totalExpensePayouts", "totalExpenseReturns", "orderCount",
     "tenderReconciliations",
   ]) {
     delete visible[field];
@@ -90,7 +91,7 @@ export async function requireOperationalShift(
 // orders those payments belong to). Called after every payment / refund so
 // the drawer numbers are always consistent — cheap and idempotent.
 //
-//   expectedCash = openingCash + net cash movements
+//   expectedCash = openingCash + net cash movements - supplier cash payouts
 //   totalSales   = cash + card + wallet (PAID only)
 //
 // THIS IS THE AUTHORITATIVE EXPECTED-CASH ANSWER, and the only one. The cash
@@ -179,8 +180,21 @@ export async function recomputeShiftTotals(
   // subtracts once, above. Subtracting `refunds` here as well would remove the
   // same reversal twice and report a shortage the cashier never caused
   // (SHIFT-001).
+  // Supplier payments handed out of this drawer leave it without being a
+  // refund or a sale: they lower expected cash and nothing else.
+  const payouts = await client.purchasePayment.aggregate({
+    where: { shiftId, fundingSource: "DRAWER" },
+    _sum: { amount: true },
+  });
+  const cashPayouts = money(payouts._sum.amount ?? 0);
   const totalSales = money(cash.plus(card).plus(wallet));
-  const expectedCash = money(decimal(shift.openingCashAmount).plus(cash));
+  const [expensePayouts, expenseReturns] = await Promise.all([
+    client.operatingExpense.aggregate({ where: { shiftId }, _sum: { amount: true } }),
+    client.operatingExpenseReturn.aggregate({ where: { shiftId }, _sum: { amount: true } }),
+  ]);
+  const totalExpensePayouts = expenseAggregate(expensePayouts._sum.amount ?? 0);
+  const totalExpenseReturns = expenseAggregate(expenseReturns._sum.amount ?? 0);
+  const expectedCash = drawerExpected({ opening: shift.openingCashAmount, netCollections: cash, supplierPayouts: cashPayouts, expensePayouts: totalExpensePayouts, expenseReturns: totalExpenseReturns });
 
   return client.shift.update({
     where: { id: shiftId },
@@ -190,6 +204,8 @@ export async function recomputeShiftTotals(
       totalWalletSales: round2(wallet),
       totalSales,
       totalRefunds: round2(refunds),
+      totalCashPayouts: cashPayouts,
+      totalExpensePayouts, totalExpenseReturns,
       totalDiscounts: round2(discounts),
       expectedCashAmount: expectedCash,
       orderCount: paidOrderIds.size,

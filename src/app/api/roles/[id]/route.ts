@@ -72,6 +72,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     }
 
     await db.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "CafeRole" WHERE "id" = ${id} FOR NO KEY UPDATE`;
       if (Object.keys(meta).length > 0) {
         await tx.cafeRole.update({ where: { id }, data: meta });
       }

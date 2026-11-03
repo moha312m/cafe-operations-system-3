@@ -184,8 +184,10 @@ describe("COUNT-012 count confirmation", () => {
 
     const r = await confirm(fx.manager.email, s.id, `${fx.marker}-unsettled`);
     assert.equal(r.status, 409, `expected 409, got ${r.status}: ${r.text}`);
+    // The refusal names the item (the 2026-10-30 handover display correction
+    // replaced raw line ids with item names; COUNT-018 was updated then).
     assert.ok(
-      r.text.includes(lineId),
+      r.text.includes(it.name),
       "a refusal that does not say which line is unsettled leaves nobody able to act on it"
     );
     const still = await db.stockCountSession.findUniqueOrThrow({ where: { id: s.id } });

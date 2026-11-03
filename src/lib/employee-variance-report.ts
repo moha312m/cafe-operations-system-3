@@ -78,7 +78,7 @@ function project(c:Case):EmployeeVarianceRow {
     actual:stock?num(s?.effectiveCountedQuantity??s?.countedQuantity):t?num(t.actualAmount):o?num(o.actualAmount):num(shift?.actualCashAmount),
     variance:stock?num(c.quantityVariance):num(c.amountVariance),amountVariance:num(c.amountVariance),
     financialImpact:c.financialImpactAvailable?num(c.financialImpact):null,item:s?.inventoryItem??null,unit:s?.unit??null,
-    reason:stock?(s?.reasonNote??null):t?t.reasonNote:o?(o.note??o.reasonCode.label):shift?.cashReasonNote??null,
+    reason:stock?(s?.reasonNote??null):t?t.reasonNote:o?(o.note??o.reasonCode?.label??null):shift?.cashReasonNote??null,
     shift:shift?{id:shift.id,number:shift.shiftNumber,openedAt:shift.openedAt.toISOString()}:null,branch:c.branch,handoverId:c.acceptedHandover?.id??null};
 }
 

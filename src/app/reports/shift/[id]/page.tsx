@@ -1,7 +1,9 @@
 import { db } from "@/lib/db";
-import { getSession } from "@/lib/auth";
+import { requireActiveSession, ApiError } from "@/lib/api";
 import { resolvePermissions } from "@/lib/perms/effective";
-import { buildShiftReport, type ShiftReport } from "@/lib/shift-report";
+import { buildShiftMaterialsReport, buildShiftReport, type ShiftMaterialsReport, type ShiftReport } from "@/lib/shift-report";
+import { UNIT_LABEL } from "@/lib/inventory";
+import { CADENCE_LABEL, materialsDecisionLabel } from "@/lib/materials-labels";
 import { ShiftReportActions } from "@/components/reports/shift-report-actions";
 
 export const dynamic = "force-dynamic";
@@ -22,6 +24,20 @@ function fmt(n: number | null, currency: string) {
   if (n === null) return "—";
   return `${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currency}`;
 }
+function qty(n: number | null) {
+  if (n === null) return "—";
+  return n.toLocaleString("en-US", { maximumFractionDigits: 3 });
+}
+function signedQty(n: number | null) {
+  if (n === null) return "—";
+  return `${n > 0 ? "+" : ""}${qty(n)}`;
+}
+const EVIDENCE_LABEL: Record<string, string> = {
+  SYSTEM_MATCH: "مطابق — تحقّق منه النظام",
+  OUTGOING_DECLARED: "مسجّل كما عدّه المُسلِّم (بفروق)",
+  MANAGER_CONFIRMED: "معتمد من مسؤول",
+  PENDING: "لسه ما اتسلّمش",
+};
 function fmtDate(iso: string | null) {
   if (!iso) return "—";
   return new Date(iso).toLocaleString("ar-EG", {
@@ -55,13 +71,19 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-// تقرير قفل الشيفت — printable, READ-ONLY. Same reach as the shift detail:
-// this café, this branch for branch-pinned staff, and only your own shift
-// without `shifts.view_reports`.
+// Printable, READ-ONLY shift close report. Restricted to this cafe,
+// this branch for branch-pinned staff, and `shifts.view_reports` permission.
 export default async function ShiftReportPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const session = await getSession();
-  if (!session) return <Message text="سجّل دخولك الأول" />;
+  // The full guard, not the bare cookie: a deactivated, revoked or moved
+  // account must lose its shift cash reports with the rest of its access.
+  let session;
+  try {
+    session = await requireActiveSession();
+  } catch (error) {
+    if (error instanceof ApiError && (error.status === 401 || error.status === 403)) return <Message text={error.message} />;
+    throw error;
+  }
 
   const shift = await db.shift.findFirst({
     where: { id, cafeId: session.cafeId ?? "" },
@@ -71,10 +93,13 @@ export default async function ShiftReportPage({ params }: { params: Promise<{ id
   if (session.branchId && shift.branchId !== session.branchId) return <Message text="الشيفت تبع فرع تاني" />;
   const { keys } = await resolvePermissions(session);
   const oversight = keys.has("shifts.view_reports");
-  if (!oversight && shift.cashierId !== session.id) return <Message text="ليس لديك صلاحية لعرض التقرير" />;
+  if (!oversight) return <Message text="ليس لديك صلاحية لعرض التقرير المالي" />;
 
   const report: ShiftReport | null = await buildShiftReport(id, session.cafeId ?? "");
   if (!report) return <Message text="التقرير بيجهز بعد قفل الشيفت" />;
+  // Expected quantities, differences and cost are oversight's, as the count's
+  // own blindness rules have it.
+  const materials: ShiftMaterialsReport = await buildShiftMaterialsReport(id, session.cafeId ?? "", { withFigures: oversight });
   const whatsapp = oversight
     ? await db.whatsAppIntegration.findUnique({ where: { cafeId: session.cafeId ?? "" }, select: { enabled: true } })
     : null;
@@ -110,6 +135,9 @@ export default async function ShiftReportPage({ params }: { params: Promise<{ id
 
         <Section title="💵 النقدية">
           <Row label="رصيد الافتتاح" value={fmt(report.cash.opening, c)} />
+          <Row label="دفعات الموردين من الدرج" value={fmt(report.cash.supplierPayouts ?? 0, c)} />
+          <Row label="مصروفات تشغيلية من الدرج" value={fmt(report.cash.expensePayouts ?? 0, c)} />
+          <Row label="نقد مصروفات مردود" value={fmt(report.cash.expenseReturns ?? 0, c)} />
           <Row label="المتوقع في الدرج" value={fmt(report.cash.expected, c)} />
           <Row label="الفعلي (اتعد)" value={fmt(report.cash.actual, c)} />
           <Row
@@ -118,7 +146,8 @@ export default async function ShiftReportPage({ params }: { params: Promise<{ id
             strong
             color={diffColor}
           />
-          {report.cash.reasonNote && <p style={{ margin: "4px 0 0", color: "#52525b" }}>السبب: {report.cash.reasonNote}</p>}
+          {report.cash.reasonNote ? <p style={{ margin: "4px 0 0", color: "#52525b" }}>ملاحظة: {report.cash.reasonNote}</p>
+            : diff !== null && diff !== 0 && <p style={{ margin: "4px 0 0", color: "#a16207" }}>بدون ملاحظة — للمراجعة</p>}
         </Section>
 
         {report.tenders.length > 0 && (
@@ -126,12 +155,15 @@ export default async function ShiftReportPage({ params }: { params: Promise<{ id
             {report.tenders.map((t) => (
               <div key={t.method}>
                 <Row label={`${METHOD_LABEL[t.method] ?? t.method}: متوقع ${fmt(t.expected, c)}`}
-                  value={`فعلي ${fmt(t.actual, c)} (فرق ${fmt(t.variance, c)})`} />
-                {t.reasonNote && <p style={{ margin: "4px 0 0", color: "#52525b" }}>السبب: {t.reasonNote}</p>}
+                  value={`فعلي ${fmt(t.actual, c)} (فرق ${t.variance === null ? "—" : `${t.variance > 0 ? "+" : ""}${fmt(t.variance, c)}`})`} />
+                {t.reasonNote ? <p style={{ margin: "4px 0 0", color: "#52525b" }}>ملاحظة: {t.reasonNote}</p>
+                  : t.variance !== null && t.variance !== 0 && <p style={{ margin: "4px 0 0", color: "#a16207" }}>بدون ملاحظة — للمراجعة</p>}
               </div>
             ))}
           </Section>
         )}
+
+        <MaterialsSection materials={materials} />
 
         <Section title="🧾 المبيعات">
           <Row label="إجمالي المبيعات" value={fmt(report.sales.total, c)} strong />
@@ -169,5 +201,56 @@ export default async function ShiftReportPage({ params }: { params: Promise<{ id
         )}
       </article>
     </main>
+  );
+}
+
+// HND-UX-004. Materials on the same report: the schedule's answer, the
+// outgoing count as recorded, receiving, and the period it covers.
+function MaterialsSection({ materials }: { materials: ShiftMaterialsReport }) {
+  const { decision, handover, lines, coveredShifts, withFigures } = materials;
+  if (!decision && !handover) return null;
+  const period = decision?.periodFrom ? (decision.periodFrom === decision.periodTo ? decision.periodTo : `${decision.periodFrom} ← ${decision.periodTo}`) : null;
+  const cell = { padding: "4px 6px", borderBottom: "1px solid #f4f4f5", textAlign: "start" as const, verticalAlign: "top" as const };
+  return (
+    <Section title="📦 جرد الخامات">
+      <div data-testid="report-materials">
+        {decision && <Row label="الجدول" value={decision.cadence === "EVERY_SHIFT" ? materialsDecisionLabel(decision) : `${materialsDecisionLabel(decision)} · ${CADENCE_LABEL[decision.cadence] ?? decision.cadence}`} />}
+        {period && <Row label="الفترة" value={period} />}
+        {decision && !decision.due && decision.nextDueAt && <Row label="الجرد الجاي" value={fmtDate(decision.nextDueAt)} />}
+        {handover && <>
+          <Row label="حالة التسليم" value={HANDOVER_LABEL[handover.status] ?? handover.status} />
+          <Row label="المُسلِّم" value={`${handover.outgoingName}${handover.submittedAt ? ` · ${fmtDate(handover.submittedAt)}` : ""}`} />
+          <Row label="المستلم" value={handover.incomingName ? `${handover.incomingName}${handover.acceptedAt ? ` · ${fmtDate(handover.acceptedAt)}` : ""}` : "لسه ما استلمش"} />
+          {handover.evidence && <Row label="دليل الجرد" value={EVIDENCE_LABEL[handover.evidence] ?? handover.evidence} />}
+          {handover.outgoingNote && <p style={{ margin: "4px 0", color: "#52525b" }}>ملاحظة المُسلِّم: {handover.outgoingNote}</p>}
+        </>}
+        {lines.length > 0 && <div style={{ overflowX: "auto", marginTop: 6 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead><tr style={{ color: "#52525b" }}>
+              <th style={cell}>الصنف</th><th style={cell}>الوحدة</th>
+              {withFigures && <th style={cell}>المتوقع</th>}<th style={cell}>عدّ المُسلِّم</th>{withFigures && <th style={cell}>الفرق</th>}
+              <th style={cell}>عدّ المستلم</th>{withFigures && <th style={cell}>فرق الاستلام</th>}{withFigures && <th style={cell}>التكلفة</th>}
+            </tr></thead>
+            <tbody>{lines.map((l) => <tr key={l.lineId} data-testid="report-materials-line">
+              <td style={cell}>{l.name}{l.note && <div style={{ color: "#52525b" }}>{l.note}</div>}</td>
+              <td style={cell}>{UNIT_LABEL[l.unit as keyof typeof UNIT_LABEL] ?? l.unit}</td>
+              {withFigures && <td style={cell} dir="ltr">{qty(l.expected)}</td>}
+              <td style={cell} dir="ltr">{l.counted === null ? "لم يُعدّ" : qty(l.counted)}</td>
+              {withFigures && <td style={{ ...cell, color: l.difference ? "#a16207" : undefined }} dir="ltr">{signedQty(l.difference)}</td>}
+              <td style={cell}>{!l.receiving ? "—" : l.receiving.decision === "DISPUTED" ? "مرفوض" : l.receiving.incomingCounted === null ? "بدون عدّ مستقل" : <span dir="ltr">{qty(l.receiving.incomingCounted)}</span>}</td>
+              {withFigures && <td style={cell} dir="ltr">{l.receiving && l.receiving.incomingCounted !== null ? signedQty(l.receiving.difference) : "—"}</td>}
+              {withFigures && <td style={cell}>{l.costAvailable && l.costImpact !== null ? <span dir="ltr">{qty(l.costImpact)}</span> : l.difference ? "غير متاحة" : "—"}</td>}
+            </tr>)}</tbody>
+          </table>
+        </div>}
+        {coveredShifts.length > 1 && <div style={{ marginTop: 6 }}>
+          <p style={{ margin: "4px 0", fontWeight: 600 }}>الفترة دي بتغطي {coveredShifts.length} شيفتات:</p>
+          <p style={{ margin: 0, color: "#52525b" }}>{coveredShifts.map((s) => `#${s.shiftNumber} ${s.cashierName}`).join("، ")}</p>
+        </div>}
+        {(lines.some((l) => l.difference) || lines.some((l) => l.receiving?.difference)) && <p style={{ margin: "6px 0 0", color: "#52525b" }}>
+          {coveredShifts.length > 1 ? "الفرق للفترة كلها، والمسؤولية غير محددة." : "المسؤولية غير محددة — تسجيل الفرق مش خصم."}
+        </p>}
+      </div>
+    </Section>
   );
 }

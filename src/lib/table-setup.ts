@@ -1,5 +1,6 @@
 // ── Default table provisioning ───────────────────────────────────────
-import { db } from "@/lib/db";
+import { protectedTransaction } from "@/lib/protected-transaction";
+import { lockBranchAllocator } from "@/lib/transaction-locks";
 
 export const DEFAULT_TABLE_COUNT = 15;
 
@@ -11,7 +12,9 @@ export async function ensureDefaultTables(
   branchId: string,
   count = DEFAULT_TABLE_COUNT
 ): Promise<number> {
-  const existing = await db.cafeTable.count({ where: { branchId } });
+  return protectedTransaction(async tx => {
+  await lockBranchAllocator(tx, branchId);
+  const existing = await tx.cafeTable.count({ where: { cafeId, branchId } });
   if (existing > 0) return 0;
 
   const rows = Array.from({ length: count }, (_, i) => {
@@ -25,6 +28,7 @@ export async function ensureDefaultTables(
     };
   });
   // skipDuplicates guards against a race where another request seeds first.
-  const res = await db.cafeTable.createMany({ data: rows, skipDuplicates: true });
+  const res = await tx.cafeTable.createMany({ data: rows, skipDuplicates: true });
   return res.count;
+  }, { cafeId, branchId });
 }

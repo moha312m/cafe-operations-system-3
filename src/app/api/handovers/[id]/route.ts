@@ -32,12 +32,20 @@ export async function GET(request: NextRequest, { params }: Params) {
       allowOutgoingDraft: true,
       allowCompletedRead: true,
     });
-    const context = await db.handoverSession.findUniqueOrThrow({where:{id},select:{incomingShift:{select:{id:true,shiftNumber:true,cashierId:true,cashier:{select:{name:true}}}},branch:{select:{name:true}},stockAcknowledgements:{select:{stockCountLineId:true,decision:true}},outgoingUser:{select:{name:true}},incomingUser:{select:{name:true}},cashVarianceAmount:true,cashVerifiedAt:true,
+    const context = await db.handoverSession.findUniqueOrThrow({where:{id},select:{incomingShift:{select:{id:true,shiftNumber:true,cashierId:true,cashier:{select:{name:true}}}},branch:{select:{name:true}},outgoingUser:{select:{name:true}},incomingUser:{select:{name:true}},cashVarianceAmount:true,cashVerifiedAt:true,
       outgoingShift:{select:{id:true,shiftNumber:true,cashDifference:true,cashReasonNote:true,tenderReconciliations:{select:{method:true,varianceAmount:true,reasonNote:true}}}}}});
+    // Only the round the handover now points at. A superseded round keeps its signatures as history,
+    // but a dispute that was already sent back for recount must not colour or block the replacement.
+    // The figures are the receiver's own count and what was handed over; they exist only once that
+    // line was acknowledged, which is also when the outgoing figures are disclosed.
+    const acknowledgements = handover.count === null ? [] : await db.handoverStockAcknowledgement.findMany({
+      where: { handoverId: id, line: { sessionId: handover.count.sessionId } },
+      select: { stockCountLineId: true, decision: true, incomingCountedQuantity: true, handedOverQuantity: true, varianceQuantity: true },
+    });
     const incoming = handover.status === "COMPLETED" ? [] : await db.shift.findMany({ where: { cafeId, branchId: handover.branchId, status: "OPEN", custodyGateReason: "AWAITING_CUSTODY_TRANSFER" }, select: { id: true, shiftNumber: true, cashierId: true, cashier: { select: { name: true } } }, take: 2 });
     const { keys } = await resolvePermissions(session);
     const overview = await handoverOverview(id, cafeId, handover.branchId, keys);
-    return NextResponse.json({ handover:{...handover,overview,workflow:{branchName:context.branch.name,acknowledgements:context.stockAcknowledgements,incomingShift:context.incomingShift ?? (incoming.length === 1 ? incoming[0] : null),incomingAmbiguous:context.incomingShift === null && incoming.length > 1},financialSummary:{outgoingName:context.outgoingUser.name,incomingName:context.incomingUser?.name??null,
+    return NextResponse.json({ handover:{...handover,overview,workflow:{branchName:context.branch.name,acknowledgements,incomingShift:context.incomingShift ?? (incoming.length === 1 ? incoming[0] : null),incomingAmbiguous:context.incomingShift === null && incoming.length > 1},financialSummary:{outgoingName:context.outgoingUser.name,incomingName:context.incomingUser?.name??null,
       shiftId:context.outgoingShift.id,shiftNumber:context.outgoingShift.shiftNumber,cashVariance:keys.has("shifts.view_reports") ? context.outgoingShift.cashDifference : null,cashReason:keys.has("shifts.view_reports") ? context.outgoingShift.cashReasonNote : null,
       tenders:keys.has("shifts.view_reports") ? context.outgoingShift.tenderReconciliations : [],cashReceiptVariance:keys.has("shifts.view_reports") ? context.cashVarianceAmount : null,cashVerifiedAt:context.cashVerifiedAt}} });
   } catch (error) {

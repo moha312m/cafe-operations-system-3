@@ -38,9 +38,15 @@ export function HandoverActionBar({
   handoverId,
   onDone,
   allowReceive = true,
+  hasIncomingShift = true,
+  stockReviewReady = true,
+  target = "SHIFT_TO_SHIFT",
 }: {
   handoverId: string;
   allowReceive?: boolean;
+  hasIncomingShift?: boolean;
+  stockReviewReady?: boolean;
+  target?: string | null;
   onDone: () => void | Promise<void>;
 }) {
   const { canKey } = useApp();
@@ -147,12 +153,12 @@ export function HandoverActionBar({
 
   return (
     <>
-      {((canKey("handover.accept") && allowReceive) || canKey("handover.exception")) && <div className="mb-3 grid gap-3 rounded-lg border p-3 sm:grid-cols-3">
+      {((canKey("handover.accept") && allowReceive) || (canKey("handover.exception") && hasIncomingShift && stockReviewReady && target !== "BRANCH_CUSTODY")) && <div className="mb-3 grid gap-3 rounded-lg border p-3 sm:grid-cols-3">
         <label className="text-sm">النقدية اللي عدّيتها عند الاستلام<Input aria-label="النقدية المستلمة" type="number" min="0" step="0.01" value={countedCash} onChange={e=>setCountedCash(e.target.value)} /></label>
         <ReasonCodeSelect domain="HANDOVER" value={cashReason} onChange={setCashReason} label="سبب فرق النقدية لو موجود" optional />
-        <label className="text-sm">توضيح فرق الاستلام<Textarea value={cashNote} onChange={e=>setCashNote(e.target.value)} /></label>
+        <label className="text-sm">ملاحظة فرق الاستلام (اختياري)<Textarea value={cashNote} onChange={e=>setCashNote(e.target.value)} /></label>
       </div>}
-      <div className="flex flex-wrap gap-2">
+      <div className="sticky bottom-0 z-10 flex flex-wrap gap-2 rounded-lg border bg-background/95 p-2 backdrop-blur" data-testid="handover-sticky-actions">
         {canKey("handover.accept") && allowReceive && (
           <Button size="sm" disabled={busy||countedCash.trim()===""||!Number.isFinite(Number(countedCash))||Number(countedCash)<0} onClick={() => setConfirmAccept(true)} data-testid="handover-accept">
             تأكيد استلام عهدة الشيفت
@@ -171,7 +177,8 @@ export function HandoverActionBar({
         )}
         {canKey("handover.exception") && (
           <>
-            <Button
+            {/* The server refuses an override on a BRANCH_CUSTODY target; that path is the branch-custody action. */}
+            {target !== "BRANCH_CUSTODY" && <Button
               size="sm"
               variant="outline"
               disabled={busy}
@@ -179,7 +186,7 @@ export function HandoverActionBar({
               data-testid="handover-override-accept"
             >
               استلام استثنائي
-            </Button>
+            </Button>}
             <Button
               size="sm"
               variant="ghost"
@@ -206,6 +213,13 @@ export function HandoverActionBar({
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-3 text-sm">
+            {open === "override" && (!hasIncomingShift || !stockReviewReady) && (
+              <p role="alert" data-testid="handover-override-prerequisite-warning" className="rounded-lg border border-amber-500/50 bg-amber-500/10 p-2.5 text-xs font-medium text-amber-950 dark:text-amber-100">
+                {!hasIncomingShift
+                  ? "تنبيه: لا يوجد شيفت مستلم مفتوح حاليًا. افتح الشيفت الجديد أولًا واطلب من المستلم توقيع ورقة الاستلام قبل استخدام الاستلام الاستثنائي."
+                  : "تنبيه: يجب على المستلم تسجيل وتأكيد قرارات ورقة استلام المخزون للسطور المعدودة أولًا قبل تنفيذ الاستلام الاستثنائي."}
+              </p>
+            )}
             {open === "override" && (
               <div className="space-y-2">
                 <Label>نوع الاستثناء</Label>
@@ -238,7 +252,7 @@ export function HandoverActionBar({
               disabled={
                 busy ||
                 (needsReason && reasonCodeId.trim() === "") ||
-                (open === "override" && (note.trim() === "" || countedCash.trim() === "" || !Number.isFinite(Number(countedCash)) || Number(countedCash) < 0)) ||
+                (open === "override" && (!hasIncomingShift || !stockReviewReady || note.trim() === "" || countedCash.trim() === "" || !Number.isFinite(Number(countedCash)) || Number(countedCash) < 0)) ||
                 // Half an omission authorisation is not a smaller
                 // authorisation. Rather than quietly dropping whichever
                 // field was filled in, the pair has to be completed or

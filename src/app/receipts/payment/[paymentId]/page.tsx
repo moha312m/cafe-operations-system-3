@@ -1,5 +1,5 @@
 import { db } from "@/lib/db";
-import { getSession } from "@/lib/auth";
+import { requireActiveSession, ApiError } from "@/lib/api";
 import { resolvePermissions } from "@/lib/perms/effective";
 import { audit } from "@/lib/audit";
 import { PrintActions } from "@/components/receipts/print-actions";
@@ -82,8 +82,15 @@ export default async function ReceiptPage({
   searchParams: Promise<{ print?: string; reprint?: string; scope?: string; embedded?: string }>;
 }) {
   const [{ paymentId }, sp] = await Promise.all([params, searchParams]);
-  const session = await getSession();
-  if (!session) return <Message text="سجّل دخولك الأول" />;
+  // The full guard, not the bare cookie: a deactivated, revoked or moved
+  // account must lose its receipts with the rest of its access.
+  let session;
+  try {
+    session = await requireActiveSession();
+  } catch (error) {
+    if (error instanceof ApiError && (error.status === 401 || error.status === 403)) return <Message text={error.message} />;
+    throw error;
+  }
 
   const { keys } = await resolvePermissions(session);
   const isReprint = sp.reprint === "1";

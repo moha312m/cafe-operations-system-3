@@ -170,12 +170,10 @@ export function resolveTenderSettlement(
   const variance = tenderVariance(actual, expected);
   const trimmed = (input?.reason ?? "").trim();
 
-  if (variance !== 0 && !trimmed) {
-    throw new ApiError(
-      400,
-      `لازم تكتب سبب فرق تسوية ${CHANNEL_LABEL[method]} قبل ما تقفل الشيفت`
-    );
-  }
+  // HND-UX-004: a difference is recorded and the close continues. A missing
+  // explanation is not a refusal any more — the variance case this settlement
+  // opens stays OPEN, which is the honest "needs later review" — and nothing
+  // is invented in its place.
 
   return {
     method,

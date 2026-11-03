@@ -203,7 +203,10 @@ describe("COUNT-004 count line schema and dispositions", () => {
     await db.inventoryItem.delete({ where: { id: spareItem.id } });
   });
 
-  test("exactly three dispositions are terminal", async () => {
+  // HND-UX-004 added VARIANCE_RECORDED: an outgoing handover difference
+  // recorded as observed, with no manager acceptance. It is the fourth
+  // terminal state; the three earlier ones are unchanged.
+  test("exactly four dispositions are terminal", async () => {
     const all = await db.$queryRaw<{ label: string }[]>`
       SELECT e.enumlabel AS label FROM pg_enum e
         JOIN pg_type t ON t.oid = e.enumtypid
@@ -213,10 +216,12 @@ describe("COUNT-004 count line schema and dispositions", () => {
     assert.deepEqual(values, [
       "PENDING", "COUNTED", "WITHIN_TOLERANCE", "OUTSIDE_TOLERANCE",
       "RECOUNT_REQUIRED", "RESOLVED_WITHIN_TOLERANCE", "VARIANCE_CONFIRMED",
+      "VARIANCE_RECORDED",
     ]);
 
     assert.deepEqual([...TERMINAL_DISPOSITIONS], [
       "WITHIN_TOLERANCE", "RESOLVED_WITHIN_TOLERANCE", "VARIANCE_CONFIRMED",
+      "VARIANCE_RECORDED",
     ]);
     for (const d of values) {
       assert.equal(

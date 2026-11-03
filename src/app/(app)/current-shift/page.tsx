@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+import { mayExecuteExpense } from "@/lib/expense-rules";
 import { useCallback, useEffect, useState } from "react";
 import { api, money } from "@/lib/client";
 import { t } from "@/lib/i18n";
@@ -12,7 +14,7 @@ import { PageHeader, StatCard } from "@/components/cafe/ui";
 // cards from that — no separate fetch, so there's no refetch/re-render loop
 // and the layout stays stable.
 export default function CurrentShiftPage() {
-  const { cafe, user, canKey } = useApp();
+  const { cafe, user, canKey, permKeys } = useApp();
   const currency = cafe?.currency ?? "EGP";
   const [selectedBranchId, setBranchId] = useState<string>(user.branchId ?? "");
   const canChooseBranch = user.role === "CAFE_OWNER" && !user.branchId;
@@ -56,6 +58,7 @@ export default function CurrentShiftPage() {
   return (
     <div className="mx-auto max-w-5xl">
       <PageHeader title={t.shifts.current} subtitle={t.shifts.details} />
+      {shift && mayExecuteExpense(user.role, new Set(permKeys)) && canKey("expenses.view") && <Link href="/expenses" className="mb-3 inline-block rounded-lg border px-4 py-2">تسجيل مصروف من الدرج</Link>}
 
       {!canChooseBranch && !branchId ? (
         <p role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900">

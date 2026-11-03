@@ -18,29 +18,52 @@ import { getInventoryEnforcementMode } from "@/lib/inventory-policy";
 import { computeEarnedPoints } from "@/lib/loyalty-calc";
 
 import { withIdempotency, publicQrRequestScope } from "@/lib/idempotency";
+import { createThrottle } from "@/lib/rate-limit";
 
 type Params = { params: Promise<{ branchId: string }> };
 
+// This endpoint needs no login, so nothing else stops a script from filling
+// a branch's approval queue. Every submission counts towards one (branch,
+// origin) pair: sixty inside ten minutes, then a cooldown that starts at
+// thirty seconds and doubles to at most five minutes. The ceiling is loose
+// on purpose — customers on the café's own Wi-Fi share one public address,
+// and a full house ordering from their tables must never hit it.
+// Per-process and in memory — see `@/lib/rate-limit` for what that covers.
+const qrOrderThrottle = createThrottle({
+  threshold: 60,
+  windowMs: 10 * 60_000,
+  baseCooldownMs: 30_000,
+  maxCooldownMs: 5 * 60_000,
+});
 
+/** The caller's origin, as far as a proxied request can tell us. */
+function originOf(request: NextRequest): string {
+  const forwarded = request.headers.get("x-forwarded-for");
+  return (forwarded?.split(",")[0] ?? "").trim() || "unknown";
+}
+
+const TOO_LONG = "النص طويل جدًا";
 
 const qrOrderSchema = z.object({
-  customerName: z.string().trim().min(2, "اكتب اسمك"),
+  customerName: z.string().trim().min(2, "اكتب اسمك").max(80, TOO_LONG),
   customerPhone: z
     .string()
     .trim()
     .regex(/^[0-9+\s-]{6,20}$/, "رقم الموبايل غير صحيح")
     .optional()
     .or(z.literal("")),
-  tableNumber: z.string().trim().optional(),
-  notes: z.string().optional(),
+  // Configured tables cap at 20, but a session opened by a transfer may
+  // carry a longer label, so this only bounds the input.
+  tableNumber: z.string().trim().max(64, TOO_LONG).optional(),
+  notes: z.string().max(500, TOO_LONG).optional(),
   items: z
     .array(
       z.object({
-        productId: z.string(),
-        variantId: z.string().nullable().optional(),
+        productId: z.string().max(64),
+        variantId: z.string().max(64).nullable().optional(),
         quantity: z.number().int().min(1).max(50),
-        addOnIds: z.array(z.string()).default([]),
-        notes: z.string().optional(),
+        addOnIds: z.array(z.string().max(64)).max(20).default([]),
+        notes: z.string().max(200, TOO_LONG).optional(),
       })
     )
     .min(1, "من فضلك أضف صنف واحد على الأقل")
@@ -53,6 +76,18 @@ const qrOrderSchema = z.object({
 export async function POST(request: NextRequest, { params }: Params) {
   try {
     const { branchId } = await params;
+    const throttleKey = `${branchId}|${originOf(request)}`;
+    // The throttle counts "failures"; here every submission is one. The
+    // submission that crosses the threshold is refused too, and one arriving
+    // during a cooldown is not counted, so it cannot lengthen it.
+    let verdict = qrOrderThrottle.check(throttleKey);
+    if (!verdict.limited) verdict = qrOrderThrottle.recordFailure(throttleKey);
+    if (verdict.limited) {
+      return NextResponse.json(
+        { error: "طلبات كتير في وقت قصير — استنى شوية وجرّب تاني" },
+        { status: 429, headers: { "Retry-After": String(Math.ceil(verdict.retryAfterMs / 1000)) } }
+      );
+    }
     const data = qrOrderSchema.parse(await request.json());
 
     return await withIdempotency(request, (tx) => publicQrRequestScope(tx, branchId), data, async (tx) => {

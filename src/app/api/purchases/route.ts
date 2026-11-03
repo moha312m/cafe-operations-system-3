@@ -5,8 +5,9 @@ import {
   requireKey, resolveCafeId, resolveBranchId, handleApiError, ApiError, requireFeature,
 } from "@/lib/api";
 import { audit } from "@/lib/audit";
-import { round2, paymentStatusFor } from "@/lib/purchases";
+import { paymentStatusFor, fundingMethodError } from "@/lib/purchases";
 import type { Prisma } from "@prisma/client";
+import { PurchaseArithmeticError, purchaseLine, purchaseSubtotal, purchaseTotals } from "@/lib/purchase-arithmetic";
 
 // GET /api/purchases — invoice list (+ summary cards). Filters: date, supplier,
 // branch, paymentStatus, status.
@@ -87,8 +88,8 @@ export async function GET(request: NextRequest) {
 
 const itemSchema = z.object({
   inventoryItemId: z.string(),
-  quantity: z.number().positive("الكمية يجب أن تكون أكبر من صفر"),
-  unitCost: z.number().min(0),
+  quantity: z.number({ error: "الكمية يجب أن تكون رقمًا محدودًا" }).positive("الكمية يجب أن تكون أكبر من صفر"),
+  unitCost: z.number({ error: "تكلفة الوحدة يجب أن تكون رقمًا محدودًا" }).min(0, "تكلفة الوحدة لا يمكن أن تكون سالبة"),
   expiryDate: z.string().optional(),
 });
 const createSchema = z.object({
@@ -97,15 +98,18 @@ const createSchema = z.object({
   supplierId: z.string().nullable().optional(),
   invoiceNumber: z.string().trim().max(60).optional(),
   invoiceDate: z.string().optional(),
-  discountAmount: z.number().min(0).default(0),
-  taxAmount: z.number().min(0).default(0),
+  discountAmount: z.number({ error: "القيمة المالية يجب أن تكون رقمًا محدودًا" }).min(0, "القيمة المالية لا يمكن أن تكون سالبة").default(0),
+  taxAmount: z.number({ error: "القيمة المالية يجب أن تكون رقمًا محدودًا" }).min(0, "القيمة المالية لا يمكن أن تكون سالبة").default(0),
   notes: z.string().max(500).optional(),
   items: z.array(itemSchema).min(1, "أضف صنف واحد على الأقل"),
   // Optional initial supplier payment recorded on creation.
   payment: z
     .object({
-      amount: z.number().positive(),
+      amount: z.number({ error: "مبلغ الدفعة يجب أن يكون رقمًا محدودًا" }).positive("مبلغ الدفعة يجب أن يكون أكبر من صفر"),
       method: z.enum(["CASH", "CARD", "WALLET", "BANK_TRANSFER"]),
+      // A drawer payment needs the shift lock and an Idempotency-Key, so it is
+      // recorded through POST /api/purchases/[id]/payments, never here.
+      fundingSource: z.enum(["SAFE", "BANK"]).optional(),
     })
     .optional(),
 });
@@ -117,6 +121,8 @@ export async function POST(request: NextRequest) {
     await requireFeature(session, "inventoryEnabled");
     await requireFeature(session, "purchasesEnabled");
     const data = createSchema.parse(await request.json());
+    const fundingError = data.payment?.fundingSource ? fundingMethodError(data.payment.fundingSource, data.payment.method) : null;
+    if (fundingError) throw new ApiError(400, fundingError);
     const cafeId = resolveCafeId(session, data.cafeId);
     const branchId = resolveBranchId(session, data.branchId);
 
@@ -134,27 +140,24 @@ export async function POST(request: NextRequest) {
     });
     const invMap = new Map(invItems.map((i) => [i.id, i]));
 
-    let subtotal = 0;
     const itemRows = data.items.map((it) => {
       const inv = invMap.get(it.inventoryItemId);
       if (!inv) throw new ApiError(400, "في خامة مش موجودة في مخزون الفرع");
-      const totalCost = round2(it.quantity * it.unitCost);
-      subtotal = round2(subtotal + totalCost);
+      const line = purchaseLine(it.quantity, it.unitCost);
       return {
         cafeId, branchId,
         inventoryItemId: it.inventoryItemId,
-        quantity: it.quantity,
+        quantity: line.quantity,
         unit: inv.unit, // stock is kept in the item's own unit
-        unitCost: it.unitCost,
-        totalCost,
+        unitCost: line.unitCost,
+        totalCost: line.totalCost,
         expiryDate: it.expiryDate ? new Date(it.expiryDate) : null,
       };
     });
 
-    const total = round2(subtotal - data.discountAmount + data.taxAmount);
-    if (total < 0) throw new ApiError(400, "الخصم أكبر من قيمة الفاتورة");
-    const paid = round2(Math.min(data.payment?.amount ?? 0, total));
-    const remaining = round2(total - paid);
+    const { subtotal, discount, tax, total, paid, remaining } = purchaseTotals(
+      purchaseSubtotal(itemRows), data.discountAmount, data.taxAmount, data.payment?.amount ?? 0, true,
+    );
 
     // Invoice number: manual (unique) or auto per branch.
     let invoiceNumber = data.invoiceNumber?.trim();
@@ -177,8 +180,8 @@ export async function POST(request: NextRequest) {
           invoiceDate: data.invoiceDate ? new Date(data.invoiceDate) : new Date(),
           status: "DRAFT",
           subtotalAmount: subtotal,
-          discountAmount: data.discountAmount,
-          taxAmount: data.taxAmount,
+          discountAmount: discount,
+          taxAmount: tax,
           totalAmount: total,
           paidAmount: paid,
           remainingAmount: remaining,
@@ -193,6 +196,7 @@ export async function POST(request: NextRequest) {
           data: {
             cafeId, branchId, purchaseInvoiceId: created.id,
             amount: paid, method: data.payment.method,
+            fundingSource: data.payment.fundingSource ?? null,
             createdByUserId: session.id,
           },
         });
@@ -209,12 +213,13 @@ export async function POST(request: NextRequest) {
       await audit({
         cafeId, userId: session.id, action: "PURCHASE_PAYMENT_RECORDED",
         entity: "PurchaseInvoice", entityId: invoice.id,
-        details: { branchId, purchaseInvoiceId: invoice.id, amount: paid, method: data.payment?.method },
+        details: { branchId, purchaseInvoiceId: invoice.id, amount: paid, method: data.payment?.method, fundingSource: data.payment?.fundingSource ?? null },
       });
     }
 
     return NextResponse.json({ id: invoice.id, invoiceNumber }, { status: 201 });
   } catch (error) {
+    if (error instanceof PurchaseArithmeticError) return handleApiError(new ApiError(400, error.message));
     return handleApiError(error);
   }
 }

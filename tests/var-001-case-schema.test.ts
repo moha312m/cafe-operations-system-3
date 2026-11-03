@@ -271,8 +271,9 @@ describe("VAR-001 variance case schema", () => {
     });
     assert.equal(c.openingException?.id, openingExceptionId);
     assert.equal(c.openingException?.kind, "CASH_MISMATCH");
+    assert.ok(c.openingException?.reasonCode, "the supplied reason must remain attached");
     assert.equal(
-      c.openingException?.reasonCode.code, `${MARKER}-OPEN`,
+      c.openingException.reasonCode.code, `${MARKER}-OPEN`,
       "and the exception still carries the reason it was authorised with"
     );
   });

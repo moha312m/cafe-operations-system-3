@@ -40,9 +40,10 @@ export function OpeningCashPanel({branchId,onAccepted}:{branchId:string;onAccept
       await load();if(action==='ACCEPT'){setCount('');setNote('');setReason('');setOverride(false);onAccepted?.();}
     }catch(e){if(currentBranch.current===context)setError(e instanceof Error?e.message:'تعذر تسجيل الاستلام');}finally{setBusy(false);}
   }
-  return <section className="space-y-3 rounded-xl border p-4" data-testid="opening-cash-panel">
-    <h2 className="font-semibold">استلام كاش الدرج من شيفت الليل</h2>
-    <p className="text-xs text-muted-foreground">عدّ النقدية بنفسك ثم أكد المبلغ الفعلي. استلام الخامات منفصل عن تأكيد الكاش.</p>
+  // Folded away when nothing is waiting, open by itself when a drawer is.
+  return <details className="rounded-xl border p-4" data-testid="opening-cash-panel" open={!!storage||!!error}>
+    <summary className="cursor-pointer font-semibold">استلام كاش الدرج من شيفت الليل{!storage&&<span className="ms-2 text-xs font-normal text-muted-foreground">— مفيش كاش مستني استلام</span>}</summary>
+    <div className="mt-3 space-y-3"><p className="text-xs text-muted-foreground">عدّ النقدية بنفسك ثم أكد المبلغ الفعلي. استلام الخامات منفصل عن تأكيد الكاش.</p>
     {error&&<p role="alert" className="text-sm text-destructive">{error}</p>}
     {!storage?<p className="text-sm text-muted-foreground">لا يوجد تصريح كاش ليل ينتظر الاستلام في هذا الفرع.</p>:<>
       {storages.length>1&&<select aria-label="الدرج المطلوب استلامه" value={storage.id} onChange={e=>{setSelected(e.target.value);setCount('');setNote('');setReason('');setOverride(false);}} className="h-9 w-full rounded border px-3">{storages.map(s=><option key={s.id} value={s.id}>{s.drawerLabel} — شيفت #{s.outgoingShift.shiftNumber}</option>)}</select>}
@@ -59,5 +60,5 @@ export function OpeningCashPanel({branchId,onAccepted}:{branchId:string;onAccept
       </>}
     </>}
     <div className="flex gap-3"><Button variant="ghost" size="sm" disabled={busy} onClick={load}>تحديث</Button>{canKey('reports.view')&&<Link className="text-sm text-primary underline" href="/reports/opening-receipts">تقرير الاستلامات والعدّ المسجل</Link>}</div>
-  </section>;
+  </div></details>;
 }

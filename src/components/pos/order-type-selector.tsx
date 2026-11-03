@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { t } from "@/lib/i18n";
 import { api } from "@/lib/client";
+import { TONE_SIDE, TONE_SURFACE, type Tone } from "@/components/ui/tone";
 import { TableInvoices } from "./table-invoices";
 import type { OrderType } from "./types";
 
@@ -31,12 +32,13 @@ type SelectorTable = {
   session: { id: string; displayStatus: string; remainingAmount: number; startedAt: string } | null;
 };
 
-const STATUS: Record<string, { card: string; badge: string; label: string }> = {
-  AVAILABLE:          { card: "border-emerald-500/40 hover:border-emerald-500/70", badge: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400", label: "متاحة" },
-  OCCUPIED:           { card: "border-blue-500/50", badge: "bg-blue-500/15 text-blue-700 dark:text-blue-400", label: "مشغولة" },
-  PENDING_COLLECTION: { card: "border-amber-500/50", badge: "bg-amber-500/12 text-amber-700 dark:text-amber-400", label: "في انتظار التحصيل" },
-  PARTIAL:            { card: "border-violet-500/50", badge: "bg-violet-500/12 text-violet-700 dark:text-violet-400", label: "مدفوعة جزئيًا" },
-  READY_TO_CLOSE:     { card: "border-emerald-500/50", badge: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400", label: "جاهزة للقفل" },
+// sage = free / ready to close, tide = occupied, caramel = money still to collect.
+const STATUS: Record<string, { tone: Tone; card: string; badge: string; label: string }> = {
+  AVAILABLE:          { tone: "sage", card: "border-sage-line hover:border-sage", badge: "bg-sage-soft text-sage-ink", label: "متاحة" },
+  OCCUPIED:           { tone: "tide", card: "border-tide-line hover:border-tide", badge: "bg-tide-soft text-tide-ink", label: "مشغولة" },
+  PENDING_COLLECTION: { tone: "caramel", card: "border-caramel-line hover:border-caramel", badge: "bg-caramel-soft text-caramel-ink", label: "في انتظار التحصيل" },
+  PARTIAL:            { tone: "caramel", card: "border-caramel-line hover:border-caramel", badge: "bg-caramel-soft text-caramel-ink", label: "مدفوعة جزئيًا" },
+  READY_TO_CLOSE:     { tone: "sage", card: "border-sage-line hover:border-sage", badge: "bg-sage-soft text-sage-ink", label: "جاهزة للقفل" },
 };
 
 function statusOf(tbl: SelectorTable) {
@@ -74,6 +76,8 @@ export function OrderTypeSelector({
   const [tables, setTables] = useState<SelectorTable[] | null>(null);
   const [allowCustom, setAllowCustom] = useState(false);
   const [manual, setManual] = useState(false);
+  // Once a table is chosen the grid folds into a one-line bar; this reopens it on demand.
+  const [pickerOpen, setPickerOpen] = useState(false);
   // Bumped after an in-place invoice change (payment/close) to refetch the grid.
   const [localReload, setLocalReload] = useState(0);
 
@@ -89,6 +93,8 @@ export function OrderTypeSelector({
   const selected = details.tableNumber.trim();
   const selectedTbl = tables?.find((x) => x.tableNumber === selected) ?? null;
   const selectedSession = selectedTbl?.session ?? null;
+  const showBar = Boolean(selected) && !pickerOpen && !manual && tables !== null;
+  const selectedStatus = selectedTbl ? statusOf(selectedTbl) : null;
 
   return (
     <div className="space-y-3">
@@ -119,6 +125,12 @@ export function OrderTypeSelector({
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <p className="text-xs font-medium text-muted-foreground">اختر الترابيزة</p>
+            {pickerOpen && selected && !manual && (
+              <button type="button" onClick={() => setPickerOpen(false)}
+                className="text-[11px] text-muted-foreground underline hover:text-foreground">
+                إلغاء التغيير
+              </button>
+            )}
             {allowCustom && (
               <button type="button" onClick={() => setManual((v) => !v)}
                 className="text-[11px] text-muted-foreground underline hover:text-foreground">
@@ -127,15 +139,43 @@ export function OrderTypeSelector({
             )}
           </div>
 
-          {/* Direct visible table grid — no modal, no compact row. */}
-          {tables === null ? (
+          {/* Direct visible table grid — no modal. After a pick it folds into a one-line bar. */}
+          {showBar ? (
+            <div
+              data-testid="pos-selected-table-bar"
+              className={cn("flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border p-2.5", selectedStatus ? `${TONE_SURFACE[selectedStatus.tone]} ${TONE_SIDE[selectedStatus.tone]}` : `${TONE_SURFACE.sage} ${TONE_SIDE.sage}`)}
+            >
+              <div className="min-w-0 flex-1 space-y-0.5">
+                <p className="flex flex-wrap items-center gap-2 text-sm font-bold">
+                  <span>🪑 ترابيزة {selected}</span>
+                  {selectedStatus && <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-medium leading-none", selectedStatus.badge)}>{selectedStatus.label}</span>}
+                </p>
+                {selectedSession ? (
+                  <p className="text-[11px] leading-snug">
+                    المتبقي {selectedSession.remainingAmount} ج.م · {sinceLabel(selectedSession.startedAt)} · الطلب الجديد يُضاف على نفس الحساب.{" "}
+                    <Link href="/tables" className="font-semibold underline">عرض الحساب</Link>
+                  </p>
+                ) : (
+                  <p className="text-[11px] leading-snug">سيتم فتح حساب جديد على الترابيزة رقم {selected}</p>
+                )}
+              </div>
+              <button
+                type="button"
+                data-testid="pos-change-table-btn"
+                onClick={() => setPickerOpen(true)}
+                className="min-h-9 shrink-0 rounded-lg border bg-card px-3 text-xs font-semibold text-foreground hover:bg-accent"
+              >
+                تغيير الترابيزة
+              </button>
+            </div>
+          ) : tables === null ? (
             <p className="text-xs text-muted-foreground">جاري تحميل الترابيزات…</p>
           ) : manual ? (
             <Input placeholder={t.pos.tableNumber} dir="ltr" value={details.tableNumber} onChange={(e) => set({ tableNumber: e.target.value })} />
           ) : tables.length === 0 ? (
             <p className="rounded-lg bg-muted/40 px-2.5 py-2 text-xs text-muted-foreground">لا توجد ترابيزات لهذا الفرع</p>
           ) : (
-            <div className="grid max-h-64 grid-cols-2 gap-2 overflow-y-auto pe-0.5 sm:grid-cols-3">
+            <div data-testid="pos-table-grid" className="grid max-h-48 grid-cols-2 gap-2 overflow-y-auto pe-0.5 sm:grid-cols-3">
               {tables.map((tbl) => {
                 const active = tbl.tableNumber === selected;
                 const st = statusOf(tbl);
@@ -143,9 +183,9 @@ export function OrderTypeSelector({
                   <button
                     key={tbl.id}
                     type="button"
-                    onClick={() => set({ tableNumber: tbl.tableNumber })}
+                    onClick={() => { set({ tableNumber: tbl.tableNumber }); setPickerOpen(false); }}
                     className={cn(
-                      "flex aspect-square flex-col items-center justify-center gap-1 rounded-xl border-2 p-2 text-center transition-all",
+                      "flex min-h-14 flex-col items-center justify-center gap-0.5 rounded-xl border-2 px-2.5 py-2 text-center transition-all",
                       active
                         ? "border-primary bg-primary/10 ring-2 ring-primary/40 shadow-sm"
                         : cn("bg-card hover:shadow-sm", st.card)
@@ -173,16 +213,17 @@ export function OrderTypeSelector({
             onChange={(e) => set({ customerName: e.target.value })}
           />
 
-          {selectedSession ? (
-            <p className="rounded-lg bg-blue-500/10 px-2.5 py-1.5 text-[11px] leading-snug text-blue-700 dark:text-blue-400">
+          {/* The bar already says this; the note is only needed while the grid is open. */}
+          {!showBar && (selectedSession ? (
+            <p className={cn("rounded-lg border px-2.5 py-1.5 text-[11px] leading-snug", TONE_SURFACE.tide)}>
               يوجد حساب مفتوح على الترابيزة رقم {selected}، سيتم إضافة الطلب على نفس الحساب.{" "}
               <Link href="/tables" className="font-semibold underline">عرض الحساب</Link>
             </p>
           ) : selected ? (
-            <p className="rounded-lg bg-emerald-500/10 px-2.5 py-1.5 text-[11px] text-emerald-700 dark:text-emerald-400">
+            <p className={cn("rounded-lg border px-2.5 py-1.5 text-[11px]", TONE_SURFACE.sage)}>
               سيتم فتح حساب جديد على الترابيزة رقم {selected}
             </p>
-          ) : null}
+          ) : null)}
 
           {/* فواتير الترابيزة — collapsible invoice cards for the selected table. */}
           {selected && branchId && (

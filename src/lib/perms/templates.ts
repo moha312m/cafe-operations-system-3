@@ -116,6 +116,9 @@ const ACCOUNTANT_KEYS = [
   "variance.view", "variance.investigate",
   "tender_reconciliation.view", "tender_reconciliation.approve",
   "audit.view",
+  // The shadow books: read, export, project and reconcile. Setup, reversal
+  // and closing stay with the owner until official activation is decided.
+  "accounting.view", "accounting.export", "accounting.project", "accounting.reconcile",
   "excel.export",
   // Accounting sees purchases and settles supplier balances.
   "purchases.view", "purchases.view_cost", "purchases.record_payment",

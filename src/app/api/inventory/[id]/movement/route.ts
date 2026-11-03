@@ -1,13 +1,13 @@
-import { protectedTransaction } from "@/lib/protected-transaction";
-import { withIdempotency, authenticatedRequestScope, requestFingerprint } from "@/lib/idempotency";
+import { withIdempotency, authenticatedRequestScope, requestFingerprint, requestScope } from "@/lib/idempotency";
 import { recordFinishedGoodsReturn } from "@/lib/finished-goods-returns";
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { requireKey, handleApiError, ApiError, resolveReadScope } from "@/lib/api";
-import { audit } from "@/lib/audit";
+import { auditInTransaction } from "@/lib/audit";
 import { round2, signedDelta, TXN_AUDIT_ACTION } from "@/lib/inventory";
-import { applyStockMutation } from "@/lib/ledger";
+import { applyStockMutation, lockItemForUpdate } from "@/lib/ledger";
+import { acquireInventorySharedLocks } from "@/lib/inventory-freeze";
 import { publicInventoryItem } from "@/lib/public-shape";
 import { round3 } from "@/lib/costing";
 import { findScopedItem } from "@/lib/inventory-scope";
@@ -58,29 +58,38 @@ export async function POST(request: NextRequest, { params }: Params) {
     }
 
     const delta = round3(signedDelta(data.type, data.quantity));
-    const current = Number(item.currentStock);
-    const newStock = round3(current + delta);
-    if (newStock < 0) {
-      throw new ApiError(400, "لا توجد كمية كافية في المخزون");
-    }
+    const movementOperation = "POST /api/inventory/movement:" + id;
+    // Re-authorized inside every idempotent phase, so a replay answers only
+    // an account that may still act on this item.
+    const movementScope = async () => {
+      const scoped = await findScopedItem(id, session);
+      return requestScope({ ...session, cafeId: scoped.cafeId, branchId: scoped.branchId }, movementOperation);
+    };
+    const effective = { inventoryItemId: id, type: data.type, quantity: delta, unitCost: data.unitCost ?? null, note: data.note ?? null };
 
-    // Value the movement: purchases use the entered cost (or current),
-    // consumption (usage/waste) is valued at the item's cost so waste
-    // reports are meaningful. Adjustments/returns follow any given cost.
-    const unitCost =
-      data.unitCost ??
-      (data.type === "PURCHASE" || data.type === "USAGE" || data.type === "WASTE"
-        ? Number(item.costPerUnit)
-        : undefined);
-    const totalCost =
-      unitCost !== undefined ? round2(Math.abs(delta) * unitCost) : null;
-
-    // Interactive form, not the array form this route used to use: an array
-    // `$transaction` cannot hold `SELECT … FOR UPDATE` across statements, so
-    // it could never satisfy the ledger contract.
-    const updated = await protectedTransaction(async (tx) => {
+    // The balance, ledger row, audit row and stored response commit together.
+    return await withIdempotency(request, movementScope, effective, async (tx) => {
       if (data.type === "RETURN" && (await tx.productStockBinding.count({ where: { inventoryItemId: id } }) || await tx.orderItem.count({ where: { finishedStockItemId: id } }))) throw new ApiError(409, "مرتجع المنتج الجاهز لازم يرتبط بصنف الطلب الأصلي؛ رد الأموال لا يعيد المخزون");
-      await applyStockMutation(tx, {
+      // Decide on the locked balance, never on the one read before the
+      // transaction: a replay must not depend on what the movement consumed.
+      await acquireInventorySharedLocks(tx, [item.branchId]);
+      const locked = await lockItemForUpdate(tx, id);
+      if (round3(locked.currentStock + delta) < 0) {
+        throw new ApiError(400, "لا توجد كمية كافية في المخزون");
+      }
+
+      // Value the movement: purchases use the entered cost (or current),
+      // consumption (usage/waste) is valued at the item's cost so waste
+      // reports are meaningful. Adjustments/returns follow any given cost.
+      const unitCost =
+        data.unitCost ??
+        (data.type === "PURCHASE" || data.type === "USAGE" || data.type === "WASTE"
+          ? locked.costPerUnit
+          : undefined);
+      const totalCost =
+        unitCost !== undefined ? round2(Math.abs(delta) * unitCost) : null;
+
+      const moved = await applyStockMutation(tx, {
         inventoryItemId: id,
         cafeId: item.cafeId,
         branchId: item.branchId,
@@ -95,26 +104,26 @@ export async function POST(request: NextRequest, { params }: Params) {
           data.type === "PURCHASE" && data.unitCost !== undefined ? data.unitCost : null,
         insufficientMessage: "لا توجد كمية كافية في المخزون",
       });
-      return tx.inventoryItem.findUniqueOrThrow({ where: { id } });
-    }, { cafeId: item.cafeId, branchId: item.branchId });
 
-    await audit({
-      cafeId: item.cafeId,
-      userId: session.id,
-      action: TXN_AUDIT_ACTION[data.type],
-      entity: "InventoryItem",
-      entityId: id,
-      details: {
-        name: item.name,
-        branchId: item.branchId,
-        type: data.type,
-        quantity: delta,
-        oldStock: current,
-        newStock,
-      },
-    });
+      await auditInTransaction(tx, {
+        cafeId: item.cafeId,
+        userId: session.id,
+        action: TXN_AUDIT_ACTION[data.type],
+        entity: "InventoryItem",
+        entityId: id,
+        details: {
+          name: item.name,
+          branchId: item.branchId,
+          type: data.type,
+          quantity: delta,
+          oldStock: moved.stockBefore,
+          newStock: moved.stockAfter,
+        },
+      });
 
-    return NextResponse.json({ item: publicInventoryItem(updated) });
+      const updated = await tx.inventoryItem.findUniqueOrThrow({ where: { id } });
+      return NextResponse.json({ item: publicInventoryItem(updated) });
+    }, { scope: { cafeId: item.cafeId, branchId: item.branchId }, authorize: async () => { session = await requireKey("inventory.transactions"); } });
   } catch (error) {
     return handleApiError(error);
   }

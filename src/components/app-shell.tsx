@@ -44,12 +44,13 @@ export function useApp(): AppContextValue {
 // The sidebar is grouped so a laptop-height screen shows the section titles and
 // the section being worked in, not 25 flat links behind a small inner scroll.
 // Items without a `group` (the dashboard) stay pinned above the sections.
-type NavGroupId = "daily" | "menu" | "stock" | "reports" | "admin";
+type NavGroupId = "daily" | "menu" | "stock" | "reports" | "finance" | "admin";
 const NAV_GROUPS: { id: NavGroupId; label: string }[] = [
   { id: "daily", label: "التشغيل اليومي" },
   { id: "menu", label: "المنيو والمخزون" },
   { id: "stock", label: "الجرد والتسليم" },
   { id: "reports", label: "التقارير والمتابعة" },
+  { id: "finance", label: "المحاسبة والماليات" },
   { id: "admin", label: "الإدارة" },
 ];
 const NAV_COLLAPSED_KEY = "nextcup.nav.collapsed";
@@ -64,11 +65,17 @@ type NavItem = {
   icon: string;
   permission: Permission;
   group?: NavGroupId;
+  ownerOnly?: boolean;
   key?: string; // optional new granular permission key (wins over `permission`)
+  anyKey?: string[];
   feature?: (f: CafeFeatures) => boolean;
 };
 
 const NAV: NavItem[] = [
+  { href: "/finance", label: "مساحة الماليات", icon: "💼", permission: "cost:read", group: "finance", anyKey: ["accounting.view", "expenses.view", "treasury.view"] },
+  { href: "/report-center", label: "مركز التقارير", icon: "📊", permission: "reports:read", group: "reports" },
+  { href: "/tables/setup", label: "إدارة الترابيزات", icon: "🪑", permission: "orders:create", group: "daily", key: "tables.manage", feature: f => f.enableTables },
+  { href: "/treasury", label: "الحسابات والتحويلات", icon: "🏦", permission: "cost:read", group: "finance", key: "treasury.view", ownerOnly: true },
   { href: "/dashboard", label: t.nav.dashboard, icon: "📊", permission: "dashboard:read" },
   { href: "/pos", label: t.nav.pos, icon: "🧾", permission: "orders:create", group: "daily" },
   { href: "/current-shift", label: t.nav.currentShift, icon: "🧑‍💼", permission: "shifts:operate", group: "daily", feature: (f) => f.shiftManagementEnabled },
@@ -99,6 +106,8 @@ const NAV: NavItem[] = [
   { href: "/variances", label: "الفروقات", icon: "⚖️", permission: "shifts:read", group: "stock", key: "variance.view", feature: (f) => f.shiftManagementEnabled },
   { href: "/handovers", label: "التسليم والاستلام", icon: "🤝", permission: "shifts:operate", group: "stock", key: "handover.view", feature: (f) => f.shiftManagementEnabled },
   { href: "/reports", label: t.nav.reports, icon: "📈", permission: "reports:read", group: "reports" },
+  { href: "/expenses", label: "المصروفات", icon: "💸", permission: "cost:read", group: "finance", key: "expenses.view" },
+  { href: "/accounting", label: "المحاسبة (تجريبي)", icon: "📒", permission: "cost:read", group: "finance", key: "accounting.view" },
   { href: "/shifts", label: t.nav.shiftReports, icon: "🧮", permission: "shifts:read", group: "reports", feature: (f) => f.shiftManagementEnabled },
   { href: "/settings", label: "الإعدادات", icon: "⚙️", permission: "branches:manage", group: "admin" },
   { href: "/roles-permissions", label: "الأدوار والصلاحيات", icon: "🛡️", permission: "users:manage", group: "admin", key: "users.manage_permissions" },
@@ -121,7 +130,7 @@ export function AppShell({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
-  const cashierTouch = ["/pos", "/orders", "/sales", "/tracing", "/tables", "/current-shift", "/receipts", "/reports"].some(route => pathname === route || pathname.startsWith(route + "/"));
+  const cashierTouch = ["/pos", "/orders", "/sales", "/tracing", "/tables", "/current-shift", "/close-shift", "/receipts", "/reports", "/handovers", "/stock-counts"].some(route => pathname === route || pathname.startsWith(route + "/"));
   const router = useRouter();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   useEffect(() => {
@@ -142,7 +151,8 @@ export function AppShell({
     (item) =>
       // An explicit `key` (new granular gate) wins; else fall back to the
       // legacy permission bridge.
-      (item.key ? canKey(item.key) : can(item.permission)) &&
+      (!item.ownerOnly || user.role === "CAFE_OWNER") &&
+      (item.anyKey ? item.anyKey.some(canKey) : item.key ? canKey(item.key) : can(item.permission)) &&
       (!item.feature || !features || item.feature(features))
   );
 
@@ -333,11 +343,11 @@ export function AppShell({
     <AppContext.Provider value={{ user, cafe, branchName, can, canKey, permKeys, features }}>
       <CashierTouchViewport active={cashierTouch} />
       <div className="flex min-h-screen w-full flex-col bg-workspace md:flex-row">
-        <aside className="sticky top-0 hidden h-dvh w-60 shrink-0 flex-col bg-sidebar text-sidebar-foreground md:flex">
+        <aside className="sticky top-0 hidden h-dvh w-60 shrink-0 flex-col bg-sidebar text-sidebar-foreground md:flex print:hidden">
           {sidebarContent}
         </aside>
         <Dialog open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
-          <div className="flex items-center gap-3 bg-sidebar px-4 py-3 text-sidebar-foreground md:hidden">
+          <div className="flex items-center gap-3 bg-sidebar px-4 py-3 text-sidebar-foreground md:hidden print:hidden">
             <DialogTrigger className="shrink-0 rounded-lg border border-sidebar-border px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sidebar-ring">
               القائمة
             </DialogTrigger>

@@ -1,4 +1,5 @@
 import { after, before, beforeEach, describe, test } from "node:test";
+import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { PrismaClient } from "@prisma/client";
 import { db, tag, teardownTaggedCafe } from "./helpers/db";
@@ -204,6 +205,7 @@ describe("LEDGER-007 transfer freeze and tenancy safety", () => {
       else await freeze(secondBranchId, destinationHandoverId);
       const response = await as(OWNER, "/api/inventory/transfer", {
         method: "POST",
+        headers: { "Idempotency-Key": randomUUID() },
         body: JSON.stringify({ inventoryItemId: source.id, toBranchId: secondBranchId, quantity: 1 }),
       });
       assert.equal(response.status, 409, response.text);
@@ -237,6 +239,7 @@ describe("LEDGER-007 transfer freeze and tenancy safety", () => {
     try {
       const response = await as(OWNER, "/api/inventory/transfer", {
         method: "POST",
+        headers: { "Idempotency-Key": randomUUID() },
         signal: AbortSignal.timeout(2_000),
         body: JSON.stringify({ inventoryItemId: source.id, toBranchId: foreign.branches[0].id, quantity: 1 }),
       });

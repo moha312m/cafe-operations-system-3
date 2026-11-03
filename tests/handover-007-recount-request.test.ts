@@ -621,6 +621,7 @@ async function acknowledge(args: {
   incomingCountedQuantity?: number | null;
   disputeReasonCodeId?: string;
   disputeNote?: string;
+  refuse?: boolean;
   acknowledgedById?: string;
   cafeId?: string;
   viewerBranchId?: string | null;
@@ -633,6 +634,7 @@ async function acknowledge(args: {
     incomingCountedQuantity: args.incomingCountedQuantity,
     disputeReasonCodeId: args.disputeReasonCodeId,
     disputeNote: args.disputeNote,
+    refuse: args.refuse,
     cafeId: args.cafeId ?? fx.cafeId,
     viewerBranchId: args.viewerBranchId === undefined ? fx.branchId : args.viewerBranchId,
   });
@@ -700,7 +702,11 @@ describe("acknowledgeStockLine", () => {
     assert.equal(Number(row.incomingCountedQuantity), 10);
   });
 
-  test("2.3 a differing spot count with no reason is refused, and rolls back", async () => {
+  // HND-UX-003 replaced "a different count without a reason is refused":
+  // a different count is now accepted with its difference recorded (see
+  // hnd-ux-004). What still needs a reason, and still rolls back without
+  // one, is an explicit refusal — which is what this test now sends.
+  test("2.3 an explicit refusal with no reason is refused, and rolls back", async () => {
     const h = await submittedHandover();
     const line = await lineOf(h.sessionId, items.alpha.id);
 
@@ -709,8 +715,9 @@ describe("acknowledgeStockLine", () => {
         handoverId: h.handoverId,
         stockCountLineId: line.id,
         incomingCountedQuantity: 7,
+        refuse: true,
       }),
-      refusalIs(400, "لازم تحدد سبب الاختلاف"),
+      refusalIs(400, "لازم تحدد سبب الاعتراض"),
     );
 
     // The rollback is asserted, not assumed: the acknowledgement row and the
@@ -1258,18 +1265,20 @@ describe("acknowledge route", () => {
     assert.equal(await ackCount(h.handoverId), 0);
   });
 
-  test("3.6 a differing spot count with no reason reaches HTTP as 400", async () => {
+  // HND-UX-003: only an explicit refusal demands a reason (see 2.3).
+  test("3.6 an explicit refusal with no reason reaches HTTP as 400", async () => {
     const h = await submittedHandover();
     const line = await lineOf(h.sessionId, items.alpha.id);
 
     const r = await ackPost(incoming.email, h.handoverId, {
       stockCountLineId: line.id,
       incomingCountedQuantity: 3,
+      refuse: true,
     });
     assert.equal(r.status, 400, r.text);
     assert.equal(
       r.body.error,
-      "لازم تحدد سبب الاختلاف",
+      "لازم تحدد سبب الاعتراض",
       "the service's own wording must survive the route",
     );
     assert.equal(await ackCount(h.handoverId), 0);
@@ -2121,7 +2130,10 @@ async function walkTheCount(sessionId: string, alphaCounted: number) {
     const r = await acceptVariance(fx.manager.email, sessionId, line.id, stockReasonId);
     assert.ok(r.status < 300, `accept-variance failed: ${r.text}`);
   }
-  return { lineIds: lines.map((l) => l.id), settled: unsettled.length };
+  // HND-UX-004: a complete count with a difference is recorded at submit
+  // (VARIANCE_RECORDED, no manager); `settled` counts either outcome.
+  const recorded = await db.stockCountLine.count({ where: { sessionId, disposition: "VARIANCE_RECORDED" } });
+  return { lineIds: lines.map((l) => l.id), settled: unsettled.length + recorded };
 }
 
 /** A handover sent back for a recount, with its superseded evidence. */
@@ -2557,7 +2569,10 @@ describe("recount end-to-end", () => {
       Number(firstAlpha.varianceQuantity),
       "the replacement carries the recount's own figure, not the first count's",
     );
-    assert.equal(secondAlpha.reasonCodeId, stockReasonId, "and its own reason");
+    // HND-UX-004: the complete replacement count is recorded as observed at
+    // submit, with no manager acceptance, so no reason is attached — and none
+    // is invented. (Before, a manager accepted it with `stockReasonId`.)
+    assert.equal(secondAlpha.reasonCodeId, null, "no reason is fabricated for a recorded difference");
 
     assert.equal(
       await caseCountFor(first.sessionId),

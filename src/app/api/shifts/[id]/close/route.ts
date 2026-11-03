@@ -180,6 +180,8 @@ export async function POST(request: NextRequest, { params }: Params) {
         requiredItemCount: result.requiredItemCount,
         configIssue: result.handoverConfigIssue,
       },
+      // HND-UX-004: whether materials were due at this close. No figures.
+      materials: result.materials,
       // Open orders the incoming shift now serves and collects. Empty unless
       // the café enabled carrying them.
       carriedOrders: result.carriedOrders.map((o) => ({

@@ -35,6 +35,7 @@
 // `handover-010b-branch-custody-rollback.test.ts`.
 
 import { after, before, describe, test } from "node:test";
+import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import bcrypt from "bcryptjs";
 import { db, tag, teardownTaggedCafe, purgeOrderTracesFor } from "./helpers/db";
@@ -280,6 +281,7 @@ const openingHttp = <T = Record<string, unknown>>(email: string, body: unknown) 
 const movement = (email: string, itemId: string, quantity: number) =>
   as<{ error?: string }>(email, `/api/inventory/${itemId}/movement`, {
     method: "POST",
+    headers: { "Idempotency-Key": randomUUID() },
     body: JSON.stringify({ type: "PURCHASE", quantity, unitCost: 450 }),
   });
 

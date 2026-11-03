@@ -81,8 +81,11 @@ export function PlaceReceiptPanel({ branchId }: { branchId: string }) {
     finally { setBusy(false); }
   }
 
-  return <section className="space-y-3 rounded-xl border p-4" data-testid="place-receipt-panel">
-    <header className="flex items-center justify-between gap-2"><h2 className="font-semibold">استلام المكان والأجهزة</h2><Button size="sm" variant="ghost" disabled={busy} onClick={() => void load()}>تحديث</Button></header>
+  // Folded away unless a check is waiting, one is open, or loading failed.
+  const pendingPlace = rows.filter((row) => row.status === "PENDING").length;
+  return <details className="rounded-xl border p-4" data-testid="place-receipt-panel" open={pendingPlace > 0 || !!detail || !!error}>
+    <summary className="cursor-pointer font-semibold">استلام المكان والأجهزة<span className="ms-2 text-xs font-normal text-muted-foreground">{pendingPlace > 0 ? `— ${pendingPlace} ينتظر الفحص` : "— مفيش استلام مستني"}</span></summary>
+    <div className="mt-3 space-y-3"><div className="flex justify-end"><Button size="sm" variant="ghost" disabled={busy} onClick={() => void load()}>تحديث</Button></div>
     <p className="text-xs text-muted-foreground">الموظف المعيّن يسجل حالة كل جهاز. قبول الكاش أو الخامات منفصل عن اعتماد المكان.</p>
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     {!rows.length && <p className="text-sm text-muted-foreground">لا توجد استلامات مكان في هذا الفرع.</p>}
@@ -90,7 +93,7 @@ export function PlaceReceiptPanel({ branchId }: { branchId: string }) {
       شيفت #{row.incomingShift.shiftNumber} · {row.assignedUser.name} · {row.status === "PENDING" ? "ينتظر الفحص" : row.status === "ACCEPTED" ? "تم الاستلام" : "اعتماد استثنائي"}
     </button>)}</div>}
     {detail && <div className="space-y-4 border-t pt-3">
-      <p className="text-sm">مسؤول الفحص: <strong>{detail.assignedUser.name}</strong> · الحالة: {detail.status}</p>
+      <p className="text-sm">مسؤول الفحص: <strong>{detail.assignedUser.name}</strong> · الحالة: {detail.status === "PENDING" ? "ينتظر الفحص" : detail.status === "ACCEPTED" ? "تم الاستلام" : "اعتماد استثنائي"}</p>
       {detail.snapshot.map((asset) => <article key={asset.id} className="space-y-2 rounded-lg border p-3">
         <h3 className="font-medium">{asset.name}{asset.area ? " · " + asset.area : ""}</h3>
         {asset.checkpoints.map((checkpoint) => {
@@ -120,5 +123,5 @@ export function PlaceReceiptPanel({ branchId }: { branchId: string }) {
         <Button size="sm" variant="outline" disabled={busy || (repair[incident.id] ?? "").trim().length < 3} onClick={() => void resolveIncident(incident.id)}>تسجيل الإصلاح</Button>
       </div>)}
     </div>}
-  </section>;
+  </div></details>;
 }

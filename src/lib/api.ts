@@ -57,11 +57,11 @@ const DENIED = "ليس لديك صلاحية لتنفيذ هذا الإجراء"
  * into that bundle. `@/lib/api` is server-only, and is the door every
  * guarded route already comes through.
  */
-export async function requireActiveSession(): Promise<SessionUser> {
+export async function requireActiveSession(client?: Prisma.TransactionClient): Promise<SessionUser> {
   const session = await getSession();
   if (!session) throw new ApiError(401, "سجّل دخولك الأول");
 
-  return db.$transaction(async (tx) => {
+  const check = async (tx: Prisma.TransactionClient) => {
     await tx.$executeRaw`SET LOCAL lock_timeout = '2s'`;
     await tx.$executeRaw`SET LOCAL statement_timeout = '5s'`;
     await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${session.id} FOR NO KEY UPDATE`;
@@ -97,7 +97,8 @@ export async function requireActiveSession(): Promise<SessionUser> {
     if (!branch) throw new ApiError(401, "سجّل دخولك الأول");
     return { ...session, email: account.email, name: account.name, role: account.role,
       cafeId: account.cafeId, ...branch };
-  });
+  };
+  return client ? check(client) : db.$transaction(check);
 }
 
 export async function requirePermission(

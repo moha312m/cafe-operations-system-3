@@ -1101,8 +1101,32 @@ describe("SH-20 stock rebase inside the acceptance", () => {
     );
   });
 
+  // HND-UX-004: a complete count with a difference is now recorded as the
+  // outgoing declaration, unsigned. Unsigned evidence (like a system match)
+  // is only valid while the ledger has not moved since the observation, so
+  // the movement below makes acceptance refuse as stale. In production no
+  // writer can move the shelf in that window — the freeze refuses untokened
+  // writers and only acceptance itself holds the token — so this is the
+  // safe answer to an impossible-in-practice case.
+  test("a movement after an unsigned count makes the evidence stale and acceptance refuses", async () => {
+    const h = await acceptableHandover({ [items.alpha.id]: 9 });
+    const { applyStockMutation } = await import("@/lib/ledger");
+    await db.$transaction((tx) =>
+      applyStockMutation(tx, {
+        inventoryItemId: items.alpha.id, type: "USAGE", quantity: -0.25,
+        cafeId: fx.cafeId, branchId: fx.branchId, createdById: fx.cashier.id,
+        freezeToken: h.handoverId,
+      }),
+    );
+    await assert.rejects(accept(h.handoverId), statusIs(409));
+    assert.notEqual((await db.handoverSession.findUniqueOrThrow({ where: { id: h.handoverId } })).status, "COMPLETED");
+  });
+
   test("a movement made after the count point is replayed onto the rebase", async () => {
     const h = await acceptableHandover({ [items.alpha.id]: 9 });
+    // The manager-signed shape (every count before HND-UX-004, and counts a
+    // manager confirms today): signed evidence is replayed, not re-checked.
+    await db.stockCountSession.update({ where: { id: h.sessionId }, data: { confirmedById: fx.manager.id } });
     // A sale after the counter looked at the shelf. Setting the balance to
     // the counted figure would put that coffee back.
     const { applyStockMutation } = await import("@/lib/ledger");
@@ -1983,19 +2007,19 @@ describe("SH-20 accept route", () => {
   });
 });
 
-test('cash handover: mismatch needs reason, is persisted once, and custody agrees with incoming opening',async()=>{
+test('cash handover: an unexplained mismatch is persisted once and custody agrees with incoming opening',async()=>{
   const h=await acceptableHandover();
   await db.shift.update({where:{id:h.incomingShiftId},data:{openingCashAmount:80,expectedCashAmount:80}});
   const url='/api/handovers/'+h.handoverId+'/accept';
   const key=MARKER+'cash-'+h.handoverId;
-  const denied=await as(incoming.email,url,{method:'POST',body:JSON.stringify({idempotencyKey:key})});
-  assert.equal(denied.status,400,denied.text);
-  assert.equal((await db.handoverSession.findUniqueOrThrow({where:{id:h.handoverId}})).status,'INCOMING_REVIEW');
-  const body={idempotencyKey:key,countedOpeningCash:80,cashReasonCodeId:handoverReasonId,cashReasonNote:'20 missing on receipt'};
+  const body={idempotencyKey:key,countedOpeningCash:80};
   const accepted=await as(incoming.email,url,{method:'POST',body:JSON.stringify(body)});
   assert.equal(accepted.status,200,accepted.text);
   const persisted=await db.handoverSession.findUniqueOrThrow({where:{id:h.handoverId}});
   assert.equal(Number(persisted.cashVarianceAmount),-20);
+  const observation=await db.openingException.findFirstOrThrow({where:{handoverId:h.handoverId,kind:'CASH_MISMATCH'}});
+  assert.equal(observation.reasonCodeId,null);
+  assert.equal(observation.note,null);
   const custody=await db.custodyPeriod.findUniqueOrThrow({where:{id:persisted.incomingCashCustodyId!}});
   assert.equal(Number(custody.openingCashAmount),80);
   const replay=await as(incoming.email,url,{method:'POST',body:JSON.stringify(body)});

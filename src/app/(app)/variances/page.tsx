@@ -14,7 +14,7 @@ import { toast } from "sonner";
 import Link from "next/link";
 import { api } from "@/lib/client";
 import { useApp } from "@/components/app-shell";
-import { VarianceList, type VarianceRow } from "@/components/variances/variance-list";
+import { VarianceList, VarianceSummary, type VarianceRow } from "@/components/variances/variance-list";
 import { VarianceDetail } from "@/components/variances/variance-detail";
 import {
   STATUS_LABEL,
@@ -122,6 +122,8 @@ export default function VariancesPage() {
           </Select>
         </div>
       </header>
+
+      {!loading && <VarianceSummary cases={cases} />}
 
       {loading ? (
         <div className="h-40 animate-pulse rounded-xl border border-dashed bg-muted/30" />

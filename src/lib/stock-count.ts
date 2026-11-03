@@ -36,8 +36,10 @@ import { ApiError } from "@/lib/api";
 import { audit, auditInTransaction } from "@/lib/audit";
 import { round3 } from "@/lib/costing";
 import { captureCountPoint } from "@/lib/count-point";
+import { activeFreezeFor } from "@/lib/inventory-freeze";
 import { activeCustody } from "@/lib/custody";
 import { isTerminal } from "@/lib/count-disposition";
+import { lockHandoverCount, assertHandoverCountActor, matchingHandoverCountEvidence, declaredHandoverCountEvidence, currentUnsignedCountEvidence, assertHandoverCorrectionRoundOpen, COUNT_SYSTEM_VALIDATED, COUNT_OUTGOING_DECLARED } from "@/lib/handover-count-validation";
 import {
   EFFECTIVE_EVIDENCE_SELECT,
   effectiveCountEvidence,
@@ -398,6 +400,7 @@ const COUNT_SESSION_DETAIL = {
   mode: true,
   scopeDerivation: true,
   accountabilityContext: true,
+  handoverId: true,
   startedAt: true,
   submittedAt: true,
   confirmedAt: true,
@@ -427,7 +430,7 @@ const COUNT_SESSION_DETAIL = {
       expectedBasis: true,
       reasonCodeId: true,
       reasonNote: true,
-      inventoryItem: { select: { id: true, name: true, category: true, unit: true } },
+      inventoryItem: { select: { id: true, name: true, category: true, unit: true, isCritical: true } },
     },
     orderBy: { inventoryItem: { name: "asc" } },
   },
@@ -459,7 +462,16 @@ export async function getCountSessionForViewer(args: {
   }
 
   const blind = countIsBlindTo(session, args.viewerId);
-  return { ...redactCountTargets(session, args.viewerId), blind };
+  const systemValidated = session.handoverId !== null && session.confirmedById === null &&
+    ["CONFIRMED", "LOCKED"].includes(session.status) && !!await db.auditLog.findFirst({
+      where: { entity: "StockCountSession", entityId: session.id, action: COUNT_SYSTEM_VALIDATED }, select: { id: true },
+    });
+  // HND-UX-004: a complete outgoing count recorded with its differences.
+  const outgoingDeclared = session.handoverId !== null && session.confirmedById === null && !systemValidated &&
+    ["CONFIRMED", "LOCKED"].includes(session.status) && !!await db.auditLog.findFirst({
+      where: { entity: "StockCountSession", entityId: session.id, action: COUNT_OUTGOING_DECLARED }, select: { id: true },
+    });
+  return { ...redactCountTargets(session, args.viewerId), blind, systemValidated, outgoingDeclared };
 }
 
 // ─────────────────────────── Recording a count ───────────────────────
@@ -599,6 +611,7 @@ export async function recordCountLine(args: {
   sessionId: string;
   lineId: string;
   countedQuantity: number;
+  expectedCountedAt?: string | null;
   counterId: string;
   cafeId: string;
   viewerBranchId: string | null;
@@ -606,6 +619,9 @@ export async function recordCountLine(args: {
   if (!Number.isFinite(args.countedQuantity) || args.countedQuantity < 0) {
     throw new ApiError(400, "الكمية المعدودة لازم تكون رقم مش سالب");
   }
+
+  const candidate = await db.stockCountSession.findUnique({where:{id:args.sessionId},select:{accountabilityContext:true}});
+  if (candidate?.accountabilityContext === "HANDOVER") return recordHandoverCountLine(args);
 
   const line = await lineForWrite(args);
   if (CLOSED_TO_CAPTURE.includes(line.session.status)) {
@@ -678,6 +694,55 @@ export async function recordCountLine(args: {
   };
 }
 
+// Handover capture shares the submission lock, so a late PATCH cannot reopen
+// a submitted round. A compare-and-swap token prevents an old edit replacing
+// a newer one; replaying an already persisted observation has no second effect.
+async function recordHandoverCountLine(args: {
+  sessionId:string;lineId:string;countedQuantity:number;counterId:string;cafeId:string;
+  viewerBranchId:string|null;expectedCountedAt?:string|null;
+}): Promise<RecordCountLineResult> {
+  return db.$transaction(async (tx) => {
+    await lockHandoverCount(tx,args.sessionId);
+    const line=await tx.stockCountLine.findUnique({where:{id:args.lineId},select:{
+      id:true,sessionId:true,inventoryItemId:true,countedAt:true,countedQuantity:true,counterId:true,itemVersion:true,disposition:true,
+      session:{select:{id:true,cafeId:true,branchId:true,status:true,startedAt:true,firstCounterId:true,handoverId:true}},
+    }});
+    if(!line || line.sessionId!==args.sessionId || line.session.cafeId!==args.cafeId) throw new ApiError(404,"سطر الجرد غير موجود");
+    if(args.viewerBranchId && line.session.branchId!==args.viewerBranchId) throw new ApiError(403,"ليس لديك صلاحية على فرع تاني");
+    await assertHandoverCountActor(tx,{actorId:args.counterId,cafeId:line.session.cafeId,branchId:line.session.branchId,key:"stock_count.submit"});
+    const quantity=round3(args.countedQuantity);
+    const currentToken=line.countedAt?.toISOString()??null;
+    const sameObservation=line.countedQuantity!==null && Number(line.countedQuantity)===quantity && line.counterId===args.counterId && line.itemVersion!==null && line.countedAt!==null;
+    const handover=await tx.handoverSession.findUnique({where:{id:line.session.handoverId!},select:{id:true,status:true,stockCountSessionId:true}});
+    if(!handover || handover.stockCountSessionId!==args.sessionId) throw new ApiError(409,"إصدار الجرد اتغير — حدّث التسليم");
+    if(args.expectedCountedAt!==undefined && args.expectedCountedAt!==currentToken) {
+      if(sameObservation) return {lineId:line.id,countedAt:line.countedAt!,itemVersion:line.itemVersion!,disposition:"COUNTED"};
+      throw new ApiError(409,"الكمية اتغيرت من تسجيل أحدث — راجع السطر وأعد المحاولة");
+    }
+    if(CLOSED_TO_CAPTURE.includes(line.session.status)) {
+      if(sameObservation) return {lineId:line.id,countedAt:line.countedAt!,itemVersion:line.itemVersion!,disposition:"COUNTED"};
+      throw new ApiError(409,"الجرد ده اتقفل خلاص — مينفعش تسجل كمية عليه");
+    }
+    if(!["DRAFT","REJECTED"].includes(handover.status)) throw new ApiError(409,"التسليم مش مفتوح لتسجيل الجرد");
+    const freeze=await activeFreezeFor(tx,line.session.branchId);
+    if(freeze?.handoverId!==handover.id) throw new ApiError(409,"تجميد المخزون مش مفتوح لهذا التسليم");
+    const point=await captureCountPoint(tx,line.inventoryItemId);
+    // Millisecond timestamps are the existing CAS token: allocate a strictly
+    // increasing recorded instant even when two captures share a clock tick.
+    if(line.countedAt && point.capturedAt <= line.countedAt) point.capturedAt = new Date(line.countedAt.getTime()+1);
+    if(sameObservation && line.itemVersion===point.itemVersion) return {lineId:line.id,countedAt:line.countedAt!,itemVersion:line.itemVersion!,disposition:"COUNTED"};
+    if(await tx.stockCountCorrection.count({where:{lineId:line.id,status:"PENDING_APPROVAL"}})) throw new ApiError(409,"السطر مستني اعتماد تصحيح");
+    await tx.stockCountLine.update({where:{id:line.id},data:{expectedQuantity:point.expectedQuantity,itemVersion:point.itemVersion,
+      expectedBasis:point.basis,countedAt:point.capturedAt,counterId:args.counterId,countedQuantity:quantity,
+      effectiveCountedQuantity:quantity,varianceQuantity:round3(quantity-point.expectedQuantity),disposition:"COUNTED"}});
+    await tx.stockCountSession.update({where:{id:args.sessionId},data:{status:"IN_PROGRESS",startedAt:line.session.startedAt??point.capturedAt,firstCounterId:line.session.firstCounterId??args.counterId}});
+    await auditInTransaction(tx,{cafeId:args.cafeId,userId:args.counterId,action:ITEM_COUNTED_AUDIT_ACTION,entity:"StockCountLine",entityId:line.id,
+      details:{sessionId:args.sessionId,branchId:line.session.branchId,inventoryItemId:line.inventoryItemId,itemVersion:String(point.itemVersion),
+        expectedBasis:point.basis,countedQuantity:quantity,previousDisposition:line.disposition,previousCountedAt:currentToken}});
+    return {lineId:line.id,countedAt:point.capturedAt,itemVersion:point.itemVersion,disposition:"COUNTED"};
+  });
+}
+
 // ────────────────────────── Submitting a count ───────────────────────
 //
 // Submission is where a pile of observations becomes a set of verdicts. Each
@@ -716,7 +781,10 @@ export async function recordCountLine(args: {
 // always a state the line actually occupied.
 
 export type SubmitCountResult = {
-  status: "SUBMITTED" | "RECOUNT_REQUIRED";
+  status: "SUBMITTED" | "RECOUNT_REQUIRED" | "CONFIRMED";
+  systemValidated?: boolean;
+  /** HND-UX-004: lines recorded with a difference, when the count was declared. */
+  recordedDifferences?: number;
   within: number;
   outside: number;
   /** Lines left as gaps rather than judged. Always 0 outside HANDOVER. */
@@ -746,7 +814,27 @@ export async function submitCountSession(args: {
   cafeId?: string;
   viewerBranchId?: string | null;
 }): Promise<SubmitCountResult> {
-  const session = await db.stockCountSession.findUnique({
+  const candidate = await db.stockCountSession.findUnique({where:{id:args.sessionId},select:{accountabilityContext:true}});
+  if (candidate?.accountabilityContext === "HANDOVER") {
+    return db.$transaction(async (tx) => {
+      await lockHandoverCount(tx, args.sessionId);
+      return submitCountSessionWithClient(args, tx);
+    }, { timeout: 30000 });
+  }
+  return submitCountSessionWithClient(args, db);
+}
+
+/** For a caller that already holds the handover and count locks (HND-UX-004 finish). */
+export async function submitHandoverCountInTransaction(tx: Prisma.TransactionClient, args: {
+  sessionId: string; submittedById: string; cafeId?: string; viewerBranchId?: string | null;
+}): Promise<SubmitCountResult> {
+  return submitCountSessionWithClient(args, tx);
+}
+
+async function submitCountSessionWithClient(args: {
+  sessionId: string; submittedById: string; cafeId?: string; viewerBranchId?: string | null;
+}, client: Prisma.TransactionClient | typeof db): Promise<SubmitCountResult> {
+  const session = await client.stockCountSession.findUnique({
     where: { id: args.sessionId },
     select: {
       id: true,
@@ -754,6 +842,7 @@ export async function submitCountSession(args: {
       branchId: true,
       status: true,
       accountabilityContext: true,
+      confirmedById: true,
       lines: {
         select: {
           ...EFFECTIVE_EVIDENCE_SELECT,
@@ -769,6 +858,18 @@ export async function submitCountSession(args: {
   }
   if (args.viewerBranchId && session.branchId !== args.viewerBranchId) {
     throw new ApiError(403, "ليس لديك صلاحية على فرع تاني");
+  }
+  if (session.accountabilityContext === "HANDOVER") {
+    await assertHandoverCountActor(client as Prisma.TransactionClient, {
+      actorId: args.submittedById, cafeId: session.cafeId, branchId: session.branchId, key:"stock_count.submit",
+    });
+    if (session.status === "CONFIRMED" && session.confirmedById === null) {
+      const prior = await client.auditLog.findFirst({where:{entity:"StockCountSession",entityId:session.id,action:{in:[COUNT_SYSTEM_VALIDATED,COUNT_OUTGOING_DECLARED]}},select:{id:true}});
+      const current = prior ? await currentUnsignedCountEvidence(client as Prisma.TransactionClient,session.id) : null;
+      if (current === "SYSTEM_MATCH") return {status:"CONFIRMED",systemValidated:true,within:session.lines.length,outside:0,skippedUnobserved:0};
+      if (current === "OUTGOING_DECLARED") return {status:"CONFIRMED",systemValidated:false,recordedDifferences:session.lines.filter((l)=>l.disposition==="VARIANCE_RECORDED").length,within:session.lines.length,outside:0,skippedUnobserved:0};
+      if (prior) throw new ApiError(409,"دليل الجرد اتغير بعد تسجيله — حدّث الصفحة وراجع الجرد");
+    }
   }
   if (!SUBMITTABLE.includes(session.status)) {
     throw new ApiError(409, "الجرد ده اتقفل خلاص");
@@ -910,7 +1011,7 @@ export async function submitCountSession(args: {
 
   // One transaction: a submission that gave half the lines a verdict and then
   // failed would leave the count in a state nobody chose.
-  await db.$transaction(async (tx) => {
+  const writeVerdicts = async (tx: Prisma.TransactionClient) => {
     for (const u of updates) {
       await tx.stockCountLine.update({ where: { id: u.id }, data: u.data });
     }
@@ -918,9 +1019,11 @@ export async function submitCountSession(args: {
       where: { id: session.id },
       data: { status, submittedAt },
     });
-  });
+  };
+  if (client === db) await db.$transaction(writeVerdicts);
+  else await writeVerdicts(client as Prisma.TransactionClient);
 
-  await audit({
+  const auditEntry = {
     cafeId: session.cafeId,
     userId: args.submittedById,
     action: COUNT_SUBMITTED_AUDIT_ACTION,
@@ -937,9 +1040,50 @@ export async function submitCountSession(args: {
       // of nine with three shelves nobody reached.
       skippedUnobserved,
     },
-  });
+  };
+  if (client === db) await audit(auditEntry);
+  else await auditInTransaction(client as Prisma.TransactionClient, auditEntry);
 
-  return { status, within, outside, skippedUnobserved };
+  if (session.accountabilityContext === "HANDOVER") {
+    const tx = client as Prisma.TransactionClient;
+    const evidence = await matchingHandoverCountEvidence(tx, session.id);
+    if (evidence) {
+      const confirmedAt = new Date();
+      await tx.stockCountSession.update({where:{id:session.id},data:{
+        status:"CONFIRMED", confirmedAt, confirmedById:null, idempotencyKey:`handover-system:${session.id}`,
+      }});
+      await auditInTransaction(tx, {cafeId:session.cafeId,userId:args.submittedById,
+        action:COUNT_SYSTEM_VALIDATED,entity:"StockCountSession",entityId:session.id,
+        details:{...evidence,validation:"SYSTEM_MATCHING_QUANTITIES",initiatedById:args.submittedById,confirmedAt:confirmedAt.toISOString()},
+      });
+      return {status:"CONFIRMED",systemValidated:true,within,outside,skippedUnobserved};
+    }
+    // HND-UX-004 / HND-UX-003. A complete, current count whose quantities
+    // differ is recorded as the outgoing employee observed it and handed on.
+    // No manager acceptance is invented: the lines become VARIANCE_RECORDED
+    // (never VARIANCE_CONFIRMED), `confirmedById` stays NULL, and the audit
+    // row names the evidence and the person who counted. A count with a gap,
+    // a stale ledger cursor, a pending correction or a dispute is not a
+    // declaration — it stays SUBMITTED exactly as before.
+    const declared = await declaredHandoverCountEvidence(tx, session.id);
+    if (declared) {
+      const confirmedAt = new Date();
+      await tx.stockCountLine.updateMany({
+        where:{sessionId:session.id,disposition:{in:["OUTSIDE_TOLERANCE","RECOUNT_REQUIRED"]}},
+        data:{disposition:"VARIANCE_RECORDED"},
+      });
+      await tx.stockCountSession.update({where:{id:session.id},data:{
+        status:"CONFIRMED", confirmedAt, confirmedById:null, idempotencyKey:`handover-declared:${session.id}`,
+      }});
+      await auditInTransaction(tx, {cafeId:session.cafeId,userId:args.submittedById,
+        action:COUNT_OUTGOING_DECLARED,entity:"StockCountSession",entityId:session.id,
+        details:{...declared,validation:"OUTGOING_DECLARED_QUANTITIES",differenceLines:declared.differenceLineIds.length,
+          initiatedById:args.submittedById,confirmedAt:confirmedAt.toISOString()},
+      });
+      return {status:"CONFIRMED",systemValidated:false,recordedDifferences:declared.differenceLineIds.length,within,outside,skippedUnobserved};
+    }
+  }
+  return { status, within, outside, skippedUnobserved, ...(session.accountabilityContext === "HANDOVER" ? {systemValidated:false} : {}) };
 }
 
 // ───────────────────────── Confirming a count ────────────────────────
@@ -1025,11 +1169,24 @@ export async function confirmCountSession(args: {
   cafeId?: string;
   viewerBranchId?: string | null;
 }): Promise<ConfirmCountResult> {
+  const candidate=await db.stockCountSession.findUnique({where:{id:args.sessionId},select:{accountabilityContext:true}});
+  if(candidate?.accountabilityContext === "HANDOVER") return db.$transaction(async(tx)=>{
+    await lockHandoverCount(tx,args.sessionId);
+    return confirmCountSessionWithClient(args,tx);
+  },{timeout:30000});
+  return confirmCountSessionWithClient(args,db);
+}
+/** The lines of THIS session that still need a decision, by item name, with the next action. */
+export function unsettledLinesMessage(lines: readonly { inventoryItem: { name: string } }[]): string {
+  return `في سطور لسه مش مقفولة (${lines.length}): ${lines.map((l) => l.inventoryItem.name).join("، ")}. لكل صنف: اعتمد الفرق، أو سجّل سبب الفرق، أو اطلب إعادة عد، ثم أكّد الجرد تاني.`;
+}
+
+async function confirmCountSessionWithClient(args:{sessionId:string;confirmedById:string;idempotencyKey:string;cafeId?:string;viewerBranchId?:string|null},client:Prisma.TransactionClient|typeof db):Promise<ConfirmCountResult> {
   if (!args.idempotencyKey) {
     throw new ApiError(400, "مفتاح التأكيد مطلوب");
   }
 
-  const session = await db.stockCountSession.findUnique({
+  const session = await client.stockCountSession.findUnique({
     where: { id: args.sessionId },
     select: {
       id: true,
@@ -1046,6 +1203,7 @@ export async function confirmCountSession(args: {
       lines: {
         select: {
           ...EFFECTIVE_EVIDENCE_SELECT,
+          inventoryItem: { select: { name: true } },
           disposition: true,
           confidence: true,
           costImpact: true,
@@ -1062,6 +1220,10 @@ export async function confirmCountSession(args: {
     throw new ApiError(403, "ليس لديك صلاحية على فرع تاني");
   }
 
+  if(session.accountabilityContext === "HANDOVER") {
+    await assertHandoverCountActor(client as Prisma.TransactionClient,{actorId:args.confirmedById,cafeId:session.cafeId,branchId:session.branchId,key:"stock_count.confirm"});
+    if(await client.stockCountCorrection.count({where:{line:{sessionId:session.id},status:"PENDING_APPROVAL"}})) throw new ApiError(409,"الجرد مستني اعتماد تصحيح");
+  }
   const lineIds = session.lines.map((l) => l.id);
 
   // Resolved once, from the session, and returned identically from every
@@ -1112,16 +1274,13 @@ export async function confirmCountSession(args: {
       !(mayFreezeGaps && l.disposition === "PENDING" && !hasAuthoritativeObservation(l))
   );
   if (unsettled.length > 0) {
-    throw new ApiError(
-      409,
-      `في سطور لسه مش مقفولة (${unsettled.length}): ${unsettled.map((l) => l.id).join("، ")}`
-    );
+    throw new ApiError(409, unsettledLinesMessage(unsettled));
   }
 
   const confirmedAt = new Date();
   const accepted = session.lines.filter((l) => l.disposition === "VARIANCE_CONFIRMED");
 
-  const outcome = await db.$transaction(async (tx) => {
+  const writeConfirmation=async(tx:Prisma.TransactionClient)=>{
     // The guard and the write are one statement, so two callers racing cannot
     // both see SUBMITTED and both proceed.
     const claimed = await tx.stockCountSession.updateMany({
@@ -1176,11 +1335,12 @@ export async function confirmCountSession(args: {
       caseIds.push(opened.caseId);
     }
     return { won: true, caseIds };
-  });
+  };
+  const outcome=client === db ? await db.$transaction(writeConfirmation) : await writeConfirmation(client as Prisma.TransactionClient);
 
   if (!outcome.won) {
     // Somebody else confirmed it a moment ago. Their cases are the cases.
-    const current = await db.stockCountSession.findUniqueOrThrow({
+    const current = await client.stockCountSession.findUniqueOrThrow({
       where: { id: session.id },
       select: { confirmedAt: true },
     });
@@ -1193,7 +1353,7 @@ export async function confirmCountSession(args: {
     };
   }
 
-  await audit({
+  const entry = {
     cafeId: session.cafeId,
     userId: args.confirmedById,
     action: COUNT_CONFIRMED_AUDIT_ACTION,
@@ -1207,7 +1367,8 @@ export async function confirmCountSession(args: {
       deferredContext: deferred?.context ?? null,
       idempotencyKey: args.idempotencyKey,
     },
-  });
+  };
+  if(client === db) await audit(entry); else await auditInTransaction(client as Prisma.TransactionClient,entry);
 
   return {
     status: "CONFIRMED",
@@ -1279,16 +1440,28 @@ export async function createCountCorrection(args: {
   cafeId?: string;
   viewerBranchId?: string | null;
 }): Promise<{ correctionId: string; status: "PENDING_APPROVAL" }> {
+  const candidate=await db.stockCountLine.findUnique({where:{id:args.lineId},select:{sessionId:true,session:{select:{accountabilityContext:true}}}});
+  if(candidate?.session.accountabilityContext === "HANDOVER") return db.$transaction(async(tx)=>{
+    await lockHandoverCount(tx,candidate.sessionId);
+    await assertHandoverCorrectionRoundOpen(tx,candidate.sessionId);
+    return createCountCorrectionWithClient(args,tx);
+  });
+  return createCountCorrectionWithClient(args,db);
+}
+async function createCountCorrectionWithClient(args: {
+  lineId:string;newCountedQuantity:number;reasonCodeId:string;note?:string;actorId:string;
+  sessionId?:string;cafeId?:string;viewerBranchId?:string|null;
+},client: Prisma.TransactionClient | typeof db): Promise<{correctionId:string;status:"PENDING_APPROVAL"}> {
   if (!Number.isFinite(args.newCountedQuantity) || args.newCountedQuantity < 0) {
     throw new ApiError(400, "الكمية المصححة لازم تكون رقم مش سالب");
   }
 
-  const line = await db.stockCountLine.findUnique({
+  const line = await client.stockCountLine.findUnique({
     where: { id: args.lineId },
     select: {
       ...EFFECTIVE_EVIDENCE_SELECT,
       sessionId: true,
-      session: { select: { id: true, cafeId: true, branchId: true, status: true } },
+      session: { select: { id: true, cafeId: true, branchId: true, status: true, handoverId:true, confirmedById:true } },
     },
   });
   const wrongSession = args.sessionId !== undefined && line?.sessionId !== args.sessionId;
@@ -1331,7 +1504,7 @@ export async function createCountCorrection(args: {
   // tell which one they are looking at.
   const postCustodyTransfer = isCountLocked(line.session);
 
-  const correction = await db.stockCountCorrection.create({
+  const correction = await client.stockCountCorrection.create({
     data: {
       lineId: line.id,
       oldCountedQuantity,
@@ -1345,7 +1518,13 @@ export async function createCountCorrection(args: {
     select: { id: true },
   });
 
-  await audit({
+  if (client !== db && line.session.handoverId && line.session.confirmedById === null && line.session.status === "CONFIRMED") {
+    const handover=await client.handoverSession.findUnique({where:{id:line.session.handoverId},select:{status:true,stockCountSessionId:true}});
+    if(handover?.stockCountSessionId === line.session.id && ["DRAFT","REJECTED","OUTGOING_SUBMITTED","INCOMING_REVIEW"].includes(handover.status)) {
+      await client.stockCountSession.update({where:{id:line.session.id},data:{status:"SUBMITTED",confirmedAt:null,idempotencyKey:null}});
+    }
+  }
+  const entry = {
     cafeId: line.session.cafeId,
     userId: args.actorId,
     action: CORRECTION_CREATED_AUDIT_ACTION,
@@ -1360,7 +1539,8 @@ export async function createCountCorrection(args: {
       note: args.note ?? null,
       postCustodyTransfer,
     },
-  });
+  };
+  if(client === db) await audit(entry); else await auditInTransaction(client as Prisma.TransactionClient,entry);
 
   return { correctionId: correction.id, status: "PENDING_APPROVAL" };
 }
@@ -1380,7 +1560,16 @@ export async function approveCountCorrection(args: {
   cafeId?: string;
   viewerBranchId?: string | null;
 }): Promise<{ correctionId: string; effectiveCountedQuantity: number; varianceQuantity: number }> {
-  const correction = await db.stockCountCorrection.findUnique({
+  const candidate=await db.stockCountCorrection.findUnique({where:{id:args.correctionId},select:{line:{select:{sessionId:true,session:{select:{accountabilityContext:true}}}}}});
+  if(candidate?.line.session.accountabilityContext === "HANDOVER") return db.$transaction(async(tx)=>{
+    await lockHandoverCount(tx,candidate.line.sessionId);
+    await assertHandoverCorrectionRoundOpen(tx,candidate.line.sessionId);
+    return approveCountCorrectionWithClient(args,tx);
+  });
+  return approveCountCorrectionWithClient(args,db);
+}
+async function approveCountCorrectionWithClient(args:{correctionId:string;approvedById:string;cafeId?:string;viewerBranchId?:string|null},client:Prisma.TransactionClient|typeof db):Promise<{correctionId:string;effectiveCountedQuantity:number;varianceQuantity:number}> {
+  const correction = await client.stockCountCorrection.findUnique({
     where: { id: args.correctionId },
     select: {
       id: true,
@@ -1418,7 +1607,7 @@ export async function approveCountCorrection(args: {
   const variance = round3(effective - Number(correction.line.expectedQuantity ?? 0));
   const approvedAt = new Date();
 
-  await db.$transaction(async (tx) => {
+  const writeCorrection=async(tx:Prisma.TransactionClient)=>{
     // Conditional, so two approvals racing move the figure once.
     const claimed = await tx.stockCountCorrection.updateMany({
       where: { id: correction.id, status: "PENDING_APPROVAL" },
@@ -1434,9 +1623,10 @@ export async function approveCountCorrection(args: {
         varianceQuantity: variance,
       },
     });
-  });
+  };
+  if(client === db) await db.$transaction(writeCorrection); else await writeCorrection(client as Prisma.TransactionClient);
 
-  await audit({
+  const entry = {
     cafeId: correction.line.session.cafeId,
     userId: args.approvedById,
     action: CORRECTION_APPROVED_AUDIT_ACTION,
@@ -1450,7 +1640,8 @@ export async function approveCountCorrection(args: {
       varianceQuantity: variance,
       requestedById: correction.actorId,
     },
-  });
+  };
+  if(client === db) await audit(entry); else await auditInTransaction(client as Prisma.TransactionClient,entry);
 
   return { correctionId: correction.id, effectiveCountedQuantity: effective, varianceQuantity: variance };
 }

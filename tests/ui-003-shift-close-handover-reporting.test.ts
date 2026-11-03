@@ -48,71 +48,54 @@ describe("UI-003 the two-stage close is reported honestly", () => {
     assert.match(code, /filter\(\(b\): b is string => typeof b === "string"\)/);
   });
 
+  // HND-UX-004 replaced the POS close dialog and its "settled, not
+  // discharged" notice with a two-screen close (`/close-shift`). The stake is
+  // the same and so is the contract, now held by the screen that submits:
+  // the handover half of the answer decides what comes next, a settled shift
+  // is never announced as finished while materials are owed, every blocker
+  // the server names is shown, and the next state is read from the server.
+  const FLOW = "src/components/pos/shift-close-flow.tsx";
+
   test("the close reads the handover half of the answer", () => {
-    const code = read(CONTROLS);
-
-    // Typed, not dropped.
-    assert.match(code, /handover\?: HandoverOutcome/);
-    assert.match(code, /export type HandoverOutcome/);
-    assert.match(code, /requiredItemCount/);
-    assert.match(code, /configIssue/);
-
-    // And branched on: a required handover must not produce the plain
-    // success message.
-    assert.match(code, /res\.handover\?\.required/);
-    assert.match(code, /setHandoverNotice\(res\.handover\)/);
+    const code = read(FLOW);
+    assert.match(code, /handover\?: \{ required: boolean \}/);
+    // "Not due" is claimed only from the server's own materials decision —
+    // never inferred from "no handover", which is also true when a café does
+    // not count at all. What comes next is then re-read from the server.
+    assert.match(code, /res\.materials && !res\.materials\.due \? \{ notDue:/);
+    assert.match(code, /const next = await onCommitted\(null\);/);
+    // The type stays exported beside the controls for the route's response.
+    assert.match(read(CONTROLS), /export type HandoverOutcome/);
   });
 
-  test("a settled-but-not-discharged close says so, and offers the way out", () => {
-    const code = read(CONTROLS);
-    assert.match(code, /data-testid="handover-required-notice"/);
-    assert.match(code, /t\.shifts\.settledNotDischarged/);
-    assert.match(code, /countAction\(branchId, handoverNotice\.handoverId/, "the notice targets the handover returned by close");
-    assert.match(code, /href=\{action\?\.href \?\? `\/handovers\?branchId=/, "the notice links to the action or branch handovers");
-    assert.match(code, /data-testid="handover-notice-action"/);
-
-    const i18n = read("src/lib/i18n.ts");
-    assert.match(i18n, /settledNotDischarged:/);
-    assert.match(i18n, /handoverStillOwed:/);
-    assert.match(i18n, /goToHandovers:/);
+  test("a settled close with materials owed continues to the materials screen, not to a success message", () => {
+    const code = read(FLOW);
+    assert.match(code, /"التالي: تسليم الخامات"/);
+    assert.match(code, /stage === "MATERIALS"/);
+    assert.match(code, /data-testid="close-materials-step"/);
+    // Done is only ever the server's answer.
+    assert.match(code, /flow\.stage === "DONE" && <DoneStep/);
+    assert.match(code, /تم تسجيل تسليم شيفتك/);
+    // The POS offers the way back to the remaining step after a refresh.
+    assert.match(read(CONTROLS), /data-testid="close-resume-materials"/);
   });
 
-  test("the bare success toast is reserved for a close that really finished", () => {
-    const code = read(CONTROLS);
-    // `lockedSuccess` must live in the else-branch of the handover check.
-    // Asserted positionally because the defect being guarded against is
-    // exactly "this line runs unconditionally".
-    const required = code.indexOf("res.handover?.required");
-    const locked = code.indexOf("t.shifts.lockedSuccess");
-    assert.ok(required > 0, "the handover branch must exist");
-    assert.ok(
-      locked > required,
-      "the success message must come after the handover check, not before it"
-    );
-    assert.match(code, /} else \{[\s\S]{0,160}t\.shifts\.lockedSuccess/);
-  });
-
-  test("a refusal shows every blocker the server named", () => {
-    const code = read(CONTROLS);
+  test("a refusal shows every blocker the server named, beside the action", () => {
+    const code = read(FLOW);
     const clientImports = code.match(/import\s*\{([^}]+)\}\s*from "@\/lib\/client"/)?.[1].split(",").map((name) => name.trim());
     assert.ok(clientImports?.includes("api") && clientImports.includes("blockersOf") && clientImports.includes("money"));
-    assert.match(code, /setBlockers\(blockersOf\(e\)\)/);
-    assert.match(code, /data-testid="close-blockers"/);
-    assert.match(code, /blockers\.map\(/);
-    // Yesterday's obstacles must not be shown against today's attempt.
-    assert.match(code, /setBlockers\(\[\]\)/);
+    assert.match(code, /blockers: e instanceof ApiRequestError \? blockersOf\(e\) : \[\]/);
+    assert.match(code, /failure\.blockers\.map\(/);
+    // Last attempt's obstacles are cleared at the next attempt.
+    assert.match(code, /setFailure\(null\)/);
   });
 
   test("the close does not invent the shift's new state", () => {
-    const code = read(CONTROLS);
-    // A two-stage close leaves the shift AWAITING_HANDOVER rather than
-    // closed. The client asks the server what happened instead of assuming
-    // either outcome.
-    assert.match(code, /await load\(\);/);
-    assert.doesNotMatch(
-      code,
-      /setHandoverNotice\(res\.handover\);[\s\S]{0,200}setActive\(null\)/,
-      "the client must re-read the shift rather than clearing it locally"
-    );
+    const code = read(FLOW);
+    // A lost response may still have committed: the screen asks the server
+    // which step remains instead of assuming success or retrying the money.
+    assert.match(code, /const next = await onCommitted\(null\);/);
+    assert.match(code, /next\.stage !== "MONEY"/);
+    assert.match(code, /\/api\/shifts\/close-flow\?branchId=/);
   });
 });

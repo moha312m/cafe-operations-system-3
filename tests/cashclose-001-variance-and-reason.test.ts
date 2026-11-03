@@ -270,37 +270,44 @@ describe("CASHCLOSE-001 — cash variance is recorded as a fact", () => {
 
   // ───────────────────────────── the reason ──────────────────────────
 
-  test("a shortage without a reason is refused, and the shift stays open", async () => {
+  // HND-UX-004 changed this rule on the owner's instruction: a money
+  // difference is RECORDED and the close continues; an explanation is an
+  // optional note, not a refusal. These three tests used to assert a 400.
+  // What they still hold: nothing is invented — the note stays NULL — and
+  // the difference is not hidden, because its CASH case opens and stays OPEN
+  // for later review.
+
+  test("a shortage without a note is recorded and the close continues; the note stays NULL and the case opens", async () => {
     const d = await drawer();
     const r = await close(fx.cashier.email, d.shiftId, { actualCashAmount: 4970 });
 
-    assert.equal(r.status, 400, r.text);
+    assert.equal(r.status, 200, r.text);
     const row = await shiftRow(d.shiftId);
-    assert.equal(row.status, "OPEN", "a refused close commits nothing");
-    assert.equal(row.actualCashAmount, null);
-    assert.equal(row.cashDifference, null);
-    assert.equal(row.closedAt, null);
-    assert.deepEqual(await cashCases(d.shiftId), []);
+    assert.equal(row.status, "CLOSED");
+    assert.equal(Number(row.cashDifference), -30);
+    assert.equal(row.cashReasonNote, null, "no reason is fabricated");
+    assert.equal((await cashCases(d.shiftId)).length, 1, "the unexplained difference is an open case, not a hidden one");
   });
 
-  test("an overage without a reason is refused too", async () => {
+  test("an overage without a note is recorded the same way", async () => {
     const d = await drawer();
     const r = await close(fx.cashier.email, d.shiftId, { actualCashAmount: 5030 });
 
-    assert.equal(r.status, 400, r.text);
-    assert.equal((await shiftRow(d.shiftId)).status, "OPEN");
+    assert.equal(r.status, 200, r.text);
+    const row = await shiftRow(d.shiftId);
+    assert.equal(Number(row.cashDifference), 30);
+    assert.equal(row.cashReasonNote, null);
   });
 
-  test("a whitespace-only reason is not a reason", async () => {
+  test("a whitespace-only note is stored as no note", async () => {
     const d = await drawer();
     const r = await close(fx.cashier.email, d.shiftId, {
       actualCashAmount: 4970,
       reason: "   \t\n  ",
     });
 
-    assert.equal(r.status, 400, r.text);
+    assert.equal(r.status, 200, r.text);
     const row = await shiftRow(d.shiftId);
-    assert.equal(row.status, "OPEN");
     assert.equal(row.cashReasonNote, null);
   });
 
@@ -597,13 +604,8 @@ describe("CASHCLOSE-001 — cash variance is recorded as a fact", () => {
     });
     try {
       const d = await drawer();
-      const refused = await close(fx.cashier.email, d.shiftId, { actualCashAmount: 4970 });
-      assert.equal(
-        refused.status,
-        400,
-        "a 30 EGP shortage inside a 100 EGP bound STILL needs a reason — there is no tolerance here"
-      );
-
+      // HND-UX-004: no reason is required at any size, so the bound cannot
+      // be what decides; the note is simply recorded when given.
       const ok = await close(fx.cashier.email, d.shiftId, {
         actualCashAmount: 4970,
         reason: "عجز",

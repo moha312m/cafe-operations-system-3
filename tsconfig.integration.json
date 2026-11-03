@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [
+    "src/**/*.ts", "src/**/*.tsx", "src/**/*.mts",
+    "tests/**/*.ts", "tests/**/*.tsx", "tests/**/*.mts",
+    "scripts/**/*.ts", "scripts/**/*.tsx", "scripts/**/*.mts",
+    "prisma/**/*.ts", "prisma/**/*.tsx", "prisma/**/*.mts",
+    "*.ts", "*.tsx", "*.mts",
+    ".next-integration/types/**/*.ts", ".next-integration/dev/types/**/*.ts"
+  ],
+  "exclude": ["node_modules", "artifacts"]
+}

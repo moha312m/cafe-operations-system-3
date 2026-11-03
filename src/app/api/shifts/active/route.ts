@@ -35,7 +35,7 @@ export async function GET(request: NextRequest) {
     const candidates = keys.has("handover.view") && pendingShift?.custodyGateReason === "AWAITING_CUSTODY_TRANSFER"
       ? await db.handoverSession.findMany({
           where: { cafeId: pendingShift.cafeId, branchId, status: { in: ["DRAFT", "REJECTED", "OUTGOING_SUBMITTED", "INCOMING_REVIEW"] }, outgoingStockCustodyId: { not: null } },
-          select: { id: true, branchId: true, status: true, stockCountSessionId: true, outgoingUser: { select: { name: true } }, outgoingShift: { select: { shiftNumber: true } } },
+          select: { id: true, branchId: true, status: true, stockCountSessionId: true, stockCountSession: { select: { status: true } }, outgoingUser: { select: { name: true } }, outgoingShift: { select: { shiftNumber: true } } },
           take: 2,
         }) : [];
     const pendingHandover = selectPendingHandover(candidates, branchId);

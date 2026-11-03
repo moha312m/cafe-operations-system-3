@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { resolvePermissions } from "@/lib/perms/effective";
 import { handleApiError, ApiError, requireActiveSession, resolveReadScope } from "@/lib/api";
-import { buildShiftReport } from "@/lib/shift-report";
+import { buildShiftMaterialsReport, buildShiftReport } from "@/lib/shift-report";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -23,7 +23,9 @@ export async function GET(_request: NextRequest, { params }: Params) {
 
     const report = await buildShiftReport(id, shift.cafeId);
     if (!report) throw new ApiError(409, "التقرير بيجهز بعد قفل الشيفت");
-    return NextResponse.json({ report });
+    // HND-UX-004: the materials evidence beside the money (oversight only here).
+    const materials = await buildShiftMaterialsReport(id, shift.cafeId, { withFigures: true });
+    return NextResponse.json({ report, materials });
   } catch (error) {
     return handleApiError(error);
   }

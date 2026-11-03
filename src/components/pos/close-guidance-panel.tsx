@@ -102,6 +102,7 @@ export function CloseGuidancePanel({ view, source, rechecking, onRecheck, restor
 
 type HandoverView = {
   handoverId: string; status: string; branchId: string; outgoingUserId: string;
+  overview?: { shiftNumber: number; signatures: { outgoingName: string } };
   requiredItems: { inventoryItemId: string; itemNameSnapshot: string; unitSnapshot: string }[];
   count: { sessionId: string; status: string } | null;
 };
@@ -162,7 +163,7 @@ export function PendingCloseBanner({ branchId, refreshKey }: { branchId: string;
     <section data-testid="pending-close-banner" aria-label="حالة الشيفت المقفول ماليًا" className="space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
       <p className="font-medium">{note.shiftNumber ? `شيفت #${note.shiftNumber}: ` : ""}{phase.label}</p>
       <p className="text-xs">{phase.detail}</p>
-      {view && <p data-testid="pending-close-phase">{handoverPhaseLabel(view.status).label}</p>}
+      {view && <p data-testid="pending-close-phase">{handoverPhaseLabel(view.status, { countStatus: view.count?.status ?? null, outgoingName: view.overview?.signatures.outgoingName, outgoingShiftNumber: view.overview?.shiftNumber ?? note.shiftNumber }).label}</p>}
       {view && view.requiredItems.length > 0 && (
         <p data-testid="pending-close-items" className="text-xs">أصناف مطلوب جردها: {view.requiredItems.map((i) => `${i.itemNameSnapshot} (${i.unitSnapshot})`).join(" · ")}</p>
       )}

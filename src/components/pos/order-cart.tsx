@@ -136,8 +136,8 @@ export function OrderCart({
         <div className="space-y-2 border-t pt-3">
           {discountControls}
           {cart.length === 0 ? (
-            <div className="flex min-h-40 flex-col items-center justify-center gap-2 text-center">
-              <span className="text-4xl">🛒</span>
+            <div className="flex min-h-20 flex-col items-center justify-center gap-1.5 py-2 text-center">
+              <span className="text-2xl">🛒</span>
               <p className="text-sm font-medium">{t.pos.cartEmpty}</p>
               <p className="max-w-48 text-xs text-muted-foreground">
                 {t.pos.cartEmptyHint}

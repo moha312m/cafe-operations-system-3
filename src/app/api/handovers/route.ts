@@ -8,6 +8,8 @@ import {
   handleApiError,
 } from "@/lib/api";
 import {
+  finishOutgoingHandover,
+  HandoverCountIncompleteError,
   HandoverSubmitRefusedError,
   listHandoversForViewer,
   startHandoverCount,
@@ -43,6 +45,16 @@ const actionSchema = z.discriminatedUnion("action", [
     .object({
       action: z.literal("submit"),
       handoverId: z.string().min(1, "لازم تحدد التسليم"),
+      cafeId: z.string().optional(),
+    })
+    .strict(),
+  // HND-UX-004 «إنهاء التسليم»: submit the saved count and the handover in one
+  // act. Still no quantity in the body — the lines were saved one by one.
+  z
+    .object({
+      action: z.literal("finish_outgoing"),
+      handoverId: z.string().min(1, "لازم تحدد التسليم"),
+      note: z.string().max(1000).optional(),
       cafeId: z.string().optional(),
     })
     .strict(),
@@ -99,6 +111,17 @@ export async function POST(request: NextRequest) {
       });
     }
 
+    if (body.action === "finish_outgoing") {
+      const finished = await finishOutgoingHandover({
+        handoverId: body.handoverId,
+        actorId: session.id,
+        cafeId,
+        viewerBranchId: session.branchId,
+        note: body.note,
+      });
+      return NextResponse.json(finished);
+    }
+
     const submitted = await submitHandover({
       handoverId: body.handoverId,
       outgoingUserId: session.id,
@@ -114,6 +137,9 @@ export async function POST(request: NextRequest) {
     // Unwrapped here, the way the close route unwraps `HandoverBlockedError`:
     // the aggregate is the feature, and letting it collapse to one message
     // would send a café back to fix one thing at a time.
+    if (error instanceof HandoverCountIncompleteError) {
+      return NextResponse.json({ error: error.message, missingItems: error.itemNames }, { status: error.status });
+    }
     if (error instanceof HandoverSubmitRefusedError) {
       return NextResponse.json(
         {

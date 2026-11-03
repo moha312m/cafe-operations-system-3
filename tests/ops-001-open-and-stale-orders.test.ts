@@ -188,8 +188,8 @@ describe("OPS-001 forgotten orders", () => {
 describe("OPS-001 the screens use these, through the ordinary routes", () => {
   const read = (f: string) => readFileSync(f, "utf8");
 
-  test("the close dialog reads the open orders before the count", () => {
-    const code = read("src/components/pos/shift-controls.tsx");
+  test("the close screen reads the open orders before the count (HND-UX-004 moved it off the POS dialog)", () => {
+    const code = read("src/components/pos/shift-close-flow.tsx");
     assert.match(code, /\/api\/orders\/open-summary\?branchId=/);
     assert.match(code, /data-testid="close-open-orders-notice"/);
   });
