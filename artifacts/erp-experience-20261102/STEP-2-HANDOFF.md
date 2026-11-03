@@ -1,5 +1,20 @@
 # NEXT CUP Step 2A–2C handoff — 2026-11-03
 
+## Runtime closeout — 2026-11-03 Africa/Cairo
+
+**Technical closeout complete. Owner visual acceptance pending.** The original partial handoff below records the state at 7865392. Source correction: 4ec914f166228e9cc8296d6b8dd123a9f49d5bba on codex/nextcup-workspace-redesign-20261102, preserving 6bcdefb and 7865392.
+
+- Reproduced the missing November 1 invoice against the preserved build. The corrected report, CSV and print context use invoiceDate for confirmed purchases. The synthetic invoice dated November 1 and confirmed November 3 appears on November 1 only. The EGP 17.35 settlement stays on November 2 by paidAt.
+- Fixed report branch/category selection when asynchronous options have yet to load. The rapid resubmit check held the older GET, verified both selections while pending, observed cancellation, and returned one correct result for the latest request.
+- Final production build 3CpBRLmpvaT0JJp6jkZ9K, app PID 24440 on 3113. At 21:27 Cairo, the unchanged guard verified localhost:5434, the authorized pgdata, system ID 7693368256609479860, OID 65538, disposable marker, 91 migration checksums and 986 source files. Manifest f38ab10a19ea4a09981f6439dd22b5fe3578de3b3f5bcb3b7f732bf8a7e7ac4e. A resumed disposable postmaster PID 10352 completed normal recovery after the earlier task process exited. No manual data repair.
+- Final targeted suite 21/21, nine live report groups passed. The first final test invocation omitted the fixture configuration and failed at its fixture guard. It passed with the retained fixture configuration. Browser acceptance includes 18 final-build captures at 1440/360/390 CSS pixels with no page-wide horizontal overflow, detail drill-down, and the rapid resubmit check. Prior closeout build evidence covers focus/back, shift drill-down, empty/loading/error/timeout/retry and browser CSV downloads. XLSX and A4 print HTML were inspected as actual output artifacts. Physical devices and printer output were outside this check.
+- Runtime evidence includes 61 results (30/30/1), page CSV 30 versus full 61, exact 0012 vs 12, 40% contribution, and EGP 9,915 matching the canonical daily total. Tenant, branch, cost/customer permissions and old output tokens were exercised. The retained POS receipt was audited and POS accepted a synthetic item into an unsubmitted cart. Report runs and receipt checks preserved business money, order, stock and GL counts.
+- Preview: [SKU](http://localhost:3113/reports/product-sales?branchId=wr_s2c_20261103_branch&from=2026-11-01&to=2026-11-02&q=0012), [purchase date regression](http://localhost:3113/reports/purchase-sales?branchId=wr_768a4910b7034ed5b6737e05b6930456&from=2026-11-01&to=2026-11-01&q=STEP2C-DATE-20261103), [report center](http://localhost:3113/report-center). Uses the retained synthetic workspace session.
+- Evidence: local step2-closeout/verification.json and runtime logs in this worktree. Final screenshots and browser matrix are in C:/Dev/cafe-operations-system-3/artifacts/erp-experience-20261102/step2-closeout/screenshots/final. State captures and rapid-scope proof are in its parent directory. The older stale-protected image records the pre-fix result.
+- Owner database untouched. No push, main merge, Railway action or deployment. Closeout stops at Step 2C.
+
+## Original Step 2 handoff
+
 Status: **PARTIALLY COMPLETE**. Local implementation exists; dedicated runtime/browser acceptance is **UNVERIFIED**, owner visual acceptance **PENDING**. Do not promote static or pure evidence to runtime acceptance.
 
 ## Target and boundaries
@@ -66,7 +81,7 @@ Independent completed Payment legs retain their stable IDs, paidAt event time, r
 
 ### Purchase & Sale
 
-Separate recognized sale events and CONFIRMED purchase invoices dated confirmedAt; source invoiceDate remains in the existing invoice detail. Customer collections and supplier paidAt settlements are separate measures. Both purchase view and cost permissions and inventory/purchasing feature flags are required before data/output. No sales-minus-purchases profit measure, invented consumption cost, new valuation or P&L posting.
+Separate recognized sale events and CONFIRMED purchase invoices filtered and displayed by invoiceDate, including exports. Customer collections and supplier paidAt settlements are separate measures. Both purchase view and cost permissions and inventory/purchasing feature flags are required before data/output. No sales-minus-purchases profit measure, invented consumption cost, new valuation or P&L posting.
 
 ### Staff
 
