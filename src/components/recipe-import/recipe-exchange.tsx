@@ -12,8 +12,8 @@ type RawRow = Record<string, string | number | boolean | null>;
 type RecipeSide = { items: { ingredient: string; branch: string; quantity: string; unit: string; waste: string }[]; all: boolean; reason: string | null };
 type ExportChoice = { id: string; name: string; kind: "productId" | "addOnId" };
 type Preview = {
-  rows: { rowNumber: number; errors: string[] }[];
-  groups: { name: string; scope: string; action: string; requiresConfirmation: boolean; before: RecipeSide | null; after: RecipeSide | null }[];
+  rows: { rowNumber: number; slot?: number | null; errors: string[] }[];
+  groups: { name: string; scope: string; action: string; requiresConfirmation: boolean; before: RecipeSide | null; after: RecipeSide | null; removed: RecipeSide["items"] }[];
   stats: { total: number; errors: number; recipes: number; totals: Record<string, number> };
   previewToken: string;
 };
@@ -42,16 +42,17 @@ export function RecipeExchange({ onImported, choices }: { onImported: () => void
   const [summary, setSummary] = useState<{ created: number; replaced: number; unchanged: number; skipped: number } | null>(null);
   const input = useRef<HTMLInputElement>(null);
   function reset() { setAcknowledgeLegacy(false); setReview([]); setRows([]); setFileName(""); setMode(null); setPreview(null); setError(null); setSummary(null); }
-  async function download(template: boolean, selectedOnly = false) {
+  async function download(template: boolean, selectedOnly = false, slots = false) {
     setBusy(true);
     try {
       const params = new URLSearchParams(template ? { template: "1" } : {});
+      if (slots) params.set("layout", "slots");
       if (selectedOnly) for (const choice of choices.filter(choice => selected.includes(choice.id))) params.append(choice.kind, choice.id);
       if (selectedOnly && !params.size) return;
       const response = await fetch("/api/recipe-import/export?" + params);
       if (!response.ok) { const body = await response.json(); throw new Error(body.error ?? "تعذر تحميل الملف"); }
       const url = URL.createObjectURL(await response.blob());
-      const link = document.createElement("a"); link.href = url; link.download = template ? "recipes-template.xlsx" : "recipes-export.xlsx";
+      const link = document.createElement("a"); link.href = url; link.download = slots ? "recipe-template.xlsx" : template ? "recipes-template.xlsx" : "recipes-export.xlsx";
       document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(url);
     } catch (e) { toast.error(e instanceof Error ? e.message : "تعذر تحميل الملف"); }
     finally { setBusy(false); }
@@ -101,13 +102,13 @@ export function RecipeExchange({ onImported, choices }: { onImported: () => void
       </DialogContent>
     </Dialog>
     <Button size="sm" variant="outline" disabled={busy} onClick={() => void download(false)}>تصدير كل الوصفات Excel</Button>
-    <Button size="sm" variant="outline" disabled={busy} onClick={() => void download(true)}>تحميل قالب الوصفات</Button>
+    <Button size="sm" variant="outline" disabled={busy} onClick={() => void download(true, false, true)}>تحميل قالب Excel للوصفات</Button>
     <Button size="sm" disabled={busy} onClick={() => { reset(); setOpen(true); }}>استيراد الوصفات</Button>
     <Dialog open={open} onOpenChange={next => { if (!busy) setOpen(next); }}>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-4xl" dir="rtl">
         <DialogHeader><DialogTitle>استيراد وصفات Excel / CSV</DialogTitle></DialogHeader>
         <p className="text-sm text-muted-foreground">أدخل المكونات والكميات الفعلية لكل وحدة مباعة. الاستيراد يخص الوصفات فقط؛ تبقى الأسعار والتكاليف والمخزون كما هي. الوصفات الجديدة أو المتغيرة تحتاج تأكيدًا بعد المراجعة.</p>
-        <div className="flex flex-wrap gap-2"><Button variant="outline" disabled={busy} onClick={() => void download(true)}>تحميل القالب والمراجع</Button>
+        <div className="flex flex-wrap gap-2"><Button variant="outline" disabled={busy} onClick={() => void download(true, false, true)}>تحميل قالب Excel والمراجع</Button>
           <input ref={input} type="file" accept=".xlsx,.csv" disabled={busy} className="hidden" onChange={e => { const file = e.target.files?.[0]; if (file) void readFile(file); }} />
           <Button variant="outline" disabled={busy} onClick={() => input.current?.click()}>اختيار ملف</Button><span className="min-w-0 break-all self-center text-sm" dir="auto">{fileName}</span>
         </div>
@@ -125,8 +126,8 @@ export function RecipeExchange({ onImported, choices }: { onImported: () => void
           <p className="text-sm">{preview.stats.total} صف — {preview.stats.recipes} وصفة — {preview.stats.errors} صف به أخطاء</p>
           <p className="text-sm">جديدة {preview.stats.totals.CREATE} · متغيرة {preview.stats.totals.REPLACE} · بدون تغيير {preview.stats.totals.UNCHANGED} · متجاوزة {preview.stats.totals.SKIP} · وصفات بها أخطاء {preview.stats.totals.ERROR}</p>
           {!!preview.stats.errors && <p className="text-sm text-destructive">صحح كل الأخطاء في الملف وأعد رفعه. لا يتم استيراد أي وصفة من ملف به أخطاء.</p>}
-          <div className="max-h-64 overflow-auto rounded-lg border"><Table><TableHeader><TableRow><TableHead>الصنف</TableHead><TableHead>النطاق</TableHead><TableHead>النتيجة</TableHead><TableHead>قبل</TableHead><TableHead>بعد</TableHead></TableRow></TableHeader><TableBody>{preview.groups.map((g, i) => <TableRow key={i}><TableCell>{g.name}</TableCell><TableCell>{g.scope}</TableCell><TableCell>{actions[g.action] ?? g.action}{g.requiresConfirmation && ["CREATE", "REPLACE"].includes(g.action) ? " — يحتاج تأكيدًا جديدًا" : ""}</TableCell><TableCell><RecipeIngredients recipe={g.before} /></TableCell><TableCell><RecipeIngredients recipe={g.after} /></TableCell></TableRow>)}</TableBody></Table></div>
-          <ul className="max-h-48 overflow-auto space-y-1 text-sm text-destructive">{preview.rows.filter(r => r.errors.length).map(r => <li key={r.rowNumber}>صف {r.rowNumber}: {r.errors.join("؛ ")}</li>)}</ul>
+          <div className="max-h-64 overflow-auto rounded-lg border"><Table><TableHeader><TableRow><TableHead>الصنف</TableHead><TableHead>النطاق</TableHead><TableHead>النتيجة</TableHead><TableHead>قبل</TableHead><TableHead>بعد</TableHead></TableRow></TableHeader><TableBody>{preview.groups.map((g, i) => <TableRow key={i}><TableCell>{g.name}</TableCell><TableCell>{g.scope}</TableCell><TableCell>{actions[g.action] ?? g.action}{g.requiresConfirmation && ["CREATE", "REPLACE"].includes(g.action) ? " — يحتاج تأكيدًا جديدًا" : ""}</TableCell><TableCell><RecipeIngredients recipe={g.before} /></TableCell><TableCell><RecipeIngredients recipe={g.after} />{g.removed.length > 0 && <p className="text-destructive">سيُحذف: {g.removed.map(item => item.ingredient).join("، ")}</p>}</TableCell></TableRow>)}</TableBody></Table></div>
+          <ul className="max-h-48 overflow-auto space-y-1 text-sm text-destructive">{preview.rows.filter(r => r.errors.length).map(r => <li key={`${r.rowNumber}-${r.slot ?? 0}`}>صف {r.rowNumber}{r.slot ? `، المكون ${r.slot}` : ""}: {r.errors.join("؛ ")}</li>)}</ul>
           <Button disabled={busy || !!preview.stats.errors || !preview.previewToken} onClick={() => void commit()}>{busy ? "جارٍ الاستيراد…" : mode === "replace" ? "تأكيد الاستبدال والاستيراد" : "تأكيد استيراد الجديد فقط"}</Button>
         </div>}
       </DialogContent>

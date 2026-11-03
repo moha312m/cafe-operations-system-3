@@ -5,12 +5,20 @@ import { db } from "@/lib/db";
 import { ApiError, handleApiError, resolveCafeId } from "@/lib/api";
 import { requireRecipeCafe } from "@/lib/recipe-access";
 import { exportedRecipeRows, recipeCatalog, RECIPE_COLUMNS } from "@/lib/recipe-import";
+import { buildRecipeTemplate } from "@/lib/recipe-template";
 export async function GET(request: NextRequest) {
   try {
     const session = await requireRecipeCafe();
     const cafeId = resolveCafeId(session, request.nextUrl.searchParams.get("cafeId"));
     const template = request.nextUrl.searchParams.get("template") === "1";
     const catalog = await db.$transaction(tx => recipeCatalog(tx, cafeId), { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+    if (template && request.nextUrl.searchParams.get("layout") === "slots") {
+      return new NextResponse(new Uint8Array(buildRecipeTemplate(catalog)), { headers: {
+        "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "Content-Disposition": 'attachment; filename="recipe-template.xlsx"',
+        "Cache-Control": "no-store",
+      } });
+    }
     const productIds = new Set(request.nextUrl.searchParams.getAll("productId"));
     const addOnIds = new Set(request.nextUrl.searchParams.getAll("addOnId"));
     const selected = productIds.size + addOnIds.size > 0;

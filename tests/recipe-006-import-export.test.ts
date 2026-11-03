@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { after, afterEach, beforeEach, describe, test } from "node:test";
 import * as XLSX from "xlsx";
+import { parseRecipeFile } from "@/lib/recipe-file";
 import { recipeFingerprint } from "@/lib/recipes";
 import { db, tag, testIngredients, teardownTaggedCafe } from "./helpers/db";
 import { as, BASE, requireServer } from "./helpers/http";
@@ -216,6 +217,67 @@ describe("RECIPE-006 bounded spreadsheet exchange", () => {
       await db.$executeRawUnsafe('DROP FUNCTION IF EXISTS ' + fn + '()');
       await cleanup(c);
     }
+  });
+
+  test("12-slot template round-trips nine ingredients, preserves SKU text, and guards replacement", async () => {
+    const c = await setup();
+    try {
+      await db.product.update({ where: { id: c.product.id }, data: { sku: "0012" } });
+      await db.product.create({ data: { cafeId: c.fx.cafeId, categoryId: c.product.categoryId, name: "Resale", sku: "0013", basePrice: 30, stockMode: "FINISHED_GOOD" } });
+      const extra = await Promise.all(Array.from({ length: 8 }, (_, index) => db.inventoryItem.create({
+        data: { cafeId: c.fx.cafeId, branchId: index % 2 ? c.branch.id : c.fx.otherBranchId, name: "Ingredient " + Math.floor(index / 2), unit: "GRAM" },
+      })));
+      const getTemplate = async () => {
+        const response = await fetch(BASE + "/api/recipe-import/export?template=1&layout=slots", { headers: { cookie } });
+        assert.equal(response.status, 200);
+        return response.arrayBuffer();
+      };
+      const bytes = await getTemplate();
+      const workbook = XLSX.read(bytes, { type: "array", bookFiles: true }) as XLSX.WorkBook & { files: Record<string, { content: Buffer }> };
+      const xml = Buffer.from(workbook.files["xl/worksheets/sheet1.xml"].content).toString();
+      assert.match(xml, /xSplit="2" ySplit="1"/);
+      assert.match(xml, /dataValidations count="24"/);
+      assert.match(xml, /sqref="AJ2:AJ2"><formula1>RecipeIngredients/);
+      assert.match(xml, /sqref="AL2:AL2"><formula1>RecipeUnits/);
+      assert.match(Buffer.from(workbook.files["xl/workbook.xml"].content).toString(), /name="RecipeIngredients">Ingredients!/);
+      assert.deepEqual(XLSX.utils.sheet_to_json<{ Unit: string }>(workbook.Sheets.Units).map(row => row.Unit).slice(0, 2).sort(), ["GRAM", "KG"]);
+      const sheet = workbook.Sheets.Recipes;
+      assert.equal(sheet.A2.v, "0012");
+      assert.equal(sheet.A2.t, "s");
+      assert.equal(sheet.A3, undefined);
+      for (const [index, ingredient] of extra.entries()) {
+        const start = 5 + index * 3;
+        sheet[XLSX.utils.encode_cell({ r: 1, c: start })] = { t: "s", v: ingredient.name + " [" + ingredient.id + "]" };
+        sheet[XLSX.utils.encode_cell({ r: 1, c: start + 1 })] = { t: "n", v: index === 0 ? 0.25 : 1.125 };
+        sheet[XLSX.utils.encode_cell({ r: 1, c: start + 2 })] = { t: "s", v: index === 0 ? "KG" : "GRAM" };
+      }
+      const rows = parseRecipeFile(XLSX.write(workbook, { bookType: "xlsx", type: "array" }));
+      assert.equal(rows.length, 9);
+      const original = await current(c);
+      const bad = rows.map((line, index) => index === 8 ? { ...line, unit: "ML", quantity: "" } : line);
+      const invalid = await preview(bad);
+      assert.equal(invalid.stats.errors, 1);
+      assert.equal(invalid.rows[8].rowNumber, 2);
+      assert.equal((invalid.rows[8] as { slot?: number }).slot, 9);
+      assert.ok((await apply(bad, invalid)).status >= 400);
+      assert.deepEqual(await current(c), original);
+      const proposal = await preview(rows);
+      assert.equal(proposal.stats.errors, 0);
+      const applied = await apply(rows, proposal);
+      assert.equal(applied.status, 200, applied.text);
+      assert.deepEqual((await apply(rows, proposal)).body, applied.body);
+      const saved = await current(c);
+      assert.equal(saved.items.length, 9);
+      assert.equal(saved.appliesToAllVariants, true);
+      const converted = saved.items.find(item => item.inventoryItemId === extra[0].id);
+      assert.equal(converted?.unit, "GRAM");
+      assert.equal(Number(converted?.quantity), 250);
+      const returned = parseRecipeFile(await getTemplate());
+      const inGrams = returned.find(line => line.inventoryItemId === extra[0].id);
+      assert.equal(inGrams?.quantity, 250);
+      assert.equal(inGrams?.unit, "GRAM");
+      assert.equal((await preview(returned)).stats.errors, 0);
+    } finally { await cleanup(c); }
   });
 
   test("recipe capability is required for export, preview and apply", async () => {

@@ -6,10 +6,10 @@ import { db } from "@/lib/db";
 import { ApiError } from "@/lib/api";
 import { resolveAuthSecret } from "@/lib/auth";
 import { auditInTransaction } from "@/lib/audit";
-import { unitsCompatible } from "@/lib/costing";
+import { convertQuantity, unitsCompatible } from "@/lib/costing";
 import { recipeFingerprint } from "@/lib/recipes";
 
-export const RECIPE_COLUMNS = ["exportBaseline", "recipeId", "scope", "productId", "productSku", "productName", "variantId", "variantName", "addOnId", "addOnName", "inventoryItemId", "ingredientName", "ingredientBranchId", "ingredientBranchName", "quantity", "unit", "wastePercentage", "appliesToAllVariants", "notApplicable", "notApplicableReason"] as const;
+export const RECIPE_COLUMNS = ["excelRow", "excelSlot", "exportBaseline", "recipeId", "scope", "productId", "productSku", "productName", "variantId", "variantName", "addOnId", "addOnName", "inventoryItemId", "ingredientName", "ingredientBranchId", "ingredientBranchName", "quantity", "unit", "wastePercentage", "appliesToAllVariants", "notApplicable", "notApplicableReason"] as const;
 export const MAX_RECIPE_ROWS = 1000;
 export const recipeImportSchema = z.object({
   rows: z.array(z.record(z.string().max(80), z.union([z.string().max(1000), z.number().finite(), z.boolean(), z.null()]))).min(1).max(MAX_RECIPE_ROWS).refine(rows => rows.every(row => Object.keys(row).length <= 32), "الحد 32 عمودًا لكل صف"),
@@ -24,7 +24,7 @@ type RawRow = RecipeImportInput["rows"][number];
 type Connection = Prisma.TransactionClient;
 export async function recipeCatalog(tx: Connection, cafeId: string) {
   const [products, addOns, ingredients, branches, recipes] = await Promise.all([
-    tx.product.findMany({ where: { cafeId }, orderBy: { id: "asc" }, select: { id: true, sku: true, name: true, isActive: true, variants: { orderBy: { id: "asc" }, select: { id: true, name: true, isActive: true } } } }),
+    tx.product.findMany({ where: { cafeId }, orderBy: { id: "asc" }, select: { id: true, sku: true, name: true, isActive: true, isAvailable: true, stockMode: true, variants: { orderBy: { id: "asc" }, select: { id: true, name: true, isActive: true } } } }),
     tx.addOn.findMany({ where: { cafeId }, orderBy: { id: "asc" }, select: { id: true, name: true, isActive: true } }),
     tx.inventoryItem.findMany({ where: { cafeId }, orderBy: { id: "asc" }, select: { id: true, name: true, branchId: true, unit: true, isActive: true, archivedAt: true } }),
     tx.branch.findMany({ where: { cafeId }, orderBy: { id: "asc" }, select: { id: true, name: true, isActive: true } }),
@@ -32,7 +32,7 @@ export async function recipeCatalog(tx: Connection, cafeId: string) {
   ]);
   return { products, addOns, ingredients, branches, recipes };
 }
-type Catalog = Awaited<ReturnType<typeof recipeCatalog>>;
+export type Catalog = Awaited<ReturnType<typeof recipeCatalog>>;
 type Recipe = Catalog["recipes"][number];
 type Line = { inventoryItemId: string; quantity: number; unit: InventoryUnit; wastePercentage: number };
 type Group = { key: string; scope: string; productId: string | null; variantId: string | null; addOnId: string | null; name: string; appliesToAllVariants: boolean; notApplicable: boolean; notApplicableReason: string | null; items: Line[]; rowIndexes: number[]; existing: Recipe | undefined };
@@ -68,13 +68,14 @@ function material(group: Pick<Group, "items" | "appliesToAllVariants" | "notAppl
 function changed(group: Group) { return !group.existing || material(group) !== material({ ...group.existing, items: group.existing.items.map(i => ({ inventoryItemId: i.inventoryItemId, quantity: Number(i.quantity), unit: i.unit, wastePercentage: Number(i.wastePercentage) })) }); }
 
 export function validateRecipeImport(input: RecipeImportInput, catalog: Catalog) {
-  const rows = input.rows.map((raw, index) => ({ rowNumber: index + 2, errors: [] as string[], raw }));
+  const rows = input.rows.map((raw, index) => ({ rowNumber: Number.isInteger(raw.excelRow) && Number(raw.excelRow) >= 2 ? Number(raw.excelRow) : index + 2, slot: Number.isInteger(raw.excelSlot) ? Number(raw.excelSlot) : null, errors: [] as string[], raw }));
   const groups = new Map<string, Group>();
   for (const [index, row] of rows.entries()) {
     const r = row.raw, errors = row.errors, scope = text(r.scope);
     for (const key of Object.keys(r)) if (!(RECIPE_COLUMNS as readonly string[]).includes(key)) errors.push("عمود غير معروف: " + key);
     if (!["PRODUCT_DEFAULT", "VARIANT", "ADDON"].includes(scope)) errors.push("scope: اختر PRODUCT_DEFAULT أو VARIANT أو ADDON");
-    const all = bool(r.appliesToAllVariants, "appliesToAllVariants", errors), na = bool(r.notApplicable, "notApplicable", errors);
+    let all = bool(r.appliesToAllVariants, "appliesToAllVariants", errors);
+    const na = bool(r.notApplicable, "notApplicable", errors);
     const reason = text(r.notApplicableReason) || null;
     let product: Catalog["products"][number] | undefined, variant: Catalog["products"][number]["variants"][number] | undefined, addon: Catalog["addOns"][number] | undefined;
     if (scope === "ADDON") {
@@ -91,6 +92,7 @@ export function validateRecipeImport(input: RecipeImportInput, catalog: Catalog)
       if (scope === "VARIANT") variant = resolve(product?.variants ?? [], r.variantId, r.variantName, "الحجم التابع للمنتج", errors);
       else if (text(r.variantId) || text(r.variantName)) errors.push("الوصفة الافتراضية لا تقبل حجمًا");
     }
+    if (product?.stockMode === "FINISHED_GOOD") errors.push("الصنف المعد لإعادة البيع خارج نطاق الوصفات");
     if (all && scope !== "PRODUCT_DEFAULT") errors.push("تعميم الأحجام متاح للوصفة الافتراضية فقط");
     if (product && !product.isActive || variant && !variant.isActive || addon && !addon.isActive) errors.push("الصنف غير نشط");
     let line: Line | undefined;
@@ -108,9 +110,17 @@ export function validateRecipeImport(input: RecipeImportInput, catalog: Catalog)
       const unit = text(r.unit) as InventoryUnit;
       if (!Object.values(InventoryUnit).includes(unit)) errors.push("وحدة المكون غير معروفة");
       else if (ingredient && !unitsCompatible(unit, ingredient.unit)) errors.push("الوحدة غير متوافقة مع وحدة تخزين المكون");
-      const quantity = decimal(r.quantity, 3, 0.001, 999999999.999, "الكمية", errors);
+      const quantity = decimal(r.quantity, row.slot === null ? 3 : 9, row.slot === null ? 0.001 : 0.000000001, 999999999.999, "الكمية", errors);
       const wastePercentage = decimal(r.wastePercentage, 2, 0, 100, "الهدر", errors);
-      if (ingredient) line = { inventoryItemId: ingredient.id, quantity, unit, wastePercentage };
+      if (ingredient) {
+        const normalize = row.slot !== null && unitsCompatible(unit, ingredient.unit) && Object.values(InventoryUnit).includes(unit);
+        const converted = normalize ? convertQuantity(quantity, unit, ingredient.unit) : quantity;
+        const rounded = Number(converted.toFixed(3));
+        if (normalize && (rounded < 0.001 || rounded > 999999999.999 || Math.abs(converted - rounded) > 1e-9)) {
+          errors.push("الكمية بعد التحويل لا يمكن حفظها بدقة ثلاث منازل عشرية");
+        }
+        line = { inventoryItemId: ingredient.id, quantity: normalize ? rounded : quantity, unit: normalize ? ingredient.unit : unit, wastePercentage };
+      }
     }
     const productId = product?.id ?? null, variantId = variant?.id ?? null, addOnId = addon?.id ?? null;
     const key = scope + ":" + (scope === "ADDON" ? addOnId : productId) + ":" + (variantId ?? "");
@@ -118,6 +128,13 @@ export function validateRecipeImport(input: RecipeImportInput, catalog: Catalog)
     if (existingMatches.length > 1) errors.push("نطاق الوصفة ملتبس");
     const existing = existingMatches[0];
     if (text(r.recipeId) && (!existing || existing.id !== text(r.recipeId))) errors.push("معرف الوصفة لا يطابق النطاق المحدد");
+    if (row.slot !== null && scope === "PRODUCT_DEFAULT") {
+      all = existing?.appliesToAllVariants ?? !!product?.variants.some(variant => variant.isActive);
+    }
+    if (row.slot !== null && line && existing) {
+      const prior = existing.items.find(item => item.inventoryItemId === line?.inventoryItemId);
+      if (prior) line.wastePercentage = Number(prior.wastePercentage);
+    }
     const baseline = text(r.exportBaseline);
     if (baseline && (!existing || baseline !== exportBaseline(existing, existing.cafeId))) {
       errors.push("تغيرت الوصفة منذ التصدير أو أن الملف من كافيه آخر. صدّر الوصفة مجددًا.");
@@ -146,7 +163,7 @@ function stable(value: unknown): unknown {
   return value;
 }
 function digest(value: unknown) { return createHash("sha256").update(JSON.stringify(stable(value))).digest("hex"); }
-function exportBaseline(recipe: Recipe, cafeId: string) {
+export function exportBaseline(recipe: Recipe, cafeId: string) {
   return "v2." + createHmac("sha256", resolveAuthSecret())
     .update("recipe-export:" + cafeId + ":" + digest(recipe)).digest("base64url");
 }
@@ -183,11 +200,12 @@ function previewShape(input: RecipeImportInput, catalog: Catalog, userId: string
     const before = group.existing ? { items: describe(group.existing.items), all: group.existing.appliesToAllVariants, reason: group.existing.notApplicableReason } : null;
     const proposed = { items: describe(group.items), all: group.appliesToAllVariants, reason: group.notApplicableReason };
     return { name: group.name, scope: group.scope, recipeId: group.existing?.id ?? null, action,
-      before, after: action === "SKIP" ? before : proposed, requiresConfirmation: action === "CREATE" || action === "REPLACE" };
+      before, after: action === "SKIP" ? before : proposed,
+      removed: action === "REPLACE" ? describe(group.existing!.items.filter(item => !group.items.some(line => line.inventoryItemId === item.inventoryItemId))) : [], requiresConfirmation: action === "CREATE" || action === "REPLACE" };
   });
   const totals = Object.fromEntries(["CREATE", "REPLACE", "UNCHANGED", "SKIP", "ERROR"].map(action => [action, groups.filter(group => group.action === action).length]));
   return {
-    rows: validated.rows.map(r => ({ rowNumber: r.rowNumber, errors: r.errors })),
+    rows: validated.rows.map(r => ({ rowNumber: r.rowNumber, slot: r.slot, errors: r.errors })),
     groups,
     stats: { total: input.rows.length, errors, recipes: groups.length, totals },
     previewToken: errors ? "" : makeToken(userId, cafeId, input, catalog),
