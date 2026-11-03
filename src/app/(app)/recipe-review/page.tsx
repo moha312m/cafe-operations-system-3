@@ -219,7 +219,11 @@ export default function RecipeReviewPage() {
         <Button size="sm" variant="outline" onClick={() => void load()} disabled={busy}>
           ↻ تحديث
         </Button>
-        {canManageRecipes && <RecipeExchange onImported={load} />}
+        {canManageRecipes && <RecipeExchange onImported={load} choices={[
+          ...Array.from(new Map((data?.rows ?? []).filter(row => row.recipeId || row.defaultRecipeId)
+            .map(row => [row.productId, { id: row.productId, name: row.productName, kind: "productId" as const }])).values()),
+          ...(data?.addOns ?? []).filter(row => row.recipeId).map(row => ({ id: row.addOnId, name: row.addOnName, kind: "addOnId" as const })),
+        ]} />}
       </PageHeader>
 
       <div className="mb-4 grid grid-cols-2 gap-2 lg:grid-cols-4">

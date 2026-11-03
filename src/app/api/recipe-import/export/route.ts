@@ -1,8 +1,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 import * as XLSX from "xlsx";
-import { Prisma } from "@prisma/client";
+import { InventoryUnit, Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
-import { handleApiError, resolveCafeId } from "@/lib/api";
+import { ApiError, handleApiError, resolveCafeId } from "@/lib/api";
 import { requireRecipeCafe } from "@/lib/recipe-access";
 import { exportedRecipeRows, recipeCatalog, RECIPE_COLUMNS } from "@/lib/recipe-import";
 export async function GET(request: NextRequest) {
@@ -11,19 +11,35 @@ export async function GET(request: NextRequest) {
     const cafeId = resolveCafeId(session, request.nextUrl.searchParams.get("cafeId"));
     const template = request.nextUrl.searchParams.get("template") === "1";
     const catalog = await db.$transaction(tx => recipeCatalog(tx, cafeId), { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+    const productIds = new Set(request.nextUrl.searchParams.getAll("productId"));
+    const addOnIds = new Set(request.nextUrl.searchParams.getAll("addOnId"));
+    const selected = productIds.size + addOnIds.size > 0;
+    if (productIds.size + addOnIds.size > 1000 || [...productIds].some(id => !catalog.products.some(product => product.id === id)) ||
+        [...addOnIds].some(id => !catalog.addOns.some(addOn => addOn.id === id))) {
+      throw new ApiError(400, "اختر أصنافًا وإضافات من الكافيه الحالي");
+    }
+    const recipes = selected ? catalog.recipes.filter(recipe =>
+      (recipe.productId && productIds.has(recipe.productId)) || (recipe.addOnId && addOnIds.has(recipe.addOnId))) : catalog.recipes;
     const book = XLSX.utils.book_new();
     const rows: Record<string, unknown>[] = template ? [...catalog.products.flatMap(p => [
-      { scope: "PRODUCT_DEFAULT", productId: p.id, productName: p.name, appliesToAllVariants: false, notApplicable: false },
-      ...p.variants.map(v => ({ scope: "VARIANT", productId: p.id, productName: p.name, variantId: v.id, variantName: v.name, appliesToAllVariants: false, notApplicable: false })),
-    ]), ...catalog.addOns.map(a => ({ scope: "ADDON", addOnId: a.id, addOnName: a.name, appliesToAllVariants: false, notApplicable: false }))] : exportedRecipeRows(catalog);
+      { scope: "PRODUCT_DEFAULT", productId: p.id, productSku: p.sku ?? "", productName: p.name, appliesToAllVariants: false, notApplicable: false },
+      ...p.variants.map(v => ({ scope: "VARIANT", productId: p.id, productSku: p.sku ?? "", productName: p.name, variantId: v.id, variantName: v.name, appliesToAllVariants: false, notApplicable: false })),
+    ]), ...catalog.addOns.map(a => ({ scope: "ADDON", addOnId: a.id, addOnName: a.name, appliesToAllVariants: false, notApplicable: false }))] : exportedRecipeRows({ ...catalog, recipes });
+    if (selected && !rows.length) throw new ApiError(400, "لا توجد وصفات محفوظة للأصناف المحددة");
     const sheet = XLSX.utils.json_to_sheet(rows, { header: [...RECIPE_COLUMNS] });
+    const baselineColumn = RECIPE_COLUMNS.indexOf("exportBaseline");
     sheet["!cols"] = RECIPE_COLUMNS.map(k => ({ wch: k.endsWith("Id") ? 28 : 24 }));
+    sheet["!cols"][baselineColumn] = { hidden: true };
     XLSX.utils.book_append_sheet(book, sheet, "Recipes");
     XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(catalog.ingredients.map(i => ({ inventoryItemId: i.id, ingredientName: i.name, ingredientBranchId: i.branchId, ingredientBranchName: catalog.branches.find(b => b.id === i.branchId)?.name ?? "", storageUnit: i.unit, active: i.isActive && !i.archivedAt }))), "Ingredients");
-    XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(catalog.products.flatMap(p => [ { productId: p.id, productName: p.name, variantId: "", variantName: "", active: p.isActive }, ...p.variants.map(v => ({ productId: p.id, productName: p.name, variantId: v.id, variantName: v.name, active: p.isActive && v.isActive })) ])), "Products");
+    XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(catalog.products.flatMap(p => [ { productId: p.id, productSku: p.sku ?? "", productName: p.name, variantId: "", variantName: "", active: p.isActive }, ...p.variants.map(v => ({ productId: p.id, productSku: p.sku ?? "", productName: p.name, variantId: v.id, variantName: v.name, active: p.isActive && v.isActive })) ])), "Products");
     XLSX.utils.book_append_sheet(book, XLSX.utils.json_to_sheet(catalog.addOns.map(a => ({ addOnId: a.id, addOnName: a.name, active: a.isActive }))), "AddOns");
+    XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([["unit"], ...Object.values(InventoryUnit).map(unit => [unit])]), "Units");
     XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([
-      ["تعليمات"],
+      ["تعليمات — إصدار 2"],
+      [selected ? "النطاق: الأصناف المحددة" : template ? "النطاق: قالب" : "النطاق: كل الوصفات المحفوظة"],
+      ["عدّل المكون والكمية والوحدة والهدر في Recipes. اترك المعرفات وبصمة التصدير كما هي. SKU نص وقد يبدأ بصفر."],
+      ["إذا تجاوز الملف 1000 صف، صدّر مجموعات أصغر واستورد كل ملف على حدة."],
       ["عدّل ورقة Recipes فقط. أوراق Ingredients وProducts وAddOns مراجع للمعرفات والأسماء."],
       ["الكمية لكل وحدة مباعة، ودقتها 3 منازل عشرية. الهدر من 0 إلى 100 بدقة منزلتين. أدخل القيم الفعلية ولا تخمّن الكميات."],
       ["الوحدات: GRAM, KG, ML, LITER, PIECE, BOX, BAG. اختر وحدة متوافقة مع وحدة تخزين المكون."],

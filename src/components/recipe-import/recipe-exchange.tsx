@@ -9,14 +9,29 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 
 type Mode = "replace" | "new-only";
 type RawRow = Record<string, string | number | boolean | null>;
+type RecipeSide = { items: { ingredient: string; branch: string; quantity: string; unit: string; waste: string }[]; all: boolean; reason: string | null };
+type ExportChoice = { id: string; name: string; kind: "productId" | "addOnId" };
 type Preview = {
   rows: { rowNumber: number; errors: string[] }[];
-  groups: { name: string; scope: string; action: string; requiresConfirmation: boolean }[];
-  stats: { total: number; errors: number; recipes: number };
+  groups: { name: string; scope: string; action: string; requiresConfirmation: boolean; before: RecipeSide | null; after: RecipeSide | null }[];
+  stats: { total: number; errors: number; recipes: number; totals: Record<string, number> };
   previewToken: string;
 };
 const actions: Record<string, string> = { CREATE: "وصفة جديدة", REPLACE: "استبدال المكونات", UNCHANGED: "بدون تغيير — يحتفظ بالتأكيد", SKIP: "تجاوز الوصفة الموجودة", ERROR: "أخطاء تحتاج تصحيحًا" };
-export function RecipeExchange({ onImported }: { onImported: () => void | Promise<void> }) {
+function RecipeIngredients({ recipe }: { recipe: RecipeSide | null }) {
+  if (!recipe) return <span>لا توجد وصفة</span>;
+  return <div className="space-y-1">
+    {recipe.all && <p>تغطي كل الأحجام</p>}
+    {recipe.reason && <p>غير منطبقة: {recipe.reason}</p>}
+    {recipe.items.map((item, index) => <p key={index}>{item.ingredient} · {item.branch} · <bdi>{item.quantity} {item.unit}</bdi> · هدر {item.waste}%</p>)}
+  </div>;
+}
+export function RecipeExchange({ onImported, choices }: { onImported: () => void | Promise<void>; choices: ExportChoice[] }) {
+  const [selectOpen, setSelectOpen] = useState(false);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [acknowledgeLegacy, setAcknowledgeLegacy] = useState(false);
+  const [review, setReview] = useState<{ id: string; name: string }[]>([]);
+  const lock = useRef(false);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [rows, setRows] = useState<RawRow[]>([]);
@@ -26,11 +41,14 @@ export function RecipeExchange({ onImported }: { onImported: () => void | Promis
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<{ created: number; replaced: number; unchanged: number; skipped: number } | null>(null);
   const input = useRef<HTMLInputElement>(null);
-  function reset() { setRows([]); setFileName(""); setMode(null); setPreview(null); setError(null); setSummary(null); }
-  async function download(template: boolean) {
+  function reset() { setAcknowledgeLegacy(false); setReview([]); setRows([]); setFileName(""); setMode(null); setPreview(null); setError(null); setSummary(null); }
+  async function download(template: boolean, selectedOnly = false) {
     setBusy(true);
     try {
-      const response = await fetch("/api/recipe-import/export" + (template ? "?template=1" : ""));
+      const params = new URLSearchParams(template ? { template: "1" } : {});
+      if (selectedOnly) for (const choice of choices.filter(choice => selected.includes(choice.id))) params.append(choice.kind, choice.id);
+      if (selectedOnly && !params.size) return;
+      const response = await fetch("/api/recipe-import/export?" + params);
       if (!response.ok) { const body = await response.json(); throw new Error(body.error ?? "تعذر تحميل الملف"); }
       const url = URL.createObjectURL(await response.blob());
       const link = document.createElement("a"); link.href = url; link.download = template ? "recipes-template.xlsx" : "recipes-export.xlsx";
@@ -51,22 +69,37 @@ export function RecipeExchange({ onImported }: { onImported: () => void | Promis
   async function inspect() {
     if (!mode) return;
     setBusy(true); setError(null); setPreview(null);
-    try { setPreview(await api<Preview>("/api/recipe-import/preview", { method: "POST", body: { rows, mode } })); }
+    try { setPreview(await api<Preview>("/api/recipe-import/preview", { method: "POST", body: { rows, mode, acknowledgeLegacy } })); }
     catch (e) { setError(e instanceof Error ? e.message : "تعذرت المعاينة"); }
     finally { setBusy(false); }
   }
   async function commit() {
-    if (!mode || !preview?.previewToken || preview.stats.errors) return;
+    if (lock.current || !mode || !preview?.previewToken || preview.stats.errors) return;
+    lock.current = true;
     setBusy(true); setError(null);
     try {
-      const result = await api<{ summary: NonNullable<typeof summary> }>("/api/recipe-import", { method: "POST", body: { rows, mode, previewToken: preview.previewToken, fileName } });
-      setSummary(result.summary); setPreview(null); setRows([]);
+      const result = await api<{ summary: NonNullable<typeof summary>; review: { id: string; name: string }[] }>("/api/recipe-import", { method: "POST", body: { rows, mode, previewToken: preview.previewToken, fileName, acknowledgeLegacy } });
+      setReview(result.review); setSummary(result.summary); setPreview(null); setRows([]);
       toast.success("تم استيراد الوصفات؛ أكد الوصفات الجديدة أو المتغيرة بعد مراجعتها");
-      await onImported();
-    } catch (e) { setError(e instanceof Error ? e.message : "تعذر الاستيراد"); setPreview(null); }
-    finally { setBusy(false); }
+      void Promise.resolve().then(onImported).catch(() => toast.error("تم الحفظ، حدّث شاشة الوصفات لعرض النتيجة"));
+    } catch (e) { setError(e instanceof Error ? e.message : "تعذر الاستيراد"); }
+    finally { lock.current = false; setBusy(false); }
   }
   return <>
+    <Button size="sm" variant="outline" disabled={busy || !choices.length} onClick={() => setSelectOpen(true)}>تصدير وصفات محددة</Button>
+    <Dialog open={selectOpen} onOpenChange={next => { if (!busy) setSelectOpen(next); }}>
+      <DialogContent dir="rtl">
+        <DialogHeader><DialogTitle>اختيار وصفات للتصدير</DialogTitle></DialogHeader>
+        <p className="text-sm text-muted-foreground">يشمل اختيار المنتج وصفته الافتراضية ووصفات أحجامه المحفوظة.</p>
+        <div className="max-h-72 space-y-2 overflow-auto">{choices.map(choice => <label key={choice.id} className="flex gap-2">
+          <input type="checkbox" disabled={busy} checked={selected.includes(choice.id)} onChange={event => {
+            const checked = event.currentTarget.checked;
+            setSelected(current => checked ? [...current, choice.id] : current.filter(id => id !== choice.id));
+          }} />{choice.name}
+        </label>)}</div>
+        <Button disabled={busy || !choices.some(choice => selected.includes(choice.id))} onClick={() => void download(false, true)}>تنزيل Excel للمحدد ({selected.length})</Button>
+      </DialogContent>
+    </Dialog>
     <Button size="sm" variant="outline" disabled={busy} onClick={() => void download(false)}>تصدير كل الوصفات Excel</Button>
     <Button size="sm" variant="outline" disabled={busy} onClick={() => void download(true)}>تحميل قالب الوصفات</Button>
     <Button size="sm" disabled={busy} onClick={() => { reset(); setOpen(true); }}>استيراد الوصفات</Button>
@@ -83,13 +116,16 @@ export function RecipeExchange({ onImported }: { onImported: () => void | Promis
           <label className="flex items-start gap-2"><input type="radio" name="recipe-import-mode" checked={mode === "replace"} onChange={() => { setMode("replace"); setPreview(null); setSummary(null); }} /><span className="text-sm">استبدال الوصفات الموجودة في الملف وإضافة الجديدة. يستبدل كل مكونات الوصفة الموجودة، ولا يحذف وصفات أخرى.</span></label>
           <label className="flex items-start gap-2"><input type="radio" name="recipe-import-mode" checked={mode === "new-only"} onChange={() => { setMode("new-only"); setPreview(null); setSummary(null); }} /><span className="text-sm">الجديد فقط: إضافة وصفات للأصناف الموجودة التي لا تملك وصفة، وتجاوز الوصفات الموجودة.</span></label>
         </fieldset>
+        {mode === "replace" && <label className="flex gap-2 text-sm"><input type="checkbox" disabled={busy} checked={acknowledgeLegacy} onChange={event => { setAcknowledgeLegacy(event.target.checked); setPreview(null); }} />أراجع الوصفات الحالية وأسمح بمعاينة ملف قديم بلا بصمة تصدير</label>}
+        {review.length > 0 && <div className="text-sm"><p>وصفات تحتاج مراجعة وتأكيدًا</p><ul className="max-h-32 overflow-auto">{review.map(recipe => <li key={recipe.id}>{recipe.name}</li>)}</ul></div>}
         {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
         {summary && <p role="status" className="rounded-lg bg-muted p-3 text-sm">جديدة: {summary.created} — مستبدلة: {summary.replaced} — بدون تغيير: {summary.unchanged} — متجاوزة: {summary.skipped}</p>}
         <Button variant="outline" disabled={busy || !rows.length || !mode} onClick={() => void inspect()}>{busy ? "جارٍ التحقق…" : "معاينة الملف بدون حفظ"}</Button>
         {preview && <div className="space-y-3">
           <p className="text-sm">{preview.stats.total} صف — {preview.stats.recipes} وصفة — {preview.stats.errors} صف به أخطاء</p>
+          <p className="text-sm">جديدة {preview.stats.totals.CREATE} · متغيرة {preview.stats.totals.REPLACE} · بدون تغيير {preview.stats.totals.UNCHANGED} · متجاوزة {preview.stats.totals.SKIP} · وصفات بها أخطاء {preview.stats.totals.ERROR}</p>
           {!!preview.stats.errors && <p className="text-sm text-destructive">صحح كل الأخطاء في الملف وأعد رفعه. لا يتم استيراد أي وصفة من ملف به أخطاء.</p>}
-          <div className="max-h-64 overflow-auto rounded-lg border"><Table><TableHeader><TableRow><TableHead>الصنف</TableHead><TableHead>النطاق</TableHead><TableHead>النتيجة</TableHead></TableRow></TableHeader><TableBody>{preview.groups.map((g, i) => <TableRow key={i}><TableCell>{g.name}</TableCell><TableCell>{g.scope}</TableCell><TableCell>{actions[g.action] ?? g.action}{g.requiresConfirmation && ["CREATE", "REPLACE"].includes(g.action) ? " — يحتاج تأكيدًا جديدًا" : ""}</TableCell></TableRow>)}</TableBody></Table></div>
+          <div className="max-h-64 overflow-auto rounded-lg border"><Table><TableHeader><TableRow><TableHead>الصنف</TableHead><TableHead>النطاق</TableHead><TableHead>النتيجة</TableHead><TableHead>قبل</TableHead><TableHead>بعد</TableHead></TableRow></TableHeader><TableBody>{preview.groups.map((g, i) => <TableRow key={i}><TableCell>{g.name}</TableCell><TableCell>{g.scope}</TableCell><TableCell>{actions[g.action] ?? g.action}{g.requiresConfirmation && ["CREATE", "REPLACE"].includes(g.action) ? " — يحتاج تأكيدًا جديدًا" : ""}</TableCell><TableCell><RecipeIngredients recipe={g.before} /></TableCell><TableCell><RecipeIngredients recipe={g.after} /></TableCell></TableRow>)}</TableBody></Table></div>
           <ul className="max-h-48 overflow-auto space-y-1 text-sm text-destructive">{preview.rows.filter(r => r.errors.length).map(r => <li key={r.rowNumber}>صف {r.rowNumber}: {r.errors.join("؛ ")}</li>)}</ul>
           <Button disabled={busy || !!preview.stats.errors || !preview.previewToken} onClick={() => void commit()}>{busy ? "جارٍ الاستيراد…" : mode === "replace" ? "تأكيد الاستبدال والاستيراد" : "تأكيد استيراد الجديد فقط"}</Button>
         </div>}

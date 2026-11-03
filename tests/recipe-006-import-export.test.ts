@@ -41,12 +41,12 @@ function row(c: Ctx, extra: Raw = {}): Raw {
   return { recipeId: c.recipe.id, scope: "PRODUCT_DEFAULT", productId: c.product.id, productName: c.product.name, inventoryItemId: c.beans.id, ingredientName: c.beans.name, ingredientBranchId: c.branch.id, ingredientBranchName: c.branch.name, quantity: 18, unit: "GRAM", wastePercentage: 2.5, appliesToAllVariants: true, notApplicable: false, ...extra };
 }
 async function preview(rows: Raw[], mode = "replace") {
-  const r = await as<Preview>(OWNER, "/api/recipe-import/preview", { method: "POST", body: JSON.stringify({ rows, mode }) });
+  const r = await as<Preview>(OWNER, "/api/recipe-import/preview", { method: "POST", body: JSON.stringify({ rows, mode, acknowledgeLegacy: true }) });
   assert.equal(r.status, 200, r.text.slice(0, 250));
   return r.body;
 }
 async function apply(rows: Raw[], p: Preview, mode = "replace") {
-  return as(OWNER, "/api/recipe-import", { method: "POST", body: JSON.stringify({ rows, mode, previewToken: p.previewToken, fileName: "r6.xlsx" }) });
+  return as(OWNER, "/api/recipe-import", { method: "POST", body: JSON.stringify({ rows, mode, acknowledgeLegacy: true, previewToken: p.previewToken, fileName: "r6.xlsx" }) });
 }
 async function current(c: Ctx) { return db.recipe.findUniqueOrThrow({ where: { id: c.recipe.id }, include: { items: true } }); }
 async function cleanup(c: Ctx) {

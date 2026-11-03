@@ -1,8 +1,9 @@
 // Browser-compatible XLSX/CSV decoding; server validates identity and values.
 import * as XLSX from "xlsx";
 export type RecipeFileRow = Record<string, string | number | boolean | null>;
-const fields = ["recipeId", "scope", "productId", "productSku", "productName", "variantId", "variantName", "addOnId", "addOnName", "inventoryItemId", "ingredientName", "ingredientBranchId", "ingredientBranchName", "quantity", "unit", "wastePercentage", "appliesToAllVariants", "notApplicable", "notApplicableReason"];
+const fields = ["exportBaseline", "recipeId", "scope", "productId", "productSku", "productName", "variantId", "variantName", "addOnId", "addOnName", "inventoryItemId", "ingredientName", "ingredientBranchId", "ingredientBranchName", "quantity", "unit", "wastePercentage", "appliesToAllVariants", "notApplicable", "notApplicableReason"];
 export function parseRecipeFile(bytes: ArrayBuffer): RecipeFileRow[] {
+  if (bytes.byteLength > 5 * 1024 * 1024) throw new Error("الحد الأقصى لحجم الملف 5 ميجابايت");
   const signature = new Uint8Array(bytes, 0, Math.min(bytes.byteLength, 4));
   const isXlsx = signature[0] === 0x50 && signature[1] === 0x4b && signature[2] === 0x03 && signature[3] === 0x04;
   const csvText = isXlsx ? null : new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -14,6 +15,8 @@ export function parseRecipeFile(bytes: ArrayBuffer): RecipeFileRow[] {
   const sheet = workbook.Sheets[workbook.SheetNames.includes("Recipes") ? "Recipes" : workbook.SheetNames[0]];
   if (!sheet) throw new Error("الملف لا يحتوي ورقة وصفات");
   const range = XLSX.utils.decode_range(sheet["!ref"] ?? "A1");
+  if (range.e.r - range.s.r > 1000 || range.e.c - range.s.c >= 32) throw new Error("الحد 1000 صف و32 عمودًا");
+  if (isXlsx && Object.values(sheet).some(cell => cell && typeof cell === "object" && "f" in cell)) throw new Error("احذف الصيغ من ورقة الوصفات واستخدم القيم فقط");
   const headers = XLSX.utils.sheet_to_json<unknown[]>(sheet, {
     header: 1, raw: false, defval: "",
     range: { s: range.s, e: { r: range.s.r, c: range.e.c } },
@@ -35,6 +38,9 @@ export function parseRecipeFile(bytes: ArrayBuffer): RecipeFileRow[] {
     const raw = XLSX.read(csvText, { type: "string", raw: true });
     return XLSX.utils.sheet_to_json<RecipeFileRow>(raw.Sheets[raw.SheetNames[0]], { defval: "" });
   })();
+  if (isXlsx && parsed.some(row => Object.entries(row).some(([key, value]) => key.trim().toLowerCase() === "productsku" && typeof value === "number"))) {
+    throw new Error("عمود productSku يجب أن يكون نصًا للحفاظ على الأصفار في بداية الكود");
+  }
   return parsed.map((row, index) => Object.fromEntries(Object.entries(row).map(([header, value]) => {
     const key = fields.find(k => k.toLowerCase() === header.trim().toLowerCase()) ?? header.trim();
     return [key, key === "productSku" ? String(lexical[index]?.[header] ?? "") : value];

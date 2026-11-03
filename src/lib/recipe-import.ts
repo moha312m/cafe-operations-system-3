@@ -9,10 +9,11 @@ import { auditInTransaction } from "@/lib/audit";
 import { unitsCompatible } from "@/lib/costing";
 import { recipeFingerprint } from "@/lib/recipes";
 
-export const RECIPE_COLUMNS = ["recipeId", "scope", "productId", "productSku", "productName", "variantId", "variantName", "addOnId", "addOnName", "inventoryItemId", "ingredientName", "ingredientBranchId", "ingredientBranchName", "quantity", "unit", "wastePercentage", "appliesToAllVariants", "notApplicable", "notApplicableReason"] as const;
+export const RECIPE_COLUMNS = ["exportBaseline", "recipeId", "scope", "productId", "productSku", "productName", "variantId", "variantName", "addOnId", "addOnName", "inventoryItemId", "ingredientName", "ingredientBranchId", "ingredientBranchName", "quantity", "unit", "wastePercentage", "appliesToAllVariants", "notApplicable", "notApplicableReason"] as const;
 export const MAX_RECIPE_ROWS = 1000;
 export const recipeImportSchema = z.object({
-  rows: z.array(z.record(z.string().max(80), z.union([z.string().max(1000), z.number().finite(), z.boolean(), z.null()]))).min(1).max(MAX_RECIPE_ROWS),
+  rows: z.array(z.record(z.string().max(80), z.union([z.string().max(1000), z.number().finite(), z.boolean(), z.null()]))).min(1).max(MAX_RECIPE_ROWS).refine(rows => rows.every(row => Object.keys(row).length <= 32), "الحد 32 عمودًا لكل صف"),
+  acknowledgeLegacy: z.boolean().optional(),
   mode: z.enum(["replace", "new-only"]),
   cafeId: z.string().optional(),
   previewToken: z.string().max(3000).optional(),
@@ -81,6 +82,7 @@ export function validateRecipeImport(input: RecipeImportInput, catalog: Catalog)
       if (text(r.productId) || text(r.productSku) || text(r.productName) || text(r.variantId) || text(r.variantName)) errors.push("وصفة الإضافة لا تقبل منتجًا أو حجمًا");
     } else {
       const sku = text(r.productSku);
+      if (sku && typeof r.productSku !== "string") errors.push("أدخل SKU كنص للحفاظ على الأصفار في بداية الكود");
       const skuProduct = sku ? catalog.products.find(p => p.sku === sku) : undefined;
       if (sku && !skuProduct) errors.push("المنتج: SKU غير موجود داخل هذا الكافيه");
       product = resolve(catalog.products, text(r.productId) || skuProduct?.id, r.productName, "المنتج", errors);
@@ -116,6 +118,13 @@ export function validateRecipeImport(input: RecipeImportInput, catalog: Catalog)
     if (existingMatches.length > 1) errors.push("نطاق الوصفة ملتبس");
     const existing = existingMatches[0];
     if (text(r.recipeId) && (!existing || existing.id !== text(r.recipeId))) errors.push("معرف الوصفة لا يطابق النطاق المحدد");
+    const baseline = text(r.exportBaseline);
+    if (baseline && (!existing || baseline !== exportBaseline(existing, existing.cafeId))) {
+      errors.push("تغيرت الوصفة منذ التصدير أو أن الملف من كافيه آخر. صدّر الوصفة مجددًا.");
+    }
+    if (!baseline && existing && input.mode === "replace" && !input.acknowledgeLegacy) {
+      errors.push("هذا الصف بلا بصمة تصدير. راجع النسخة الحالية وفعّل خيار الملف القديم ثم أعد المعاينة.");
+    }
     const previous = groups.get(key);
     if (previous) {
       if (previous.appliesToAllVariants !== all || previous.notApplicable !== na || previous.notApplicableReason !== reason) errors.push("خصائص الوصفة متعارضة بين الصفوف");
@@ -137,19 +146,23 @@ function stable(value: unknown): unknown {
   return value;
 }
 function digest(value: unknown) { return createHash("sha256").update(JSON.stringify(stable(value))).digest("hex"); }
+function exportBaseline(recipe: Recipe, cafeId: string) {
+  return "v2." + createHmac("sha256", resolveAuthSecret())
+    .update("recipe-export:" + cafeId + ":" + digest(recipe)).digest("base64url");
+}
 function signature(payload: string) { return createHmac("sha256", resolveAuthSecret()).update("recipe-import-v1:" + payload).digest("base64url"); }
 function makeToken(userId: string, cafeId: string, input: RecipeImportInput, catalog: Catalog) {
-  const payload = Buffer.from(JSON.stringify({ userId, cafeId, mode: input.mode, rows: digest(input.rows), state: digest(catalog), expires: Date.now() + 15 * 60 * 1000 })).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({ userId, cafeId, mode: input.mode, acknowledgeLegacy: !!input.acknowledgeLegacy, rows: digest(input.rows), state: digest(catalog), expires: Date.now() + 15 * 60 * 1000 })).toString("base64url");
   return payload + "." + signature(payload);
 }
-function checkToken(userId: string, cafeId: string, input: RecipeImportInput, catalog: Catalog) {
+function checkToken(userId: string, cafeId: string, input: RecipeImportInput) {
   try {
     const [payload, supplied, extra] = (input.previewToken ?? "").split(".");
     const want = Buffer.from(signature(payload || "")), got = Buffer.from(supplied || "");
     if (extra || want.length !== got.length || !timingSafeEqual(want, got)) throw new Error();
     const data = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-    if (data.userId !== userId || data.cafeId !== cafeId || data.mode !== input.mode || data.rows !== digest(input.rows) || !Number.isFinite(data.expires) || data.expires < Date.now()) throw new Error();
-    if (data.state !== digest(catalog)) throw new ApiError(409, "تغيرت بيانات الوصفات أو المراجع؛ أعد المعاينة قبل الاستيراد");
+    if (data.userId !== userId || data.cafeId !== cafeId || data.mode !== input.mode || !!data.acknowledgeLegacy !== !!input.acknowledgeLegacy || data.rows !== digest(input.rows) || !Number.isFinite(data.expires)) throw new Error();
+    return { state: data.state as string, expires: data.expires as number };
   } catch (error) {
     if (error instanceof ApiError) throw error;
     throw new ApiError(400, "معاينة مفقودة أو منتهية أو لا تطابق الملف وطريقة الاستيراد");
@@ -158,10 +171,25 @@ function checkToken(userId: string, cafeId: string, input: RecipeImportInput, ca
 function previewShape(input: RecipeImportInput, catalog: Catalog, userId: string, cafeId: string) {
   const validated = validateRecipeImport(input, catalog);
   const errors = validated.rows.filter(r => r.errors.length > 0).length;
+  const describe = (items: { inventoryItemId: string; quantity: unknown; unit: InventoryUnit; wastePercentage: unknown }[]) =>
+    items.map(item => {
+      const ingredient = catalog.ingredients.find(entry => entry.id === item.inventoryItemId);
+      return { ingredient: ingredient?.name ?? "مكون غير متاح", branch: catalog.branches.find(branch => branch.id === ingredient?.branchId)?.name ?? "—",
+        quantity: String(item.quantity), unit: item.unit, waste: String(item.wastePercentage) };
+    });
+  const groups = validated.groups.map(group => {
+    const action = group.rowIndexes.some(i => validated.rows[i].errors.length) ? "ERROR"
+      : group.existing && input.mode === "new-only" ? "SKIP" : !changed(group) ? "UNCHANGED" : group.existing ? "REPLACE" : "CREATE";
+    const before = group.existing ? { items: describe(group.existing.items), all: group.existing.appliesToAllVariants, reason: group.existing.notApplicableReason } : null;
+    const proposed = { items: describe(group.items), all: group.appliesToAllVariants, reason: group.notApplicableReason };
+    return { name: group.name, scope: group.scope, recipeId: group.existing?.id ?? null, action,
+      before, after: action === "SKIP" ? before : proposed, requiresConfirmation: action === "CREATE" || action === "REPLACE" };
+  });
+  const totals = Object.fromEntries(["CREATE", "REPLACE", "UNCHANGED", "SKIP", "ERROR"].map(action => [action, groups.filter(group => group.action === action).length]));
   return {
     rows: validated.rows.map(r => ({ rowNumber: r.rowNumber, errors: r.errors })),
-    groups: validated.groups.map(g => ({ name: g.name, scope: g.scope, recipeId: g.existing?.id ?? null, action: g.rowIndexes.some(i => validated.rows[i].errors.length) ? "ERROR" : g.existing && input.mode === "new-only" ? "SKIP" : !changed(g) ? "UNCHANGED" : g.existing ? "REPLACE" : "CREATE", requiresConfirmation: !g.notApplicable && changed(g) })),
-    stats: { total: input.rows.length, errors, recipes: validated.groups.length },
+    groups,
+    stats: { total: input.rows.length, errors, recipes: groups.length, totals },
     previewToken: errors ? "" : makeToken(userId, cafeId, input, catalog),
   };
 }
@@ -169,13 +197,26 @@ export async function previewRecipes(cafeId: string, userId: string, input: Reci
   return db.$transaction(async tx => previewShape(input, await recipeCatalog(tx, cafeId), userId, cafeId), { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
 }
 export async function importRecipes(cafeId: string, userId: string, input: RecipeImportInput) {
+  const { state, expires } = checkToken(userId, cafeId, input);
+  const receiptId = digest(input.previewToken);
+  const receiptWhere = { cafeId, userId, action: "RECIPE_IMPORT_COMMITTED", entity: "RecipeImport", entityId: receiptId };
+  const findReceipt = async () => {
+    const receipt = await db.auditLog.findFirst({ where: receiptWhere, select: { details: true } });
+    return receipt?.details;
+  };
+  const previous = await findReceipt();
+  if (previous) return previous;
+  if (expires < Date.now()) throw new ApiError(400, "انتهت المعاينة؛ أعد المعاينة قبل الاستيراد");
   try {
     return await db.$transaction(async tx => {
       const catalog = await recipeCatalog(tx, cafeId);
-      checkToken(userId, cafeId, input, catalog);
+      const receipt = await tx.auditLog.findFirst({ where: receiptWhere, select: { details: true } });
+      if (receipt?.details) return receipt.details;
+      if (state !== digest(catalog)) throw new ApiError(409, "تغيرت بيانات الوصفات أو المراجع؛ أعد المعاينة قبل الاستيراد");
       const { rows, groups } = validateRecipeImport(input, catalog);
       if (rows.some(r => r.errors.length)) throw new ApiError(400, "صحح كل أخطاء الملف قبل الاستيراد");
       const summary = { created: 0, replaced: 0, unchanged: 0, skipped: 0 };
+      const review: { id: string; name: string }[] = [];
       for (const group of groups) {
         if (group.existing && input.mode === "new-only") { summary.skipped++; continue; }
         if (!changed(group)) { summary.unchanged++; continue; }
@@ -193,19 +234,26 @@ export async function importRecipes(cafeId: string, userId: string, input: Recip
           const created = await tx.recipe.create({ data: { cafeId, productId: group.productId, variantId: group.variantId, addOnId: group.addOnId, createdById: userId, ...data, items: { create: group.items } } });
           id = created.id; summary.created++;
         }
+        review.push({ id, name: group.name });
         await auditInTransaction(tx, { cafeId, userId, action: "RECIPE_IMPORTED", entity: "Recipe", entityId: id, details: { mode: input.mode, fileName: input.fileName ?? null, scope: group.scope, productId: group.productId, variantId: group.variantId, addOnId: group.addOnId, appliesToAllVariants: group.appliesToAllVariants, notApplicable: group.notApplicable, notApplicableReason: group.notApplicableReason, beforeItems: group.existing?.items.map(i => ({ inventoryItemId: i.inventoryItemId, quantity: Number(i.quantity), unit: i.unit, wastePercentage: Number(i.wastePercentage) })) ?? [], afterItems: group.items, invalidatedConfirmation: !!group.existing?.verifiedAt, before: group.existing ? material({ ...group.existing, items: group.existing.items.map(i => ({ inventoryItemId: i.inventoryItemId, quantity: Number(i.quantity), unit: i.unit, wastePercentage: Number(i.wastePercentage) })) }) : null, after: material(group) } });
       }
-      return { summary };
+      const result = { summary, review };
+      await auditInTransaction(tx, { ...receiptWhere, details: result });
+      return result;
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, timeout: 20000 });
   } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && ["P2034", "P2002"].includes(error.code)) throw new ApiError(409, "تغيرت الوصفات أثناء الاستيراد؛ أعد المعاينة");
+    if (error instanceof Prisma.PrismaClientKnownRequestError && ["P2034", "P2002"].includes(error.code)) {
+      const receipt = await findReceipt();
+      if (receipt) return receipt;
+      throw new ApiError(409, "تغيرت الوصفات أثناء الاستيراد؛ أعد المعاينة");
+    }
     throw error;
   }
 }
 export function exportedRecipeRows(catalog: Catalog): RawRow[] {
   return catalog.recipes.flatMap(recipe => {
     const product = catalog.products.find(p => p.id === recipe.productId), variant = product?.variants.find(v => v.id === recipe.variantId), addon = catalog.addOns.find(a => a.id === recipe.addOnId);
-    const base: RawRow = { recipeId: recipe.id, scope: recipe.addOnId ? "ADDON" : recipe.variantId ? "VARIANT" : "PRODUCT_DEFAULT", productId: recipe.productId ?? "", productSku: product?.sku ?? "", productName: product?.name ?? "", variantId: recipe.variantId ?? "", variantName: variant?.name ?? "", addOnId: recipe.addOnId ?? "", addOnName: addon?.name ?? "", appliesToAllVariants: recipe.appliesToAllVariants, notApplicable: recipe.notApplicable, notApplicableReason: recipe.notApplicableReason ?? "" };
+    const base: RawRow = { exportBaseline: exportBaseline(recipe, recipe.cafeId), recipeId: recipe.id, scope: recipe.addOnId ? "ADDON" : recipe.variantId ? "VARIANT" : "PRODUCT_DEFAULT", productId: recipe.productId ?? "", productSku: product?.sku ?? "", productName: product?.name ?? "", variantId: recipe.variantId ?? "", variantName: variant?.name ?? "", addOnId: recipe.addOnId ?? "", addOnName: addon?.name ?? "", appliesToAllVariants: recipe.appliesToAllVariants, notApplicable: recipe.notApplicable, notApplicableReason: recipe.notApplicableReason ?? "" };
     if (!recipe.items.length) return [base];
     return recipe.items.map(item => {
       const ingredient = catalog.ingredients.find(i => i.id === item.inventoryItemId), branch = catalog.branches.find(b => b.id === ingredient?.branchId);
