@@ -7,14 +7,15 @@ import { useEffect, useState, type FormEvent } from "react";
 import { api, ApiRequestError, money } from "@/lib/client";
 import { useApp } from "@/components/app-shell";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
-import { expenseInput, returnInput, categoryInput, mayExecuteExpense } from "@/lib/expense-rules";
+import { expenseInput, returnInput, categoryInput, categoryUpdateInput, mayExecuteExpense } from "@/lib/expense-rules";
 import { beginExpenseIntent, loadExpenseIntent, completeExpenseIntent, type ExpenseIntent } from "@/lib/expense-intent";
 import type { expenseDto } from "@/lib/expenses";
 
 type Expense = ReturnType<typeof expenseDto>;
 type Category = { id: string; code: string; nameAr: string; archivedAt: string | null };
 type Metadata = { categories: Category[]; branches: { id: string; name: string }[] };
-type Listing = { expenses: Expense[]; count: number; pageSize: number; totals: { paid: number; returned: number } };
+type Breakdown = { branchId: string; branchName: string; categoryId: string; categoryName: string; categoryCode: string; count: number; paid: number };
+type Listing = { branchNames: Record<string, string>; breakdown: Breakdown[]; expenses: Expense[]; count: number; pageSize: number; totals: { paid: number; returned: number } };
 const field = nativeFieldClassName;
 const button = nativeButtonClassName;
 const message = (error: unknown) => error instanceof Error ? error.message : "تعذر إكمال الطلب";
@@ -29,6 +30,11 @@ export function ExpenseWorkspace() {
   const [readyOwner, setReadyOwner] = useState("");
   const intentReady = readyOwner === intentOwner;
   const manage = mayExecuteExpense(user.role, new Set(permKeys));
+  const canManageCategories = user.role === "CAFE_OWNER" && manage;
+  const [categorySearch, setCategorySearch] = useState("");
+  const [rename, setRename] = useState<Category | null>(null);
+  const [renameName, setRenameName] = useState("");
+  const [expenseBranch, setExpenseBranch] = useState(user.branchId ?? "");
   const [metadata, setMetadata] = useState<Metadata>({ categories: [], branches: [] });
   const [setupError, setSetupError] = useState("");
   const [branchId, setBranchId] = useState(user.branchId ?? "");
@@ -53,7 +59,7 @@ export function ExpenseWorkspace() {
         if (!live) return;
         setPending(intent); setUncertain(!!intent);
         if (intent && "branchId" in intent.body) {
-          setBranchId(intent.body.branchId); setCategoryId(intent.body.categoryId); setAmount(String(intent.body.amount));
+          setExpenseBranch(intent.body.branchId); setCategoryId(intent.body.categoryId); setAmount(String(intent.body.amount));
           setDescription(intent.body.description); setReference(intent.body.documentReference ?? "");
         }
         setReadyOwner(intentOwner);
@@ -84,7 +90,11 @@ export function ExpenseWorkspace() {
   async function pay(event: FormEvent) {
     event.preventDefault(); if (!intentReady) return;
     setError(""); setSuccess("");
-    const result = pending ? null : expenseInput.safeParse({ branchId, categoryId, amount: Number(amount), description, ...(reference.trim() ? { documentReference: reference } : {}) });
+    if (!pending && !metadata.categories.some(c => c.id === categoryId && !c.archivedAt)) {
+      setError("اختر تصنيفًا نشطًا من القائمة");
+      return;
+    }
+    const result = pending ? null : expenseInput.safeParse({ branchId: expenseBranch, categoryId, amount: Number(amount), description, ...(reference.trim() ? { documentReference: reference } : {}) });
     if (result && !result.success) { setError(result.error.issues.map(i => i.message).join("؛ ")); return; }
     setBusy(true);
     let intent = pending;
@@ -108,20 +118,40 @@ export function ExpenseWorkspace() {
     try { await api("/api/expenses/categories", { method: "POST", body: result.data }); setCategoryName(""); setCategoryCode(""); refresh(); }
     catch (e) { setCategoryError(message(e)); } finally { setCategoryBusy(false); }
   }
+  async function saveRename(event: FormEvent) {
+    event.preventDefault();
+    if (!rename) return;
+    const result = categoryUpdateInput.safeParse({ nameAr: renameName });
+    if (!result.success) { setCategoryError(result.error.issues.map(issue => issue.message).join("، ")); return; }
+    setCategoryError(""); setCategoryBusy(true);
+    try {
+      await api(`/api/expenses/categories/${rename.id}`, { method: "PATCH", body: result.data });
+      setRename(null); refresh();
+    } catch (e) { setCategoryError(message(e)); } finally { setCategoryBusy(false); }
+  }
   async function archive(c: Category) {
     setCategoryError(""); setCategoryBusy(true);
     try { await api(`/api/expenses/categories/${c.id}`, { method: "PATCH", body: { archived: !c.archivedAt } }); refresh(); }
     catch (e) { setCategoryError(message(e)); } finally { setCategoryBusy(false); }
   }
   if (!view) return <p role="alert">ليس لديك صلاحية عرض المصروفات.</p>;
+  const activeCategories = metadata.categories.filter(c => !c.archivedAt);
+  const query = categorySearch.trim().toLowerCase();
+  const categoryChoices = metadata.categories.filter(c =>
+    (!!pending && c.id === categoryId) || (!c.archivedAt && (c.id === categoryId || `${c.nameAr} ${c.code}`.toLowerCase().includes(query))));
+  function openExpense() {
+    if (!pending) setExpenseBranch(user.branchId ?? branchId);
+    setCategorySearch("");
+    setCreateOpen(true);
+  }
   return <main dir="rtl" className="workspace-page">
-    <PageHeader title="المصروفات التشغيلية" subtitle="سجل المصروفات وردود النقد من درج الوردية" />
-    <div className="flex flex-wrap items-center gap-3"><Link href="/finance" className="text-primary underline">مساحة الماليات ←</Link>{manage && <button className={nativePrimaryButtonClassName} onClick={() => setCreateOpen(true)}>{uncertain ? "استعادة نتيجة المصروف المعلق" : "+ إضافة مصروف"}</button>}{user.role === "CAFE_OWNER" && manage && <button className={button} onClick={() => setCategoriesOpen(true)}>تصنيفات المصروفات</button>}</div>
+    <PageHeader title="مصروفات التشغيل" subtitle="سجل المصروفات وردود النقد من درج الوردية" />
+    <div className="flex flex-wrap items-center gap-3"><Link href="/finance" className="text-primary underline">مساحة الماليات ←</Link>{manage && <button className={nativePrimaryButtonClassName} onClick={openExpense}>{uncertain ? "استعادة نتيجة المصروف المعلق" : "+ إضافة مصروف"}</button>}{canManageCategories && <button className={button} onClick={() => setCategoriesOpen(true)}>إدارة تصنيفات المصروفات</button>}</div>
     <p>مصروف تشغيلي مدفوع فورًا من درجك الحالي بالجنيه المصري. المشتريات وسداد الموردين والسلف والأجور والأصول ومسحوبات المالك لها مسارات منفصلة.</p>
     <div className="workspace-toolbar"><label>بحث في المصروفات<input className={field} maxLength={120} value={search} onChange={e => { setSearch(e.target.value); setPage(1); setLoading(true); }} /></label><label>التصنيف<select className={field} value={filterCategory} onChange={e => { setFilterCategory(e.target.value); setPage(1); setLoading(true); }}><option value="">كل التصنيفات</option>{metadata.categories.map(c => <option key={c.id} value={c.id}>{c.nameAr}{c.archivedAt ? " — مؤرشف" : ""}</option>)}</select></label></div>
     <div className="grid gap-3 rounded-xl bg-card p-4 sm:grid-cols-3">
       <div><label htmlFor="expense-branch">الفرع</label><select id="expense-branch" className={field} value={branchId} disabled={!!user.branchId || busy || uncertain || !intentReady} onChange={e => { setBranchId(e.target.value); setPage(1); setLoading(true); }}>
-        <option value="">كل الفروع — اختر فرعًا للصرف</option>{metadata.branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+        <option value="">كل الفروع</option>{metadata.branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
       </select></div>
       <div><label htmlFor="expense-from">من تاريخ — القاهرة</label><input id="expense-from" className={field} type="date" value={from} onChange={e => { setFrom(e.target.value); setPage(1); setLoading(true); }} /></div>
       <div><label htmlFor="expense-to">إلى تاريخ — القاهرة</label><input id="expense-to" className={field} type="date" value={to} onChange={e => { setTo(e.target.value); setPage(1); setLoading(true); }} /></div>
@@ -130,29 +160,46 @@ export function ExpenseWorkspace() {
     {manage && <Dialog open={createOpen} onOpenChange={setCreateOpen}><DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-2xl"><DialogTitle>إضافة مصروف تشغيلي</DialogTitle><form onSubmit={pay} className="space-y-3 rounded-xl border p-4" aria-label="تسجيل مصروف">
       <h2 className="text-lg font-semibold">تسجيل مصروف من الدرج</h2>
       <fieldset disabled={busy || uncertain || !intentReady} className="grid gap-3 sm:grid-cols-2">
-        <div className="sm:col-span-2"><label htmlFor="expense-create-branch">فرع المصروف</label><select id="expense-create-branch" className={field} value={branchId} disabled={!!user.branchId || busy || uncertain || !intentReady} required onChange={e => setBranchId(e.target.value)}><option value="">اختر الفرع الذي سيتم الصرف من درجه</option>{metadata.branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}</select>{!branchId && <p className="mt-1 text-sm text-muted-foreground">اختيار الفرع مطلوب لتحديد درج الصرف الحالي.</p>}</div>
-        <div><label htmlFor="expense-category">بند المصروف المعتمد</label><select id="expense-category" className={field} value={categoryId} onChange={e => setCategoryId(e.target.value)} required>
-          <option value="">اختر البند</option>{metadata.categories.filter(c => !c.archivedAt || (!!pending && c.id === categoryId)).map(c => <option key={c.id} value={c.id}>{c.nameAr}</option>)}
-        </select></div>
+        <div className="sm:col-span-2"><label htmlFor="expense-create-branch">فرع المصروف</label><select id="expense-create-branch" className={field} value={expenseBranch} disabled={!!user.branchId || busy || uncertain || !intentReady} required onChange={e => setExpenseBranch(e.target.value)}><option value="">اختر الفرع الذي سيتم الصرف من درجه</option>{metadata.branches.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}</select>{!expenseBranch && <p className="mt-1 text-sm text-muted-foreground">اختيار الفرع مطلوب لتحديد درج الصرف الحالي.</p>}</div>
+        <div className="space-y-1">
+          <label htmlFor="expense-category-search">ابحث عن تصنيف بالاسم أو الكود</label>
+          <input id="expense-category-search" className={field} type="search" value={categorySearch} onChange={e => setCategorySearch(e.target.value)} />
+          <label htmlFor="expense-category">تصنيف المصروف النشط</label><select id="expense-category" className={field} value={categoryId} onChange={e => setCategoryId(e.target.value)} required>
+          <option value="">اختر البند</option>{categoryChoices.map(c => <option key={c.id} value={c.id}>{c.nameAr} ({c.code})</option>)}
+        </select>{query && !categoryChoices.length && <p role="status">لا يوجد تصنيف مطابق للبحث.</p>}</div>
         <div><label htmlFor="expense-amount">المبلغ — ج.م</label><input id="expense-amount" className={field} type="number" inputMode="decimal" min="0.01" step="0.01" max="9999999999.99" value={amount} onChange={e => setAmount(e.target.value)} required /></div>
         <div className="sm:col-span-2"><label htmlFor="expense-description">الوصف</label><textarea id="expense-description" className={field} maxLength={500} value={description} onChange={e => setDescription(e.target.value)} required /></div>
         <div className="sm:col-span-2"><label htmlFor="expense-reference">مرجع المستند — اختياري</label><input id="expense-reference" className={field} maxLength={200} value={reference} onChange={e => setReference(e.target.value)} /></div>
       </fieldset>
-      {!setupError && !metadata.categories.some(c => !c.archivedAt) && <p>لا توجد تصنيفات متاحة. ينشئ المالك بند مصروف تشغيلي أولًا.</p>}
+      {!setupError && !activeCategories.length && <div className="space-y-2">
+        <p>لا توجد تصنيفات نشطة. يلزم إعداد تصنيف قبل تسجيل المصروف.</p>
+        {canManageCategories ? <button type="button" className={button} onClick={() => { setCreateOpen(false); setCategoriesOpen(true); }}>إعداد تصنيفات المصروفات</button>
+          : <p>اطلب من مالك الكافيه إتاحة تصنيف للصرف.</p>}
+      </div>}
       {error && <p role="alert">{error}</p>}
       {uncertain && <p role="status">يوجد طلب صرف سابق لم تُحسم نتيجته. استعد النتيجة بنفس البيانات والمفتاح، ولا تسلّم نقدًا جديدًا أثناء الاستعادة.</p>}
-      <button className={button} disabled={busy || !intentReady || (!pending && (!branchId || !categoryId || !!setupError))} type="submit">{busy ? "جارٍ التحقق والحفظ…" : uncertain ? "إعادة المحاولة واستعادة النتيجة" : "تسجيل الصرف الفعلي"}</button>
+      <button className={button} disabled={busy || !intentReady || (!pending && (!expenseBranch || !activeCategories.some(c => c.id === categoryId) || !!setupError))} type="submit">{busy ? "جارٍ التحقق والحفظ…" : uncertain ? "إعادة المحاولة واستعادة النتيجة" : "تسجيل الصرف الفعلي"}</button>
       {success && <p role="status">تم حفظ أو استعادة نتيجة الطلب. <Link className="underline" href={`/expenses/${success}`}>فتح الإيصال ورد النقد</Link></p>}
     </form></DialogContent></Dialog>}
     {readError && <p role="alert">{readError} <button className={button} onClick={refresh}>إعادة التحميل</button></p>}
     {loading ? <p role="status">جارٍ تحميل المصروفات…</p> : listing && <section aria-label="سجل المصروفات" className="space-y-3">
       <p>إجمالي المصروفات في النطاق: {money(listing.totals.paid, "EGP")}؛ النقد المردود لهذه المصروفات: {money(listing.totals.returned, "EGP")}.</p>
+      {listing.breakdown.length > 0 && <section className="rounded-xl border bg-card p-4" aria-label="ملخص الصرف حسب الفرع والتصنيف">
+        <h2 className="font-semibold">الصرف حسب الفرع والتصنيف</h2>
+        <p className="text-sm text-muted-foreground">لكل النتائج المطابقة لفترة الصرف والفلاتر. الأسماء كما سُجلت وقت الصرف. النقد المردود معروض في الإجمالي أعلاه.</p>
+        <div className="overflow-x-auto"><table className="w-full min-w-[32rem] text-start text-sm">
+          <thead><tr><th className="p-2 text-start">الفرع</th><th className="p-2 text-start">التصنيف وقت الصرف</th><th className="p-2 text-start">العدد</th><th className="p-2 text-start">إجمالي الصرف</th></tr></thead>
+          <tbody>{listing.breakdown.map(group => <tr className="border-t" key={JSON.stringify([group.branchId, group.categoryId, group.categoryName, group.categoryCode])}>
+            <td className="p-2">{group.branchName}</td><td className="p-2">{group.categoryName} <bdi>({group.categoryCode})</bdi></td><td className="p-2">{group.count}</td><td className="p-2"><bdi>{money(group.paid, "EGP")}</bdi></td>
+          </tr>)}</tbody>
+        </table></div>
+      </section>}
       {listing.expenses.length === 0 ? <p>لا توجد مصروفات في النطاق المحدد.</p> : <ul className="space-y-2">{listing.expenses.map(e => <li key={e.id} className="flex flex-wrap items-center justify-between gap-3 border-b border-border bg-card p-4">
-        <Link className="font-semibold underline" href={`/expenses/${e.id}`}>{e.categoryName} — {money(e.amount, "EGP")}</Link><p>{e.description}</p><p className="text-sm">{date(e.occurredAt)} — {e.actorName}؛ مردود {money(e.returnedAmount, "EGP")}</p>
+        <Link className="font-semibold underline" href={`/expenses/${e.id}`}>{e.categoryName} — {money(e.amount, "EGP")}</Link><p>{e.description}</p><p className="text-sm">{date(e.occurredAt)} — {listing.branchNames[e.branchId] ?? "فرع غير متاح"} — {e.actorName}؛ مردود {money(e.returnedAmount, "EGP")}</p>
       </li>)}</ul>}
       <div className="flex items-center gap-3"><button className={button} disabled={page === 1} onClick={() => { setPage(p => p - 1); setLoading(true); }}>السابق</button><span>صفحة {page}</span><button className={button} disabled={page * listing.pageSize >= listing.count} onClick={() => { setPage(p => p + 1); setLoading(true); }}>التالي</button></div>
     </section>}
-    {user.role === "CAFE_OWNER" && manage && <Dialog open={categoriesOpen} onOpenChange={setCategoriesOpen}><DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-2xl"><DialogTitle>تصنيفات المصروفات</DialogTitle><section className="space-y-3 rounded-xl border p-4" aria-label="تصنيفات المصروفات">
+    {canManageCategories && <Dialog open={categoriesOpen} onOpenChange={setCategoriesOpen}><DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-2xl"><DialogTitle>تصنيفات المصروفات</DialogTitle><section className="space-y-3 rounded-xl border p-4" aria-label="تصنيفات المصروفات">
       <h2 className="text-lg font-semibold">تصنيفات المصروفات — المالك</h2>
       <form onSubmit={createCategory} className="space-y-3">
         <label htmlFor="category-code">كود البند</label><input id="category-code" className={field} dir="ltr" maxLength={40} pattern="[A-Z0-9_]+" value={categoryCode} onChange={e => setCategoryCode(e.target.value)} required />
@@ -161,7 +208,20 @@ export function ExpenseWorkspace() {
         <button className={button} disabled={categoryBusy}>إنشاء التصنيف</button>
       </form>
       {categoryError && <p role="alert">{categoryError}</p>}
-      <ul className="space-y-2">{metadata.categories.map(c => <li key={c.id} className="flex flex-wrap items-center gap-3"><span>{c.nameAr}{c.archivedAt ? " — مؤرشف" : ""}</span><button className={button} disabled={categoryBusy} onClick={() => archive(c)}>{c.archivedAt ? "إتاحة البند" : "أرشفة البند"}</button></li>)}</ul>
+      <ul className="space-y-2">{metadata.categories.map(c => <li key={c.id} className="space-y-2 border-t pt-2">
+        <div className="flex flex-wrap items-center gap-3">
+          <span>{c.nameAr} <bdi>({c.code})</bdi> — {c.archivedAt ? "مؤرشف" : "نشط"}</span>
+          <button className={button} disabled={categoryBusy} onClick={() => { setRename(c); setRenameName(c.nameAr); setCategoryError(""); }}>تعديل الاسم</button>
+          <button className={button} disabled={categoryBusy} onClick={() => void archive(c)}>{c.archivedAt ? "إتاحة البند" : "أرشفة البند"}</button>
+        </div>
+        {rename?.id === c.id && <form onSubmit={saveRename} className="space-y-2">
+          <label htmlFor="category-rename">الاسم الجديد للتصنيف</label>
+          <input id="category-rename" className={field} maxLength={100} value={renameName} onChange={e => setRenameName(e.target.value)} required />
+          <p className="text-sm text-muted-foreground">تظهر التسمية الجديدة في المصروفات اللاحقة. تبقى التسمية المسجلة في الإيصالات السابقة.</p>
+          <button className={button} disabled={categoryBusy}>حفظ الاسم</button>
+          <button className={button} type="button" disabled={categoryBusy} onClick={() => setRename(null)}>إلغاء</button>
+        </form>}
+      </li>)}</ul>
     </section></DialogContent></Dialog>}
   </main>;
 }

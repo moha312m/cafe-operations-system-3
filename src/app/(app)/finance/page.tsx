@@ -4,7 +4,7 @@ import { Landmark, Wallet, ArrowLeftRight, BookOpen, ArrowUpLeft, ShieldCheck } 
 import { PageHeader } from '@/components/cafe/ui';
 import { useApp } from '@/components/app-shell';
 const links = [
-  { href: '/expenses', title: 'المصروفات والتصنيفات', text: 'إيصالات الصرف ورد النقد وتصنيف المصروفات', key: 'expenses.view', owner: false, cafeWide: false },
+  { href: '/expenses', title: 'مصروفات التشغيل', text: 'إيصالات الصرف ورد النقد وتصنيف المصروفات', key: 'expenses.view', owner: false, cafeWide: false },
   { href: '/treasury', title: 'حسابات الأموال', text: 'الخزنة والبنك والمحفظة وكشوف الحركات', key: 'treasury.view', owner: true, cafeWide: false },
   { href: '/treasury#transfers', title: 'التحويلات الداخلية', text: 'مسودة، خروج فعلي ثم استلام مؤكد', key: 'treasury.view', owner: true, cafeWide: false },
   { href: '/accounting/trial-balance', title: 'ميزان المراجعة', text: 'الافتتاح والمدين والدائن والختام', key: 'accounting.view', owner: false, cafeWide: false },

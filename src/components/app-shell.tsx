@@ -120,7 +120,7 @@ const NAV: NavItem[] = [
   { href: "/stock-counts", label: "جرد المخزون", icon: "📋", permission: "inventory:read", group: "stock", key: "stock_count.view", feature: (f) => f.inventoryEnabled },
   { href: "/variances", label: "الفروقات", icon: "⚖️", permission: "shifts:read", group: "stock", key: "variance.view", feature: (f) => f.shiftManagementEnabled },
   { href: "/handovers", label: "التسليم والاستلام", icon: "🤝", permission: "shifts:operate", group: "stock", key: "handover.view", feature: (f) => f.shiftManagementEnabled },
-  { href: "/expenses", label: "المصروفات", icon: "💸", permission: "cost:read", group: "finance", key: "expenses.view" },
+  { href: "/expenses", label: "مصروفات التشغيل", icon: "💸", permission: "cost:read", group: "finance", key: "expenses.view" },
   { href: "/accounting", label: "المحاسبة (تجريبي)", icon: "📒", permission: "cost:read", group: "finance", key: "accounting.view" },
   { href: "/settings", label: "الإعدادات", icon: "⚙️", permission: "branches:manage", group: "admin" },
   { href: "/roles-permissions", label: "الأدوار والصلاحيات", icon: "🛡️", permission: "users:manage", group: "admin", key: "users.manage_permissions" },
