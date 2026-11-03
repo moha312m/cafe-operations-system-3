@@ -1,10 +1,12 @@
 "use client";
 
+import {visibleReportCatalog,REPORT_GROUPS} from "@/lib/report-center";
+import {SALES_WORKSPACE_LINKS} from "@/lib/sales-report-catalog";
 import { currentWorkspaceHref } from "@/lib/workspace-navigation";
 import { LayoutDashboard, ReceiptText, Armchair, Coffee, ClipboardList, ChartNoAxesCombined, ScanSearch, Smartphone, BookOpen, FlaskConical, Building2, Users, Package, ShoppingCart, Truck, CreditCard, ClipboardCheck, Scale, Handshake, FileChartColumn, Wallet, Landmark, BookText, Calculator, Settings, ShieldCheck, History, PanelRightClose, PanelRightOpen, ChevronDown } from "lucide-react";
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useContext, useEffect, useState, Suspense } from "react";
 import Link from "next/link";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import type { SessionUser } from "@/lib/auth";
 import {
   ROLE_LABELS,
@@ -46,8 +48,9 @@ export function useApp(): AppContextValue {
 // The sidebar is grouped so a laptop-height screen shows the section titles and
 // the section being worked in, not 25 flat links behind a small inner scroll.
 // Items without a `group` (the dashboard) stay pinned above the sections.
-type NavGroupId = "daily" | "menu" | "stock" | "reports" | "finance" | "admin";
+type NavGroupId = "sales" | "daily" | "menu" | "stock" | "reports" | "finance" | "admin";
 const NAV_GROUPS: { id: NavGroupId; label: string }[] = [
+  {id:"sales",label:"المبيعات"},
   { id: "daily", label: "التشغيل اليومي" },
   { id: "menu", label: "المنيو والمخزون" },
   { id: "stock", label: "الجرد والتسليم" },
@@ -69,6 +72,8 @@ type NavItem = {
   ownerOnly?: boolean;
   key?: string; // optional new granular permission key (wins over `permission`)
   anyKey?: string[];
+  allKeys?: string[];
+  reportGroup?: string;
   feature?: (f: CafeFeatures) => boolean;
 };
 
@@ -83,19 +88,18 @@ const NAV_ICONS: Record<string, React.ElementType> = {
  "/roles-permissions":ShieldCheck,"/audit":History,
 };
 const NAV: NavItem[] = [
+  ...SALES_WORKSPACE_LINKS.map(item=>({...item,icon:"",permission:"orders:read" as const,group:"sales" as const})),
   { href: "/finance", label: "مساحة الماليات", icon: "💼", permission: "cost:read", group: "finance", anyKey: ["accounting.view", "expenses.view", "treasury.view"] },
   { href: "/report-center", label: "مركز التقارير", icon: "📊", permission: "reports:read", group: "reports" },
   { href: "/tables/setup", label: "إدارة الترابيزات", icon: "🪑", permission: "orders:create", group: "daily", key: "tables.manage", feature: f => f.enableTables },
   { href: "/treasury", label: "الحسابات والتحويلات", icon: "🏦", permission: "cost:read", group: "finance", key: "treasury.view", ownerOnly: true },
   { href: "/dashboard", label: t.nav.dashboard, icon: "📊", permission: "dashboard:read" },
-  { href: "/pos", label: t.nav.pos, icon: "🧾", permission: "orders:create", group: "daily" },
   { href: "/current-shift", label: t.nav.currentShift, icon: "🧑‍💼", permission: "shifts:operate", group: "daily", feature: (f) => f.shiftManagementEnabled },
   { href: "/kitchen", label: t.nav.kitchen, icon: "☕", permission: "orders:update-status", group: "daily", feature: (f) => f.kitchenScreenEnabled },
   { href: "/tables", label: "الترابيزات", icon: "🍽️", permission: "orders:create", group: "daily", key: "tables.view", feature: (f) => f.enableTables },
   // Table setup is no longer a prominent daily page — it's reached from a
   // small "إدارة أرقام الترابيزات" button on /tables (owner/manager only).
   { href: "/orders", label: t.nav.orders, icon: "🔔", permission: "orders:read", group: "daily" },
-  { href: "/sales", label: "المبيعات", icon: "📈", permission: "orders:read", group: "daily", key: "sales.view" },
   { href: "/tracing", label: "التتبّع", icon: "🔎", permission: "audit:read", group: "reports", key: "audit.view" },
   // Approvals shows when waiter approval is on OR QR orders route to a waiter.
   { href: "/approvals", label: t.nav.approvals, icon: "📱", permission: "orders:approve", group: "daily", key: "qr_orders.view", feature: (f) => f.qrMenuEnabled },
@@ -116,13 +120,10 @@ const NAV: NavItem[] = [
   { href: "/stock-counts", label: "جرد المخزون", icon: "📋", permission: "inventory:read", group: "stock", key: "stock_count.view", feature: (f) => f.inventoryEnabled },
   { href: "/variances", label: "الفروقات", icon: "⚖️", permission: "shifts:read", group: "stock", key: "variance.view", feature: (f) => f.shiftManagementEnabled },
   { href: "/handovers", label: "التسليم والاستلام", icon: "🤝", permission: "shifts:operate", group: "stock", key: "handover.view", feature: (f) => f.shiftManagementEnabled },
-  { href: "/reports", label: t.nav.reports, icon: "📈", permission: "reports:read", group: "reports" },
   { href: "/expenses", label: "المصروفات", icon: "💸", permission: "cost:read", group: "finance", key: "expenses.view" },
   { href: "/accounting", label: "المحاسبة (تجريبي)", icon: "📒", permission: "cost:read", group: "finance", key: "accounting.view" },
-  { href: "/shifts", label: t.nav.shiftReports, icon: "🧮", permission: "shifts:read", group: "reports", feature: (f) => f.shiftManagementEnabled },
   { href: "/settings", label: "الإعدادات", icon: "⚙️", permission: "branches:manage", group: "admin" },
   { href: "/roles-permissions", label: "الأدوار والصلاحيات", icon: "🛡️", permission: "users:manage", group: "admin", key: "users.manage_permissions" },
-  { href: "/audit", label: t.nav.audit, icon: "🕓", permission: "audit:read", group: "reports" },
 ];
 
 export function AppShell({
@@ -159,12 +160,14 @@ export function AppShell({
     return key ? keySet.has(key) : false;
   };
 
-  const navItems = NAV.filter(
+  const catalog=visibleReportCatalog({keys:keySet,features:features??{},role:user.role,branchId:user.branchId});
+  const reportNav:NavItem[]=catalog.map(report=>({href:report.href,label:report.title,icon:'',permission:'reports:read',group:'reports',allKeys:report.keys,reportGroup:report.group}));
+  const navItems = [...NAV,...reportNav].filter(
     (item) =>
       // An explicit `key` (new granular gate) wins; else fall back to the
       // legacy permission bridge.
       (!item.ownerOnly || user.role === "CAFE_OWNER") &&
-      (item.anyKey ? item.anyKey.some(canKey) : item.key ? canKey(item.key) : can(item.permission)) &&
+      (item.allKeys ? item.allKeys.every(canKey) : item.anyKey ? item.anyKey.some(canKey) : item.key ? canKey(item.key) : can(item.permission)) &&
       (!item.feature || !features || item.feature(features))
   );
 
@@ -252,9 +255,10 @@ export function AppShell({
     (user.role === "CAFE_OWNER" || user.role === "BRANCH_MANAGER") && can("orders:read");
 
   const navLink = (item: NavItem) => {
-    const active = currentHref === item.href;
+    const active = currentHref === item.href && item.group === activeGroup;
     const ancestor = !active && pathname.startsWith(item.href + "/");
-    const Icon = NAV_ICONS[item.href] ?? BookOpen;
+    const Icon = NAV_ICONS[item.href.split("?")[0]] ?? BookOpen;
+    if(item.group==="sales")return <Suspense key={item.href} fallback={<Link className="workspace-nav-link block px-3 py-2.5 text-sm" href={item.href}>{item.label}</Link>}><SalesNavLink item={item} close={()=>setMobileNavOpen(false)}/></Suspense>;
     return (
       <Link
         key={item.href}
@@ -326,7 +330,8 @@ export function AppShell({
                     <ChevronDown aria-hidden="true" className={cn("size-3", !open && "rotate-90")} />
                   </button>
                   <div id={`nav-group-${group.id}`} hidden={!open} className="space-y-0.5">
-                    {items.map(navLink)}
+                    {items.filter(item=>!item.reportGroup).map(navLink)}
+                    {group.id==='reports'&&REPORT_GROUPS.map(reportGroup=>{const children=items.filter(item=>item.reportGroup===reportGroup.id);if(!children.length)return null;const active=children.some(item=>item.href===currentHref);return <details key={reportGroup.id} open={active||undefined} className="ms-2 border-s border-sidebar-border ps-1"><summary className="min-h-10 cursor-pointer px-3 py-2 text-sm font-medium">تقارير {reportGroup.title}</summary>{children.map(navLink)}</details>;})}
                   </div>
                 </div>
               );
@@ -386,4 +391,10 @@ export function AppShell({
       </div>
     </AppContext.Provider>
   );
+}
+
+function SalesNavLink({item,close}:{item:NavItem;close:()=>void}){
+ const pathname=usePathname(),search=useSearchParams();
+ const active=currentWorkspaceHref(pathname+'?'+search.toString(),SALES_WORKSPACE_LINKS.map(l=>l.href))===item.href;
+ return <Link href={item.href} onClick={close} aria-current={active?'page':undefined} className={cn('workspace-nav-link flex min-h-11 items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium focus-visible:outline-2',active?'bg-sidebar-primary text-sidebar-primary-foreground':'text-sidebar-foreground hover:bg-sidebar-accent')}><ReceiptText className="size-5 shrink-0" aria-hidden="true"/><span className="workspace-nav-label">{item.label}</span></Link>;
 }

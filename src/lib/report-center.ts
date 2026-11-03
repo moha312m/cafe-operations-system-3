@@ -1,3 +1,4 @@
+import {SALES_REPORT_CATALOG} from './sales-report-catalog';
 import type { CafeFeatures } from './cafe-settings';
 
 export const REPORT_GROUPS = [
@@ -12,6 +13,7 @@ type ReportGroup = typeof REPORT_GROUPS[number]['id'];
 export type ReportCatalogEntry = { id: string; group: ReportGroup; title: string; description: string; href: string;
   keys: string[]; features?: (keyof CafeFeatures)[]; ownerOnly?: boolean; cafeWide?: boolean; format: string };
 const CATALOG: ReportCatalogEntry[] = [
+  ...SALES_REPORT_CATALOG.map(entry=>({...entry,group:'sales' as const,href:'/reports/'+entry.id,format:'تقرير · تفاصيل · طباعة · تصدير'})),
   { id: 'daily', group: 'sales', title: 'قَفلة اليوم والفترة', description: 'المبيعات المعترف بها والتحصيلات والمرتجعات حسب الفرع والكاشير والصنف. طباعة وCSV وExcel من اللقطة المعروضة.', href: '/reports', keys: ['reports.view'], format: 'تقرير · طباعة · تصدير' },
   { id: 'invoices', group: 'sales', title: 'سجل فواتير البيع', description: 'بحث وفلاتر وتفاصيل الفاتورة والإيصال؛ المبيعات والتحصيلات منفصلة.', href: '/sales', keys: ['sales.view'], format: 'سجل · تفاصيل · تصدير' },
   { id: 'historical', group: 'sales', title: 'المبيعات التاريخية المستوردة', description: 'بيانات مستوردة مستقلة عن مبيعات الكاشير، بلا ربط موثوق بالفرع.', href: '/reports/historical-sales', keys: ['reports.view', 'finance.view_revenue'], ownerOnly: true, cafeWide: true, format: 'تقرير سنوي مستقل' },
