@@ -87,6 +87,14 @@ const NAV_ICONS: Record<string, React.ElementType> = {
  "/finance":Wallet,"/accounting":BookText,"/shifts":Calculator,"/settings":Settings,
  "/roles-permissions":ShieldCheck,"/audit":History,
 };
+/** Report links share one catalog, so they pick an icon by report id, then by group, instead of the generic book. */
+const REPORT_ICONS: Record<string, React.ElementType> = {
+ tables:Armchair,"product-sales":Coffee,"sales-payments":CreditCard,"shift-sales":Calculator,"sales-staff":Users,"purchase-sales":ShoppingCart,
+ daily:ChartNoAxesCombined,invoices:ReceiptText,historical:History,stock:Package,"purchase-invoices":ShoppingCart,expenses:Wallet,money:Landmark,
+ "trial-balance":Scale,income:ChartNoAxesCombined,"balance-sheet":Scale,"cash-flow":Landmark,ledger:BookText,journal:BookText,customers:CreditCard,
+ shifts:Calculator,opening:ClipboardCheck,variances:Scale,actions:ShieldCheck,audit:History,
+};
+const REPORT_GROUP_ICONS: Record<string, React.ElementType> = {sales:ChartNoAxesCombined,inventory:Package,purchasing:ShoppingCart,finance:Wallet,customers:CreditCard,system:ShieldCheck};
 const NAV: NavItem[] = [
   ...SALES_WORKSPACE_LINKS.map(item=>({...item,icon:"",permission:"orders:read" as const,group:"sales" as const})),
   { href: "/finance", label: "مساحة الماليات", icon: "💼", permission: "cost:read", group: "finance", anyKey: ["accounting.view", "expenses.view", "treasury.view"] },
@@ -142,7 +150,7 @@ export function AppShell({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
-  const cashierTouch = ["/pos", "/orders", "/sales", "/tracing", "/tables", "/current-shift", "/close-shift", "/receipts", "/reports", "/handovers", "/stock-counts"].some(route => pathname === route || pathname.startsWith(route + "/"));
+  const cashierTouch = ["/pos", "/orders", "/sales", "/tracing", "/tables", "/current-shift", "/close-shift", "/receipts", "/handovers", "/stock-counts"].some(route => pathname === route || pathname.startsWith(route + "/"));
   const router = useRouter();
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [rail, setRail] = useState(false);
@@ -257,7 +265,9 @@ export function AppShell({
   const navLink = (item: NavItem) => {
     const active = currentHref === item.href && item.group === activeGroup;
     const ancestor = !active && pathname.startsWith(item.href + "/");
-    const Icon = NAV_ICONS[item.href.split("?")[0]] ?? BookOpen;
+    const Icon = item.reportGroup
+      ? REPORT_ICONS[item.href.split("?")[0].split("/").pop() ?? ""] ?? REPORT_GROUP_ICONS[item.reportGroup] ?? FileChartColumn
+      : NAV_ICONS[item.href.split("?")[0]] ?? BookOpen;
     if(item.group==="sales")return <Suspense key={item.href} fallback={<Link className="workspace-nav-link block px-3 py-2.5 text-sm" href={item.href}>{item.label}</Link>}><SalesNavLink item={item} close={()=>setMobileNavOpen(false)}/></Suspense>;
     return (
       <Link

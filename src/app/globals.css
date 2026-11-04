@@ -307,6 +307,10 @@ html[data-cashier-touch="true"] .touch-number > input { width: 3rem; }
 .app-workspace :is(button,[role=button],summary) { min-height: 44px; }
 .app-workspace :is(button,a,input,select,textarea,summary):focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
 .workspace-nav-link { min-height: 44px; }
+/* Report filter toolbar: dense on pointer-fine desktops, 44px elsewhere. Specificity must beat the .app-workspace control rules above. */
+@media (min-width: 768px) and (pointer: fine) {
+  .app-workspace .report-dense :is(input:not([type=checkbox]):not([type=radio]),select,textarea,button,summary) { min-height: 36px; font-size: .875rem; }
+}
 .workspace-sidebar [data-nav-rail] { min-width: 0; }
 [data-nav-rail=true] > .workspace-sidebar :is(.workspace-nav-label,.workspace-nav-group) { display: none; }
 [data-nav-rail=true] > .workspace-sidebar .workspace-nav-link { justify-content: center; padding-inline: .5rem; }
