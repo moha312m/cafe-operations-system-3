@@ -131,3 +131,70 @@ export function buildMappingDraft(categories: readonly MappingCategory[], accoun
     },
   };
 }
+
+// ── Mapping eligibility and protection (Step 4B.2 closeout) ────────────
+/**
+ * System accounts whose posting meaning is not an ordinary operating expense:
+ * cost of sales, purchase discounts, inventory loss and cash differences.
+ * Decided by stable system identity only — never by code prefix or Arabic name.
+ * The database holds the same list in expense_mapping_excluded_key().
+ */
+export const NON_OPERATING_EXPENSE_KEYS = ["COST_OF_SALES", "PURCHASE_DISCOUNTS", "INVENTORY_LOSS", "CASH_OVER_SHORT"] as const;
+
+/** Postable, active expense account that is not one of the excluded system accounts. */
+export function isOperatingExpenseAccount(a: { type: string; isPostable: boolean; isActive: boolean; systemKey: string | null }) {
+  return a.type === "EXPENSE" && a.isPostable && a.isActive && !(NON_OPERATING_EXPENSE_KEYS as readonly string[]).includes(a.systemKey ?? "");
+}
+
+export type MappingRowInput = { categoryId: string; accountId: string | null; effectiveFrom: string };
+
+/**
+ * Accounts a mapping still needs on or after `today` (Cairo date): the row in force today
+ * for each category and every row that starts later. Mirrors the deactivation guard in the
+ * database. An account whose intervals have all ended is not protected.
+ */
+export function protectedMappingAccountIds(rows: readonly MappingRowInput[], today: string) {
+  const byCategory = new Map<string, MappingRowInput[]>();
+  for (const r of rows) byCategory.set(r.categoryId, [...(byCategory.get(r.categoryId) ?? []), r]);
+  const needed = new Set<string>();
+  for (const list of byCategory.values()) {
+    const sorted = [...list].sort((x, y) => x.effectiveFrom.localeCompare(y.effectiveFrom));
+    const inForce = sorted.filter((r) => r.effectiveFrom <= today).at(-1);
+    if (inForce?.accountId) needed.add(inForce.accountId);
+    for (const r of sorted) if (r.effectiveFrom > today && r.accountId) needed.add(r.accountId);
+  }
+  return needed;
+}
+
+// ── What an owner may change on an account, and why not ────────────────
+export type AccountFacts = { lineCount: number; closedPeriodLines: boolean; hasChildren: boolean; mappedInForce: boolean; mappedEver: boolean };
+export type AccountLocks = {
+  facts: AccountFacts;
+  /** Type, side and group/posting designation never change through the API; this says what pins them for this account. */
+  identity: string;
+  /** null = the change is available. */
+  code: string | null;
+  deactivate: string | null;
+  move: string | null;
+};
+
+export function accountLocks(a: { systemKey: string | null; isPostable: boolean; isActive: boolean }, f: AccountFacts): AccountLocks {
+  const pins = [
+    a.systemKey ? "حساب نظام (الترحيل بيوصله بمفتاحه)" : null,
+    f.lineCount > 0 ? `عليه ${f.lineCount} سطر قيد مرحّل` : null,
+    f.mappedEver ? "اتربط بتصنيف مصروف" : null,
+    f.hasChildren ? "تحته حسابات فرعية" : null,
+  ].filter(Boolean);
+  const identity = `النوع والجانب وكونه ${a.isPostable ? "حساب يقبل قيود" : "حساب رئيسي"} ثابتين بعد الإنشاء لأن تغييرهم بيغيّر معنى التقارير.${pins.length ? ` هنا: ${pins.join("، ")}.` : ""} لو فيه غلط، أنشئ حساب جديد وانقل الربط.`;
+  return {
+    facts: f, identity,
+    code: null,
+    deactivate: !a.isActive ? null
+      : a.systemKey ? "حساب نظام: الترحيل بيوصله بمفتاحه، فمايتوقفش"
+      : f.mappedInForce ? "مطلوب لربط تصنيف مصروف ساري أو مجدول. غيّر الربط الأول"
+      : null,
+    move: a.systemKey ? "حساب نظام: مكانه ثابت"
+      : f.closedPeriodLines ? "عليه قيود (أو حسابات تحته) في فترة مقفولة، فماينفعش يتنقل"
+      : null,
+  };
+}

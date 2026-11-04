@@ -14,7 +14,7 @@ export async function GET(request: NextRequest) {
     const { session, scope } = await accountingScope(request);
     const { q } = chartQuery.parse({ q: request.nextUrl.searchParams.get("q") ?? undefined });
     const { keys } = await resolvePermissions(session);
-    return NextResponse.json(await chartOfAccountsView(scope, { q, includeMapping: keys.has("expenses.view"), canSetup: keys.has("accounting.setup") && !resolveReadScope(session).branchId }));
+    return NextResponse.json(await chartOfAccountsView(scope, { q, includeMapping: keys.has("expenses.view"), canSetup: keys.has("accounting.setup") && !resolveReadScope(session).branchId, canExport: keys.has("accounting.export") }));
   } catch (error) {
     return handleApiError(error);
   }

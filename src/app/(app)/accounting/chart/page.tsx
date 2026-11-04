@@ -20,7 +20,7 @@ type Mapping = {
 };
 type Chart =
   | { configured: false; notice: string }
-  | { configured: true; notice: string; entity: { name: string }; query: string; total: number; matchCount: number; rows: ChartRow[]; mapping: Mapping | null; mappingAllowed: boolean; canSetup: boolean };
+  | { configured: true; notice: string; entity: { name: string }; query: string; total: number; matchCount: number; rows: ChartRow[]; mapping: Mapping | null; mappingAllowed: boolean; canSetup: boolean; canExport: boolean };
 
 const TYPE_LABELS: Record<string, string> = { ASSET: "أصول", LIABILITY: "خصوم", EQUITY: "حقوق ملكية", REVENUE: "إيرادات", EXPENSE: "مصروفات" };
 const SIDE_LABELS: Record<string, string> = { DEBIT: "مدين", CREDIT: "دائن" };
@@ -52,7 +52,11 @@ function LedgerLink({ r }: { r: ChartRow }) {
 }
 
 export default function ChartOfAccountsPage() {
-  const [accountDialog, setAccountDialog] = useState<{ account: ChartRow | null } | null>(null);
+  const [accountDialog, setAccountDialog] = useState<{ mode: "group" | "sub" | "edit"; account: ChartRow | null } | null>(null);
+  const [exportScope, setExportScope] = useState<"full" | "filtered">("full");
+  const [includeMapping, setIncludeMapping] = useState(false);
+  const [exporting, setExporting] = useState("");
+  const [exportError, setExportError] = useState("");
   const [mappingTarget, setMappingTarget] = useState<MappingTarget | null>(null);
   const [input, setInput] = useState("");
   const [q, setQ] = useState("");
@@ -63,6 +67,24 @@ export default function ChartOfAccountsPage() {
   }, [input]);
   const { data, error, loading, reload } = useAccountingData<Chart>(`/api/accounting/chart-of-accounts${q ? `?${new URLSearchParams({ q })}` : ""}`);
   const ready = data && data.configured ? data : null;
+  async function download(format: "xlsx" | "csv", dataset: "chart" | "mapping" = "chart") {
+    if (!ready) return;
+    const filtered = exportScope === "filtered" && !!ready.query;
+    const params = new URLSearchParams({ format, scope: filtered ? "filtered" : "full", dataset });
+    if (filtered) params.set("q", ready.query);
+    if (format === "xlsx" && includeMapping) params.set("includeMapping", "1");
+    setExporting(`${format}:${dataset}`); setExportError("");
+    try {
+      const response = await fetch(`/api/accounting/chart-of-accounts/export?${params}`);
+      if (!response.ok) throw new Error(((await response.json().catch(() => ({}))) as { error?: string }).error ?? `تعذر التصدير (${response.status})`);
+      const blob = await response.blob();
+      const name = /filename="([^"]+)"/.exec(response.headers.get("Content-Disposition") ?? "")?.[1] ?? `chart-of-accounts.${format}`;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url; link.download = name; document.body.appendChild(link); link.click(); link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } catch (e) { setExportError(e instanceof Error ? e.message : "تعذر التصدير"); } finally { setExporting(""); }
+  }
   const savedBlock = (m: Mapping["rows"][number]) => (
     <>
                             {m.saved.current ? <span><span dir="ltr">{m.saved.current.accountCode}</span> — {m.saved.current.accountName}<span className="block text-xs text-muted-foreground">من {m.saved.current.effectiveFrom}</span></span> : <span className="text-muted-foreground">{m.saved.ended ? "منتهي" : "غير محفوظ"}</span>}
@@ -82,8 +104,26 @@ export default function ChartOfAccountsPage() {
           <Label htmlFor="coa-search">بحث بالكود أو الاسم</Label>
           <Input id="coa-search" type="search" className="w-72 max-w-full" placeholder="مثال: 1110 أو نقدية" value={input} onChange={(e) => setInput(e.target.value)} maxLength={60} />
         </div>
-        {ready?.canSetup && <Button onClick={() => setAccountDialog({ account: null })}>حساب جديد</Button>}
+        {ready?.canSetup && <Button onClick={() => setAccountDialog({ mode: "group", account: null })}>إضافة حساب رئيسي (مجموعة)</Button>}
+        {ready?.canSetup && <Button variant="outline" onClick={() => setAccountDialog({ mode: "sub", account: null })}>إضافة حساب فرعي</Button>}
       </div>
+      {ready?.canExport && (
+        <section className="flex flex-wrap items-end gap-3 rounded-lg border p-3" aria-label="تصدير الدليل" data-testid="chart-export">
+          <div className="space-y-1">
+            <Label htmlFor="coa-export-scope">نطاق التصدير</Label>
+            <select id="coa-export-scope" className="h-9 min-w-56 rounded-lg border border-input bg-background px-3 text-sm" value={ready.query ? exportScope : "full"} onChange={(e) => setExportScope(e.target.value as "full" | "filtered")}>
+              <option value="full">الدليل كاملًا ({ready.total} حساب)</option>
+              <option value="filtered" disabled={!ready.query}>النتائج الحالية{ready.query ? ` (${ready.matchCount} نتيجة + سياقها)` : " — اكتب بحث الأول"}</option>
+            </select>
+          </div>
+          {ready.mappingAllowed && <label className="flex items-center gap-2 pb-1.5 text-sm"><input type="checkbox" className="size-4" checked={includeMapping} onChange={(e) => setIncludeMapping(e.target.checked)} />ضم ورقة ربط التصنيفات في Excel</label>}
+          <Button variant="outline" disabled={!!exporting} onClick={() => download("xlsx")}>{exporting === "xlsx:chart" ? "جارٍ التجهيز…" : "تصدير Excel"}</Button>
+          <Button variant="outline" disabled={!!exporting} onClick={() => download("csv")}>{exporting === "csv:chart" ? "جارٍ التجهيز…" : "تصدير CSV"}</Button>
+          {ready.mappingAllowed && <Button variant="outline" disabled={!!exporting} onClick={() => download("csv", "mapping")}>{exporting === "csv:mapping" ? "جارٍ التجهيز…" : "CSV ربط التصنيفات"}</Button>}
+          <p className="w-full text-xs text-muted-foreground">للقراءة والتخطيط بره النظام. تعديل الملف مابيغيّرش الدليل، ومفيش رفع أو استيراد.</p>
+          {exportError && <p role="alert" className="w-full text-sm font-medium text-destructive">{exportError}</p>}
+        </section>
+      )}
       {error && <div role="alert" className="workspace-state text-destructive"><p>{error}</p><Button variant="outline" disabled={loading} onClick={reload}>{loading ? "جارٍ إعادة التحميل…" : "إعادة المحاولة"}</Button></div>}
       {loading && !data && <p role="status">جاري التحميل…</p>}
       {data && !data.configured && <p className="rounded-lg border p-4 text-muted-foreground">الدفاتر لسه ماتجهزتش للكافيه ده، فمفيش دليل حسابات يتعرض. القراءة هنا مابتنشئش دفاتر.</p>}
@@ -107,13 +147,13 @@ export default function ChartOfAccountsPage() {
                       <TableCell style={{ paddingInlineStart: `${0.5 + r.depth * 1.25}rem` }} className={!r.isPostable ? "font-semibold" : ""}>
                         {r.name}
                         {!r.matched && ready.query && <span className="ms-2 text-xs text-muted-foreground">(يضم نتيجة بحث)</span>}
-                        <span className="mt-1 flex flex-wrap items-center gap-2 md:hidden"><StatusBadges r={r} /><LedgerLink r={r} />{ready.canSetup && <EditButton onClick={() => setAccountDialog({ account: r })} />}</span>
+                        <span className="mt-1 flex flex-wrap items-center gap-2 md:hidden"><StatusBadges r={r} /><LedgerLink r={r} />{ready.canSetup && <EditButton onClick={() => setAccountDialog({ mode: "edit", account: r })} />}</span>
                       </TableCell>
                       <TableCell className="hidden md:table-cell">{TYPE_LABELS[r.type] ?? r.type}</TableCell>
                       <TableCell className="hidden 2xl:table-cell">{SIDE_LABELS[r.normalBalance] ?? r.normalBalance}</TableCell>
                       <TableCell className="hidden xl:table-cell" dir="auto">{r.parentCode ? `${r.parentCode} — ${r.parentName}` : "—"}</TableCell>
                       <TableCell className="hidden md:table-cell"><StatusBadges r={r} /></TableCell>
-                      <TableCell className="hidden md:table-cell"><span className="flex items-center gap-3"><LedgerLink r={r} />{ready.canSetup && <EditButton onClick={() => setAccountDialog({ account: r })} />}</span></TableCell>
+                      <TableCell className="hidden md:table-cell"><span className="flex items-center gap-3"><LedgerLink r={r} />{ready.canSetup && <EditButton onClick={() => setAccountDialog({ mode: "edit", account: r })} />}</span></TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -159,7 +199,7 @@ export default function ChartOfAccountsPage() {
           {!ready.mappingAllowed && <p className="text-sm text-muted-foreground">مسودة ربط تصنيفات المصروفات بتظهر لمن عنده صلاحية عرض المصاريف.</p>}
         </>
       )}
-      {accountDialog && ready && <AccountDialog account={accountDialog.account} rows={ready.rows} onClose={() => setAccountDialog(null)} onSaved={reload} />}
+      {accountDialog && ready && <AccountDialog mode={accountDialog.mode} account={accountDialog.account} rows={ready.rows} onClose={() => setAccountDialog(null)} onSaved={reload} />}
       {mappingTarget && ready?.mapping && <MappingDialog target={mappingTarget} accounts={ready.mapping.expenseAccounts} onClose={() => setMappingTarget(null)} onSaved={reload} />}
     </div>
   );

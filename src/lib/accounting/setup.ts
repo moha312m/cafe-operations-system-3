@@ -15,6 +15,7 @@ import { accountingScope } from "@/lib/accounting/api-scope";
 import { auditInTransaction } from "@/lib/audit";
 import { addDays, dateStrInTz, zonedDayStart } from "@/lib/date-range";
 import { expenseSourceKey } from "@/lib/expense-rules";
+import { isOperatingExpenseAccount, protectedMappingAccountIds, NON_OPERATING_EXPENSE_KEYS } from "@/lib/accounting/chart-view";
 import type { SessionUser } from "@/lib/auth";
 
 type Tx = Prisma.TransactionClient;
@@ -24,10 +25,14 @@ const reason = text(3, 300, "السبب");
 const accountType = z.enum(["ASSET", "LIABILITY", "EQUITY", "REVENUE", "EXPENSE"]);
 const code = z.string().trim().regex(/^\d{4}$/, "الكود 4 أرقام");
 
+/** parentId null makes a root group under one of the five types; it must then be a header (non-postable). */
 export const accountCreateInput = z.object({
-  code, name: text(2, 100, "الاسم"), type: accountType, parentId: z.string().min(1, "الحساب الأب مطلوب"),
+  code, name: text(2, 100, "الاسم"), type: accountType, parentId: z.string().min(1).nullable(),
   isPostable: z.boolean(), contra: z.boolean().optional(), reason,
-}).strict();
+}).strict()
+  .refine((v) => v.parentId !== null || !v.isPostable, { message: "الحساب الجذر لازم يكون حساب رئيسي (مجموعة)", path: ["isPostable"] })
+  .refine((v) => !v.contra || v.isPostable, { message: "الحساب العكسي بيتعمل على حساب يقبل قيود بس", path: ["contra"] });
+const MAX_DEPTH = 6;
 export const accountUpdateInput = z.object({
   name: text(2, 100, "الاسم").optional(), code: code.optional(), isActive: z.boolean().optional(), parentId: z.string().min(1).optional(), reason,
 }).strict().refine((v) => v.name !== undefined || v.code !== undefined || v.isActive !== undefined || v.parentId !== undefined, "مفيش تغيير مطلوب");
@@ -36,7 +41,7 @@ export const mappingChangeInput = z.object({
   expectedLatestEffectiveFrom: z.string().date().nullable(), reason, approvalRef: text(3, 120, "مرجع اعتماد المحاسب"),
   acknowledgePostedNotReclassified: z.boolean().optional(),
 }).strict();
-export const mappingPreviewQuery = z.object({ categoryId: z.string().min(1), effectiveFrom: z.string().date() }).strict();
+export const mappingPreviewQuery = z.object({ categoryId: z.string().min(1), effectiveFrom: z.string().date(), accountId: z.string().min(1).optional() }).strict();
 
 const NORMAL = { ASSET: "DEBIT", EXPENSE: "DEBIT", LIABILITY: "CREDIT", EQUITY: "CREDIT", REVENUE: "CREDIT" } as const;
 
@@ -52,6 +57,9 @@ const GUARD_MESSAGES: [RegExp, number, string][] = [
   [/same books|another cafe|belong to the mapping cafe/, 400, "العنصر خارج دفاتر الكافيه"],
   [/under itself|too deep/, 400, "ترتيب الحسابات غير صحيح"],
   [/Mapped account must be/, 400, "لازم تختار حساب مصروفات نشط يقبل قيود"],
+  [/ordinary operating expense/, 400, "الحساب ده مش من حسابات المصروفات التشغيلية العادية (تكلفة المبيعات وخصومات المشتريات وهالك المخزون وفروق الكاش)"],
+  [/closed accounting period/, 400, "تاريخ الربط جوه فترة محاسبية مقفولة"],
+  [/named by an expense category mapping/, 409, "الحساب مربوط بتصنيف مصروف، فنوعه وجانبه وكونه حساب قيود ماينفعوش يتغيروا"],
   [/only move forward/, 400, "تاريخ الربط لازم يكون بعد آخر ربط محفوظ"],
 ];
 function guardError(error: unknown): never {
@@ -81,15 +89,24 @@ const accountDto = (a: { id: string; code: string; name: string; type: string; n
 
 export async function createAccount(tx: Tx, actor: SessionUser, cafeId: string, input: z.infer<typeof accountCreateInput>) {
   const entityId = await lockBooks(tx, cafeId);
-  const parent = await tx.accountingAccount.findFirst({ where: { id: input.parentId, entityId, cafeId } });
-  if (!parent) throw new ApiError(404, "الحساب الأب مش موجود");
-  if (parent.isPostable) throw new ApiError(400, "الحساب الأب لازم يكون حساب رئيسي");
-  if (parent.type !== input.type) throw new ApiError(400, "الحساب الأب لازم يكون من نفس النوع");
+  let parent: { id: string; code: string; type: string; isPostable: boolean; parentId: string | null } | null = null;
+  if (input.parentId) {
+    parent = await tx.accountingAccount.findFirst({ where: { id: input.parentId, entityId, cafeId }, select: { id: true, code: true, type: true, isPostable: true, parentId: true } });
+    if (!parent) throw new ApiError(404, "الحساب الأب مش موجود");
+    if (parent.isPostable) throw new ApiError(400, "الحساب الأب لازم يكون حساب رئيسي");
+    if (parent.type !== input.type) throw new ApiError(400, "الحساب الأب لازم يكون من نفس النوع");
+    let depth = 1;
+    for (let cur = parent.parentId; cur; depth++) {
+      if (depth >= MAX_DEPTH) throw new ApiError(400, `الشجرة أقصاها ${MAX_DEPTH} مستويات`);
+      cur = (await tx.accountingAccount.findUnique({ where: { id: cur }, select: { parentId: true } }))?.parentId ?? null;
+    }
+    if (depth >= MAX_DEPTH) throw new ApiError(400, `الشجرة أقصاها ${MAX_DEPTH} مستويات`);
+  }
   const base = NORMAL[input.type];
   const normalBalance = input.contra ? (base === "DEBIT" ? "CREDIT" : "DEBIT") : base;
   try {
-    const created = await tx.accountingAccount.create({ data: { cafeId, entityId, code: input.code, name: input.name, type: input.type, normalBalance, isPostable: input.isPostable, parentId: parent.id } });
-    await auditInTransaction(tx, { cafeId, userId: actor.id, action: "ACCOUNTING_ACCOUNT_CREATED", entity: "AccountingAccount", entityId: created.id, details: { code: created.code, name: created.name, type: created.type, normalBalance, isPostable: created.isPostable, parentId: parent.id, parentCode: parent.code, contra: !!input.contra, reason: input.reason } });
+    const created = await tx.accountingAccount.create({ data: { cafeId, entityId, code: input.code, name: input.name, type: input.type, normalBalance, isPostable: input.isPostable, parentId: parent?.id ?? null } });
+    await auditInTransaction(tx, { cafeId, userId: actor.id, action: "ACCOUNTING_ACCOUNT_CREATED", entity: "AccountingAccount", entityId: created.id, details: { code: created.code, name: created.name, type: created.type, normalBalance, isPostable: created.isPostable, parentId: parent?.id ?? null, parentCode: parent?.code ?? null, root: !parent, contra: !!input.contra, reason: input.reason } });
     return { account: accountDto(created) };
   } catch (error) { return guardError(error); }
 }
@@ -100,6 +117,14 @@ export async function updateAccount(tx: Tx, actor: SessionUser, cafeId: string, 
   if (!before) throw new ApiError(404, "الحساب مش موجود");
   if (before.systemKey && (input.parentId !== undefined || input.isActive === false)) {
     throw new ApiError(409, "حسابات النظام ماينفعش تتنقل أو تتوقف. الاسم والكود بس اللي يتعدلوا");
+  }
+  if (input.isActive === false && before.isActive) {
+    const rows = await tx.expenseCategoryAccountMapping.findMany({ where: { entityId }, select: { categoryId: true, accountId: true, effectiveFrom: true, category: { select: { nameAr: true } } } });
+    const needed = protectedMappingAccountIds(rows.map((r) => ({ categoryId: r.categoryId, accountId: r.accountId, effectiveFrom: day(r.effectiveFrom) })), dateStrInTz(new Date()));
+    if (needed.has(before.id)) {
+      const names = [...new Set(rows.filter((r) => r.accountId === before.id).map((r) => r.category.nameAr))].join("، ");
+      throw new ApiError(409, `الحساب مطلوب لربط ساري أو مجدول لتصنيف: ${names}. غيّر الربط الأول`);
+    }
   }
   const data: Prisma.AccountingAccountUncheckedUpdateInput = {};
   if (input.name !== undefined && input.name !== before.name) data.name = input.name;
@@ -147,7 +172,14 @@ export async function previewMapping(tx: Tx, cafeId: string, q: z.infer<typeof m
   const category = await tx.expenseCategory.findFirst({ where: { id: q.categoryId, cafeId }, select: { id: true } });
   if (!category) throw new ApiError(404, "التصنيف مش موجود");
   const latest = await latestMapping(tx, category.id);
-  return { effectiveFrom: q.effectiveFrom, latestEffectiveFrom: latest ? day(latest.effectiveFrom) : null, impact: await mappingImpact(tx, entity.id, cafeId, category.id, q.effectiveFrom) };
+  let account: { eligible: boolean; reason: string | null } | null = null;
+  if (q.accountId) {
+    const found = await tx.accountingAccount.findFirst({ where: { id: q.accountId, entityId: entity.id, cafeId }, select: { type: true, isPostable: true, isActive: true, systemKey: true } });
+    if (!found) throw new ApiError(404, "الحساب مش موجود");
+    account = isOperatingExpenseAccount(found) ? { eligible: true, reason: null }
+      : { eligible: false, reason: found.systemKey && (NON_OPERATING_EXPENSE_KEYS as readonly string[]).includes(found.systemKey) ? "حساب نظام مش من المصروفات التشغيلية العادية" : "لازم حساب مصروفات نشط يقبل قيود" };
+  }
+  return { effectiveFrom: q.effectiveFrom, latestEffectiveFrom: latest ? day(latest.effectiveFrom) : null, impact: await mappingImpact(tx, entity.id, cafeId, category.id, q.effectiveFrom), account };
 }
 
 export async function changeMapping(tx: Tx, actor: SessionUser, cafeId: string, input: z.infer<typeof mappingChangeInput>) {
@@ -168,6 +200,7 @@ export async function changeMapping(tx: Tx, actor: SessionUser, cafeId: string, 
     const found = await tx.accountingAccount.findFirst({ where: { id: input.accountId, entityId, cafeId } });
     if (!found) throw new ApiError(404, "الحساب مش موجود");
     if (!found.isPostable || !found.isActive || found.type !== "EXPENSE") throw new ApiError(400, "لازم تختار حساب مصروفات نشط يقبل قيود");
+    if (!isOperatingExpenseAccount(found)) throw new ApiError(400, "الحساب ده مش من حسابات المصروفات التشغيلية العادية (تكلفة المبيعات وخصومات المشتريات وهالك المخزون وفروق الكاش)");
     account = { id: found.id, code: found.code, name: found.name };
   }
 

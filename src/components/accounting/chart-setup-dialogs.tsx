@@ -38,22 +38,39 @@ function Shell({ title, onClose, children }: { title: string; onClose: () => voi
 }
 const Error_ = ({ text }: { text: string }) => (text ? <p role="alert" className="text-sm font-medium text-destructive">{text}</p> : null);
 
-export function AccountDialog({ account, rows, onClose, onSaved }: { account: ChartRow | null; rows: ChartRow[]; onClose: () => void; onSaved: () => void }) {
-  const editing = !!account;
+export type AccountDialogMode = "group" | "sub" | "edit";
+type LockedRow = ChartRow & { locks?: { identity: string; deactivate: string | null; move: string | null; code: string | null } };
+const NORMAL_SIDE: Record<string, string> = { ASSET: "مدين", EXPENSE: "مدين", LIABILITY: "دائن", EQUITY: "دائن", REVENUE: "دائن" };
+const TYPES = ["ASSET", "LIABILITY", "EQUITY", "REVENUE", "EXPENSE"] as const;
+
+function Locked({ reason }: { reason: string }) {
+  return <p className="mt-1 flex items-start gap-1.5 text-sm text-muted-foreground"><span aria-hidden>🔒</span><span>{reason}</span></p>;
+}
+
+/**
+ * Add a main (group) account, add a posting sub-account, or edit one. Groups are never postable
+ * and may be roots; a posting account always sits under a group of its own type. What cannot
+ * change is shown with the reason, not hidden.
+ */
+export function AccountDialog({ mode, account, rows, onClose, onSaved }: { mode: AccountDialogMode; account: LockedRow | null; rows: ChartRow[]; onClose: () => void; onSaved: () => void }) {
+  const editing = mode === "edit" && !!account;
   const system = !!account?.systemKey;
   const headers = rows.filter((r) => !r.isPostable);
-  const [parentId, setParentId] = useState(account?.parentId ?? headers.find((h) => h.type === "EXPENSE")?.id ?? headers[0]?.id ?? "");
+  const [type, setType] = useState<string>(account?.type ?? "EXPENSE");
+  const [parentId, setParentId] = useState(account?.parentId ?? (mode === "sub" ? headers.find((h) => h.type === "EXPENSE")?.id ?? headers[0]?.id ?? "" : ""));
   const [code, setCode] = useState(account?.code ?? "");
   const [name, setName] = useState(account?.name ?? "");
   const [isActive, setIsActive] = useState(account?.isActive ?? true);
-  const [isPostable, setIsPostable] = useState(true);
   const [contra, setContra] = useState(false);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const keyFor = useRequestKey();
   const parent = headers.find((h) => h.id === parentId);
-  const parentChoices = editing ? headers.filter((h) => h.type === account!.type && h.id !== account!.id) : headers;
+  const effectiveType = mode === "sub" ? parent?.type ?? type : type;
+  const parentChoices = editing ? headers.filter((h) => h.type === account!.type && h.id !== account!.id) : mode === "group" ? headers.filter((h) => h.type === type) : headers;
+  const side = contra ? (NORMAL_SIDE[effectiveType] === "مدين" ? "دائن" : "مدين") : NORMAL_SIDE[effectiveType];
+  const locks = account?.locks;
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -63,41 +80,67 @@ export function AccountDialog({ account, rows, onClose, onSaved }: { account: Ch
         const body: Record<string, unknown> = { reason };
         if (name !== account!.name) body.name = name;
         if (code !== account!.code) body.code = code;
-        if (!system && isActive !== account!.isActive) body.isActive = isActive;
-        if (!system && parentId && parentId !== account!.parentId) body.parentId = parentId;
+        if (!system && !locks?.deactivate && isActive !== account!.isActive) body.isActive = isActive;
+        if (!system && !locks?.move && parentId && parentId !== account!.parentId) body.parentId = parentId;
         await api(`/api/accounting/accounts/${account!.id}`, { method: "PATCH", body, idempotencyKey: keyFor({ id: account!.id, ...body }) });
       } else {
-        const body = { code, name, type: parent?.type, parentId, isPostable, contra, reason };
+        const isGroup = mode === "group";
+        const body = { code, name, type: effectiveType, parentId: parentId || null, isPostable: !isGroup, contra: isGroup ? undefined : contra || undefined, reason };
+        if (!isGroup && !parentId) throw new Error("اختار المجموعة اللي هيتحط تحتها الحساب");
         await api("/api/accounting/accounts", { method: "POST", body, idempotencyKey: keyFor(body) });
       }
       onSaved(); onClose();
     } catch (e) { setError(message(e)); } finally { setBusy(false); }
   }
 
+  const title = editing ? `تعديل الحساب ${account!.code}` : mode === "group" ? "إضافة حساب رئيسي (مجموعة)" : "إضافة حساب فرعي (يقبل قيود)";
   return (
-    <Shell title={editing ? `تعديل الحساب ${account!.code}` : "إضافة حساب جديد"} onClose={onClose}>
+    <Shell title={title} onClose={onClose}>
       <form onSubmit={submit} className="space-y-4" noValidate>
-        <p className="text-sm text-muted-foreground">بيغيّر دليل الحسابات بس. مفيش قيد بيتعمل أو بيتعدّل، والقيود المرحّلة بتفضل زي ما هي.{system && " ده حساب نظام: الاسم والكود بس اللي يتعدلوا، لأن الترحيل بيوصله بمفتاحه."}</p>
-        {(!editing || !system) && (
+        <p className="text-sm text-muted-foreground">بيغيّر دليل الحسابات بس. مفيش قيد بيتعمل أو بيتعدّل، والقيود المرحّلة بتفضل زي ما هي.</p>
+        {mode === "group" && (
           <div>
-            <label className={label} htmlFor="acct-parent">الحساب الرئيسي (الأب)</label>
-            <select id="acct-parent" className={field} value={parentId} onChange={(e) => setParentId(e.target.value)} required>
+            <label className={label} htmlFor="acct-type">نوع الحساب</label>
+            <select id="acct-type" className={field} value={type} onChange={(e) => { setType(e.target.value); setParentId(""); }}>
+              {TYPES.map((t) => <option key={t} value={t}>{TYPE_LABELS[t]}</option>)}
+            </select>
+          </div>
+        )}
+        {(mode !== "edit" || !system) && (
+          <div>
+            <label className={label} htmlFor="acct-parent">{mode === "group" ? "تحت أي مجموعة؟ (اختياري)" : "المجموعة (الحساب الأب)"}</label>
+            <select id="acct-parent" className={field} value={parentId} onChange={(e) => setParentId(e.target.value)} disabled={editing && !!locks?.move}>
+              {(mode === "group" || editing) && <option value="">{editing ? "— بدون تغيير —" : "— بدون: مجموعة جذر تحت النوع —"}</option>}
               {parentChoices.map((h) => <option key={h.id} value={h.id}>{h.code} — {h.name} ({TYPE_LABELS[h.type] ?? h.type})</option>)}
             </select>
-            {!editing && parent && <p className="mt-1 text-sm text-muted-foreground">النوع: {TYPE_LABELS[parent.type] ?? parent.type}</p>}
+            {mode === "sub" && parent && <p className="mt-1 text-sm text-muted-foreground">النوع: {TYPE_LABELS[parent.type] ?? parent.type}</p>}
+            {mode === "sub" && headers.length === 0 && <p role="alert" className="mt-1 text-sm text-destructive">مفيش مجموعات. أضف حساب رئيسي الأول.</p>}
+            {editing && locks?.move && <Locked reason={locks.move} />}
           </div>
         )}
+        {editing && system && account!.parentCode && <p className="text-sm text-muted-foreground">المجموعة: {account!.parentCode} — {account!.parentName}</p>}
+        {editing && system && locks?.move && <Locked reason={locks.move} />}
         <div className="grid gap-4 sm:grid-cols-2">
           <div><label className={label} htmlFor="acct-code">الكود (4 أرقام)</label><input id="acct-code" className={field} dir="ltr" inputMode="numeric" maxLength={4} value={code} onChange={(e) => setCode(e.target.value)} /></div>
-          <div><label className={label} htmlFor="acct-name">الاسم</label><input id="acct-name" className={field} maxLength={100} value={name} onChange={(e) => setName(e.target.value)} /></div>
+          <div><label className={label} htmlFor="acct-name">الاسم بالعربي</label><input id="acct-name" className={field} maxLength={100} value={name} onChange={(e) => setName(e.target.value)} /></div>
         </div>
         {!editing && (
-          <div className="space-y-2">
-            <label className="flex items-center gap-3 text-base"><input type="checkbox" className="size-5" checked={isPostable} onChange={(e) => setIsPostable(e.target.checked)} />حساب يقبل قيود (مش رئيسي)</label>
-            <label className="flex items-center gap-3 text-base"><input type="checkbox" className="size-5" checked={contra} onChange={(e) => setContra(e.target.checked)} />حساب عكسي (جانبه عكس طبيعة نوعه)</label>
+          <div className="space-y-2 rounded-lg border p-3">
+            <p className="text-sm">الجانب الطبيعي: <b>{side}</b> — {mode === "group" ? "المجموعة مابتاخدش قيود." : "حساب يقبل قيود."}</p>
+            {mode === "sub" && <label className="flex items-center gap-3 text-base"><input type="checkbox" className="size-5" checked={contra} onChange={(e) => setContra(e.target.checked)} />حساب عكسي (جانبه عكس طبيعة نوعه، وبيتسجل سببه تحت)</label>}
           </div>
         )}
-        {editing && !system && <label className="flex items-center gap-3 text-base"><input type="checkbox" className="size-5" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} />نشط</label>}
+        {editing && (
+          <>
+            <label className="flex items-center gap-3 text-base"><input type="checkbox" className="size-5" checked={isActive} disabled={!!locks?.deactivate && account!.isActive} onChange={(e) => setIsActive(e.target.checked)} />نشط</label>
+            {locks?.deactivate && account!.isActive && <Locked reason={locks.deactivate} />}
+            <div className="rounded-lg border border-dashed p-3 text-sm">
+              <p className="font-semibold">ثابت — مش بيتغير من هنا</p>
+              <p className="mt-1 text-muted-foreground">{locks?.identity ?? "النوع والجانب وكونه رئيسي أو يقبل قيود ثابتين بعد الإنشاء."}</p>
+              {system && <p className="mt-1 text-muted-foreground">الكود والاسم بيتعدلوا بأمان لأن الترحيل بيوصل للحساب بمفتاحه مش بكوده.</p>}
+            </div>
+          </>
+        )}
         <div><label className={label} htmlFor="acct-reason">السبب</label><input id="acct-reason" className={field} maxLength={300} value={reason} onChange={(e) => setReason(e.target.value)} /></div>
         <Error_ text={error} />
         <button className={nativePrimaryButtonClassName + " min-h-12 w-full text-base font-bold sm:w-auto"} disabled={busy}>{busy ? "جارٍ الحفظ…" : editing ? "حفظ التعديل" : "إضافة الحساب"}</button>
