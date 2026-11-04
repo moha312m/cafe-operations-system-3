@@ -19,7 +19,8 @@ export function DetailFrame({ embedded, open, busy, title, onClose, children, hi
     {children}
   </section> : null;
   return <Dialog open={open} onOpenChange={value => !value && !busy && onClose()}>
-    <DialogContent className="max-w-4xl">
+    {/* sm: prefix required — the base dialog sets sm:max-w-sm, which a bare max-w-4xl does not override. */}
+    <DialogContent className="sm:max-w-4xl">
       <DialogHeader><DialogTitle>{title}</DialogTitle></DialogHeader>
       {children}
     </DialogContent>
@@ -31,7 +32,7 @@ export function ConfirmHandoverAction({ title, open, busy, onCancel, onConfirm, 
   onConfirm: () => void; children?: ReactNode;
 }) {
   return <Dialog open={open} onOpenChange={value => !value && !busy && onCancel()}>
-    <DialogContent className="max-w-md">
+    <DialogContent className="sm:max-w-md">
       <DialogHeader><DialogTitle>{title}</DialogTitle></DialogHeader>
       <p className="text-sm">{children ?? "سيُسجل هذا الإجراء باسمك في سجل المراجعة. راجع البيانات قبل التأكيد."}</p>
       <DialogFooter className="flex flex-wrap gap-2">
