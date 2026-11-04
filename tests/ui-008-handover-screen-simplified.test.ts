@@ -19,10 +19,15 @@ describe("UI-008 simplified handover screen", () => {
   test("the step bar follows the existing navigation helper and names the next action", () => {
     assert.match(detail, /import \{ handoverStep \} from "\.\/workflow-state"/);
     assert.match(detail, /const step = view \? handoverStep\(view\.status, view\.count\?\.status \?\? null\) : "unknown"/);
-    for (const id of ["count", "review", "submit", "receive", "complete"]) assert.match(detail, new RegExp(`\\{ id: "${id}", label: "`));
-    assert.match(detail, /aria-current=\{state === "current" \? "step" : undefined\}/);
-    // A current receiving dispute takes the next-action line; every other state still follows the step.
-    assert.match(detail, /المطلوب الآن: \{step === "receive" && receivingDisputed \? NEXT_STEP\.disputed : \(NEXT_STEP\[step\] \?\? NEXT_STEP\.unknown\)\}/);
+    // Step 5: the five-step bar became the unified journey (closure, handover, incoming readiness) with one "required now" panel.
+    const journey = source("src/components/handovers/handover-journey.ts");
+    const parts = source("src/components/handovers/handover-workspace-parts.tsx");
+    for (const id of ["count", "review", "submit", "sign", "completion"]) assert.match(journey, new RegExp(`id: "${id}", group: "handover"`));
+    assert.match(detail, /buildJourney\(\{/);
+    assert.match(parts, /aria-current=\{s\.state === "current" \? "step" : undefined\}/);
+    // A current receiving dispute outranks the other next actions.
+    assert.match(journey, /if \(i\.disputed\) return \{ \.\.\.base, title: "الاستلام معترض عليه — اطلب إعادة الجرد"/);
+    assert.match(detail, /data-testid="handover-required-now"/);
   });
 
   test("the receiving custodian still cannot see the handed-over figures before acknowledging", () => {
@@ -46,7 +51,7 @@ describe("UI-008 simplified handover screen", () => {
 
   test("the item search only appears with the table it filters, units are shown in Arabic, empty returns are not shown", () => {
     assert.match(detail, /const receiptVisible = !!view && view\.count !== null && !\["DRAFT", "REJECTED"\]\.includes\(view\.status\)/);
-    assert.match(detail, /\{receiptVisible && view\.count && !canReceiveLines && \(\s*<div className="space-y-2">\s*<label className="block">بحث عن صنف/);
+    assert.match(detail, /\{receiptVisible && view\.count && !canReceiveLines && \(\s*<div className="space-y-2">\s*<div className="flex flex-wrap items-end gap-2">\s*<label className="block min-w-48 flex-1">بحث عن صنف/);
     assert.match(detail, /import \{ UNIT_LABEL \} from "@\/lib\/inventory"/);
     assert.match(detail, /unitLabel\(line\.unit\)/);
     assert.match(detail, /unitLabel\(i\.unitSnapshot\)/);

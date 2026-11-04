@@ -31,6 +31,9 @@ export const BASE = (() => {
 
 const jars = new Map<string, string>();
 
+/** The session cookie of a logged-in test user, for requests that need the raw response (file downloads). */
+export const jarFor = (email: string) => jars.get(email) ?? "";
+
 /** Fail loudly rather than skipping when the dev server is not running. */
 export async function requireServer() {
   try {

@@ -106,7 +106,7 @@ import {
 } from "@/lib/stock-count";
 import { buildStockBoundary, persistStockBoundary } from "@/lib/handover-boundary";
 import { openHandoverVarianceCases } from "@/lib/stock-variance-attribution";
-import { transferCustody } from "@/lib/custody";
+import { ensureCustodyForShift, transferCustody } from "@/lib/custody";
 import { recordCashHandover } from "@/lib/cash-handover";
 
 export const HANDOVER_STARTED_AUDIT_ACTION = "HANDOVER_STARTED";
@@ -3460,9 +3460,9 @@ async function transferCashCustody(
 // this stock, and a second record saying the same thing in weaker words would
 // invite a reader to look for a recipient who was never intended.
 
-/** The one refusal R-A1 exists to make, in the café's own words. */
-const SHIFT_AWAITING_CUSTODY =
-  "في وردية مستنية العهدة — سلّم ليها أو اقفلها قبل التحويل لعهدة الفرع";
+/** A waiting shift that the completed branch custody could not carry to opening verification. */
+const WAITING_SHIFT_NOT_REDECIDED =
+  "في وردية مستنية العهدة ومقدرتش تتحول للتحقق من العهدة الافتتاحية — راجع حالة العهدة في الفرع";
 const NOT_BRANCH_TARGET =
   "التسليم ده مش للعهدة المركزية — استخدم الاستلام العادي";
 const OUTGOING_CASH_STILL_OPEN =
@@ -3480,6 +3480,13 @@ type BranchAcceptedEvidence = {
   /** The already-discharged drawer, recorded so the audit can name it. */
   outgoingCashCustodyId: string | null;
   countedLineIds: string[];
+  /**
+   * Shifts that opened while this handover was live and are gated
+   * `AWAITING_CUSTODY_TRANSFER`. Branch custody names nobody, so they are not
+   * handed anything; once the branch holds the shelf they are re-decided
+   * exactly as a shift opened a moment later would be (see R-A1 below).
+   */
+  waitingShifts: { id: string; cashierId: string; openingCashAmount: Prisma.Decimal }[];
 };
 
 /**
@@ -3514,6 +3521,8 @@ export type BranchCustodyAcceptResult = {
   /** `inventoryItemId` of every required item nobody counted, ascending. */
   missingItemIds: string[];
   alreadyAccepted: boolean;
+  /** Waiting shifts moved to opening verification (R-A1 revised); absent on a replay. */
+  redecidedShiftIds?: string[];
 };
 
 /**
@@ -3633,27 +3642,28 @@ async function resolveBranchAcceptableEvidence(
 
   // ── R-A1: nobody may be left waiting for a transfer that will not come ──
   //
-  // A shift gated `AWAITING_CUSTODY_TRANSFER` opened while this handover was
-  // live and is waiting for an arriving custodian to be named. Branch custody
-  // names nobody, so completing here would strand that shift on a gate no
-  // later operation could release — and `ensureCustodyForShift` would never
-  // re-decide it, because the handover it was waiting for is finished.
-  //
-  // Refused deterministically, BEFORE the first write, and with no
-  // retargeting: the fix is somebody's to make (hand to that shift, or close
-  // it), and inventing an incoming user to absorb it would be this milestone
-  // recording a custodian nobody appointed. `branchIsMidHandover` holds a
-  // SHARE lock on this handover's row for the whole of a concurrent
-  // shift-open, so a shift cannot appear between this check and the
-  // completion below.
-  const waiting = await tx.shift.count({
+  // R-A1 (revised 2026-11-04, owner decision). A shift gated
+  // `AWAITING_CUSTODY_TRANSFER` opened while this handover was live and is
+  // waiting for an arriving custodian. Branch custody names nobody, so it is
+  // NOT handed anything and no incoming user is invented. It used to be a
+  // refusal here, which left the branch deadlocked: the waiting shift could not
+  // receive a BRANCH_CUSTODY handover, and this path refused while it waited.
+  // Now the waiting shift is collected under the same row lock and, after the
+  // branch takes the shelf (step 17a), re-decided by `ensureCustodyForShift`
+  // exactly as a shift opened a moment later would be — landing on
+  // `AWAITING_OPENING_VERIFICATION`, which SH-22 Half B discharges. That is the
+  // same verdict the concurrent-open race already reaches. `branchIsMidHandover`
+  // still holds a SHARE lock on this row during any concurrent shift-open, so
+  // no shift can appear between this read and the completion below.
+  const waitingShifts = await tx.shift.findMany({
     where: {
       branchId: handover.branchId,
       status: "OPEN",
       custodyGateReason: "AWAITING_CUSTODY_TRANSFER",
     },
+    select: { id: true, cashierId: true, openingCashAmount: true },
+    orderBy: { shiftNumber: "asc" },
   });
-  if (waiting > 0) throw new ApiError(409, SHIFT_AWAITING_CUSTODY);
 
   // Acceptance releases the freeze at step 17, so it must be releasing its
   // own. A branch frozen by a different handover is not this one's to reopen.
@@ -3668,6 +3678,7 @@ async function resolveBranchAcceptableEvidence(
     outgoingStockCustodyId: outgoingStock.id,
     outgoingCashCustodyId: handover.outgoingCashCustodyId,
     countedLineIds: countedLines.map((line) => line.id),
+    waitingShifts,
   };
 }
 
@@ -4074,6 +4085,35 @@ async function runBranchAcceptance(
   await applyPendingFinishedGoodsReturns(tx, { handoverId: handover.id, actorId: args.managerId });
   await checkpoint(17);
 
+  // ── 17a. Shifts that were waiting are re-decided, not handed anything ──
+  //
+  // The handover is COMPLETED (step 15) and the branch holds the shelf (step
+  // 12), so `ensureCustodyForShift` now sees no live handover and a BRANCH
+  // stock period: the same inputs a shift opening now would see. Anything but
+  // `AWAITING_OPENING_VERIFICATION` means the branch is not in the state this
+  // path just wrote, and the whole acceptance rolls back rather than leaving a
+  // shift on a gate nothing can release.
+  const redecidedShiftIds: string[] = [];
+  for (const waiting of evidence.waitingShifts) {
+    const verdict = await ensureCustodyForShift(tx, {
+      cafeId: handover.cafeId,
+      branchId: handover.branchId,
+      shiftId: waiting.id,
+      userId: waiting.cashierId,
+      openingCashAmount: Number(waiting.openingCashAmount),
+    });
+    if (verdict.gate !== "AWAITING_OPENING_VERIFICATION") throw new ApiError(409, WAITING_SHIFT_NOT_REDECIDED);
+    await auditInTransaction(tx, {
+      cafeId: handover.cafeId,
+      userId: args.managerId,
+      action: "SHIFT_CUSTODY_GATE_REDECIDED",
+      entity: "Shift",
+      entityId: waiting.id,
+      details: { handoverId: handover.id, from: "AWAITING_CUSTODY_TRANSFER", to: verdict.gate, branchCustodyPeriodId: stock.incomingPeriodId, cashCustodyPeriodId: verdict.cashCustodyPeriodId },
+    });
+    redecidedShiftIds.push(waiting.id);
+  }
+
   const result: BranchCustodyAcceptResult = {
     status: "COMPLETED",
     handoverTarget: "BRANCH_CUSTODY",
@@ -4101,6 +4141,7 @@ async function runBranchAcceptance(
     openingExceptionId,
     missingItemIds,
     alreadyAccepted: false,
+    redecidedShiftIds,
   };
 
   // ── 18. One audit row, carrying the whole shape ──

@@ -17,7 +17,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ConfirmHandoverAction } from "./detail-frame";
-import { newIdempotencyKey } from "./handover-labels";
+import { handoverIntents } from "./handover-intent";
 
 type Action = "recount" | "override" | "branch";
 
@@ -55,7 +55,6 @@ export function HandoverActionBar({
   const [countedCash,setCountedCash]=useState("");
   const [cashReason,setCashReason]=useState("");
   const [cashNote,setCashNote]=useState("");
-  const [acceptKey]=useState(()=>newIdempotencyKey());
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState<Action | null>(null);
   const [reasonCodeId, setReasonCodeId] = useState("");
@@ -75,14 +74,16 @@ export function HandoverActionBar({
     inFlight.current = true;
     setBusy(true);
     try {
+      // The retry key belongs to this exact intent (same handover, same cash count and reason), kept across a
+      // refresh: the same key on an already-completed handover answers 200 (replay), a different one is refused
+      // as a second acceptance. An edited payload is a new intent and gets a new key on purpose.
+      const intent = { countedOpeningCash: Number(countedCash), cashReasonCodeId: cashReason || undefined, cashReasonNote: cashNote.trim() || undefined };
       const res = await api<{ alreadyAccepted: boolean }>(
         `/api/handovers/${handoverId}/accept`,
-        // The retry key is what makes a repeated press safe: the same key on
-        // an already-completed handover answers 200, a different one is
-        // refused as a second acceptance.
-        { method: "POST", body: { idempotencyKey: acceptKey, countedOpeningCash: Number(countedCash), cashReasonCodeId:cashReason||undefined,cashReasonNote:cashNote.trim()||undefined } }
+        { method: "POST", body: { idempotencyKey: handoverIntents.keyFor(handoverId, "accept", intent), ...intent } }
       );
-      toast.success(res.alreadyAccepted ? "التسليم كان مستلم قبل كده" : "تم استلام العهدة");
+      handoverIntents.done(handoverId, "accept");
+      toast.success(res.alreadyAccepted ? "التسليم كان مستلم قبل كده — اتعرض نفس النتيجة بدون تكرار" : "تم استلام العهدة");
       await onDone();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "تعذّر الاستلام");
@@ -107,19 +108,20 @@ export function HandoverActionBar({
         );
         toast.success(`اترفض الجرد — سطور معترض عليها: ${res.disputedLineIds.length}`);
       } else if (open === "override") {
-        await api(`/api/handovers/${handoverId}/override-accept`, {
+        const intent = {
+          countedOpeningCash: countedCash.trim()===""?undefined:Number(countedCash),
+          cashReasonCodeId:cashReason||undefined,cashReasonNote:cashNote.trim()||undefined,
+          reasonCodeId: reasonCodeId.trim(),
+          // Required by the service, and refused when blank after trimming.
+          note: note.trim(),
+          kind,
+        };
+        const res = await api<{ alreadyAccepted?: boolean }>(`/api/handovers/${handoverId}/override-accept`, {
           method: "POST",
-          body: {
-            idempotencyKey: newIdempotencyKey(),
-            countedOpeningCash: countedCash.trim()===""?undefined:Number(countedCash),
-            cashReasonCodeId:cashReason||undefined,cashReasonNote:cashNote.trim()||undefined,
-            reasonCodeId: reasonCodeId.trim(),
-            // Required by the service, and refused when blank after trimming.
-            note: note.trim(),
-            kind,
-          },
+          body: { idempotencyKey: handoverIntents.keyFor(handoverId, "override", intent), ...intent },
         });
-        toast.success("اتعمل استلام استثنائي");
+        handoverIntents.done(handoverId, "override");
+        toast.success(res.alreadyAccepted ? "الاستلام الاستثنائي كان اتسجل قبل كده — نفس النتيجة بدون تكرار" : "اتعمل استلام استثنائي");
       } else {
         // The two omission fields authorise leaving a required item
         // uncounted, and they are only valid TOGETHER: a reason without its
@@ -129,15 +131,15 @@ export function HandoverActionBar({
         const omissionReason = reasonCodeId.trim();
         const omissionNote = note.trim();
         const authorised = omissionReason !== "" && omissionNote !== "";
-        await api(`/api/handovers/${handoverId}/to-branch-custody`, {
+        const intent = { omissionReasonCodeId: authorised ? omissionReason : undefined, omissionNote: authorised ? omissionNote : undefined };
+        const res = await api<{ alreadyAccepted?: boolean; redecidedShiftIds?: string[] }>(`/api/handovers/${handoverId}/to-branch-custody`, {
           method: "POST",
-          body: {
-            idempotencyKey: newIdempotencyKey(),
-            omissionReasonCodeId: authorised ? omissionReason : undefined,
-            omissionNote: authorised ? omissionNote : undefined,
-          },
+          body: { idempotencyKey: handoverIntents.keyFor(handoverId, "branch", intent), ...intent },
         });
-        toast.success("اتحولت العهدة للفرع");
+        handoverIntents.done(handoverId, "branch");
+        const carried = res.redecidedShiftIds?.length ?? 0;
+        toast.success(res.alreadyAccepted ? "العهدة كانت اتحولت للفرع قبل كده — نفس النتيجة بدون تكرار"
+          : carried > 0 ? `اتحولت العهدة للفرع — ${carried} شيفت مستني انتقل للتحقق من العهدة الافتتاحية` : "اتحولت العهدة للفرع");
       }
       setOpen(null);
       await onDone();
@@ -187,10 +189,13 @@ export function HandoverActionBar({
             >
               استلام استثنائي
             </Button>}
+            {/* On a BRANCH_CUSTODY handover this IS the completing action, so it is the primary one;
+                the server also needs every counted line signed first, so it waits for that. */}
             <Button
               size="sm"
-              variant="ghost"
-              disabled={busy}
+              variant={target === "BRANCH_CUSTODY" ? "default" : "ghost"}
+              disabled={busy || (target === "BRANCH_CUSTODY" && !stockReviewReady)}
+              title={target === "BRANCH_CUSTODY" && !stockReviewReady ? "وقّع سطور الجرد باسم الفرع الأول" : undefined}
               onClick={() => start("branch")}
               data-testid="handover-to-branch-custody"
             >

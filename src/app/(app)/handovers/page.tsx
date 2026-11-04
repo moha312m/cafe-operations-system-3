@@ -109,6 +109,13 @@ function HandoversWorkspace() {
     );
   }
 
+  const auxiliary = (
+    <div className="grid items-start gap-3 lg:grid-cols-3" data-testid="handover-auxiliary-panels">
+        <OpeningVerificationPanel key={`opening:${branchId}:${selectedId ?? "list"}`} branchId={branchId} />
+        <PlaceReceiptPanel key={`place:${branchId}:${selectedId ?? "list"}`} branchId={branchId} />
+    </div>
+  );
+
   return (
     <main className="space-y-4 p-4 sm:p-6">
       <header className="flex flex-wrap items-center gap-3">
@@ -154,14 +161,14 @@ function HandoversWorkspace() {
         listedStatus={handovers.find(row => row.id === selectedId && row.branchId === branchId)?.status}
         listedHandover={handovers.find(row => row.id === selectedId && row.branchId === branchId) ?? null}
         listLoading={loading}
+        auxiliary={auxiliary}
         handoverId={selectedId}
         onClose={() => setSelectedId(null)}
         onChanged={load}
       />
-      <div className="grid items-start gap-3 lg:grid-cols-3" data-testid="handover-auxiliary-panels">
-        <OpeningVerificationPanel key={`opening:${branchId}:${selectedId ?? "list"}`} branchId={branchId} />
-        <PlaceReceiptPanel key={`place:${branchId}:${selectedId ?? "list"}`} branchId={branchId} />
-      </div>
+      {/* With a handover open, these panels live inside its tabs (cash, inventory, place); the same panels stay
+          here for the list and as the fallback when the open handover cannot be read. */}
+      {!selectedId && auxiliary}
     </main>
   );
 }

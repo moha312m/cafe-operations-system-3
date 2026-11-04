@@ -81,7 +81,7 @@ describe("UI-017 modules use the tones, and no screen hard-codes a hex", () => {
     assert.match(overview, /<dl className="grid grid-cols-2 gap-2" data-testid=\{testId\}>/, "figures stay two per row inside the narrow side column");
     assert.doesNotMatch(overview, /<dl className="grid[^"]*lg:grid-cols-4/);
     const detail = source("src/components/handovers/handover-detail.tsx");
-    assert.match(detail, /state === "done" && TONE_SURFACE\.sage/);
+    assert.match(source("src/components/handovers/handover-workspace-parts.tsx"), /done: "sage"/);
     assert.match(detail, /data-testid="handover-receive-blocker-callout" className=\{`[^`]*\$\{TONE_SURFACE\.caramel\} \$\{TONE_SIDE\.caramel\}`\}/);
   });
 

@@ -11,9 +11,10 @@ describe("UI-014 handover 1280x640 wide layout, internal table scroll, and stick
   test("HandoverDetail uses a 12-column wide responsive grid separating count/receiving from overview", () => {
     const detail = source("src/components/handovers/handover-detail.tsx");
     assert.match(detail, /data-testid="handover-wide-grid"/);
-    assert.match(detail, /lg:grid-cols-12/);
-    assert.match(detail, /lg:col-span-7/);
-    assert.match(detail, /lg:col-span-5/);
+    // Step 5 replaced the two fixed columns with a header, summary cards and accessible tabs; the wide container keeps its hook.
+    assert.match(detail, /data-testid="handover-cards"/);
+    assert.match(detail, /<TabBar active=\{tab\}/);
+    assert.match(detail, /role="tabpanel"/);
     assert.match(detail, /max-h-\[55vh\]\s+overflow-auto/);
   });
 

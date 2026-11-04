@@ -5,7 +5,7 @@
 import { crc32, deflateRawSync } from "node:zlib";
 
 export type XlsxCell = string | number | boolean | null | undefined;
-export type XlsxSheet = { name: string; rows: XlsxCell[][]; headerRows?: number[]; readable?: boolean; frozenColumns?: number; hiddenColumns?: number[]; lists?: { range: string; name: string }[] };
+export type XlsxSheet = { name: string; rows: XlsxCell[][]; headerRows?: number[]; readable?: boolean; frozenColumns?: number; hiddenColumns?: number[]; lists?: { range: string; name: string }[]; /** Header-row filter buttons over the used range. */ filter?: boolean };
 
 const xml = (s: string) =>
   s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F￾￿]/g, "")
@@ -38,8 +38,10 @@ function worksheet(sheet: XlsxSheet) {
   }
   const cols = widths.length ? `<cols>${widths.map((width, i) => `<col min="${i + 1}" max="${i + 1}" width="${width}" customWidth="1"${sheet.hiddenColumns?.includes(i) ? ' hidden="1"' : ""}/>`).join("")}</cols>` : "";
   const lists = sheet.lists?.length ? `<dataValidations count="${sheet.lists.length}">${sheet.lists.map(({ range, name }) => `<dataValidation type="list" allowBlank="1" showErrorMessage="1" sqref="${xml(range)}"><formula1>${xml(name)}</formula1></dataValidation>`).join("")}</dataValidations>` : "";
+  const width = sheet.rows.reduce((n, row) => Math.max(n, row.length), 0);
+  const autoFilter = sheet.filter && sheet.rows.length > 1 && width > 0 ? `<autoFilter ref="A1:${xlsxColumn(width - 1)}${sheet.rows.length}"/>` : "";
   const pane = sheet.frozenColumns === 2 ? '<pane xSplit="2" ySplit="1" topLeftCell="C2" activePane="bottomRight" state="frozen"/>' : sheet.readable ? '<pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/>' : "";
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView rightToLeft="1" workbookViewId="0">${pane}</sheetView></sheetViews>${cols}${rows ? `<sheetData>${rows}</sheetData>` : "<sheetData/>"}${lists}</worksheet>`;
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView rightToLeft="1" workbookViewId="0">${pane}</sheetView></sheetViews>${cols}${rows ? `<sheetData>${rows}</sheetData>` : "<sheetData/>"}${autoFilter}${lists}</worksheet>`;
 }
 
 // Excel sheet names: at most 31 characters, none of []:*?/\ and unique.

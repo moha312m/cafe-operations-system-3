@@ -602,7 +602,10 @@ before(async () => {
 // handover — so one leftover acknowledgement pins the user who signed it, and
 // the whole café graph behind them.
 after(() =>
-  teardownTaggedCafe(fx?.cafeId, [() => resetBranch(fx.branchId)], { disconnect: true }),
+  // HANDOVER_KEEP_FIXTURE=1 (used only with --test-name-pattern "browser fixture") keeps the synthetic café for a browser check.
+  process.env.HANDOVER_KEEP_FIXTURE === "1"
+    ? db.$disconnect()
+    : teardownTaggedCafe(fx?.cafeId, [() => resetBranch(fx.branchId)], { disconnect: true }),
 );
 
 // ══════════════════════════════ HALF A ═══════════════════════════════════
@@ -843,34 +846,43 @@ describe("SH-22 Half A · what it refuses", () => {
     await assert.rejects(() => acceptToBranch(closed.handoverId!), statusIs(409));
   });
 
-  test("R-A1 — a shift already waiting for a transfer is a deterministic refusal", async () => {
+  test("R-A1 (revised) — a shift already waiting is carried to opening verification, not refused", async () => {
     const ready = await readyForBranchCustody();
     // A shift that opened while the handover was live. It is gated on
-    // AWAITING_CUSTODY_TRANSFER, and branch custody names nobody to release
-    // it, so completing would strand it forever.
+    // AWAITING_CUSTODY_TRANSFER. Branch custody names nobody, so it is handed
+    // nothing; once the branch holds the shelf it is re-decided like a shift
+    // opened a moment later. (Owner decision 2026-11-04: the old refusal left the
+    // branch deadlocked, because the waiting shift could not receive a
+    // BRANCH_CUSTODY handover either.)
     const waiting = await openOperationalShift(opener.id, 50);
     const gate = await db.shift.findUniqueOrThrow({ where: { id: waiting.id } });
     assert.equal(gate.custodyGateReason, "AWAITING_CUSTODY_TRANSFER");
 
-    await assert.rejects(() => acceptToBranch(ready.handoverId), statusIs(409));
     const r = await toBranchHttp(ready.handoverId, { idempotencyKey: nextKey() });
-    assert.equal(r.status, 409, r.text);
-    assert.match(r.body.error ?? "", /وردية مستنية العهدة/);
+    assert.equal(r.status, 200, r.text);
+    assert.deepEqual(r.body.redecidedShiftIds, [waiting.id]);
+    assert.equal(r.body.incomingShiftId, null, "nobody was handed the stock");
+    assert.equal(r.body.incomingUserId, null);
 
-    // Nothing was written. The refusal is before the first write.
-    const handover = await db.handoverSession.findUniqueOrThrow({
-      where: { id: ready.handoverId },
-    });
-    assert.notEqual(handover.status, "COMPLETED");
-    assert.equal(handover.resolvedTarget, null);
+    const handover = await db.handoverSession.findUniqueOrThrow({ where: { id: ready.handoverId } });
+    assert.equal(handover.status, "COMPLETED");
+    assert.equal(handover.resolvedTarget, "BRANCH_CUSTODY");
+    assert.equal(handover.incomingShiftId, null);
+    assert.equal(handover.incomingUserId, null);
+
+    const after = await db.shift.findUniqueOrThrow({ where: { id: waiting.id } });
+    assert.equal(after.custodyGateReason, "AWAITING_OPENING_VERIFICATION", "now on the gate SH-22 Half B discharges");
+    const stock = await db.custodyPeriod.findUniqueOrThrow({ where: { id: handover.incomingStockCustodyId! } });
+    assert.equal(stock.holderType, "BRANCH");
+    assert.equal(stock.status, "OPEN");
+    const links = await db.shiftCustody.findMany({ where: { shiftId: waiting.id } });
+    assert.deepEqual(links.map((l) => l.scope).sort(), ["CASH"], "the waiting shift gets its own drawer, and no stock until it verifies");
     assert.equal(
-      await db.handoverStockBoundary.count({ where: { handoverId: ready.handoverId } }),
-      0,
+      await db.auditLog.count({ where: { entity: "Shift", entityId: waiting.id, action: "SHIFT_CUSTODY_GATE_REDECIDED" } }),
+      1,
     );
-    const custody = await db.custodyPeriod.findUniqueOrThrow({
-      where: { id: ready.outgoingStockCustodyId! },
-    });
-    assert.equal(custody.status, "OPEN");
+    const outgoing = await db.custodyPeriod.findUniqueOrThrow({ where: { id: ready.outgoingStockCustodyId! } });
+    assert.notEqual(outgoing.status, "OPEN", "the outgoing custodian is discharged");
   });
 
   test("an uncounted required item refuses without a manager's reason", async () => {
@@ -1728,5 +1740,202 @@ describe("Serving while the handover holds the shelf frozen", () => {
     );
     assert.equal(replay.applied, 0);
     assert.equal(await db.inventoryTransaction.count({ where: { orderId: order.id } }), 1);
+  });
+});
+
+// ═══════════════ STEP 5 · the handover workspace, signing and report ═══════════════
+// The screen reads one payload and one report; these tests pin what it may show, who may take it
+// out of the app, and that a half-signed batch recovers without double records.
+
+type Payload = {
+  handover: {
+    status: string; target: string | null; acknowledged: boolean;
+    activity: { label: string; actor: string | null; at: string; detail: string | null }[];
+    workflow: { timezone: string; currency: string; acknowledgements: { stockCountLineId: string }[];
+      readiness: { shiftId: string; gate: string | null; operational: boolean; requirements: { id: string; state: string }[] }[] };
+    count: { lines: { id: string; disposition: string; countedQuantity?: unknown }[] } | null;
+  };
+};
+const detail = (id: string, email = fx.manager.email) => as<Payload>(email, `/api/handovers/${id}`);
+
+/** A BRANCH_CUSTODY handover submitted but NOT yet signed: what the signing panel starts from. */
+async function submittedBranchHandover() {
+  const h = await freshBranchHandover();
+  const started = await startCountHttp(h.handoverId);
+  assert.equal(started.status, 200, started.text);
+  const sessionId = started.body.countSession.id;
+  await walkTheCount(sessionId, {});
+  const confirmed = await confirmCount(fx.manager.email, sessionId, `${MARKER}-${sessionId}`);
+  assert.ok(confirmed.status < 300, confirmed.text);
+  const submitted = await submitHandoverHttp(h.handoverId);
+  assert.equal(submitted.status, 200, submitted.text);
+  const lines = await db.stockCountLine.findMany({ where: { sessionId, countedQuantity: { not: null } }, select: { id: true }, orderBy: { id: "asc" } });
+  return { ...h, sessionId, lineIds: lines.map((l) => l.id) };
+}
+
+async function reportFile(handoverId: string, query: string, email: string) {
+  const { jarFor, BASE } = await import("./helpers/http");
+  const r = await fetch(`${BASE}/api/handovers/${handoverId}/report?${query}`, { headers: { cookie: jarFor(email) } });
+  return { status: r.status, type: r.headers.get("content-type") ?? "", disposition: r.headers.get("content-disposition") ?? "", buffer: Buffer.from(await r.arrayBuffer()) };
+}
+
+describe("Step 5 · journey C and E — a waiting shift, partial signing, readiness and the POS gate", () => {
+  test("the payload names readiness and recorded activity at every stage until the next shift is operational", async () => {
+    const ready = await readyForBranchCustody();
+    const waiting = await openOperationalShift(opener.id, 50);
+
+    const before = await detail(ready.handoverId);
+    assert.equal(before.status, 200, before.text);
+    assert.equal(before.body.handover.workflow.timezone, "Africa/Cairo", "the project fallback when the branch has no reporting version");
+    assert.equal(typeof before.body.handover.workflow.currency, "string");
+    const waitingBefore = before.body.handover.workflow.readiness.find((r) => r.shiftId === waiting.id)!;
+    assert.equal(waitingBefore.gate, "AWAITING_CUSTODY_TRANSFER");
+    assert.equal(waitingBefore.operational, false);
+    assert.equal(waitingBefore.requirements.find((r) => r.id === "custody")!.state, "pending");
+    const labelsBefore = before.body.handover.activity.map((e) => e.label);
+    assert.ok(labelsBefore.includes("إقفال الشيفت ماليًا") && labelsBefore.includes("تقديم العهدة"), `recorded events only: ${labelsBefore}`);
+    assert.equal(labelsBefore.filter((l) => l === "توقيع سطر جرد").length, before.body.handover.workflow.acknowledgements.length, "one signing event per signed line");
+    assert.ok(!labelsBefore.includes("اكتمال التسليم"), "nothing is shown for an event that has not happened");
+
+    const done = await toBranchHttp(ready.handoverId, { idempotencyKey: nextKey() });
+    assert.equal(done.status, 200, done.text);
+    const mid = await detail(ready.handoverId);
+    const gated = mid.body.handover.workflow.readiness.find((r) => r.shiftId === waiting.id)!;
+    assert.equal(mid.body.handover.status, "COMPLETED", "the handover is complete…");
+    assert.equal(gated.operational, false, "…while the next shift is still not operational");
+    assert.equal(gated.gate, "AWAITING_OPENING_VERIFICATION");
+    assert.equal(gated.requirements.find((r) => r.id === "opening-verification")!.state, "pending");
+    const labelsMid = mid.body.handover.activity.map((e) => e.label);
+    assert.ok(labelsMid.includes("اكتمال التسليم") && labelsMid.includes("الشيفت المنتظر انتقل للتحقق من العهدة الافتتاحية"));
+    assert.ok(mid.body.handover.activity.every((e) => e.actor !== undefined && typeof e.at === "string"));
+
+    // The POS gate really refuses until verification: the displayed status is not the gate.
+    const { getActiveShift } = await shiftsLib();
+    assert.equal(await getActiveShift(fx.branchId, opener.id), null, "gated shift is not operational");
+
+    const sessionId = await walkOpeningCount(waiting.id, { alpha: 100, bravo: 100, charlie: 10 });
+    const verified = await verify(waiting.id, sessionId);
+    assert.equal(verified.status, 200, verified.text);
+    const after = await detail(ready.handoverId);
+    const ok = after.body.handover.workflow.readiness.find((r) => r.shiftId === waiting.id)!;
+    assert.equal(ok.operational, true);
+    assert.ok(ok.requirements.every((r) => r.state !== "pending"));
+    assert.equal((await getActiveShift(fx.branchId, opener.id))?.id, waiting.id, "and now the shift may operate");
+  });
+
+  test("a half-signed batch recovers: signed lines persist, a duplicate is refused once, conversion waits, no double records", async () => {
+    const h = await submittedBranchHandover();
+    assert.ok(h.lineIds.length >= 2, "needs at least two counted lines to be partial");
+    const first = await ackPost(fx.manager.email, h.handoverId, { stockCountLineId: h.lineIds[0] });
+    assert.equal(first.status, 200, first.text);
+
+    // A lost response means the client asks again: the server answers "already signed", never a second record.
+    const again = await ackPost(fx.manager.email, h.handoverId, { stockCountLineId: h.lineIds[0] });
+    assert.equal(again.status, 409);
+    assert.match(again.body.error ?? "", /متسجل استلامه قبل كده/);
+
+    const partial = await detail(h.handoverId);
+    assert.equal(partial.body.handover.workflow.acknowledgements.length, 1, "the authoritative state shows exactly what was saved");
+    const refusedEarly = await toBranchHttp(h.handoverId, { idempotencyKey: nextKey() });
+    assert.equal(refusedEarly.status, 409, "conversion waits for every counted line");
+    // The first signature opens the review; the handover is still not complete.
+    assert.equal((await db.handoverSession.findUniqueOrThrow({ where: { id: h.handoverId } })).status, "INCOMING_REVIEW");
+
+    for (const id of h.lineIds.slice(1)) assert.equal((await ackPost(fx.manager.email, h.handoverId, { stockCountLineId: id })).status, 200);
+    const converted = await toBranchHttp(h.handoverId, { idempotencyKey: `${MARKER}-stable-${h.handoverId}` });
+    assert.equal(converted.status, 200, converted.text);
+    const replay = await toBranchHttp(h.handoverId, { idempotencyKey: `${MARKER}-stable-${h.handoverId}` });
+    assert.equal(replay.body.alreadyAccepted, true, "the same intent key replays the first result");
+    assert.equal(
+      await db.auditLog.count({ where: { cafeId: fx.cafeId, entity: "HandoverStockAcknowledgement", action: "HANDOVER_LINE_ACKNOWLEDGED", details: { path: ["handoverId"], equals: h.handoverId } } }),
+      h.lineIds.length, "exactly one signing record per line",
+    );
+    assert.equal(await db.auditLog.count({ where: { cafeId: fx.cafeId, entity: "HandoverSession", entityId: h.handoverId, action: "HANDOVER_ACCEPTED" } }), 1, "and one completion");
+  });
+});
+
+describe("Step 5 · the handover report — permissions, tenancy, blind counts, coverage, injection", () => {
+  test("xlsx and print html are built from the screen's payload and enforce the same visibility", async () => {
+    const XLSX = await import("xlsx");
+    const h = await submittedBranchHandover();
+    const hidden = await db.inventoryItem.findUniqueOrThrow({ where: { id: items.alpha.id }, select: { name: true } });
+    const nasty = '=HYPERLINK("http://x","go")<b>';
+    await db.inventoryItem.update({ where: { id: items.alpha.id }, data: { name: nasty } });
+    try {
+      // Unsigned: outgoing figures stay hidden in the file exactly as on the screen.
+      const blind = await reportFile(h.handoverId, "format=xlsx", fx.owner.email);
+      assert.equal(blind.status, 200);
+      assert.match(blind.type, /spreadsheetml/);
+      assert.match(blind.disposition, /attachment; filename="handover-shift-\d+-\d{4}-\d{2}-\d{2}\.xlsx"/);
+      const book = XLSX.read(blind.buffer, { type: "buffer", cellFormula: true });
+      assert.deepEqual(book.SheetNames.slice(0, 2), ["الملخص", "المال والمدفوعات"]);
+      const inv = XLSX.utils.sheet_to_json<string[]>(book.Sheets["الجرد"], { header: 1 });
+      assert.equal(inv.length - 1, (await db.stockCountLine.count({ where: { sessionId: h.sessionId } })), "every line of the count is a row");
+      const counted = inv.slice(1).filter((r) => r[2] !== "لسه ما اتعدش");
+      assert.ok(counted.length > 0 && counted.every((r) => r[3] === "مخفي" && r[4] === "مخفي"), "no outgoing quantity before the signature");
+      const summary = XLSX.utils.sheet_to_json<string[]>(book.Sheets["الملخص"], { header: 1 });
+      const get = (k: string) => summary.find((r) => r[0] === k)?.[1];
+      assert.equal(get("نوع التسليم"), "عهدة الفرع");
+      assert.match(String(get("الجهة المستلمة")), /عهدة الفرع/);
+      assert.equal(get("المنطقة الزمنية"), "Africa/Cairo");
+      assert.ok(get("العملة"), "the currency is stated");
+      assert.equal(get("رقم التسليم"), h.handoverId);
+
+      // Formula injection: kept as text in the workbook, escaped in the print page.
+      const row = inv.find((r) => r[0] === nasty);
+      assert.ok(row, "the item name is exported verbatim as text");
+      assert.ok(Object.values(book.Sheets["الجرد"]).every((c) => !(c as { f?: string }).f), "no formula in the workbook");
+      const html = await reportFile(h.handoverId, "format=html", fx.owner.email);
+      assert.equal(html.status, 200);
+      assert.match(html.type, /text\/html; charset=utf-8/);
+      const text = html.buffer.toString("utf8");
+      assert.ok(text.includes("&lt;b&gt;") && !text.includes("<b>"), "markup in data is escaped");
+      assert.ok(text.includes('dir="rtl"') && text.includes("@page"), "a print-ready RTL page");
+
+      // After the branch signs, the figures are disclosed to the same viewer, and the decision is branch-signature wording.
+      for (const id of h.lineIds) assert.equal((await ackPost(fx.manager.email, h.handoverId, { stockCountLineId: id })).status, 200);
+      const open = XLSX.read((await reportFile(h.handoverId, "format=xlsx", fx.owner.email)).buffer, { type: "buffer" });
+      const rows = XLSX.utils.sheet_to_json<(string | number)[]>(open.Sheets["الجرد"], { header: 1 }).slice(1);
+      const signed = rows.filter((r) => r[5] === "موقّع باسم الفرع");
+      assert.equal(signed.length, h.lineIds.length);
+      assert.ok(signed.every((r) => typeof r[3] === "number"), "numeric quantity cells once disclosed");
+      assert.ok(rows.every((r) => r[5] !== "قرار الاستلام" && r[5] !== "مُستلَم"), "no 'employee received' wording on a branch-custody handover");
+      const activity = XLSX.utils.sheet_to_json<string[]>(open.Sheets["النشاط والتوقيعات"], { header: 1 }).map((r) => r[1]);
+      assert.ok(activity.includes("توقيع سطر جرد") && activity.includes("إقفال الشيفت ماليًا"));
+    } finally {
+      await db.inventoryItem.update({ where: { id: items.alpha.id }, data: { name: hidden.name } });
+    }
+  });
+
+  test("who may export, which handovers, and a bad request", async () => {
+    const h = await submittedBranchHandover();
+    // A cashier may take part in a handover but has no export key.
+    assert.equal((await reportFile(h.handoverId, "format=xlsx", fx.cashier.email)).status, 403);
+    // The manager follows the permission, not the role.
+    const set = (allowed: boolean) => as(fx.owner.email, `/api/users/${fx.manager.id}/permissions`, { method: "PUT", body: JSON.stringify({ overrides: [{ key: "reports.export", allowed }] }) });
+    assert.equal((await set(false)).status, 200);
+    await login(fx.manager.email, COUNT_PASSWORD);
+    assert.equal((await reportFile(h.handoverId, "format=xlsx", fx.manager.email)).status, 403);
+    assert.equal((await set(true)).status, 200);
+    await login(fx.manager.email, COUNT_PASSWORD);
+    assert.equal((await reportFile(h.handoverId, "format=xlsx", fx.manager.email)).status, 200);
+    // Another café's owner cannot confirm the handover exists.
+    const other = await countCafe("HANDOVER010X");
+    try {
+      await login(other.owner.email, COUNT_PASSWORD);
+      assert.equal((await reportFile(h.handoverId, "format=xlsx", other.owner.email)).status, 404);
+    } finally { await teardownTaggedCafe(other.cafeId); }
+    assert.equal((await reportFile(h.handoverId, "format=pdf", fx.owner.email)).status, 400);
+    assert.equal((await reportFile(h.handoverId, "format=xlsx&extra=1", fx.owner.email)).status, 400);
+  });
+});
+
+describe("Step 5 · browser fixture", () => {
+  test("browser fixture (kept only when HANDOVER_KEEP_FIXTURE=1)", { skip: process.env.HANDOVER_KEEP_FIXTURE !== "1" }, async () => {
+    // A branch-custody handover submitted and half signed, with a shift already waiting: journeys B, C and E on screen.
+    const h = await submittedBranchHandover();
+    await ackPost(fx.manager.email, h.handoverId, { stockCountLineId: h.lineIds[0] });
+    const waiting = await openOperationalShift(opener.id, 50);
+    console.log("FIXTURE " + JSON.stringify({ handoverId: h.handoverId, branchId: fx.branchId, manager: fx.manager.email, owner: fx.owner.email, opener: opener.email, waitingShiftId: waiting.id, password: COUNT_PASSWORD }));
   });
 });

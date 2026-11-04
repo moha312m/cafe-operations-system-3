@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 type OpeningShift = { id:string; shiftNumber:number; custodyGateReason:string|null; cashier:{name:string} };
 type OpeningCount = { id:string; shiftId:string|null; status:string; createdAt:string };
-export function OpeningVerificationPanel({ branchId }: { branchId: string }) {
+export function OpeningVerificationPanel({ branchId, includeCash = true }: { branchId: string; includeCash?: boolean }) {
  const { canKey } = useApp();
  const [shiftId,setShiftId]=useState(""); const [countSessionId,setCountSessionId]=useState("");
  const [shifts,setShifts]=useState<OpeningShift[]>([]); const [counts,setCounts]=useState<OpeningCount[]>([]);
@@ -24,7 +24,7 @@ export function OpeningVerificationPanel({ branchId }: { branchId: string }) {
  async function startCount(){setBusy(true);try{const r=await api<{countSession:{id:string;reused:boolean}}>("/api/custody/opening-verification",{ method: "POST", body: { action: "start_count", shiftId, branchId } });await load();setCountSessionId(r.countSession.id);toast.success(r.countSession.reused?"في جرد افتتاحي مفتوح بالفعل":"اتفتح الجرد الافتتاحي");}catch(e){toast.error(e instanceof Error?e.message:"تعذر بدء الجرد");}finally{setBusy(false);}}
  async function verify(){setBusy(true);try{const r=await api<{alreadyVerified:boolean;varianceCaseIds:string[]}>("/api/custody/opening-verification",{ method: "POST", body: { action: "verify", shiftId, countSessionId, branchId } });toast.success(r.alreadyVerified?"العهدة كانت متحققة قبل كده":`اتحققت العهدة الافتتاحية · حالات فروقات: ${r.varianceCaseIds.length}`);setShiftId("");setCountSessionId("");await load();}catch(e){toast.error(e instanceof Error?e.message:"تعذر التحقق");}finally{setBusy(false);}}
  const selectableCounts=counts.filter(x=>x.shiftId===shiftId&&x.status!=="LOCKED");
- return <><OpeningCashPanel branchId={branchId}/><details className="rounded-xl border p-4" data-testid="opening-verification-panel" open={shifts.length>0||!!loadError}>
+ return <>{includeCash && <OpeningCashPanel branchId={branchId}/>}<details className="rounded-xl border p-4" data-testid="opening-verification-panel" open={shifts.length>0||!!loadError}>
   <summary className="cursor-pointer font-semibold">التحقق من العهدة الافتتاحية{!shifts.length&&!loadError&&<span className="ms-2 text-xs font-normal text-muted-foreground">— مفيش شيفت مستني تحقق</span>}</summary><div className="mt-3 space-y-3"><p className="text-xs text-muted-foreground">اختَر الشيفت الذي يستلم مخزونًا محفوظًا في عهدة الفرع، وافتح جرده ثم تحقّق منه بعد اعتماده.</p>
   {loadError&&<p role="alert" className="text-sm text-destructive">{loadError}</p>}
   {!shifts.length&&!loadError&&<p className="text-sm text-muted-foreground">لا يوجد شيفت ينتظر تحققًا افتتاحيًا في هذا الفرع.</p>}

@@ -51,7 +51,7 @@ export function reportOutputModel(report:ReportOutput):OutputModel{
 // A text cell that a spreadsheet could read as a formula is prefixed with '.
 // Real numbers are written bare so they stay numeric (a negative number is
 // not a formula).
-const csvCell=(value:OutputValue)=>{if(typeof value==='number')return String(value);let text=String(value??'');if(/^[\u0000-\u0020\uFEFF]*[=+@-]|^[\t\r\n]/.test(text))text="'"+text;return '"'+text.replaceAll('"','""')+'"';};
+export const csvCell=(value:OutputValue)=>{if(typeof value==='number')return String(value);let text=String(value??'');if(/^[\u0000-\u0020\uFEFF]*[=+@-]|^[\t\r\n]/.test(text))text="'"+text;return '"'+text.replaceAll('"','""')+'"';};
 
 export function reportOutputFiles(report:ReportOutput){
  const model=reportOutputModel(report);
