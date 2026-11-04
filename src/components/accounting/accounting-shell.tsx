@@ -12,6 +12,7 @@ const TABS = [
   { href: "/accounting", label: "نظرة عامة" },
   { href: "/accounting/trial-balance", label: "ميزان المراجعة" },
   { href: "/accounting/statements", label: "القوائم المالية" },
+  { href: "/accounting/chart", label: "دليل الحسابات" },
   { href: "/accounting/ledger", label: "دفتر الأستاذ" },
   { href: "/accounting/journal", label: "القيود" },
 ];

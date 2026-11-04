@@ -697,6 +697,7 @@ model User {
 
   journalEntries JournalEntry[] @relation("JournalEntryCreator")
   accountingPeriodsClosed AccountingPeriod[] @relation("AccountingPeriodCloser")
+  expenseMappingsCreated ExpenseCategoryAccountMapping[] @relation("ExpenseMappingCreator")
   finishedGoodsReturns FinishedGoodsReturn[] @relation("FinishedReturnActor")
   branchOpeningSettingsUpdated BranchOpeningSettings[]
   cashStoragesDeclared CashStorage[]
@@ -3761,6 +3762,7 @@ model AccountingEntity {
   accounts AccountingAccount[]
   periods  AccountingPeriod[]
   entries  JournalEntry[]
+  expenseMappings ExpenseCategoryAccountMapping[]
 }
 
 model AccountingAccount {
@@ -3783,10 +3785,37 @@ model AccountingAccount {
   parent   AccountingAccount?  @relation("AccountTree", fields: [parentId], references: [id], onDelete: NoAction)
   children AccountingAccount[] @relation("AccountTree")
   lines    JournalLine[]
+  expenseMappings ExpenseCategoryAccountMapping[]
 
   @@unique([entityId, code])
   @@unique([entityId, systemKey])
   @@index([cafeId])
+}
+
+/// Append-only, effective-dated link from an operational expense category to an expense account (Step 4B.2).
+/// The mapping in force on date D is the row with the greatest effectiveFrom <= D; accountId = null ends the mapping.
+model ExpenseCategoryAccountMapping {
+  id            String   @id @default(cuid())
+  cafeId        String
+  entityId      String
+  categoryId    String
+  accountId     String?
+  /// Africa/Cairo business date.
+  effectiveFrom DateTime @db.Date
+  reason        String
+  /// Accountant sign-off reference.
+  approvalRef   String
+  createdById   String
+  createdAt     DateTime @default(now())
+
+  entity    AccountingEntity   @relation(fields: [entityId], references: [id], onDelete: Restrict)
+  category  ExpenseCategory    @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  account   AccountingAccount? @relation(fields: [accountId], references: [id], onDelete: Restrict)
+  createdBy User               @relation("ExpenseMappingCreator", fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@unique([categoryId, effectiveFrom])
+  @@index([cafeId, categoryId, effectiveFrom])
+  @@index([accountId])
 }
 
 model AccountingPeriod {
@@ -3932,6 +3961,7 @@ model ExpenseCategory {
   cafe Cafe @relation(fields: [cafeId], references: [id], onDelete: Restrict)
   createdBy User @relation(fields: [createdById], references: [id], onDelete: Restrict)
   expenses OperatingExpense[]
+  accountMappings ExpenseCategoryAccountMapping[]
   @@unique([cafeId, code])
   @@index([cafeId, archivedAt])
 }
