@@ -42,6 +42,8 @@ export async function recordNightCash(tx: Prisma.TransactionClient, args: {
   const assignment=await projectStaffBranch(tx,actor);
   if ((isBranchStaff(actor.role)&&!assignment.branchId) || (actor.role!=='SUPER_ADMIN'&&assignment.branchId&&assignment.branchId!==args.branchId)) throw new ApiError(403,'عهدة الخزنة تبع فرع تاني');
   if(await tx.shift.count({where:{branchId:args.branchId,id:{not:args.shiftId},status:'OPEN',custodyGateReason:null}})) throw new ApiError(409,'Close other operational shifts before declaring night drawer storage');
+  // One drawer partition per shift: a direct-handover disposition already describes this cash.
+  if(await tx.shiftCashDisposition.findUnique({where:{shiftId:args.shiftId},select:{id:true}})) throw new ApiError(409, "نقدية الشيفت ده متسجل لها مصير بالفعل (تسليم مباشر) — مينفعش تتسجل كإقرار خزنة ليلي كمان");
   const storage = await tx.cashStorage.create({data:{
     cafeId:args.cafeId,branchId:args.branchId,outgoingShiftId:args.shiftId,handoverId:args.handoverId,
     closingAmount:money(args.actualCash),leftInDrawer:money(args.disposition.leftInDrawer),toTreasury:money(args.disposition.toTreasury),

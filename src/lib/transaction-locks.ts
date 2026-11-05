@@ -155,3 +155,16 @@ export async function lockMoneyAccounts(tx:Prisma.TransactionClient,requested:st
  const rows=await tx.$queryRaw<{id:string}[]>`SELECT "id" FROM "MoneyAccount" WHERE "id" IN (${Prisma.join(ids)}) AND "cafeId"=${scope.cafeId??""} AND (${scope.branchId??null}::text IS NULL OR "branchId"=${scope.branchId??null}) ORDER BY "id" FOR NO KEY UPDATE`;
  if(rows.length!==ids.length)throw new ApiError(404,"الحساب غير موجود في نطاقك");remember(tx,"MoneyAccount",ids,rows.map(r=>r.id),8,"FOR NO KEY UPDATE");
 }
+
+/** Direct handover: Shift 1 -> Branch 1.5 -> HandoverSession 1.7 -> disposition/declarations/issues 9.x (leaves). */
+async function lockScopedRow(tx: Prisma.TransactionClient, table: "HandoverSession" | "CashDeliveryDeclaration" | "HandoverIssue", id: string, rank: number, missing: string) {
+  const ids = newLocks(tx, table, [id], rank);
+  if (!ids.length) return;
+  const scope = protectedContext(tx).scope;
+  const rows = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM ${Prisma.raw(`"${table}"`)} WHERE "id"=${id} AND (${scope.cafeId ?? null}::text IS NULL OR "cafeId"=${scope.cafeId ?? null}) AND (${scope.branchId ?? null}::text IS NULL OR "branchId"=${scope.branchId ?? null}) FOR UPDATE`;
+  if (rows.length !== 1) throw new ApiError(404, missing);
+  remember(tx, table, ids, ids, rank);
+}
+export const lockHandoverRow = (tx: Prisma.TransactionClient, id: string) => lockScopedRow(tx, "HandoverSession", id, 1.7, "التسليم مش موجود في نطاقك");
+export const lockCashDelivery = (tx: Prisma.TransactionClient, id: string) => lockScopedRow(tx, "CashDeliveryDeclaration", id, 9.1, "التسليم مش موجود");
+export const lockHandoverIssue = (tx: Prisma.TransactionClient, id: string) => lockScopedRow(tx, "HandoverIssue", id, 9.2, "الإبلاغ مش موجود");

@@ -129,3 +129,25 @@ Branch `codex/nextcup-workspace-redesign-20261102`, base `203cc48` (above `bbbed
 - API routes: `src/app/api/shifts/[id]/cash-disposition/route.ts`, `src/app/api/handovers/[id]/route.ts`, `src/app/api/handovers/[id]/direct/route.ts`, `src/app/api/handovers/[id]/issues/route.ts`, `src/app/api/handover-issues/[id]/resolve/route.ts`, `src/app/api/cash-deliveries/route.ts`, `src/app/api/cash-deliveries/[id]/confirm/route.ts`, `src/app/api/cash-deliveries/[id]/dispute/route.ts`, `src/app/api/cash-deliveries/[id]/resolve/route.ts`
 - UI components & pages: `src/components/pos/cash-disposition-editor.tsx`, `src/components/pos/shift-close-flow.tsx`, `src/components/handovers/direct-handover-panel.tsx`, `src/components/handovers/cash-deliveries-panel.tsx`, `src/components/handovers/handover-detail.tsx`, `src/components/handovers/handover-journey.ts`, `src/components/handovers/handover-overview.tsx`, `src/app/(app)/handovers/page.tsx`, `src/app/reports/shift/[id]/page.tsx`
 - Tests: `tests/direct-handover-001-cash-disposition.test.ts`, `tests/handover-023-journey-model.test.ts`, `tests/hnd-ux-004-two-screen-close.test.ts`, `tests/ui-008-handover-guided-ux.test.ts`
+
+### 8.5 Hardening (2026-11-05) — implementation A confirmed by the owner
+
+The owner chose this implementation (A) over `feature/hnd-cash-01` (B, `cafe-ops-finance-f1`, `19425eb`), which stays parked and untouched. Status: **implemented and tested on the disposable `cafe_ops_test` (5434) via an owned server on 3160. Owner visual acceptance is still a separate step.**
+
+| # | State / actor | Action → result | Gate / evidence |
+|---|---|---|---|
+| D1 | Shift financially closed; outgoing cashier (or `shifts.close_others`) | Record the disposition once: deliveries to a named OWNER/MANAGER plus retained drawer cash = counted cash | Exact sum; at most one drawer partition per shift (service check plus `*_single_partition` triggers against `CashStorage`); `withIdempotency` |
+| D2 | Delivery `DECLARED`; named recipient | Confirm → `CONFIRMED` | Recipient's own account only; audit `CASH_DELIVERY_CONFIRMED` |
+| D3 | Delivery `DECLARED`; café owner, not the recipient | Confirm «تأكيد نيابةً عن المستلم» → `CONFIRMED` with `confirmedByException` | Written reason required; audit `CASH_DELIVERY_CONFIRMED_ON_BEHALF`; labelled distinctly in the UI, report and XLSX; never counted as the recipient's own |
+| D4 | `DECLARED`, or on-behalf `CONFIRMED`; named recipient | Dispute → `DISPUTED` (optional claimed amount) | On-behalf disputes are allowed only while that day's accounting period is open; the closed shift and the next opening are never rewritten |
+| D5 | `DISPUTED`; café owner | Resolve → `RESOLVED` with the resolved amount | The report shows declared / claimed / resolved and the shortfall; an owner resolving their own dispute is labelled self-resolved |
+| D6 | Period close (G1 checklist) | — | `cash-deliveries` is **blocking** while any delivery is `DECLARED`/`DISPUTED`; `cash-deliveries-on-behalf` is a **warning**. Never blocks a shift or the incoming acceptance |
+| D7 | Direct handover `OUTGOING_SUBMITTED`; incoming cashier | «فتح ورديتي واستلام العهدة» → `COMPLETED`; drawer opens at the retained amount | Reviewed version; ambiguity refused; `withIdempotency` on top of the handover's own key |
+
+**Other changes:**
+- Every new mutating route (cash-disposition, direct accept, issues, issue resolve, confirm, dispute, resolve) goes through `withIdempotency`. The key travels in the `Idempotency-Key` header; a body key is accepted only when it is identical.
+- New ranked locks: `lockHandoverRow` (1.7), `lockCashDelivery` (9.1), `lockHandoverIssue` (9.2). These replace the ad-hoc `FOR UPDATE` calls.
+
+**New migration:** `20261106120000_direct_handover_hardening`. It adds triggers only and changes no data.
+
+**Tests:** `direct-handover-001` full run, 42/42 PASS. The regression suites are recorded in `artifacts/erp-experience-20261102/direct-handover/PROGRESS.md`.

@@ -18,7 +18,17 @@ import assert from "node:assert/strict";
 import bcrypt from "bcryptjs";
 import { db, tag, teardownTaggedCafe, purgeOrderTracesFor } from "./helpers/db";
 import { countCafe, countItem, COUNT_PASSWORD, type CountCafe } from "./helpers/count";
-import { as, login, requireServer } from "./helpers/http";
+import { as as rawAs, login, requireServer } from "./helpers/http";
+
+// The direct-handover mutations are fenced by `withIdempotency`, which reads the per-attempt key from
+// the `Idempotency-Key` header. Cases below still name their key as `idempotencyKey`; this moves it to
+// the header (generating one when a case named none), so every case keeps its exact meaning.
+const IDEMPOTENT_ROUTE = /^\/api\/(shifts\/[^/]+\/cash-disposition|handovers\/[^/]+\/(direct|issues)|handover-issues\/[^/]+\/resolve|cash-deliveries\/[^/]+\/(confirm|dispute|resolve))$/;
+function as<T = Record<string, unknown>>(email: string, path: string, init: RequestInit = {}) {
+  if (init.method !== "POST" || !IDEMPOTENT_ROUTE.test(path) || typeof init.body !== "string" || (init.headers as Record<string, string> | undefined)?.["Idempotency-Key"]) return rawAs<T>(email, path, init);
+  const { idempotencyKey, ...rest } = JSON.parse(init.body) as { idempotencyKey?: string };
+  return rawAs<T>(email, path, { ...init, body: JSON.stringify(rest), headers: { ...(init.headers as Record<string, string> | undefined), "Idempotency-Key": idempotencyKey ?? `auto-${crypto.randomUUID()}` } });
+}
 
 const MARKER = tag("DIRECT001");
 const GRANTS_FULL = { handoverSubmit: true, handoverException: true };
@@ -428,7 +438,9 @@ describe("replay, races and stale reviews", () => {
     assert.equal(first.status, 200, first.text);
     const retry = await acceptDirect(incoming.email, h.handoverId, s.body.reviewVersion, k);
     assert.equal(retry.status, 200, retry.text);
-    assert.equal(retry.body.alreadyAccepted, true);
+    // The idempotent route replays the exact stored response of the first attempt.
+    assert.equal(retry.headers.get("Idempotency-Replayed"), "true");
+    assert.deepEqual(retry.body, first.body);
     const second = await acceptDirect(incoming.email, h.handoverId, s.body.reviewVersion, key("other"));
     assert.equal(second.status, 409, second.text);
     assert.equal(await db.auditLog.count({ where: { entityId: h.handoverId, action: "HANDOVER_ACCEPTED" } }), 1);
@@ -534,8 +546,8 @@ describe("replay, races and stale reviews", () => {
 // ═════════════════════ recipient confirmation / dispute ═════════════════════
 
 describe("declared delivery and recipient confirmation", () => {
-  const confirm = (email: string, id: string, body: { idempotencyKey?: string; exceptionReason?: string } = {}) =>
-    as<{ status?: string; alreadyConfirmed?: boolean; confirmedByException?: boolean; error?: string }>(email, `/api/cash-deliveries/${id}/confirm`, { method: "POST", body: JSON.stringify({ idempotencyKey: key("confirm"), ...body }) });
+  const confirm = (email: string, id: string, body: { idempotencyKey?: string; onBehalfReason?: string } = {}) =>
+    as<{ status?: string; alreadyConfirmed?: boolean; confirmedOnBehalf?: boolean; error?: string }>(email, `/api/cash-deliveries/${id}/confirm`, { method: "POST", body: JSON.stringify({ idempotencyKey: key("confirm"), ...body }) });
   const dispute = (email: string, id: string, body: { note: string; claimedReceivedAmount?: number }) =>
     as<{ status?: string; alreadyDisputed?: boolean; error?: string }>(email, `/api/cash-deliveries/${id}/dispute`, { method: "POST", body: JSON.stringify(body) });
   const resolve = (email: string, id: string, body: { resolutionNote: string; resolvedAmount: number }) =>
@@ -562,7 +574,8 @@ describe("declared delivery and recipient confirmation", () => {
     assert.equal(row.confirmedByException, false);
     const replay = await confirm(fx.owner.email, h.deliveryId, { idempotencyKey: k });
     assert.equal(replay.status, 200);
-    assert.equal(replay.body.alreadyConfirmed, true);
+    assert.equal(replay.headers.get("Idempotency-Replayed"), "true", "the same attempt is replayed, not re-run");
+    assert.deepEqual(replay.body, ok.body);
     const duplicate = await confirm(fx.owner.email, h.deliveryId, { idempotencyKey: key("second") });
     assert.equal(duplicate.status, 409, duplicate.text);
     assert.equal(await db.auditLog.count({ where: { entityId: h.deliveryId, action: "CASH_DELIVERY_CONFIRMED" } }), 1);
@@ -582,16 +595,66 @@ describe("declared delivery and recipient confirmation", () => {
     assert.equal(own.status, 200, own.text);
   });
 
-  test("proxy confirmation is refused: only the named recipient can confirm from their own account", async () => {
+  test("an owner may confirm «نيابةً عن المستلم» only with a reason; it stays a distinct exception the recipient can still dispute", async () => {
     const h = await declared(fx.manager, "MANAGER");
-    const ownerAttempt = await confirm(fx.owner.email, h.deliveryId);
-    assert.equal(ownerAttempt.status, 403, ownerAttempt.text);
+    const noReason = await confirm(fx.owner.email, h.deliveryId);
+    assert.equal(noReason.status, 400, noReason.text);
+    const managerCannotProxy = await confirm(annexManager.email, h.deliveryId, { onBehalfReason: "x" });
+    assert.ok([403, 404].includes(managerCannotProxy.status), managerCannotProxy.text);
+    const selfWithReason = await confirm(fx.manager.email, h.deliveryId, { onBehalfReason: "x" });
+    assert.equal(selfWithReason.status, 400, "a recipient confirming for themselves is not an on-behalf confirmation");
     assert.equal((await db.cashDeliveryDeclaration.findUniqueOrThrow({ where: { id: h.deliveryId } })).status, "DECLARED");
-    const namedRecipient = await confirm(fx.manager.email, h.deliveryId);
-    assert.equal(namedRecipient.status, 200, namedRecipient.text);
+
+    const ok = await confirm(fx.owner.email, h.deliveryId, { onBehalfReason: "المدير في إجازة وتم الاستلام بحضور المالك" });
+    assert.equal(ok.status, 200, ok.text);
+    assert.equal(ok.body.confirmedOnBehalf, true);
     const row = await db.cashDeliveryDeclaration.findUniqueOrThrow({ where: { id: h.deliveryId } });
-    assert.equal(row.confirmedById, fx.manager.id);
-    assert.equal(row.confirmedByException, false);
+    assert.equal(row.status, "CONFIRMED");
+    assert.equal(row.confirmedById, fx.owner.id);
+    assert.equal(row.recipientId, fx.manager.id, "the named recipient is unchanged");
+    assert.equal(row.confirmedByException, true);
+    assert.ok(row.exceptionReason);
+    assert.equal(await db.auditLog.count({ where: { entityId: h.deliveryId, action: "CASH_DELIVERY_CONFIRMED_ON_BEHALF" } }), 1);
+    assert.equal(await db.auditLog.count({ where: { entityId: h.deliveryId, action: "CASH_DELIVERY_CONFIRMED" } }), 0, "never counted as the recipient's own confirmation");
+    await assert.rejects(() => db.cashDeliveryDeclaration.update({ where: { id: h.deliveryId }, data: { confirmedByException: false } }), "the on-behalf fact cannot be rewritten");
+
+    // The recipient still sees it, labelled, and may dispute it while the period is open.
+    const list = await as<{ deliveries: { id: string; statusLabel: string; confirmedOnBehalf?: boolean; mine: boolean }[] }>(fx.manager.email, "/api/cash-deliveries");
+    const seen = list.body.deliveries.find((d) => d.id === h.deliveryId);
+    assert.ok(seen && seen.mine && seen.confirmedOnBehalf, JSON.stringify(list.body));
+    assert.equal(seen!.statusLabel, "تأكيد نيابةً عن المستلم");
+    const disputed = await dispute(fx.manager.email, h.deliveryId, { note: "ما استلمتش غير 600", claimedReceivedAmount: 600 });
+    assert.equal(disputed.status, 200, disputed.text);
+    const after = await db.cashDeliveryDeclaration.findUniqueOrThrow({ where: { id: h.deliveryId } });
+    assert.equal(after.status, "DISPUTED");
+    assert.equal(after.confirmedById, fx.owner.id, "the earlier on-behalf confirmation stays on record");
+  });
+
+  test("a recipient's dispute window on an on-behalf confirmation closes with the accounting period", async () => {
+    const h = await declared(fx.manager, "MANAGER");
+    assert.equal((await confirm(fx.owner.email, h.deliveryId, { onBehalfReason: "حضور المالك" })).status, 200);
+    const row = await db.cashDeliveryDeclaration.findUniqueOrThrow({ where: { id: h.deliveryId } });
+    const { dateStrInTz } = await import("@/lib/date-range");
+    const day = new Date(`${dateStrInTz(row.declaredAt)}T00:00:00.000Z`);
+    const entity = await db.accountingEntity.upsert({ where: { cafeId: fx.cafeId }, update: {}, create: { cafeId: fx.cafeId, name: fx.marker, currency: "EGP" } });
+    // A closed period is fixture state here; the guard trigger that forbids writing one directly is
+    // disabled inside this one transaction only (teardown purges it the same way).
+    await db.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`ALTER TABLE "AccountingPeriod" DISABLE TRIGGER "AccountingPeriod_immutable_guard"`);
+      await tx.accountingPeriod.create({ data: { cafeId: fx.cafeId, entityId: entity.id, startsOn: day, endsOn: day, status: "CLOSED", closedAt: new Date(), closedById: fx.owner.id } });
+      await tx.$executeRawUnsafe(`ALTER TABLE "AccountingPeriod" ENABLE TRIGGER "AccountingPeriod_immutable_guard"`);
+    });
+    try {
+      const late = await dispute(fx.manager.email, h.deliveryId, { note: "متأخر" });
+      assert.equal(late.status, 409, late.text);
+      assert.equal((await db.cashDeliveryDeclaration.findUniqueOrThrow({ where: { id: h.deliveryId } })).status, "CONFIRMED");
+    } finally {
+      await db.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`ALTER TABLE "AccountingPeriod" DISABLE TRIGGER "AccountingPeriod_immutable_guard"`);
+        await tx.accountingPeriod.deleteMany({ where: { cafeId: fx.cafeId } });
+        await tx.$executeRawUnsafe(`ALTER TABLE "AccountingPeriod" ENABLE TRIGGER "AccountingPeriod_immutable_guard"`);
+      });
+    }
   });
 
   test("dispute: recipient reports, it never rewrites the closed shift or the next opening, and only the owner resolves", async () => {
@@ -741,8 +804,9 @@ describe("«الإبلاغ عن اختلاف»", () => {
     const pre = await report(incoming.email, h.handoverId, { kind: "STOCK_ITEM", inventoryItemId: items[0].id, description: "الكمية أقل من المعلن", idempotencyKey: k });
     assert.equal(pre.status, 201, pre.text);
     const replay = await report(incoming.email, h.handoverId, { kind: "STOCK_ITEM", inventoryItemId: items[0].id, description: "الكمية أقل من المعلن", idempotencyKey: k });
-    assert.equal(replay.status, 200);
-    assert.equal(replay.body.alreadyReported, true);
+    assert.equal(replay.status, 201, "the stored status of the first attempt");
+    assert.equal(replay.headers.get("Idempotency-Replayed"), "true");
+    assert.deepEqual(replay.body, pre.body);
     assert.equal((await acceptDirect(incoming.email, h.handoverId, s.body.reviewVersion)).status, 200, "reporting does not by itself block the separate acceptance");
     const post = await report(incoming.email, h.handoverId, { kind: "CASH", amount: 20, description: "ناقص 20 جنيه في الدرج" });
     assert.equal(post.status, 201, post.text);
@@ -950,5 +1014,169 @@ describe("directHandover finish_outgoing prerequisite, no-handover close and rep
     assert.equal(shiftRep.body.report.cashDisposition.deliveredAmount, 2500);
     assert.ok(shiftRep.body.report.handover.directAcknowledgedAt);
     assert.equal(shiftRep.body.report.handover.issues.length, 1);
+  });
+});
+
+// ═════════════════════ hardening (continuation, 2026-11-05) ═════════════════════
+
+describe("hardening: one partition, authoritative figures, period gate, idempotency, masking, parity", () => {
+  const confirmAs = (email: string, id: string, body: Record<string, unknown> = {}, k = key("hc")) =>
+    rawAs<{ status?: string; confirmedOnBehalf?: boolean; error?: string }>(email, `/api/cash-deliveries/${id}/confirm`, { method: "POST", body: JSON.stringify(body), headers: { "Idempotency-Key": k } });
+
+  test("one drawer partition per shift: the database refuses a night-storage row beside a disposition, and the reverse", async () => {
+    const h = await outgoingJourney({ actual: 900, disposition: { deliveries: [], retainedAmount: 900 }, finish: false });
+    await assert.rejects(
+      () => db.cashStorage.create({ data: { cafeId: fx.cafeId, branchId: fx.branchId, outgoingShiftId: h.shiftId, handoverId: h.handoverId, closingAmount: 900, leftInDrawer: 900, toTreasury: 0, drawerLabel: "x", declaredById: fx.cashier.id } }),
+      /direct-handover cash disposition/,
+    );
+    const { recordNightCash } = await import("@/lib/overnight-cash");
+    // The service refuses before the database has to (its own message), on the same shift.
+    await assert.rejects(() => db.$transaction((tx) => recordNightCash(tx, { cafeId: fx.cafeId, branchId: fx.branchId, shiftId: h.shiftId, handoverId: h.handoverId, actorId: fx.cashier.id, actualCash: 900, disposition: { leftInDrawer: 900, toTreasury: 0 } })));
+    assert.equal(await db.cashStorage.count({ where: { outgoingShiftId: h.shiftId } }), 0);
+  });
+
+  test("the disposition snapshots the persisted close: counted = actualCashAmount, expected = the close's expectedCashAmount", async () => {
+    const h = await outgoingJourney({ actual: 1234.56, disposition: { deliveries: [{ destination: "OWNER", recipientId: fx.owner.id, amount: 1000 }], retainedAmount: 234.56 }, finish: false });
+    const [shift, row] = await Promise.all([
+      db.shift.findUniqueOrThrow({ where: { id: h.shiftId } }),
+      db.shiftCashDisposition.findUniqueOrThrow({ where: { shiftId: h.shiftId } }),
+    ]);
+    assert.equal(row.countedCash.toString(), shift.actualCashAmount!.toString());
+    assert.equal(row.expectedCash.toString(), shift.expectedCashAmount.toString());
+    assert.equal(row.cashDifference.toString(), shift.cashDifference!.toString());
+  });
+
+  test("period close is blocked by unconfirmed or disputed deliveries, warned by on-behalf ones — and never blocks the shifts", async () => {
+    const h = await outgoingJourney({ actual: 1000, disposition: { deliveries: [{ destination: "OWNER", recipientId: fx.owner.id, amount: 600 }, { destination: "MANAGER", recipientId: fx.manager.id, amount: 300 }], retainedAmount: 100 } });
+    // The next shift opens on the retained amount while both deliveries are pending.
+    await incomingOpensShift();
+    const s = await summaryOf(incoming.email, h.handoverId);
+    assert.equal((await acceptDirect(incoming.email, h.handoverId, s.body.reviewVersion)).status, 200);
+    const { dateStrInTz } = await import("@/lib/date-range");
+    const today = new Date(`${dateStrInTz(new Date())}T00:00:00.000Z`);
+    const entity = await db.accountingEntity.upsert({ where: { cafeId: fx.cafeId }, update: {}, create: { cafeId: fx.cafeId, name: fx.marker, currency: "EGP" } });
+    const period = await db.accountingPeriod.create({ data: { cafeId: fx.cafeId, entityId: entity.id, startsOn: today, endsOn: today } });
+    const { closeChecklist } = await import("@/lib/accounting/close-checklist");
+    const item = async (k: string) => (await closeChecklist({ cafeId: fx.cafeId, periodId: period.id })).items.find((i) => i.key === k)!;
+    assert.equal((await item("cash-deliveries")).status, "blocking");
+    const [ownerDel, managerDel] = await Promise.all([
+      db.cashDeliveryDeclaration.findFirstOrThrow({ where: { shiftId: h.shiftId, recipientId: fx.owner.id } }),
+      db.cashDeliveryDeclaration.findFirstOrThrow({ where: { shiftId: h.shiftId, recipientId: fx.manager.id } }),
+    ]);
+    assert.equal((await confirmAs(fx.owner.email, ownerDel.id)).status, 200);
+    assert.equal((await item("cash-deliveries")).status, "blocking", "the manager's delivery is still pending");
+    assert.equal((await confirmAs(fx.owner.email, managerDel.id, { onBehalfReason: "حضور المالك" })).status, 200);
+    assert.equal((await item("cash-deliveries")).status, "ok");
+    assert.equal((await item("cash-deliveries-on-behalf")).status, "warning");
+    // The incoming shift stayed operational throughout.
+    const opened = await db.shift.findFirstOrThrow({ where: { cashierId: incoming.id, branchId: fx.branchId } });
+    assert.equal(opened.custodyGateReason, null);
+  });
+
+  test("withIdempotency: same key + same body replays the stored response; same key + different body is 409; no key is 400", async () => {
+    const h = await outgoingJourney({ actual: 800, disposition: null, finish: false });
+    const k = key("hdr");
+    const path = `/api/shifts/${h.shiftId}/cash-disposition`;
+    const body = JSON.stringify({ deliveries: [{ destination: "OWNER", recipientId: fx.owner.id, amount: 500 }], retainedAmount: 300 });
+    const first = await rawAs<{ disposition: { id: string } }>(fx.cashier.email, path, { method: "POST", body, headers: { "Idempotency-Key": k } });
+    assert.equal(first.status, 201, first.text);
+    const replay = await rawAs<{ disposition: { id: string } }>(fx.cashier.email, path, { method: "POST", body, headers: { "Idempotency-Key": k } });
+    assert.equal(replay.status, 201, "the stored status is replayed");
+    assert.equal(replay.headers.get("Idempotency-Replayed"), "true");
+    assert.equal(replay.body.disposition.id, first.body.disposition.id);
+    const other = await rawAs(fx.cashier.email, path, { method: "POST", body: JSON.stringify({ deliveries: [], retainedAmount: 800 }), headers: { "Idempotency-Key": k } });
+    assert.equal(other.status, 409, other.text);
+    const none = await rawAs(fx.cashier.email, path, { method: "POST", body });
+    assert.equal(none.status, 400, none.text);
+    const mismatch = await rawAs(fx.cashier.email, path, { method: "POST", body: JSON.stringify({ ...JSON.parse(body), idempotencyKey: "different-key-1" }), headers: { "Idempotency-Key": key("hdr2") } });
+    assert.equal(mismatch.status, 400, mismatch.text);
+    assert.equal(await db.shiftCashDisposition.count({ where: { shiftId: h.shiftId } }), 1);
+    assert.equal(await db.cashDeliveryDeclaration.count({ where: { shiftId: h.shiftId } }), 1);
+  });
+
+  test("lost response: concurrent retries of one attempt write exactly one row on every new mutating route", async () => {
+    const h = await outgoingJourney({ actual: 700, disposition: { deliveries: [{ destination: "OWNER", recipientId: fx.owner.id, amount: 400 }], retainedAmount: 300 } });
+    const del = await db.cashDeliveryDeclaration.findFirstOrThrow({ where: { shiftId: h.shiftId } });
+    const k = key("lost-conf");
+    const conf = await Promise.all([confirmAs(fx.owner.email, del.id, {}, k), confirmAs(fx.owner.email, del.id, {}, k)]);
+    assert.ok(conf.some((r) => r.status === 200), conf.map((r) => r.text).join(" | "));
+    assert.ok(conf.every((r) => [200, 409].includes(r.status)));
+    const again = await confirmAs(fx.owner.email, del.id, {}, k);
+    assert.equal(again.status, 200, "after the race, the same key replays");
+    assert.equal(await db.auditLog.count({ where: { entityId: del.id, action: "CASH_DELIVERY_CONFIRMED" } }), 1);
+    const ik = key("lost-issue");
+    const issueBody = JSON.stringify({ kind: "OTHER", description: "ملاحظة واحدة" });
+    const issues = await Promise.all([1, 2].map(() => rawAs(incoming.email, `/api/handovers/${h.handoverId}/issues`, { method: "POST", body: issueBody, headers: { "Idempotency-Key": ik } })));
+    assert.ok(issues.some((r) => r.status === 201), issues.map((r) => r.text).join(" | "));
+    assert.equal(await db.handoverIssue.count({ where: { handoverId: h.handoverId } }), 1);
+  });
+
+  test("masking: no counted / expected / difference figure reaches an incoming cashier in JSON or the page payload", async () => {
+    // Distinctive figures so a leak is unambiguous wherever it appears.
+    const h = await outgoingJourney({ actual: 3137.25, disposition: { deliveries: [{ destination: "OWNER", recipientId: fx.owner.id, amount: 2500 }], retainedAmount: 637.25 } });
+    const leaks = ["3137.25", "3,137.25", "3037.25", "3,037.25", "٣١٣٧"];
+    const scan = (label: string, text: string) => { for (const l of leaks) assert.ok(!text.includes(l), `${label} leaks ${l}`); };
+    const summary = await summaryOf(incoming.email, h.handoverId);
+    assert.equal(summary.status, 200, summary.text);
+    scan("direct summary", summary.text);
+    assert.equal(summary.body.cash.counted, null);
+    assert.equal(summary.body.cash.expected, null);
+    assert.equal(summary.body.cash.difference, null, "hidden is null (rendered «غير متاح»), never 0");
+    const detail = await rawAs(incoming.email, `/api/handovers/${h.handoverId}`);
+    scan("handover detail", detail.text);
+    const list = await rawAs(incoming.email, "/api/cash-deliveries");
+    scan("deliveries list", list.text);
+    const issues = await rawAs(incoming.email, `/api/handovers/${h.handoverId}/issues`);
+    scan("issues", issues.text);
+    const page = await rawAs(incoming.email, `/handovers?id=${h.handoverId}`, { headers: { RSC: "1" } });
+    scan("handovers RSC payload", page.text);
+    // The owner, who has report access, does see the figures — the scan is not vacuous.
+    const ownerView = await summaryOf(fx.owner.email, h.handoverId);
+    assert.equal(ownerView.body.cash.counted, 3137.25);
+  });
+
+  test("totals parity: screen (detail API) = HTML report = XLSX for counted, delivered, retained and each delivery", async () => {
+    const h = await outgoingJourney({ actual: 3000, disposition: { deliveries: [{ destination: "OWNER", recipientId: fx.owner.id, amount: 2000 }, { destination: "MANAGER", recipientId: fx.manager.id, amount: 500 }], retainedAmount: 500 } });
+    const ownerDel = await db.cashDeliveryDeclaration.findFirstOrThrow({ where: { shiftId: h.shiftId, recipientId: fx.owner.id } });
+    assert.equal((await confirmAs(fx.owner.email, ownerDel.id)).status, 200);
+    type Detail = { handover: { overview: { cashDisposition: { deliveredAmount: number; retainedAmount: number; countedCash: number | null; deliveries: { amount: number; statusLabel: string }[] } } } };
+    const screen = await rawAs<Detail>(fx.owner.email, `/api/handovers/${h.handoverId}`);
+    assert.equal(screen.status, 200, screen.text);
+    const cd = screen.body.handover.overview.cashDisposition;
+    assert.equal(cd.countedCash, 3000);
+    assert.equal(cd.deliveredAmount + cd.retainedAmount, cd.countedCash);
+    assert.deepEqual(cd.deliveries.map((d) => d.amount).sort((a, b) => a - b), [500, 2000]);
+
+    const { handoverDetailPayload } = await import("@/lib/handover-detail-payload");
+    const { buildHandoverReport, reportWorkbook, reportHtml } = await import("@/lib/handover-report");
+    const payload = await handoverDetailPayload({ id: fx.owner.id, email: fx.owner.email, name: "Owner", role: "CAFE_OWNER", cafeId: fx.cafeId, branchId: null }, h.handoverId, fx.cafeId);
+    const report = buildHandoverReport(payload, { businessName: "x", currency: "EGP", timezone: "Africa/Cairo", generatedAt: new Date(), viewerName: "Owner" });
+    const table = report.tables.find((t) => t.key === "cash_disposition")!;
+    const amounts = table.rows.map((r) => r[2]).filter((v): v is number => typeof v === "number");
+    assert.equal(amounts.reduce((a, b) => a + b, 0), 3000, "deliveries + retained in the report = counted");
+    assert.deepEqual([...amounts].sort((a, b) => a - b), [500, 500, 2000]);
+    const html = reportHtml(report);
+    assert.match(html, /<thead>/);
+    assert.match(html, /size:A4 landscape/);
+    // XLSX: the same numbers, read back from the generated workbook XML (no spreadsheet library needed).
+    const zip = reportWorkbook(report);
+    const { inflateRawSync } = await import("node:zlib");
+    const sheets: string[] = [];
+    for (let i = 0; i + 30 < zip.length; i++) {
+      if (zip.readUInt32LE(i) !== 0x04034b50) continue;
+      const method = zip.readUInt16LE(i + 8), size = zip.readUInt32LE(i + 18), nameLen = zip.readUInt16LE(i + 26), extra = zip.readUInt16LE(i + 28);
+      const name = zip.subarray(i + 30, i + 30 + nameLen).toString();
+      const data = zip.subarray(i + 30 + nameLen + extra, i + 30 + nameLen + extra + size);
+      if (name.startsWith("xl/worksheets/")) sheets.push((method === 8 ? inflateRawSync(data) : data).toString("utf8"));
+    }
+    assert.ok(sheets.length >= 2, "workbook has worksheets");
+    assert.ok(sheets.every((x) => /state="frozen"/.test(x)), "row 1 is frozen on every sheet");
+    const withFilter = sheets.filter((x) => /<autoFilter /.test(x));
+    assert.ok(withFilter.length >= 1, "data sheets carry an autofilter");
+    const numbers = (x: string) => [...x.matchAll(/<v>(-?[0-9.]+)<\/v>/g)].map((m) => Number(m[1]));
+    const dispositionSheet = sheets.find((x) => { const n = numbers(x); return n.includes(2000) && n.includes(500); });
+    assert.ok(dispositionSheet, "the disposition sheet carries the delivery amounts");
+    const n = numbers(dispositionSheet!);
+    assert.equal([2000, 500].every((v) => n.includes(v)), true);
   });
 });

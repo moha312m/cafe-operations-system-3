@@ -48,6 +48,19 @@ export async function closeChecklist(args: { cafeId: string; periodId: string },
   add("no-exceptions", "مفيش أحداث مايقدرش يترحّل", unpostable.length === 0, "blocking", unpostable.map((e) => `${e.sourceKey}: ${e.reason}`).join(" · "));
   const blockingIssues = coverage.recordedIssues.filter((i) => i.severity === "BLOCKING");
   add("recorded-issues", "مفيش مشاكل ترحيل متسجلة لسه مفتوحة", blockingIssues.length === 0, "blocking", blockingIssues.map((i) => `${i.kind} ${i.sourceKey}`).join(" · "));
+  // Direct-handover cash declared to an owner/manager: unconfirmed or disputed deliveries keep the
+  // period open (they never block a shift). An owner's on-behalf confirmation closes the recipient's
+  // dispute window with the period, so it is surfaced as a warning to check before closing.
+  const declaredIn = { cafeId: args.cafeId, declaredAt: { gte: zonedDayStart(startsOn), lt: zonedDayStart(addDays(endsOn, 1)) } };
+  const [pendingDeliveries, disputedDeliveries, onBehalfDeliveries] = await Promise.all([
+    client.cashDeliveryDeclaration.count({ where: { ...declaredIn, status: "DECLARED" } }),
+    client.cashDeliveryDeclaration.count({ where: { ...declaredIn, status: "DISPUTED" } }),
+    client.cashDeliveryDeclaration.count({ where: { ...declaredIn, status: "CONFIRMED", confirmedByException: true } }),
+  ]);
+  add("cash-deliveries", "كل تسليمات النقدية المُعلنة اتأكدت أو اتسوّت", pendingDeliveries + disputedDeliveries === 0, "blocking",
+    pendingDeliveries + disputedDeliveries ? `${pendingDeliveries} بانتظار تأكيد المستلم، ${disputedDeliveries} عليها اختلاف مفتوح` : "");
+  add("cash-deliveries-on-behalf", "مفيش تأكيد نيابةً عن المستلم لسه المستلم ماشافهوش", onBehalfDeliveries === 0, "warning",
+    onBehalfDeliveries ? `${onBehalfDeliveries} تأكيد نيابةً عن المستلم — قفل الفترة يقفل حق الاعتراض عليها` : "");
   const warnings = coverage.recordedIssues.filter((i) => i.severity === "WARNING");
   add("assumed-dates", "كل التواريخ من دليل فعلي", warnings.length === 0, "warning", warnings.length ? `${warnings.length} حدث اتاخد تاريخه بافتراض` : "");
 

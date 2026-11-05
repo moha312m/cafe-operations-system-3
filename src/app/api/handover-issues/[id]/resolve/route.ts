@@ -1,7 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { handleApiError, requireKey, resolveCafeId } from "@/lib/api";
-import { resolveHandoverIssue } from "@/lib/handover-direct";
+import { withIdempotency, requestScope } from "@/lib/idempotency";
+import { attemptKey } from "@/lib/attempt-key";
+import { resolveHandoverIssueInTransaction } from "@/lib/handover-direct";
 
 type Params = { params: Promise<{ id: string }> };
 const schema = z.object({ note: z.string().min(1, "اكتب نتيجة المراجعة").max(1000), cafeId: z.string().optional() }).strict();
@@ -13,7 +15,9 @@ export async function POST(request: NextRequest, { params }: Params) {
     const { id } = await params;
     const body = schema.parse(await request.json());
     const cafeId = resolveCafeId(session, body.cafeId);
-    return NextResponse.json(await resolveHandoverIssue({ issueId: id, actorId: session.id, cafeId, note: body.note }));
+    attemptKey(request);
+    return await withIdempotency(request, requestScope(session, `POST /api/handover-issues/${id}/resolve`), body, async (tx) =>
+      NextResponse.json(await resolveHandoverIssueInTransaction(tx, { issueId: id, actorId: session.id, cafeId, note: body.note })));
   } catch (error) {
     return handleApiError(error);
   }

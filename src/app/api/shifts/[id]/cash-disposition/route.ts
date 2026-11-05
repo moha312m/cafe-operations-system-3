@@ -3,7 +3,9 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { ApiError, handleApiError, requirePermission } from "@/lib/api";
 import { resolvePermissions } from "@/lib/perms/effective";
-import { closingCashPosition, dispositionForShift, listEligibleRecipients, recordCashDisposition, MAX_DELIVERIES } from "@/lib/cash-disposition";
+import { withIdempotency, requestScope } from "@/lib/idempotency";
+import { attemptKey } from "@/lib/attempt-key";
+import { closingCashPosition, dispositionForShift, listEligibleRecipients, recordCashDispositionInTransaction, MAX_DELIVERIES } from "@/lib/cash-disposition";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -24,7 +26,7 @@ const bodySchema = z
       .max(MAX_DELIVERIES),
     retainedAmount: z.union([z.number(), z.string()]),
     note: z.string().max(1000).nullish(),
-    idempotencyKey: z.string({ error: "لازم تبعت مفتاح إعادة المحاولة" }).min(1).max(200),
+    idempotencyKey: z.string().min(1).max(200).optional(),
   })
   .strict();
 
@@ -69,12 +71,15 @@ export async function POST(request: NextRequest, { params }: Params) {
     const { keys } = await resolvePermissions(session);
     const { id } = await params;
     const body = bodySchema.parse(await request.json());
-    const result = await recordCashDisposition({
-      actor: { id: session.id, cafeId: session.cafeId, role: session.role },
-      canActForOthers: keys.has("shifts.close_others"),
-      input: { shiftId: id, deliveries: body.deliveries, retainedAmount: body.retainedAmount, note: body.note ?? null, idempotencyKey: body.idempotencyKey },
+    const key = attemptKey(request, body.idempotencyKey);
+    return await withIdempotency(request, requestScope(session, `POST /api/shifts/${id}/cash-disposition`), { ...body, idempotencyKey: undefined }, async (tx) => {
+      const result = await recordCashDispositionInTransaction(tx, {
+        actor: { id: session.id, cafeId: session.cafeId, role: session.role },
+        canActForOthers: keys.has("shifts.close_others"),
+        input: { shiftId: id, deliveries: body.deliveries, retainedAmount: body.retainedAmount, note: body.note ?? null, idempotencyKey: key },
+      });
+      return NextResponse.json(result, { status: result.alreadyRecorded ? 200 : 201 });
     });
-    return NextResponse.json(result, { status: result.alreadyRecorded ? 200 : 201 });
   } catch (error) {
     return handleApiError(error);
   }

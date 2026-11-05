@@ -4,6 +4,7 @@
 // money it prints is exactly the screen's. Quantities are never summed across units, and
 // a value the viewer may not see is written as "غير متاح" — never as zero.
 import { buildXlsx, type XlsxCell, type XlsxSheet } from "@/lib/xlsx";
+import { decimal, money } from "@/lib/money";
 import { csvCell } from "@/lib/report-output";
 import { HANDOVER_STATUS_LABEL } from "@/components/handovers/handover-labels";
 import { DISPOSITION_LABEL } from "@/components/stock-counts/stock-count-labels";
@@ -25,6 +26,8 @@ type ReportLine = { id: string; unit: string; disposition: string; inventoryItem
 
 export const stamp = (at: Date | string | null | undefined, tz: string) =>
   at ? new Intl.DateTimeFormat("sv-SE", { timeZone: tz, dateStyle: "short", timeStyle: "short" }).format(new Date(at)) : "لم يتم";
+
+const shortfall = (d: { amount: number; resolvedAmount: number | null }) => d.resolvedAmount === null ? "—" : money(decimal(d.amount).minus(d.resolvedAmount)).toNumber();
 
 export function buildHandoverReport(p: HandoverPayload, meta: ReportMeta): HandoverReport {
   const tz = meta.timezone, cur = meta.currency;
@@ -105,8 +108,10 @@ export function buildHandoverReport(p: HandoverPayload, meta: ReportMeta): Hando
         d.status === "DISPUTED"
           ? `اختلاف مُبلَّغ: ${d.disputeNote ?? "—"}${d.claimedReceivedAmount !== null ? ` (المستلم فعليًا: ${d.claimedReceivedAmount})` : ""}`
           : d.status === "RESOLVED"
-            ? `تمت التسوية بمبلغ ${d.resolvedAmount ?? "—"}: ${d.resolutionNote ?? "—"}`
-            : (d.reference ?? "—"),
+            ? `تمت التسوية بمبلغ ${d.resolvedAmount ?? "—"} (الفرق ${shortfall(d)}): ${d.resolutionNote ?? "—"}`
+            : d.status === "CONFIRMED" && d.confirmedOnBehalf
+              ? `تأكيد نيابةً عن المستلم — مش تأكيد المستلم بنفسه. السبب: ${d.onBehalfReason ?? "—"}`
+              : (d.reference ?? "—"),
       ] as XlsxCell[]),
       [
         o.cashDisposition.retainedCustody.destinationLabel,
@@ -144,7 +149,7 @@ export function buildHandoverReport(p: HandoverPayload, meta: ReportMeta): Hando
     }),
   });
 
-  // Reported handover issues and delivery disputes.
+  // Reported handover issues and delivery disputes. A dispute keeps its declared amount; the shortfall is shown, never posted.
   const deliveryDisputes = (o.cashDisposition?.deliveries ?? []).filter((d) => d.status === "DISPUTED" || d.status === "RESOLVED");
   tables.push({
     key: "issues",
@@ -170,7 +175,7 @@ export function buildHandoverReport(p: HandoverPayload, meta: ReportMeta): Hando
         stamp(d.disputedAt ?? d.declaredAt, tz),
         d.recipientName,
         d.statusLabel,
-        d.status === "RESOLVED" ? `المبلغ المعتمد: ${d.resolvedAmount ?? "—"} — ${d.resolutionNote ?? "—"}` : `المستلم فعليًا: ${d.claimedReceivedAmount ?? "غير محدد"}`,
+        d.status === "RESOLVED" ? `المعلن ${d.amount} · المعتمد ${d.resolvedAmount ?? "—"} · الفرق ${shortfall(d)} — ${d.resolutionNote ?? "—"}` : `المعلن ${d.amount} · المستلم فعليًا حسب البلاغ ${d.claimedReceivedAmount ?? "غير محدد"} · الفرق ${d.claimedReceivedAmount === null ? "غير محدد" : money(decimal(d.amount).minus(d.claimedReceivedAmount)).toNumber()} — مفتوح ويمنع قفل الفترة`,
       ] as XlsxCell[]),
     ],
   });

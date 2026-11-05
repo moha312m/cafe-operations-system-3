@@ -2,7 +2,9 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { handleApiError, requireFeature, requireKey, resolveCafeId } from "@/lib/api";
 import { resolvePermissions } from "@/lib/perms/effective";
-import { acceptDirectHandover, directHandoverSummary } from "@/lib/handover-direct";
+import { withIdempotency, requestScope } from "@/lib/idempotency";
+import { attemptKey } from "@/lib/attempt-key";
+import { acceptDirectHandoverInTransaction, directHandoverSummary } from "@/lib/handover-direct";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -11,7 +13,7 @@ type Params = { params: Promise<{ id: string }> };
 const acceptSchema = z
   .object({
     reviewVersion: z.string().min(1, "لازم تبعت نسخة الملخص اللي راجعته").max(200),
-    idempotencyKey: z.string({ error: "لازم تبعت مفتاح إعادة المحاولة" }).min(1).max(200),
+    idempotencyKey: z.string().min(1).max(200).optional(),
     cafeId: z.string().optional(),
   })
   .strict();
@@ -39,11 +41,12 @@ export async function POST(request: NextRequest, { params }: Params) {
     const { id } = await params;
     const body = acceptSchema.parse(await request.json());
     const cafeId = resolveCafeId(session, body.cafeId);
-    const result = await acceptDirectHandover({
-      handoverId: id, actorId: session.id, cafeId, viewerBranchId: session.branchId,
-      reviewVersion: body.reviewVersion, idempotencyKey: body.idempotencyKey,
-    });
-    return NextResponse.json(result);
+    const key = attemptKey(request, body.idempotencyKey);
+    return await withIdempotency(request, requestScope(session, `POST /api/handovers/${id}/direct`), { reviewVersion: body.reviewVersion, cafeId }, async (tx) =>
+      NextResponse.json(await acceptDirectHandoverInTransaction(tx, {
+        handoverId: id, actorId: session.id, cafeId, viewerBranchId: session.branchId,
+        reviewVersion: body.reviewVersion, idempotencyKey: key,
+      })));
   } catch (error) {
     return handleApiError(error);
   }

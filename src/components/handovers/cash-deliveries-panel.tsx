@@ -27,6 +27,8 @@ export type AwaitingDelivery = {
   disputeNote: string | null;
   claimedReceivedAmount: number | null;
   mine: boolean;
+  /** The café owner confirmed for the recipient («تأكيد نيابةً عن المستلم»); the recipient may still dispute. */
+  confirmedOnBehalf?: boolean;
 };
 
 export function CashDeliveriesPanel({
@@ -51,7 +53,13 @@ export function CashDeliveriesPanel({
   const [resolvedAmount, setResolvedAmount] = useState("");
   const [resolutionNote, setResolutionNote] = useState("");
 
-  const confirmKeys = useRef<Record<string, string>>({});
+  const [onBehalfOpenId, setOnBehalfOpenId] = useState<string | null>(null);
+  const [onBehalfReason, setOnBehalfReason] = useState("");
+
+  // One key per attempt, reused when the same attempt is retried, dropped once it succeeded.
+  const attemptKeys = useRef<Record<string, string>>({});
+  const keyFor = (action: string, id: string) => (attemptKeys.current[`${action}:${id}`] ??= `${action}-${id}-${crypto.randomUUID()}`.slice(0, 120));
+  const doneWith = (action: string, id: string) => { delete attemptKeys.current[`${action}:${id}`]; };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -70,18 +78,20 @@ export function CashDeliveriesPanel({
     void load();
   }, [load]);
 
-  async function confirmReceipt(d: AwaitingDelivery) {
+  async function confirmReceipt(d: AwaitingDelivery, onBehalf = false) {
     if (busyId) return;
-    if (!confirmKeys.current[d.id]) {
-      confirmKeys.current[d.id] = `conf-${d.id}-${crypto.randomUUID()}`;
-    }
+    const action = onBehalf ? "proxy" : "conf";
     setBusyId(d.id);
     try {
       await api(`/api/cash-deliveries/${d.id}/confirm`, {
         method: "POST",
-        body: { idempotencyKey: confirmKeys.current[d.id] },
+        body: onBehalf ? { onBehalfReason: onBehalfReason.trim() } : {},
+        idempotencyKey: keyFor(action, d.id),
       });
-      toast.success("تم تأكيد استلام النقدية بنجاح");
+      doneWith(action, d.id);
+      toast.success(onBehalf ? "تم تسجيل التأكيد نيابةً عن المستلم" : "تم تأكيد استلام النقدية بنجاح");
+      setOnBehalfOpenId(null);
+      setOnBehalfReason("");
       await load();
       onChanged?.();
     } catch (e) {
@@ -102,7 +112,9 @@ export function CashDeliveriesPanel({
           note: disputeNote.trim(),
           ...(claimed !== undefined ? { claimedReceivedAmount: claimed } : {}),
         },
+        idempotencyKey: keyFor(`dispute-${disputeNote.trim().length}-${claimedAmount}`, d.id),
       });
+      doneWith(`dispute-${disputeNote.trim().length}-${claimedAmount}`, d.id);
       toast.success("تم تسجيل بلاغ الاختلاف على التسليم");
       setDisputeOpenId(null);
       setClaimedAmount("");
@@ -126,7 +138,9 @@ export function CashDeliveriesPanel({
           resolvedAmount: Number(resolvedAmount),
           resolutionNote: resolutionNote.trim(),
         },
+        idempotencyKey: keyFor(`resolve-${resolvedAmount}-${resolutionNote.trim().length}`, d.id),
       });
+      doneWith(`resolve-${resolvedAmount}-${resolutionNote.trim().length}`, d.id);
       toast.success("تمت تسوية وحسم اختلاف التسليم");
       setResolveOpenId(null);
       setResolvedAmount("");
@@ -201,17 +215,26 @@ export function CashDeliveriesPanel({
               {d.reference ? ` · مرجع: ${d.reference}` : ""}
             </p>
 
-            {d.status === "DECLARED" && d.mine && (
+            {d.status === "CONFIRMED" && d.confirmedOnBehalf && (
+              <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-2 text-xs" data-testid={`on-behalf-note-${d.id}`}>
+                <strong>تأكيد نيابةً عن المستلم</strong> — أكّده المالك بدل {d.recipientName}. ده مش تأكيد المستلم بنفسه، و{d.mine ? "تقدر" : "المستلم يقدر"} تعترض عليه لحد قفل الفترة المحاسبية.
+              </p>
+            )}
+
+            {(d.status === "DECLARED" || (d.status === "CONFIRMED" && d.confirmedOnBehalf)) && d.mine && (
               <div className="space-y-2 pt-1">
                 <div className="flex flex-wrap gap-2">
+                  {d.status === "DECLARED" && (
                   <Button
                     size="sm"
+                    className="min-h-11"
                     disabled={busyId === d.id}
                     onClick={() => void confirmReceipt(d)}
                     data-testid={`confirm-delivery-${d.id}`}
                   >
                     {busyId === d.id ? "جارٍ التأكيد…" : "تأكيد استلام النقدية"}
                   </Button>
+                  )}
                   <Button
                     size="sm"
                     variant="outline"
@@ -278,9 +301,28 @@ export function CashDeliveriesPanel({
             )}
 
             {d.status === "DECLARED" && !d.mine && (
-              <p className="text-xs text-muted-foreground">
-                يؤكد الاستلام المستلم المسمّى ({d.recipientName}) من حسابه الخاص فقط.
-              </p>
+              <div className="space-y-2">
+                <p className="text-xs text-muted-foreground">
+                  يؤكد الاستلام المستلم المسمّى ({d.recipientName}) من حسابه الخاص.
+                </p>
+                {user.role === "CAFE_OWNER" && (onBehalfOpenId !== d.id ? (
+                  <Button size="sm" variant="outline" className="min-h-11" onClick={() => { setOnBehalfOpenId(d.id); setOnBehalfReason(""); }} data-testid={`on-behalf-toggle-${d.id}`}>
+                    تأكيد نيابةً عن المستلم (استثناء)
+                  </Button>
+                ) : (
+                  <div className="space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-2.5">
+                    <p className="text-xs">ده استثناء بيتسجل باسمك وسببك، ومش بيتحسب تأكيد من {d.recipientName}، وهو يقدر يعترض عليه.</p>
+                    <Label htmlFor={`on-behalf-${d.id}`} className="text-xs">سبب التأكيد نيابةً عن المستلم</Label>
+                    <Textarea id={`on-behalf-${d.id}`} rows={2} maxLength={1000} className="text-base" value={onBehalfReason} onChange={(e) => setOnBehalfReason(e.target.value)} />
+                    <div className="flex gap-2">
+                      <Button size="sm" className="min-h-11" disabled={busyId === d.id || !onBehalfReason.trim()} onClick={() => void confirmReceipt(d, true)} data-testid={`on-behalf-submit-${d.id}`}>
+                        {busyId === d.id ? "جارٍ التسجيل…" : "تأكيد نيابةً عن المستلم"}
+                      </Button>
+                      <Button size="sm" variant="ghost" className="min-h-11" onClick={() => setOnBehalfOpenId(null)}>إلغاء</Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
             )}
 
             {d.status === "DISPUTED" && (

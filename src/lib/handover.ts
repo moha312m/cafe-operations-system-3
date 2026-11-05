@@ -2629,7 +2629,7 @@ async function prepareHandoverInventoryLocks(tx: Prisma.TransactionClient, hando
   for (const id of ids) await lockItemForUpdate(tx, id, { nowait: true }).catch(error => { if (isDatabaseContention(error)) throw new ApiError(409, "المخزون مشغول بعملية تانية — جرّب الاستلام تاني"); throw error; });
 }
 
-export async function acceptHandover(args: {
+export type AcceptHandoverArgs = {
   countedOpeningCash?: number;
   cashReasonCodeId?: string;
   cashReasonNote?: string;
@@ -2649,8 +2649,26 @@ export async function acceptHandover(args: {
    * and has no field of this name, so no request body can reach it.
    */
   __afterStep?: AcceptanceCheckpoint;
-}): Promise<AcceptResult> {
-  return protectedHandoverTransaction(async (tx) => {
+};
+export async function acceptHandover(args: AcceptHandoverArgs): Promise<AcceptResult> {
+  return protectedHandoverTransaction((tx) => acceptHandoverWork(tx, args));
+}
+
+/**
+ * The same acceptance on a caller's protected transaction (an idempotent route's). The one retryable
+ * condition the standalone wrapper retries — the handover's deferred consumption moving under it —
+ * surfaces here as a 409 the client retries with the same key.
+ */
+export async function acceptHandoverInTransaction(tx: Prisma.TransactionClient, args: AcceptHandoverArgs): Promise<AcceptResult> {
+  try { return await acceptHandoverWork(tx, args); }
+  catch (error) {
+    if (error instanceof HandoverConsumptionChanged) throw new ApiError(409, "مرتجعات التسليم اتغيرت؛ جرّب الاستلام تاني بنفس المفتاح");
+    throw error;
+  }
+}
+
+async function acceptHandoverWork(tx: Prisma.TransactionClient, args: AcceptHandoverArgs): Promise<AcceptResult> {
+  {
     // Assignment changes and newly acquired responsibility share User first.
     // Refresh scope before taking Handover, preserving that lock order.
     const scope = await prepareHandoverFinancialLocks(tx, args, args.incomingUserId);
@@ -2722,7 +2740,7 @@ export async function acceptHandover(args: {
     // No `exception`: an ordinary accept has no manager authority to carry,
     // and step 5 keeps its refusal.
     return narrowAcceptResult(await runAcceptance(tx, evidence, { ...args, direct: args.direct }));
-  });
+  }
 }
 
 /**

@@ -12,10 +12,11 @@ import { auditInTransaction } from "@/lib/audit";
 import { requestFingerprint } from "@/lib/idempotency";
 import { decimal, money, validCurrencyInput } from "@/lib/money";
 import { protectedContext, protectedTransaction } from "@/lib/protected-transaction";
-import { acceptHandover, handoverCountVersion, type AcceptResult } from "@/lib/handover";
+import { acceptHandover, acceptHandoverInTransaction, handoverCountVersion, type AcceptHandoverArgs, type AcceptResult } from "@/lib/handover";
 import { branchReadiness, type ShiftReadiness } from "@/lib/handover-readiness";
 import { dispositionForShift, type PresentedDisposition } from "@/lib/cash-disposition";
 import { resolveStaffBranchInTransaction } from "@/lib/staff-branch";
+import { lockHandoverIssue, lockHandoverRow } from "@/lib/transaction-locks";
 
 export const HANDOVER_ISSUE_REPORTED_AUDIT_ACTION = "HANDOVER_ISSUE_REPORTED";
 export const HANDOVER_ISSUE_RESOLVED_AUDIT_ACTION = "HANDOVER_ISSUE_RESOLVED";
@@ -219,22 +220,25 @@ export async function directHandoverSummary(args: { handoverId: string; viewerId
  * The single action: complete the viewer's own waiting shift (the shift itself is opened by the
  * route when none exists) and accept the handover. Ambiguity is refused with who is waiting.
  */
-export async function acceptDirectHandover(args: {
-  handoverId: string; actorId: string; cafeId: string; viewerBranchId: string | null; reviewVersion: string; idempotencyKey: string;
-}): Promise<AcceptResult> {
+type DirectAcceptArgs = { handoverId: string; actorId: string; cafeId: string; viewerBranchId: string | null; reviewVersion: string; idempotencyKey: string };
+export const acceptDirectHandover = (args: DirectAcceptArgs) => directAccept(db, args, acceptHandover);
+/** On an idempotent route's protected transaction. */
+export const acceptDirectHandoverInTransaction = (tx: Prisma.TransactionClient, args: DirectAcceptArgs) => directAccept(tx, args, (a) => acceptHandoverInTransaction(tx, a));
+
+async function directAccept(client: Client, args: DirectAcceptArgs, accept: (a: AcceptHandoverArgs) => Promise<AcceptResult>): Promise<AcceptResult> {
   if (!args.reviewVersion) throw new ApiError(400, "لازم تبعت نسخة الملخص اللي راجعته");
-  const h = await db.handoverSession.findFirst({ where: { id: args.handoverId, cafeId: args.cafeId }, select: { id: true, cafeId: true, branchId: true, status: true } });
+  const h = await client.handoverSession.findFirst({ where: { id: args.handoverId, cafeId: args.cafeId }, select: { id: true, cafeId: true, branchId: true, status: true } });
   if (!h) throw new ApiError(404, "التسليم مش موجود");
   let incomingShiftId: string | undefined;
   if (h.status !== "COMPLETED") {
-    const state = await incomingStateFor(db, h, args.actorId);
+    const state = await incomingStateFor(client, h, args.actorId);
     if (state.state === "AMBIGUOUS") throw new ApiError(409, `في أكتر من شيفت مستني العهدة: ${state.names.join("، ")} — لازم يفضل شيفت واحد بس قبل الاستلام`);
     if (state.state === "UNAVAILABLE") throw new ApiError(409, state.reason);
     if (state.state === "OPERATIONAL") throw new ApiError(409, "عندك شيفت مفتوح بالفعل في الفرع ده");
     if (state.state === "NONE") throw new ApiError(409, "افتح ورديتك الأول — شيفتك لسه ما اتفتحش");
     incomingShiftId = state.shiftId;
   }
-  return acceptHandover({
+  return accept({
     handoverId: args.handoverId, incomingUserId: args.actorId, incomingShiftId, idempotencyKey: args.idempotencyKey,
     cafeId: args.cafeId, viewerBranchId: args.viewerBranchId,
     direct: { reviewVersion: args.reviewVersion, computeVersion: directReviewVersion },
@@ -253,7 +257,9 @@ export type IssueInput = {
  * the report; after acceptance it is a traceable issue — a report never edits a count, a receipt
  * or an opening balance, and an incoming acknowledgement never erases an outgoing discrepancy.
  */
-export async function reportHandoverIssue(args: { actorId: string; cafeId: string; viewerBranchId: string | null; input: IssueInput }) {
+type ReportArgs = { actorId: string; cafeId: string; viewerBranchId: string | null; input: IssueInput };
+export const reportHandoverIssue = (args: ReportArgs) => protectedTransaction((tx) => reportHandoverIssueInTransaction(tx, args));
+export async function reportHandoverIssueInTransaction(tx: Prisma.TransactionClient, args: ReportArgs) {
   const { input } = args;
   const description = input.description?.trim() ?? "";
   if (!description) throw new ApiError(400, "اوصف الاختلاف");
@@ -262,12 +268,13 @@ export async function reportHandoverIssue(args: { actorId: string; cafeId: strin
   if (!["CASH", "STOCK_ITEM", "OTHER"].includes(input.kind)) throw new ApiError(400, "نوع الاختلاف غير صالح");
   if (input.kind === "CASH" && (input.amount === undefined || input.amount === null || !validCurrencyInput(input.amount) || decimal(input.amount).lt(0))) throw new ApiError(400, "اكتب مبلغ الكاش المختلف عليه (منزلتين عشريتين كحد أقصى)");
   if (input.kind === "STOCK_ITEM" && !input.inventoryItemId) throw new ApiError(400, "اختار الصنف");
-  return protectedTransaction(async (tx) => {
+  {
     await resolveStaffBranchInTransaction(tx, args.actorId);
     const h = await tx.handoverSession.findFirst({ where: { id: input.handoverId, cafeId: args.cafeId }, select: { id: true, cafeId: true, branchId: true, status: true, target: true } });
     if (!h) throw new ApiError(404, "التسليم مش موجود");
     if (args.viewerBranchId && h.branchId !== args.viewerBranchId) throw new ApiError(403, "ليس لديك صلاحية على فرع تاني");
     protectedContext(tx).scope = { cafeId: h.cafeId, branchId: h.branchId };
+    await lockHandoverRow(tx, h.id);
     if (h.status === "DRAFT") throw new ApiError(409, "التسليم لسه ما اتقدمش");
     let itemName: string | null = null;
     if (input.kind === "STOCK_ITEM") {
@@ -294,20 +301,22 @@ export async function reportHandoverIssue(args: { actorId: string; cafeId: strin
       details: { handoverId: h.id, kind: input.kind, inventoryItemId: row.inventoryItemId, itemName, amount: row.amount === null ? null : Number(row.amount), afterAcceptance, description },
     });
     return { id: row.id, status: row.status, alreadyReported: false };
-  });
+  }
 }
 
 /** A manager/owner closes a reported issue with a recorded outcome. Nothing historical is rewritten. */
-export async function resolveHandoverIssue(args: { issueId: string; actorId: string; cafeId: string; note: string }) {
+type ResolveIssueArgs = { issueId: string; actorId: string; cafeId: string; note: string };
+export const resolveHandoverIssue = (args: ResolveIssueArgs) => protectedTransaction((tx) => resolveHandoverIssueInTransaction(tx, args));
+export async function resolveHandoverIssueInTransaction(tx: Prisma.TransactionClient, args: ResolveIssueArgs) {
   const note = args.note?.trim() ?? "";
   if (!note) throw new ApiError(400, "اكتب نتيجة المراجعة");
   if (note.length > 1000) throw new ApiError(400, "النص طويل جدًا");
-  return protectedTransaction(async (tx) => {
+  {
     await resolveStaffBranchInTransaction(tx, args.actorId);
     const issue = await tx.handoverIssue.findFirst({ where: { id: args.issueId, cafeId: args.cafeId }, select: { id: true, cafeId: true, branchId: true, handoverId: true, status: true } });
     if (!issue) throw new ApiError(404, "الإبلاغ مش موجود");
     protectedContext(tx).scope = { cafeId: issue.cafeId, branchId: issue.branchId };
-    await tx.$queryRaw`SELECT "id" FROM "HandoverIssue" WHERE "id" = ${issue.id} FOR UPDATE`;
+    await lockHandoverIssue(tx, issue.id);
     const fresh = await tx.handoverIssue.findUniqueOrThrow({ where: { id: issue.id }, select: { status: true } });
     if (fresh.status === "RESOLVED") return { id: issue.id, status: "RESOLVED" as const, alreadyResolved: true };
     const at = new Date();
@@ -315,5 +324,5 @@ export async function resolveHandoverIssue(args: { issueId: string; actorId: str
     if (moved.count !== 1) throw new ApiError(409, "الإبلاغ ده اتغير — حدّث وجرّب تاني");
     await auditInTransaction(tx, { cafeId: issue.cafeId, userId: args.actorId, action: HANDOVER_ISSUE_RESOLVED_AUDIT_ACTION, entity: "HandoverIssue", entityId: issue.id, details: { handoverId: issue.handoverId, note, resolvedAt: at.toISOString() } });
     return { id: issue.id, status: "RESOLVED" as const, alreadyResolved: false };
-  });
+  }
 }

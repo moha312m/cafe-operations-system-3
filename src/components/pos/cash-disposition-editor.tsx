@@ -357,8 +357,8 @@ export function CashDispositionEditor({
           })),
           retainedAmount: validation.retainedAmount,
           ...(note.trim() ? { note: note.trim() } : {}),
-          idempotencyKey: idempotencyKeyRef.current,
         },
+        idempotencyKey: idempotencyKeyRef.current,
       });
       setRecorded(res.disposition);
       if (draftKey) {

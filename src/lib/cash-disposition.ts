@@ -16,12 +16,14 @@ import { ApiError } from "@/lib/api";
 import { auditInTransaction } from "@/lib/audit";
 import { decimal, money, sumMoney, validCurrencyInput } from "@/lib/money";
 import { protectedContext, protectedTransaction } from "@/lib/protected-transaction";
-import { lockShifts } from "@/lib/transaction-locks";
+import { lockCashDelivery, lockHandoverRow, lockShifts } from "@/lib/transaction-locks";
+import { dateStrInTz } from "@/lib/date-range";
 import { isBranchStaff, projectStaffBranch, resolveStaffBranchInTransaction } from "@/lib/staff-branch";
 
 export const CASH_DISPOSITION_RECORDED_AUDIT_ACTION = "SHIFT_CASH_DISPOSITION_RECORDED";
 export const CASH_DELIVERY_DECLARED_AUDIT_ACTION = "CASH_DELIVERY_DECLARED";
 export const CASH_DELIVERY_CONFIRMED_AUDIT_ACTION = "CASH_DELIVERY_CONFIRMED";
+export const CASH_DELIVERY_CONFIRMED_ON_BEHALF_AUDIT_ACTION = "CASH_DELIVERY_CONFIRMED_ON_BEHALF";
 export const CASH_DELIVERY_DISPUTED_AUDIT_ACTION = "CASH_DELIVERY_DISPUTED";
 export const CASH_DELIVERY_RESOLVED_AUDIT_ACTION = "CASH_DELIVERY_DISPUTE_RESOLVED";
 export const DIRECT_CASH_OPENING_AUDIT_ACTION = "HANDOVER_DIRECT_CASH_OPENING";
@@ -37,6 +39,14 @@ export const DELIVERY_STATUS_LABEL: Record<string, string> = {
   DISPUTED: "اختلاف مُبلَّغ — بانتظار المراجعة",
   RESOLVED: "تمت تسوية الاختلاف",
 };
+export const ON_BEHALF_LABEL = "تأكيد نيابةً عن المستلم";
+export const SELF_RESOLVED_LABEL = "سوّاه المالك بنفسه (هو المستلم)";
+/** The status a person reads: an owner's on-behalf confirmation is never shown as the recipient's own. */
+export function deliveryStatusLabel(d: { status: string; confirmedByException?: boolean; resolvedById?: string | null; disputedById?: string | null }) {
+  if (d.status === "CONFIRMED" && d.confirmedByException) return ON_BEHALF_LABEL;
+  if (d.status === "RESOLVED" && d.resolvedById && d.resolvedById === d.disputedById) return `${DELIVERY_STATUS_LABEL.RESOLVED} — ${SELF_RESOLVED_LABEL}`;
+  return DELIVERY_STATUS_LABEL[d.status] ?? d.status;
+}
 export const DELIVERY_DESTINATION_LABEL: Record<string, string> = { OWNER: "استلمها المالك", MANAGER: "استلمها المدير" };
 export const RETAINED_LABEL = "تُترك في الدرج كعهدة";
 
@@ -145,8 +155,9 @@ type NextDrawerShift = { id: string; shiftNumber: number; cashierName: string } 
 export function presentDisposition(row: DispositionRow, nextDrawerShift: NextDrawerShift = null) {
   const deliveries = [...row.deliveries].sort((a, b) => a.declaredAt.getTime() - b.declaredAt.getTime() || a.id.localeCompare(b.id)).map((d) => ({
     id: d.id, destination: d.destination, destinationLabel: DELIVERY_DESTINATION_LABEL[d.destination], recipientId: d.recipientId, recipientName: d.recipient.name,
-    amount: Number(d.amount), reference: d.reference, status: d.status, statusLabel: DELIVERY_STATUS_LABEL[d.status],
+    amount: Number(d.amount), reference: d.reference, status: d.status, statusLabel: deliveryStatusLabel(d),
     declaredAt: d.declaredAt.toISOString(), confirmedAt: d.confirmedAt?.toISOString() ?? null,
+    confirmedOnBehalf: d.confirmedByException, onBehalfReason: d.confirmedByException ? d.exceptionReason : null, selfResolved: d.status === "RESOLVED" && !!d.resolvedById && d.resolvedById === d.disputedById,
     disputedAt: d.disputedAt?.toISOString() ?? null, disputeNote: d.disputeNote, claimedReceivedAmount: d.claimedReceivedAmount === null ? null : Number(d.claimedReceivedAmount),
     resolvedAt: d.resolvedAt?.toISOString() ?? null, resolutionNote: d.resolutionNote, resolvedAmount: d.resolvedAmount === null ? null : Number(d.resolvedAmount),
   }));
@@ -207,16 +218,14 @@ export type RecordDispositionResult = { disposition: PresentedDisposition; alrea
  * the same allocation retried returns the stored record; a different one is refused
  * (a stale form must never silently replace what the next shift will open with).
  */
-export async function recordCashDisposition(args: {
-  actor: { id: string; cafeId: string | null; role: string };
-  canActForOthers: boolean;
-  input: DispositionInput;
-}): Promise<RecordDispositionResult> {
+type RecordArgs = { actor: { id: string; cafeId: string | null; role: string }; canActForOthers: boolean; input: DispositionInput };
+export const recordCashDisposition = (args: RecordArgs) => protectedTransaction((tx) => recordCashDispositionInTransaction(tx, args));
+export async function recordCashDispositionInTransaction(tx: Prisma.TransactionClient, args: RecordArgs): Promise<RecordDispositionResult> {
   const { input } = args;
   if (!input.idempotencyKey || input.idempotencyKey.length > 200) throw new ApiError(400, "لازم تبعت مفتاح إعادة المحاولة");
   const note = input.note?.trim() || null;
   if ((note?.length ?? 0) > NOTE_MAX) throw new ApiError(400, "الملاحظة طويلة جدًا");
-  return protectedTransaction(async (tx) => {
+  {
     // User first (assignment changes), then Shift, then the handover row — the established order.
     await resolveStaffBranchInTransaction(tx, args.actor.id);
     const candidate = await tx.shift.findFirst({ where: { id: input.shiftId, ...(args.actor.cafeId ? { cafeId: args.actor.cafeId } : {}) }, select: { id: true, cafeId: true, branchId: true, cashierId: true, shiftNumber: true } });
@@ -241,13 +250,10 @@ export async function recordCashDisposition(args: {
       select: { id: true, cafeId: true, branchId: true, cashierId: true, shiftNumber: true, status: true, financiallyClosedAt: true, actualCashAmount: true, expectedCashAmount: true, cashDifference: true },
     });
     const handover = await tx.handoverSession.findFirst({ where: { outgoingShiftId: shift.id }, orderBy: { createdAt: "desc" }, select: { id: true, status: true, target: true } });
-    if (handover) await tx.$queryRaw`SELECT "id" FROM "HandoverSession" WHERE "id" = ${handover.id} FOR UPDATE`;
+    if (handover) await lockHandoverRow(tx, handover.id);
 
     const existing = await dispositionForShift(tx, shift.id);
-    if (shift.status === "OPEN" || shift.financiallyClosedAt === null || shift.actualCashAmount === null) {
-      if (existing) throw new ApiError(409, SHIFT_NOT_CLOSED);
-      throw new ApiError(409, SHIFT_NOT_CLOSED);
-    }
+    if (shift.status === "OPEN" || shift.financiallyClosedAt === null || shift.actualCashAmount === null) throw new ApiError(409, SHIFT_NOT_CLOSED);
     const allocation = planAllocation(shift.actualCashAmount.toString(), input.deliveries, input.retainedAmount);
     const fingerprint = allocationFingerprint(shift.id, allocation, note);
     if (existing) {
@@ -333,7 +339,7 @@ export async function recordCashDisposition(args: {
       });
     }
     return { disposition: presented, alreadyRecorded: false };
-  });
+  }
 }
 
 // ───────────────────────── recipient confirmation ─────────────────────────
@@ -344,8 +350,7 @@ async function loadLockedDelivery(tx: Prisma.TransactionClient, id: string, acto
   if (!candidate || (actor.role !== "SUPER_ADMIN" && candidate.cafeId !== actor.cafeId)) throw new ApiError(404, "التسليم مش موجود");
   await resolveStaffBranchInTransaction(tx, actor.id);
   protectedContext(tx).scope = { cafeId: candidate.cafeId, branchId: candidate.branchId };
-  const rows = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "CashDeliveryDeclaration" WHERE "id" = ${id} FOR UPDATE`;
-  if (rows.length !== 1) throw new ApiError(404, "التسليم مش موجود");
+  await lockCashDelivery(tx, id);
   return tx.cashDeliveryDeclaration.findUniqueOrThrow({ where: { id }, include: { recipient: { select: { id: true, name: true } } } });
 }
 
@@ -355,119 +360,152 @@ async function assertLiveActor(tx: Prisma.TransactionClient, actor: Actor, cafeI
   return row;
 }
 
-export type ConfirmDeliveryResult = { id: string; status: string; alreadyConfirmed: boolean };
-
-/**
- * The named recipient confirms receipt from their own account. Nobody else can confirm for them:
- * not the outgoing employee, not a colleague, not another manager and — until the owner approves a
- * written proxy-confirmation exception policy — not the café owner either. (No such policy exists
- * today, and the handover manager exception covers stock acceptance, not cash receipts.) The
- * `confirmedByException` / `exceptionReason` columns therefore stay at their defaults.
- */
-export async function confirmCashDelivery(args: { declarationId: string; actor: Actor; idempotencyKey: string }): Promise<ConfirmDeliveryResult> {
-  if (!args.idempotencyKey || args.idempotencyKey.length > 200) throw new ApiError(400, "لازم تبعت مفتاح إعادة المحاولة");
-  return protectedTransaction(async (tx) => {
-    const d = await loadLockedDelivery(tx, args.declarationId, args.actor);
-    await assertLiveActor(tx, args.actor, d.cafeId);
-    if (d.recipientId !== args.actor.id) throw new ApiError(403, "التأكيد للمستلم المُسمّى فقط");
-    if (d.status === "CONFIRMED") {
-      if (d.confirmKey === args.idempotencyKey && d.confirmedById === args.actor.id) return { id: d.id, status: d.status, alreadyConfirmed: true };
-      throw new ApiError(409, "التسليم ده اتأكد استلامه قبل كده");
-    }
-    if (d.status !== "DECLARED") throw new ApiError(409, d.status === "DISPUTED" ? "التسليم ده عليه اختلاف مُبلَّغ — يتسوّى الأول" : "التسليم ده اتقفل");
-    const at = new Date();
-    const moved = await tx.cashDeliveryDeclaration.updateMany({
-      where: { id: d.id, status: "DECLARED" },
-      data: { status: "CONFIRMED", confirmedById: args.actor.id, confirmedAt: at, confirmKey: args.idempotencyKey },
-    });
-    if (moved.count !== 1) throw new ApiError(409, "التسليم ده اتغير — حدّث وجرّب تاني");
-    await auditInTransaction(tx, {
-      cafeId: d.cafeId, userId: args.actor.id, action: CASH_DELIVERY_CONFIRMED_AUDIT_ACTION, entity: "CashDeliveryDeclaration", entityId: d.id,
-      details: { shiftId: d.shiftId, dispositionId: d.dispositionId, amount: Number(d.amount), recipientId: d.recipientId, confirmedAt: at.toISOString(), idempotencyKey: args.idempotencyKey },
-    });
-    return { id: d.id, status: "CONFIRMED", alreadyConfirmed: false };
-  });
+/** True while the accounting period that contains the declaration's business day is not closed. */
+export async function deliveryPeriodOpen(client: Prisma.TransactionClient | typeof db, cafeId: string, declaredAt: Date): Promise<boolean> {
+  const day = new Date(`${dateStrInTz(declaredAt)}T00:00:00.000Z`);
+  const closed = await client.accountingPeriod.count({ where: { cafeId, status: "CLOSED", startsOn: { lte: day }, endsOn: { gte: day } } });
+  return closed === 0;
 }
 
-/** The recipient reports that the declared delivery does not match what they received. Writes only the declaration. */
-export async function disputeCashDelivery(args: { declarationId: string; actor: Actor; note: string; claimedReceivedAmount?: number | string | null }) {
+export type ConfirmDeliveryResult = { id: string; status: string; alreadyConfirmed: boolean; confirmedOnBehalf: boolean };
+
+/**
+ * The named recipient confirms receipt from their own account. The outgoing employee, a colleague
+ * or another manager can never confirm for them.
+ *
+ * The one exception is the café OWNER confirming «نيابةً عن المستلم» with a written reason. It is a
+ * different fact and is recorded as one: `confirmedByException` + `exceptionReason` + the owner as
+ * `confirmedById`, a distinct audit action, a distinct label everywhere, and it is never counted as
+ * the recipient's own confirmation — the named recipient may still dispute it while the accounting
+ * period of that day is open.
+ */
+export async function confirmCashDeliveryInTransaction(tx: Prisma.TransactionClient, args: { declarationId: string; actor: Actor; idempotencyKey: string; onBehalfReason?: string | null }): Promise<ConfirmDeliveryResult> {
+  if (!args.idempotencyKey || args.idempotencyKey.length > 200) throw new ApiError(400, "لازم تبعت مفتاح إعادة المحاولة");
+  const reason = args.onBehalfReason?.trim() || null;
+  if ((reason?.length ?? 0) > NOTE_MAX) throw new ApiError(400, "السبب طويل جدًا");
+  const d = await loadLockedDelivery(tx, args.declarationId, args.actor);
+  const actor = await assertLiveActor(tx, args.actor, d.cafeId);
+  const onBehalf = d.recipientId !== args.actor.id;
+  if (onBehalf) {
+    if (actor.role !== "CAFE_OWNER") throw new ApiError(403, "التأكيد للمستلم المُسمّى فقط");
+    if (!reason) throw new ApiError(400, "التأكيد نيابةً عن المستلم محتاج سبب مكتوب");
+  } else if (reason) {
+    throw new ApiError(400, "سبب التأكيد نيابةً عن المستلم يُكتب فقط لما المالك يأكد عن حد تاني");
+  }
+  if (d.status === "CONFIRMED") {
+    if (d.confirmKey === args.idempotencyKey && d.confirmedById === args.actor.id) return { id: d.id, status: d.status, alreadyConfirmed: true, confirmedOnBehalf: d.confirmedByException };
+    throw new ApiError(409, "التسليم ده اتأكد استلامه قبل كده");
+  }
+  if (d.status !== "DECLARED") throw new ApiError(409, d.status === "DISPUTED" ? "التسليم ده عليه اختلاف مُبلَّغ — يتسوّى الأول" : "التسليم ده اتقفل");
+  const at = new Date();
+  const moved = await tx.cashDeliveryDeclaration.updateMany({
+    where: { id: d.id, status: "DECLARED" },
+    data: { status: "CONFIRMED", confirmedById: args.actor.id, confirmedAt: at, confirmKey: args.idempotencyKey, confirmedByException: onBehalf, exceptionReason: onBehalf ? reason : null },
+  });
+  if (moved.count !== 1) throw new ApiError(409, "التسليم ده اتغير — حدّث وجرّب تاني");
+  await auditInTransaction(tx, {
+    cafeId: d.cafeId, userId: args.actor.id,
+    action: onBehalf ? CASH_DELIVERY_CONFIRMED_ON_BEHALF_AUDIT_ACTION : CASH_DELIVERY_CONFIRMED_AUDIT_ACTION,
+    entity: "CashDeliveryDeclaration", entityId: d.id,
+    details: { shiftId: d.shiftId, dispositionId: d.dispositionId, amount: Number(d.amount), recipientId: d.recipientId, confirmedById: args.actor.id, confirmedAt: at.toISOString(), onBehalf, reason: onBehalf ? reason : null, idempotencyKey: args.idempotencyKey },
+  });
+  return { id: d.id, status: "CONFIRMED", alreadyConfirmed: false, confirmedOnBehalf: onBehalf };
+}
+export const confirmCashDelivery = (args: Parameters<typeof confirmCashDeliveryInTransaction>[1]) => protectedTransaction((tx) => confirmCashDeliveryInTransaction(tx, args));
+
+/**
+ * The recipient reports that the declared delivery does not match what they received. Writes only the
+ * declaration. Allowed from DECLARED, and from an owner's on-behalf confirmation while the period is open.
+ */
+export async function disputeCashDeliveryInTransaction(tx: Prisma.TransactionClient, args: { declarationId: string; actor: Actor; note: string; claimedReceivedAmount?: number | string | null }) {
   const note = args.note?.trim() ?? "";
   if (!note) throw new ApiError(400, "اكتب وصف الاختلاف");
   if (note.length > NOTE_MAX) throw new ApiError(400, "الوصف طويل جدًا");
   const claimedIn = args.claimedReceivedAmount;
   if (claimedIn !== undefined && claimedIn !== null && (!validCurrencyInput(claimedIn) || decimal(claimedIn).lt(0))) throw new ApiError(400, "المبلغ المستلم فعليًا غير صالح");
-  return protectedTransaction(async (tx) => {
-    const d = await loadLockedDelivery(tx, args.declarationId, args.actor);
-    await assertLiveActor(tx, args.actor, d.cafeId);
-    if (d.recipientId !== args.actor.id) throw new ApiError(403, "الإبلاغ عن اختلاف التسليم للمستلم المُسمّى فقط");
-    if (d.status === "DISPUTED") return { id: d.id, status: d.status, alreadyDisputed: true };
-    if (d.status !== "DECLARED") throw new ApiError(409, d.status === "CONFIRMED" ? "التسليم ده اتأكد استلامه — الاختلاف بعد التأكيد يتسجل كمسألة مستقلة عبر المالك" : "التسليم ده اتقفل");
-    const claimed = claimedIn === undefined || claimedIn === null ? null : money(claimedIn);
-    if (claimed && claimed.gt(d.amount)) throw new ApiError(400, "المبلغ المستلم فعليًا أكبر من المُعلن — اكتب الفرق في الوصف");
-    const at = new Date();
-    const moved = await tx.cashDeliveryDeclaration.updateMany({
-      where: { id: d.id, status: "DECLARED" },
-      data: { status: "DISPUTED", disputedById: args.actor.id, disputedAt: at, disputeNote: note, claimedReceivedAmount: claimed ? claimed.toNumber() : null },
-    });
-    if (moved.count !== 1) throw new ApiError(409, "التسليم ده اتغير — حدّث وجرّب تاني");
-    await auditInTransaction(tx, {
-      cafeId: d.cafeId, userId: args.actor.id, action: CASH_DELIVERY_DISPUTED_AUDIT_ACTION, entity: "CashDeliveryDeclaration", entityId: d.id,
-      details: { shiftId: d.shiftId, dispositionId: d.dispositionId, declaredAmount: Number(d.amount), claimedReceivedAmount: claimed ? claimed.toNumber() : null, note, disputedAt: at.toISOString() },
-    });
-    return { id: d.id, status: "DISPUTED" as const, alreadyDisputed: false };
+  const d = await loadLockedDelivery(tx, args.declarationId, args.actor);
+  await assertLiveActor(tx, args.actor, d.cafeId);
+  if (d.recipientId !== args.actor.id) throw new ApiError(403, "الإبلاغ عن اختلاف التسليم للمستلم المُسمّى فقط");
+  if (d.status === "DISPUTED") return { id: d.id, status: d.status, alreadyDisputed: true };
+  const fromOnBehalf = d.status === "CONFIRMED" && d.confirmedByException;
+  if (d.status !== "DECLARED" && !fromOnBehalf) throw new ApiError(409, d.status === "CONFIRMED" ? "التسليم ده اتأكد استلامه منك — الاختلاف بعد التأكيد يتسجل كمسألة مستقلة عبر المالك" : "التسليم ده اتقفل");
+  if (fromOnBehalf && !(await deliveryPeriodOpen(tx, d.cafeId, d.declaredAt))) throw new ApiError(409, "الفترة المحاسبية لليوم ده اتقفلت — الاعتراض على التأكيد نيابةً عنك اتقفل معاها");
+  const claimed = claimedIn === undefined || claimedIn === null ? null : money(claimedIn);
+  if (claimed && claimed.gt(d.amount)) throw new ApiError(400, "المبلغ المستلم فعليًا أكبر من المُعلن — اكتب الفرق في الوصف");
+  const at = new Date();
+  const moved = await tx.cashDeliveryDeclaration.updateMany({
+    where: { id: d.id, status: d.status },
+    data: { status: "DISPUTED", disputedById: args.actor.id, disputedAt: at, disputeNote: note, claimedReceivedAmount: claimed ? claimed.toNumber() : null },
   });
+  if (moved.count !== 1) throw new ApiError(409, "التسليم ده اتغير — حدّث وجرّب تاني");
+  await auditInTransaction(tx, {
+    cafeId: d.cafeId, userId: args.actor.id, action: CASH_DELIVERY_DISPUTED_AUDIT_ACTION, entity: "CashDeliveryDeclaration", entityId: d.id,
+    details: { shiftId: d.shiftId, dispositionId: d.dispositionId, declaredAmount: Number(d.amount), claimedReceivedAmount: claimed ? claimed.toNumber() : null, note, disputedAt: at.toISOString(), disputedOnBehalfConfirmation: fromOnBehalf },
+  });
+  return { id: d.id, status: "DISPUTED" as const, alreadyDisputed: false };
 }
+export const disputeCashDelivery = (args: Parameters<typeof disputeCashDeliveryInTransaction>[1]) => protectedTransaction((tx) => disputeCashDeliveryInTransaction(tx, args));
 
-/** The café owner closes a delivery dispute with a recorded outcome. It never edits the closed shift, the declaration or the next shift's opening. */
-export async function resolveCashDeliveryDispute(args: { declarationId: string; actor: Actor; resolutionNote: string; resolvedAmount: number | string }) {
+/**
+ * The café owner closes a delivery dispute with a recorded outcome. It never edits the closed shift, the
+ * declaration or the next shift's opening. When the owner is also the disputing recipient the outcome is
+ * labelled self-resolved, so nobody reads it as an independent review.
+ */
+export async function resolveCashDeliveryDisputeInTransaction(tx: Prisma.TransactionClient, args: { declarationId: string; actor: Actor; resolutionNote: string; resolvedAmount: number | string }) {
   const note = args.resolutionNote?.trim() ?? "";
   if (!note) throw new ApiError(400, "اكتب نتيجة مراجعة الاختلاف");
   if (note.length > NOTE_MAX) throw new ApiError(400, "النص طويل جدًا");
   if (!validCurrencyInput(args.resolvedAmount) || decimal(args.resolvedAmount).lt(0)) throw new ApiError(400, "المبلغ المعتمد غير صالح");
-  return protectedTransaction(async (tx) => {
-    const d = await loadLockedDelivery(tx, args.declarationId, args.actor);
-    const actor = await assertLiveActor(tx, args.actor, d.cafeId);
-    if (actor.role !== "CAFE_OWNER") throw new ApiError(403, "تسوية اختلاف التسليم للمالك فقط");
-    if (d.status === "RESOLVED") return { id: d.id, status: d.status, alreadyResolved: true };
-    if (d.status !== "DISPUTED") throw new ApiError(409, "مفيش اختلاف مفتوح على التسليم ده");
-    const resolved = money(args.resolvedAmount);
-    if (resolved.gt(d.amount)) throw new ApiError(400, "المبلغ المعتمد أكبر من المُعلن");
-    const at = new Date();
-    const moved = await tx.cashDeliveryDeclaration.updateMany({
-      where: { id: d.id, status: "DISPUTED" },
-      data: { status: "RESOLVED", resolvedById: args.actor.id, resolvedAt: at, resolutionNote: note, resolvedAmount: resolved.toNumber() },
-    });
-    if (moved.count !== 1) throw new ApiError(409, "التسليم ده اتغير — حدّث وجرّب تاني");
-    await auditInTransaction(tx, {
-      cafeId: d.cafeId, userId: args.actor.id, action: CASH_DELIVERY_RESOLVED_AUDIT_ACTION, entity: "CashDeliveryDeclaration", entityId: d.id,
-      details: { shiftId: d.shiftId, declaredAmount: Number(d.amount), resolvedAmount: resolved.toNumber(), shortfall: money(decimal(d.amount).minus(resolved)).toNumber(), note, resolvedAt: at.toISOString() },
-    });
-    return { id: d.id, status: "RESOLVED" as const, alreadyResolved: false };
+  const d = await loadLockedDelivery(tx, args.declarationId, args.actor);
+  const actor = await assertLiveActor(tx, args.actor, d.cafeId);
+  if (actor.role !== "CAFE_OWNER") throw new ApiError(403, "تسوية اختلاف التسليم للمالك فقط");
+  if (d.status === "RESOLVED") return { id: d.id, status: d.status, alreadyResolved: true, selfResolved: d.resolvedById === d.disputedById };
+  if (d.status !== "DISPUTED") throw new ApiError(409, "مفيش اختلاف مفتوح على التسليم ده");
+  const resolved = money(args.resolvedAmount);
+  if (resolved.gt(d.amount)) throw new ApiError(400, "المبلغ المعتمد أكبر من المُعلن");
+  const at = new Date();
+  const selfResolved = d.disputedById === args.actor.id;
+  const moved = await tx.cashDeliveryDeclaration.updateMany({
+    where: { id: d.id, status: "DISPUTED" },
+    data: { status: "RESOLVED", resolvedById: args.actor.id, resolvedAt: at, resolutionNote: note, resolvedAmount: resolved.toNumber() },
   });
+  if (moved.count !== 1) throw new ApiError(409, "التسليم ده اتغير — حدّث وجرّب تاني");
+  await auditInTransaction(tx, {
+    cafeId: d.cafeId, userId: args.actor.id, action: CASH_DELIVERY_RESOLVED_AUDIT_ACTION, entity: "CashDeliveryDeclaration", entityId: d.id,
+    details: { shiftId: d.shiftId, declaredAmount: Number(d.amount), resolvedAmount: resolved.toNumber(), shortfall: money(decimal(d.amount).minus(resolved)).toNumber(), note, resolvedAt: at.toISOString(), selfResolved },
+  });
+  return { id: d.id, status: "RESOLVED" as const, alreadyResolved: false, selfResolved };
 }
+export const resolveCashDeliveryDispute = (args: Parameters<typeof resolveCashDeliveryDisputeInTransaction>[1]) => protectedTransaction((tx) => resolveCashDeliveryDisputeInTransaction(tx, args));
 
 /** Deliveries a viewer may act on: their own pending ones, and (owner) every open dispute plus every pending one. */
 export async function deliveriesAwaitingViewer(client: Prisma.TransactionClient | typeof db, viewer: Actor) {
   if (!viewer.cafeId) return [];
   const rows = await client.cashDeliveryDeclaration.findMany({
     where: {
-      cafeId: viewer.cafeId, status: { in: ["DECLARED", "DISPUTED"] },
-      ...(viewer.role === "CAFE_OWNER" ? {} : { recipientId: viewer.id }),
+      cafeId: viewer.cafeId,
+      // Pending and disputed ones, plus (for the named recipient) an owner's on-behalf confirmation
+      // they may still dispute.
+      OR: [
+        { status: { in: ["DECLARED", "DISPUTED"] }, ...(viewer.role === "CAFE_OWNER" ? {} : { recipientId: viewer.id }) },
+        { status: "CONFIRMED", confirmedByException: true, recipientId: viewer.id },
+      ],
     },
     orderBy: { declaredAt: "asc" },
     take: 100,
     select: {
-      id: true, amount: true, destination: true, status: true, declaredAt: true, reference: true, recipientId: true, disputeNote: true, claimedReceivedAmount: true,
+      id: true, amount: true, destination: true, status: true, declaredAt: true, reference: true, recipientId: true, disputeNote: true, claimedReceivedAmount: true, confirmedByException: true, resolvedById: true, disputedById: true,
       recipient: { select: { name: true } }, declaredBy: { select: { name: true } },
       shift: { select: { shiftNumber: true } }, branch: { select: { name: true } },
     },
   });
   return rows.map((r) => ({
-    id: r.id, amount: Number(r.amount), destination: r.destination, destinationLabel: DELIVERY_DESTINATION_LABEL[r.destination], status: r.status, statusLabel: DELIVERY_STATUS_LABEL[r.status],
+    id: r.id, amount: Number(r.amount), destination: r.destination, destinationLabel: DELIVERY_DESTINATION_LABEL[r.destination], status: r.status, statusLabel: deliveryStatusLabel(r),
     declaredAt: r.declaredAt.toISOString(), reference: r.reference, recipientId: r.recipientId, recipientName: r.recipient.name, declaredByName: r.declaredBy.name,
     shiftNumber: r.shift.shiftNumber, branchName: r.branch.name, disputeNote: r.disputeNote,
     claimedReceivedAmount: r.claimedReceivedAmount === null ? null : Number(r.claimedReceivedAmount),
     mine: r.recipientId === viewer.id,
+    confirmedOnBehalf: r.confirmedByException,
   }));
 }
 

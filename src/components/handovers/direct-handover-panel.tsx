@@ -87,10 +87,8 @@ export function DirectHandoverPanel({
       }
       await api(`/api/handovers/${handoverId}/direct`, {
         method: "POST",
-        body: {
-          reviewVersion,
-          idempotencyKey: acceptKeyRef.current,
-        },
+        body: { reviewVersion },
+        idempotencyKey: acceptKeyRef.current,
       });
       toast.success("تم فتح ورديتك واستلام العهدة بنجاح");
       await load();
@@ -117,8 +115,8 @@ export function DirectHandoverPanel({
           ...(issueKind === "STOCK_ITEM" ? { inventoryItemId: issueItemId } : {}),
           ...(issueKind === "CASH" ? { amount: Number(issueAmount) } : {}),
           description: issueDescription.trim(),
-          idempotencyKey: issueKeyRef.current,
         },
+        idempotencyKey: issueKeyRef.current,
       });
       toast.success("تم تسجيل بلاغ الاختلاف في السجل");
       issueKeyRef.current = "";
@@ -141,6 +139,7 @@ export function DirectHandoverPanel({
       await api(`/api/handover-issues/${id}/resolve`, {
         method: "POST",
         body: { note: resolveNote.trim() },
+        idempotencyKey: `issue-resolve-${id}-${[...resolveNote.trim()].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7).toString(36)}`,
       });
       toast.success("تمت مراجعة وحسم بلاغ الاختلاف");
       setResolveIssueId(null);

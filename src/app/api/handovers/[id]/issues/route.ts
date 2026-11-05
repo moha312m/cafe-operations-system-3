@@ -3,7 +3,9 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { ApiError, handleApiError, requireActiveSession, requireFeature, resolveCafeId } from "@/lib/api";
 import { resolvePermissions } from "@/lib/perms/effective";
-import { reportHandoverIssue } from "@/lib/handover-direct";
+import { withIdempotency, requestScope } from "@/lib/idempotency";
+import { attemptKey } from "@/lib/attempt-key";
+import { reportHandoverIssueInTransaction } from "@/lib/handover-direct";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -13,7 +15,7 @@ const schema = z
     inventoryItemId: z.string().min(1).nullish(),
     amount: z.union([z.number(), z.string()]).nullish(),
     description: z.string().min(1, "اوصف الاختلاف").max(1000),
-    idempotencyKey: z.string({ error: "لازم تبعت مفتاح إعادة المحاولة" }).min(1).max(200),
+    idempotencyKey: z.string().min(1).max(200).optional(),
     cafeId: z.string().optional(),
   })
   .strict();
@@ -28,11 +30,14 @@ export async function POST(request: NextRequest, { params }: Params) {
     const { id } = await params;
     const body = schema.parse(await request.json());
     const cafeId = resolveCafeId(session, body.cafeId);
-    const result = await reportHandoverIssue({
-      actorId: session.id, cafeId, viewerBranchId: session.branchId,
-      input: { handoverId: id, kind: body.kind, inventoryItemId: body.inventoryItemId ?? null, amount: body.amount ?? null, description: body.description, idempotencyKey: body.idempotencyKey },
+    const key = attemptKey(request, body.idempotencyKey);
+    return await withIdempotency(request, requestScope(session, `POST /api/handovers/${id}/issues`), { ...body, idempotencyKey: undefined }, async (tx) => {
+      const result = await reportHandoverIssueInTransaction(tx, {
+        actorId: session.id, cafeId, viewerBranchId: session.branchId,
+        input: { handoverId: id, kind: body.kind, inventoryItemId: body.inventoryItemId ?? null, amount: body.amount ?? null, description: body.description, idempotencyKey: key },
+      });
+      return NextResponse.json(result, { status: result.alreadyReported ? 200 : 201 });
     });
-    return NextResponse.json(result, { status: result.alreadyReported ? 200 : 201 });
   } catch (error) {
     return handleApiError(error);
   }
