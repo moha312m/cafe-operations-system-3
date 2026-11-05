@@ -4,8 +4,17 @@
 // spreadsheet dependency for what is a write-only, table-shaped output.
 import { crc32, deflateRawSync } from "node:zlib";
 
+/**
+ * A cell that carries its own number format. `date`/`datetime` take an Excel
+ * serial number; `text` is stored with Excel's quote prefix so editing it can
+ * never turn it into a formula. Only workbooks that use one of these get the
+ * larger stylesheet, so every existing export stays byte-identical.
+ */
+export type XlsxFormat = "money" | "qty" | "int" | "date" | "datetime" | "text";
+export type XlsxStyledCell = { value: string | number | null; format?: XlsxFormat; bold?: boolean };
 export type XlsxCell = string | number | boolean | null | undefined;
-export type XlsxSheet = { name: string; rows: XlsxCell[][]; headerRows?: number[]; readable?: boolean; frozenColumns?: number; hiddenColumns?: number[]; lists?: { range: string; name: string }[]; /** Header-row filter buttons over the used range. */ filter?: boolean };
+export type XlsxSheetCell = XlsxCell | XlsxStyledCell;
+export type XlsxSheet = { name: string; rows: XlsxSheetCell[][]; headerRows?: number[]; readable?: boolean; frozenColumns?: number; hiddenColumns?: number[]; lists?: { range: string; name: string }[]; /** Header-row filter buttons over the used range. */ filter?: boolean };
 
 const xml = (s: string) =>
   s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F￾￿]/g, "")
@@ -17,7 +26,15 @@ export function xlsxColumn(index: number) {
   return name;
 }
 
-function cell(ref: string, value: XlsxCell, style: string) {
+// Index into the extended cellXfs below: [plain, bold] per format.
+const FORMAT_STYLE: Record<XlsxFormat, [number, number]> = { money: [2, 3], qty: [4, 5], int: [6, 7], date: [8, 9], datetime: [10, 11], text: [12, 13] };
+const styled = (value: XlsxSheetCell): value is XlsxStyledCell => typeof value === "object" && value !== null;
+
+function cell(ref: string, value: XlsxSheetCell, style: string): string {
+  if (styled(value)) {
+    const s = value.format ? FORMAT_STYLE[value.format][value.bold ? 1 : 0] : value.bold ? 1 : 0;
+    return cell(ref, value.value, s ? ` s="${s}"` : style);
+  }
   if (value === null || value === undefined || value === "") return "";
   if (typeof value === "number" && Number.isFinite(value)) return `<c r="${ref}"${style}><v>${value}</v></c>`;
   if (typeof value === "boolean") return `<c r="${ref}"${style} t="b"><v>${value ? 1 : 0}</v></c>`;
@@ -33,7 +50,8 @@ function worksheet(sheet: XlsxSheet) {
   const widths: number[] = [];
   if (sheet.readable) {
     for (const row of sheet.rows) row.forEach((value, index) => {
-      widths[index] = Math.min(58, Math.max(widths[index] ?? 14, String(value ?? "").length + 6));
+      const shown = styled(value) ? (value.format === "date" || value.format === "datetime" ? "00/00/0000 00:00 AM" : value.value) : value;
+      widths[index] = Math.min(58, Math.max(widths[index] ?? 14, String(shown ?? "").length + 6));
     });
   }
   const cols = widths.length ? `<cols>${widths.map((width, i) => `<col min="${i + 1}" max="${i + 1}" width="${width}" customWidth="1"${sheet.hiddenColumns?.includes(i) ? ' hidden="1"' : ""}/>`).join("")}</cols>` : "";
@@ -58,6 +76,13 @@ function sheetNames(names: string[]) {
 
 const STYLES = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts><fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills><borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
 
+// The same two first styles, then a plain/bold pair per XlsxFormat.
+const FORMAT_XF = (numFmtId: number, quote = false) => [0, 1].map((font) => `<xf numFmtId="${numFmtId}" fontId="${font}" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"${font ? ' applyFont="1"' : ""}${quote ? ' quotePrefix="1"' : ""}/>`).join("");
+const TYPED_STYLES = STYLES
+  .replace("<fonts", '<numFmts count="4"><numFmt numFmtId="164" formatCode="#,##0.00"/><numFmt numFmtId="165" formatCode="#,##0.000"/><numFmt numFmtId="166" formatCode="dd/mm/yyyy"/><numFmt numFmtId="167" formatCode="dd/mm/yyyy h:mm AM/PM"/></numFmts><fonts')
+  .replace('<cellXfs count="2">', '<cellXfs count="14">')
+  .replace("</cellXfs>", FORMAT_XF(164) + FORMAT_XF(165) + FORMAT_XF(3) + FORMAT_XF(166) + FORMAT_XF(167) + FORMAT_XF(49, true) + "</cellXfs>");
+
 export function buildXlsx(sheets: XlsxSheet[], definedNames: Record<string, string> = {}): Buffer {
   if (!sheets.length) throw new Error("A workbook needs at least one sheet");
   const names = sheetNames(sheets.map((s) => s.name));
@@ -68,7 +93,7 @@ export function buildXlsx(sheets: XlsxSheet[], definedNames: Record<string, stri
     ["_rels/.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="${ns}/package/2006/relationships"><Relationship Id="rId1" Type="${ns}/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`],
     ["xl/workbook.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="${ns}/spreadsheetml/2006/main" xmlns:r="${ns}/officeDocument/2006/relationships"><sheets>${names.map((name, i) => `<sheet name="${xml(name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join("")}</sheets>${definitions ? `<definedNames>${definitions}</definedNames>` : ""}</workbook>`],
     ["xl/_rels/workbook.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="${ns}/package/2006/relationships">${sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="${ns}/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join("")}<Relationship Id="rId${sheets.length + 1}" Type="${ns}/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`],
-    ["xl/styles.xml", STYLES],
+    ["xl/styles.xml", sheets.some((s) => s.rows.some((row) => row.some(styled))) ? TYPED_STYLES : STYLES],
     ...sheets.map((s, i) => [`xl/worksheets/sheet${i + 1}.xml`, worksheet(s)] as [string, string]),
   ];
   return zip(files);

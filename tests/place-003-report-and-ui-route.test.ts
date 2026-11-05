@@ -39,7 +39,7 @@ test("opening report keeps place, cash and stock acceptance independent and show
 test("opening receipt page serves readable Arabic to the owner", async () => {
   const page = await as(fx.owner.email, "/reports/opening-receipts");
   assert.equal(page.status, 200, page.text);
-  assert.match(page.text, /تقرير استلام الكاش والخامات والمكان/);
-  assert.match(page.text, /يعرض التقرير المبلغ المعلن عند إقفال الشيفت/);
+  assert.match(page.text, /تقرير الاستلام والمسؤولية/);
+  assert.match(page.text, /العجز والزيادة لكل موظف في النقدية والخامات/);
   assert.doesNotMatch(page.text, /Ø|Ù|Fault recorded|Inspector:/);
 });

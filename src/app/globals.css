@@ -92,9 +92,9 @@ html[data-cashier-touch="true"] .touch-number > input { width: 3rem; }
   --color-background: var(--background);
   --color-workspace: var(--workspace);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-cairo), system-ui, sans-serif;
+  --font-sans: var(--font-plex-arabic), "IBM Plex Sans Arabic", "Segoe UI", Tahoma, sans-serif;
   --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-cairo), system-ui, sans-serif;
+  --font-heading: var(--font-plex-arabic), "IBM Plex Sans Arabic", "Segoe UI", Tahoma, sans-serif;
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -302,6 +302,8 @@ html[data-cashier-touch="true"] .touch-number > input { width: 3rem; }
 .workspace-table { width: 100%; border-collapse: collapse; text-align: start; font-size: .9375rem; }
 .workspace-table :is(th,td) { text-align: start; padding: 1rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
 .workspace-table th { background: var(--muted); color: var(--muted-foreground); font-size: .875rem; font-weight: 600; white-space: nowrap; }
+/* Columns of figures line up only when every digit has the same width. */
+:is(table, .tabular-figures) { font-variant-numeric: tabular-nums; }
 .workspace-table tbody tr:hover { background: var(--sage-soft); }
 .app-workspace :is(input:not([type=checkbox]):not([type=radio]),select,textarea) { font-size: 1rem; min-height: 44px; }
 .app-workspace :is(button,[role=button],summary) { min-height: 44px; }

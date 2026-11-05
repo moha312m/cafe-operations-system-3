@@ -1,11 +1,23 @@
 import type { Metadata, Viewport } from "next";
-import { Cairo } from "next/font/google";
+import { Cairo, IBM_Plex_Sans_Arabic } from "next/font/google";
 import { Toaster } from "@/components/ui/sonner";
 import "./globals.css";
 
+// Cairo stays loaded, preloaded as before, only because the 80mm payment
+// receipt and the shift print page name `--font-cairo` directly; their
+// printing is accepted as-is.
 const cairo = Cairo({
   variable: "--font-cairo",
   subsets: ["arabic", "latin"],
+});
+
+// The screen font. Self-hosted by next/font at build time, so the app makes
+// no runtime request to Google and keeps working offline.
+const plexArabic = IBM_Plex_Sans_Arabic({
+  variable: "--font-plex-arabic",
+  subsets: ["arabic", "latin"],
+  weight: ["400", "500", "600", "700"],
+  display: "swap",
 });
 
 export const metadata: Metadata = {
@@ -30,7 +42,7 @@ export default function RootLayout({
     <html
       lang="ar"
       dir="rtl"
-      className={`${cairo.variable} h-full antialiased`}
+      className={`${cairo.variable} ${plexArabic.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col font-sans">
         {children}

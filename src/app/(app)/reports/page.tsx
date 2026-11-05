@@ -113,7 +113,7 @@ export default function ReportsPage() {
       {(user.role === "CAFE_OWNER" || user.role === "SUPER_ADMIN") && canKey("finance.view_revenue") && (
         <><Link className="inline-block text-primary underline" href="/reports/historical-sales">المبيعات التاريخية المستوردة من Next Cup خلال السنة</Link></>
       )}
-      <Link className="inline-block text-primary underline" href="/reports/opening-receipts">تقرير استلام الكاش والخامات والمكان — المطابق والمؤجل والفروق</Link>
+      <Link className="inline-block text-primary underline" href="/reports/opening-receipts">تقرير الاستلام والمسؤولية — عجز وزيادة كل موظف في النقدية والخامات</Link>
       <Link className="inline-block text-primary underline" href="/reports/employee-variances">تقرير فروق الموظفين — كاش وفيزا ومحفظة وخامات</Link>
       <Link className="inline-block text-primary underline" href="/reports/employee-actions">تقرير مسؤولية الموظفين عن الإلغاء والاسترداد</Link>
       <Link href="/report-center" className="text-primary underline">كل التقارير</Link></nav></details>
