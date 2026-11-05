@@ -111,7 +111,7 @@ export async function loadSalesReport(kind:SalesReportKind,params:URLSearchParam
    const ids=new Set(sessions.map(s=>s.id));
    rows=tableRows(sessions.map(s=>({id:s.id,table:s.tableNumber,branch:s.branchId,startedAt:s.startedAt.toISOString(),closedAt:s.closedAt?.toISOString()??null,status:s.status,remaining:fixed(s.remainingAmount)})),events.filter(e=>e.sessionId&&ids.has(e.sessionId)),legs.filter(p=>p.sessionId&&ids.has(p.sessionId)));
    for(const row of rows){const session=sessions.find(s=>s.id===row.id)!;bounded(session.orders,'طلب جلسة');row.cells.orders=String(session.orders.length);row.links=[...new Map([...(row.links??[]),...session.orders.map(o=>({label:'الفاتورة '+o.id,href:'/sales?invoice='+encodeURIComponent(o.id)}))].map(link=>[link.href,link])).values()];}
-   summary('sessions','الجلسات المطابقة',String(rows.length));summary('sales','إيراد الجلسات',total(rows.map(r=>r.cells.net??'0')));
+   summary('sessions','الجلسات المطابقة',String(rows.length));summary('sales','إيراد الجلسات خلال الفترة',total(rows.map(r=>r.cells.net??'0')));
    metricBasis='زيارات مستقلة بمعرف TableSession. أحداث المبيعات والتحصيل خلال الفترة؛ المتبقي حالة حالية وقت القراءة وليس رصيداً تاريخياً. لا يجمع المتبقي عبر الأيام.';
    coverage.push('كل Payment يعد مرة واحدة؛ جلسة الدفع الصريحة مقدمة على جلسة الطلب. الجلسات المفتوحة تظهر ولو بدأت قبل الفترة.');
   }else{

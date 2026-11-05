@@ -150,6 +150,29 @@ export default async function ShiftReportPage({ params }: { params: Promise<{ id
             : diff !== null && diff !== 0 && <p style={{ margin: "4px 0 0", color: "#a16207" }}>بدون ملاحظة — للمراجعة</p>}
         </Section>
 
+        {report.cashDisposition && (
+          <Section title="💼 توزيع نقدية الإغلاق والعهدة">
+            <div data-testid="report-cash-disposition">
+              <Row label="النقد الفعلي الموزّع" value={fmt(report.cashDisposition.countedCash, c)} strong />
+              <Row label="إجمالي التسليمات المُعلنة (للمالك / للمدير)" value={fmt(report.cashDisposition.deliveredAmount, c)} />
+              {report.cashDisposition.deliveries.map((d) => (
+                <div key={d.id} style={{ padding: "4px 8px", margin: "4px 0", background: "#f4f4f5", borderRadius: 6 }}>
+                  <Row label={`${d.destinationLabel} (${d.recipientName})`} value={fmt(d.amount, c)} strong />
+                  <p style={{ margin: "2px 0 0", fontSize: 12, color: d.status === "DISPUTED" ? "#b91c1c" : d.status === "CONFIRMED" || d.status === "RESOLVED" ? "#15803d" : "#a16207" }}>
+                    الحالة: {d.statusLabel}
+                    {d.confirmedAt ? ` · أكد الاستلام: ${fmtDate(d.confirmedAt)}` : ""}
+                    {d.disputedAt ? ` · أبلغ عن فرق (${fmt(d.claimedReceivedAmount, c)}): ${d.disputeNote ?? ""}` : ""}
+                    {d.resolvedAt ? ` · حسم المالك (${fmt(d.resolvedAmount, c)}): ${d.resolutionNote ?? ""}` : ""}
+                  </p>
+                </div>
+              ))}
+              <Row label={report.cashDisposition.retainedCustody.destinationLabel} value={fmt(report.cashDisposition.retainedAmount, c)} strong />
+              <Row label="حالة عهدة الدرج المتبقية" value={`${report.cashDisposition.retainedCustody.statusLabel}${report.cashDisposition.retainedCustody.holderName ? ` (${report.cashDisposition.retainedCustody.holderName})` : ""}`} />
+              {report.cashDisposition.note && <p style={{ margin: "4px 0 0", color: "#52525b" }}>ملاحظة التوزيع: {report.cashDisposition.note}</p>}
+            </div>
+          </Section>
+        )}
+
         {report.tenders.length > 0 && (
           <Section title="💳 الفيزا والمحافظ">
             {report.tenders.map((t) => (
@@ -194,9 +217,25 @@ export default async function ShiftReportPage({ params }: { params: Promise<{ id
 
         {report.handover && (
           <Section title="🤝 الاستلام والتسليم">
+            <Row label="نمط التسليم" value={report.handover.directHandover ? "تسليم مباشر ومبسّط بين الورديتين" : "تسليم قياسي"} />
             <Row label="الحالة" value={HANDOVER_LABEL[report.handover.status] ?? report.handover.status} />
             <Row label="المستلم" value={report.handover.incomingName ?? "—"} />
             <Row label="وقت الاستلام" value={fmtDate(report.handover.acceptedAt)} />
+            {report.handover.directAcknowledgedAt && (
+              <Row label="إقرار الاستلام المباشر" value={`${report.handover.directAcknowledgedByName ?? report.handover.incomingName ?? "—"} · ${fmtDate(report.handover.directAcknowledgedAt)}`} />
+            )}
+            {report.handover.issues.length > 0 && (
+              <div style={{ marginTop: 6 }} data-testid="report-handover-issues">
+                <p style={{ margin: "4px 0", fontWeight: 700 }}>بلاغات الاختلاف والملاحظات ({report.handover.issues.length}):</p>
+                {report.handover.issues.map((i) => (
+                  <div key={i.id} style={{ padding: "4px 8px", margin: "4px 0", background: "#fef2f2", borderRadius: 6, fontSize: 12 }}>
+                    <div><strong>{i.kind === "CASH" ? "نقدية" : i.kind === "STOCK_ITEM" ? `خامات${i.itemNameSnapshot ? ` (${i.itemNameSnapshot})` : ""}` : "أخرى"}</strong> — {i.status === "RESOLVED" ? "تمت المعالجة" : "مفتوح للمراجعة"}</div>
+                    <div>{i.description}{i.amount !== null ? ` (${fmt(i.amount, c)})` : ""} (أبلغ: {i.reportedByName} · {fmtDate(i.reportedAt)})</div>
+                    {i.resolutionNote && <div>قرار المعالجة: {i.resolutionNote} ({i.resolvedByName ?? "—"})</div>}
+                  </div>
+                ))}
+              </div>
+            )}
           </Section>
         )}
       </article>

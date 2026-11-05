@@ -1,0 +1,64 @@
+[
+  {
+    "page": "finance",
+    "url": "https://cheerful-grace-production-9236.up.railway.app/finance",
+    "cards": 9,
+    "direction": "rtl",
+    "height": 720,
+    "scrollWidth": 1265,
+    "width": 1280
+  },
+  {
+    "page": "table-management",
+    "cafe": "قهوة المدينة (signed-in owner)",
+    "url": "https://cheerful-grace-production-9236.up.railway.app/tables/setup",
+    "editButtons": 15,
+    "hasError": false,
+    "scrollWidth": 1265,
+    "width": 1280
+  },
+  {
+    "page": "table-management-viewport-calibration (override affected selected public-menu tab)",
+    "height": 720,
+    "scrollWidth": 1265,
+    "width": 1280
+  },
+  {
+    "page": "table-management-phone",
+    "editButtons": 15,
+    "height": 844,
+    "scrollWidth": 390,
+    "width": 390
+  },
+  {
+    "page": "next-public-menu-phone",
+    "height": 844,
+    "items": 207,
+    "scrollWidth": 375,
+    "width": 390
+  },
+  {
+    "page": "report-center-phone",
+    "groups": 6,
+    "height": 844,
+    "links": 20,
+    "scrollWidth": 375,
+    "width": 390
+  },
+  {
+    "page": "pos-phone",
+    "cafe": "قهوة المدينة (signed-in owner)",
+    "cartEmpty": true,
+    "height": 844,
+    "productButtons": 17,
+    "scrollWidth": 375,
+    "width": 390
+  },
+  {
+    "page": "table-management-phone-final",
+    "editButtons": 15,
+    "height": 844,
+    "scrollWidth": 375,
+    "width": 390
+  }
+]

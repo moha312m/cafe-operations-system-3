@@ -1,0 +1,29 @@
+{
+  "at": "2026-11-02T15:40:57.217Z",
+  "proof": {
+    "at": "2026-11-02T15:40:49.429Z",
+    "name": "cafe_ops_test_integr20261101_replay_66515e42c85e8ec4",
+    "host": "127.0.0.1",
+    "port": "5434",
+    "directory": "C:/Dev/_nextcup_test_postgres/pgdata",
+    "system_identifier": "7693368256609479860",
+    "oid": "65538",
+    "markerVerified": true,
+    "completedMigrations": 91,
+    "sourceFiles": 947,
+    "sourceSha256": "d578e26a72b9003be335086b678e78a2fb3dcf7c0e5b82907c53d7d226c981ff"
+  },
+  "categoryId": "cmvzfenwt0001hlbkcr9nwbmn",
+  "product": {
+    "id": "cmvzfenxb0003hlbkbjco0ift",
+    "sku": "UI-STEP1-20261102",
+    "name": "Step 1 UI drink"
+  },
+  "ingredient": {
+    "id": "wr_b2d3afe29d094ac59e363aec5f2bb838",
+    "unit": "KG",
+    "currentStock": "26"
+  },
+  "retained": true,
+  "ownerDatabaseAccessed": false
+}

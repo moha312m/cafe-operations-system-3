@@ -28,6 +28,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Table, TableBody, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { materialsDecisionLabel } from "@/lib/materials-labels";
 import { parseAmount } from "@/lib/close-amount";
+import { UNIT_LABEL } from "@/lib/inventory";
+import { CashDispositionEditor, type DispositionEditorController, type DispositionView, type EligibleRecipient } from "@/components/pos/cash-disposition-editor";
 
 type MoneyShift = {
   id: string; shiftNumber: number; openedAt: string; openingCashAmount: string;
@@ -41,12 +43,12 @@ type ClosedShift = {
   tenderReconciliations: Tender[];
   materialsDecision: { due: boolean; reason: string; cadence: string; periodFrom: string | null; periodTo: string | null; nextDueAt: string | null } | null;
 };
-type FlowHandover = { id: string; status: string; stockCountSessionId: string | null; requiredItemCount: number | null; outgoingNote: string | null; submittedAt: string | null };
+type FlowHandover = { id: string; status: string; target?: string | null; directHandover?: boolean; stockCountSessionId: string | null; requiredItemCount: number | null; outgoingNote: string | null; submittedAt: string | null };
 type Flow =
   | { stage: "NONE"; branch: { id: string; name: string } }
-  | { stage: "MONEY"; branch: { id: string; name: string }; shift: MoneyShift; handover: { enabled: boolean }; materials: { cadence: string; duePreview: boolean; nextDueAt: string | null; branchCustodyFullCountDue?: boolean } }
+  | { stage: "MONEY"; branch: { id: string; name: string }; shift: MoneyShift; handover: { enabled: boolean }; materials: { cadence: string; duePreview: boolean; nextDueAt: string | null; branchCustodyFullCountDue?: boolean }; recipients?: EligibleRecipient[] }
   | ClosedFlow;
-type ClosedFlow = { stage: "MATERIALS" | "DONE"; branch: { id: string; name: string }; shift: ClosedShift; handover: FlowHandover | null };
+type ClosedFlow = { stage: "MATERIALS" | "DONE"; branch: { id: string; name: string }; shift: ClosedShift; handover: FlowHandover | null; cashDisposition?: DispositionView | null; recipients?: EligibleRecipient[] };
 
 const dateTime = (iso: string | null) => iso ? new Date(iso).toLocaleString("ar-EG", { weekday: "long", hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" }) : "";
 
@@ -169,7 +171,7 @@ function MoneyStep({ flow, currency, onCommitted }: {
           ...(cardValue !== null ? { actualCardAmount: cardValue } : {}),
           ...(walletValue !== null ? { actualWalletAmount: walletValue } : {}),
           ...(note.trim() ? { notes: note.trim() } : {}),
-          ...(flow.handover.enabled ? { handoverTarget: branchCustody ? "BRANCH_CUSTODY" : "SHIFT_TO_SHIFT" } : {}),
+          ...(flow.handover.enabled ? { handoverTarget: branchCustody ? "BRANCH_CUSTODY" : "SHIFT_TO_SHIFT", directHandover: !branchCustody } : {}),
           ...(needsDisposition ? { cashDisposition: { leftInDrawer: Number(leftInDrawer), toTreasury: Number(toTreasury) } } : {}),
         },
       });
@@ -220,14 +222,41 @@ function MoneyStep({ flow, currency, onCommitted }: {
       <Label htmlFor="close-note">ملاحظة (اختياري)</Label>
       <Textarea id="close-note" rows={2} maxLength={1000} value={note} onChange={(e) => setNote(e.target.value)} />
     </div>
-    {flow.handover.enabled && exceptionAllowed && <details className="rounded-lg border p-3 text-sm" open={branchCustody || undefined}>
-      <summary className="cursor-pointer text-muted-foreground">آخر شيفت في اليوم؟</summary>
-      <label className="mt-2 flex items-center gap-2"><input type="checkbox" checked={branchCustody} onChange={(e) => setBranchCustody(e.target.checked)} />تسليم المخزون لعهدة الفرع بدل الشيفت الجاي</label>
-      {needsDisposition && <div className="mt-3 grid gap-2 sm:grid-cols-2">
-        <label className="space-y-1"><span className="text-xs">المتروك في الدرج</span><TouchNumberInput aria-label="كاش متروك في الدرج" type="number" min="0" step="0.01" value={leftInDrawer} onValueChange={setLeftInDrawer} /></label>
-        <label className="space-y-1"><span className="text-xs">المحوّل للخزنة</span><TouchNumberInput aria-label="كاش محول للخزنة" type="number" min="0" step="0.01" value={toTreasury} onValueChange={setToTreasury} /></label>
-      </div>}
-    </details>}
+    {flow.handover.enabled && exceptionAllowed && (
+      <div className="rounded-xl border bg-muted/20 p-3 text-sm space-y-2">
+        <label className="flex items-start gap-2 cursor-pointer">
+          <input
+            id="branch-custody-toggle"
+            type="checkbox"
+            className="mt-1 h-4 w-4 rounded border-gray-300"
+            checked={branchCustody}
+            onChange={(e) => setBranchCustody(e.target.checked)}
+          />
+          <div className="space-y-1">
+            <span className="font-semibold text-foreground block">
+              آخر شيفت في اليوم؟ (تسليم المخزون لعهدة الفرع)
+            </span>
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              {branchCustody ? (
+                <span className="text-amber-800 dark:text-amber-300 font-medium block">
+                  ⚠️ مفعل: إغلاق نهائي للمبيت وعزل العهدة للفرع. يتطلب اعتماد مدير الفرع وتأكيد سطور الجرد بالزر الإلكتروني. (إذا كان هناك شيفت قادم، اترك الخيار غير محدد).
+                </span>
+              ) : (
+                <span className="block">
+                  الوضع الطبيعي الموصى به: تسليم مباشر للشيفت التالي — يستلم الكاشير بضغطة زر واحدة دون الحاجة لتوقيع أو اعتماد سطور.
+                </span>
+              )}
+            </p>
+          </div>
+        </label>
+        {branchCustody && needsDisposition && (
+          <div className="mt-3 grid gap-2 sm:grid-cols-2 pt-2 border-t">
+            <label className="space-y-1"><span className="text-xs">المتروك في الدرج</span><TouchNumberInput aria-label="كاش متروك في الدرج" type="number" min="0" step="0.01" value={leftInDrawer} onValueChange={setLeftInDrawer} /></label>
+            <label className="space-y-1"><span className="text-xs">المحوّل للخزنة</span><TouchNumberInput aria-label="كاش محول للخزنة" type="number" min="0" step="0.01" value={toTreasury} onValueChange={setToTreasury} /></label>
+          </div>
+        )}
+      </div>
+    )}
     {!materialsNext && flow.handover.enabled && <p className="rounded-lg bg-muted/50 p-2 text-sm" data-testid="materials-not-due-hint">جرد الخامات غير مستحق حسب الجدول{flow.materials.nextDueAt ? ` · الجرد الجاي: ${dateTime(flow.materials.nextDueAt)}` : ""}.</p>}
     {failure && <div role="alert" className="space-y-1 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive" data-testid="close-money-error">
       <p>{failure.message}</p>
@@ -257,9 +286,11 @@ function MaterialsStep({ flow, handover, currency, onFinished, onStale }: {
   const [note, setNote] = useState(handover.outgoingNote ?? "");
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  const [dispController, setDispController] = useState<DispositionEditorController | null>(null);
   const [, redraw] = useState(0);
   const inFlight = useRef(false);
   const noteKey = `hnd-ux-004-note:${user.id}:${handover.id}`;
+  const needsDirectDisposition = handover.target !== "BRANCH_CUSTODY";
 
   useEffect(() => { try { const saved = window.sessionStorage.getItem(noteKey); if (saved !== null) setNote(saved); } catch { /* storage unavailable */ } }, [noteKey]);
   useEffect(() => { try { if (note) window.sessionStorage.setItem(noteKey, note); else window.sessionStorage.removeItem(noteKey); } catch { /* storage unavailable */ } }, [note, noteKey]);
@@ -309,7 +340,8 @@ function MaterialsStep({ flow, handover, currency, onFinished, onStale }: {
   const lines = session?.lines ?? [];
   const capture = session ? ["DRAFT", "IN_PROGRESS"].includes(session.status) : false;
   const savedCount = lines.filter((l) => (queue.get(l.id)?.status ?? (l.countedQuantity === null ? "empty" : "saved")) === "saved").length;
-  const complete = !!session && lines.length > 0 && (capture ? queue.canSubmit(true) : true);
+  const dispositionReady = !needsDirectDisposition || !!flow.cashDisposition || (dispController?.valid ?? false);
+  const complete = !!session && lines.length > 0 && (capture ? queue.canSubmit(true) : true) && dispositionReady;
 
   async function finish() {
     if (inFlight.current || !session) return;
@@ -322,6 +354,9 @@ function MaterialsStep({ flow, handover, currency, onFinished, onStale }: {
           if (entry && (entry.status === "dirty" || entry.status === "saving")) await queue.save(line.id);
         }
         if (!queue.canSubmit(true)) { setFailure("في كميات ما اتحفظتش — راجع الخانات المعلّمة"); return; }
+      }
+      if (needsDirectDisposition && dispController && !dispController.alreadyRecorded) {
+        await dispController.submit();
       }
       const result = await api<{ recordedDifferences: number }>("/api/handovers", { method: "POST", body: { action: "finish_outgoing", handoverId: handover.id, ...(note.trim() ? { note: note.trim() } : {}) } });
       try { window.sessionStorage.removeItem(noteKey); } catch { /* storage unavailable */ }
@@ -365,13 +400,69 @@ function MaterialsStep({ flow, handover, currency, onFinished, onStale }: {
       <Label htmlFor="materials-note">ملاحظة (اختياري)</Label>
       <Textarea id="materials-note" rows={2} maxLength={1000} value={note} onChange={(e) => setNote(e.target.value)} />
     </div>
+    {needsDirectDisposition && money1.actualCashAmount !== null && (
+      <CashDispositionEditor
+        shiftId={money1.id}
+        countedCash={Number(money1.actualCashAmount)}
+        expectedCash={money1.expectedCashAmount != null ? Number(money1.expectedCashAmount) : null}
+        cashDifference={money1.cashDifference != null ? Number(money1.cashDifference) : null}
+        electronicCard={money1.tenderReconciliations.find((t) => t.method === "CARD")?.actualAmount != null ? Number(money1.tenderReconciliations.find((t) => t.method === "CARD")!.actualAmount) : null}
+        electronicWallet={money1.tenderReconciliations.find((t) => t.method === "WALLET")?.actualAmount != null ? Number(money1.tenderReconciliations.find((t) => t.method === "WALLET")!.actualAmount) : null}
+        currency={currency}
+        recipients={flow.recipients ?? []}
+        initialDisposition={flow.cashDisposition ?? null}
+        draftKey={`hnd-disp:${user.id}:${money1.id}`}
+        onControllerChange={setDispController}
+      />
+    )}
+    <section className="space-y-3 rounded-xl border bg-muted/15 p-4 text-sm" data-testid="outgoing-unified-review">
+      <h2 className="font-bold">مراجعة ملخص الإغلاق والتسليم قبل الإرسال</h2>
+      <div className="grid gap-2 sm:grid-cols-3">
+        <div className="rounded-lg border bg-background p-2.5">
+          <div className="text-xs text-muted-foreground">النقدية الفعلية المعدودة</div>
+          <div className="mt-0.5 font-bold tabular-nums">{money1.actualCashAmount === null ? "—" : money(money1.actualCashAmount, currency)}</div>
+        </div>
+        <div className="rounded-lg border bg-background p-2.5">
+          <div className="text-xs text-muted-foreground">الخامات المعدودة</div>
+          <div className="mt-0.5 font-bold tabular-nums">{savedCount} / {lines.length} صنف</div>
+        </div>
+        <div className="rounded-lg border bg-background p-2.5">
+          <div className="text-xs text-muted-foreground">تُترك في الدرج كعهدة</div>
+          <div className="mt-0.5 font-bold tabular-nums text-emerald-700 dark:text-emerald-300">
+            {dispController ? money(dispController.retainedAmount, currency) : flow.cashDisposition ? money(flow.cashDisposition.retainedAmount, currency) : "—"}
+          </div>
+        </div>
+      </div>
+      {lines.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 text-xs">
+          {lines.map((l) => {
+            const val = queue.get(l.id)?.value ?? l.countedQuantity;
+            return (
+              <span key={l.id} className="rounded-md border bg-background px-2 py-1 tabular-nums">
+                {l.inventoryItem.name}: <strong>{val ?? "—"}</strong> {UNIT_LABEL[l.unit as keyof typeof UNIT_LABEL] ?? l.unit}
+              </span>
+            );
+          })}
+        </div>
+      )}
+      {dispController && dispController.deliveries.length > 0 && (
+        <div className="space-y-1 text-xs">
+          {dispController.deliveries.map((d, idx) => (
+            <div key={`${d.destination}-${d.recipientId}-${idx}`} className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-background px-2.5 py-1.5">
+              <span>{d.destinationLabel} ({d.recipientName}): <strong className="tabular-nums">{money(d.amount, currency)}</strong></span>
+              <span className="text-amber-800 dark:text-amber-300">تسليم مُعلن — بانتظار تأكيد المستلم</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
     <details className="rounded-lg border p-3 text-sm" data-testid="close-money-summary">
       <summary className="cursor-pointer text-muted-foreground">تسليم الفلوس — اتسجل</summary>
       <MoneySummary shift={money1} currency={currency} />
     </details>
     {failure && <p role="alert" className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive" data-testid="close-materials-error">{failure}</p>}
     <div className="sticky bottom-0 -mx-4 border-t bg-card/95 px-4 pt-3 pb-1 backdrop-blur sm:-mx-5 sm:px-5">
-      <Button className="h-12 w-full text-base" disabled={busy || !complete} onClick={() => void finish()} data-testid="close-materials-submit">{busy ? "جارٍ التسليم…" : "إنهاء التسليم"}</Button>
+      <Button className="h-12 w-full text-base" disabled={busy || !complete} onClick={() => void finish()} data-testid="close-materials-submit">{busy ? "جارٍ التسليم…" : "إغلاق الوردية وتسليم العهدة"}</Button>
     </div>
   </section>;
 }
@@ -411,6 +502,20 @@ function DoneStep({ flow, currency, outcome }: { flow: ClosedFlow; currency: str
     {notDue && <p className="text-sm" data-testid="materials-not-due">جرد الخامات غير مستحق حسب الجدول{nextDueAt ? ` · الجرد الجاي: ${dateTime(nextDueAt)}` : ""}.</p>}
     {hasDifferences && canKey("shifts.view_reports") && <p className="text-sm">الفروق المسجلة موجودة في <Link className="underline" href={`/reports/shift/${shift.id}`} target="_blank">تقرير الشيفت</Link>.</p>}
     {hasDifferences && !canKey("shifts.view_reports") && <p className="text-sm text-muted-foreground">الفروق المسجلة متاحة للمالك في تقرير الشيفت.</p>}
+    {shift.actualCashAmount !== null && (!handover || handover.target !== "BRANCH_CUSTODY") && (
+      <div className="text-start">
+        <CashDispositionEditor
+          shiftId={shift.id}
+          countedCash={Number(shift.actualCashAmount)}
+          expectedCash={shift.expectedCashAmount != null ? Number(shift.expectedCashAmount) : null}
+          cashDifference={shift.cashDifference != null ? Number(shift.cashDifference) : null}
+          currency={currency}
+          recipients={flow.recipients ?? []}
+          initialDisposition={flow.cashDisposition ?? null}
+          showSaveButton
+        />
+      </div>
+    )}
     <details className="rounded-lg border p-3 text-start text-sm">
       <summary className="cursor-pointer text-muted-foreground">تفاصيل تسليم الفلوس</summary>
       <MoneySummary shift={shift} currency={currency} />

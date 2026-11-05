@@ -195,7 +195,7 @@ export function HandoverActionBar({
               size="sm"
               variant={target === "BRANCH_CUSTODY" ? "default" : "ghost"}
               disabled={busy || (target === "BRANCH_CUSTODY" && !stockReviewReady)}
-              title={target === "BRANCH_CUSTODY" && !stockReviewReady ? "وقّع سطور الجرد باسم الفرع الأول" : undefined}
+              title={target === "BRANCH_CUSTODY" && !stockReviewReady ? "اضغط على زر تأكيد سطور الجرد بالأعلى أولاً" : undefined}
               onClick={() => start("branch")}
               data-testid="handover-to-branch-custody"
             >

@@ -196,6 +196,12 @@ export type ShiftCloseArgs = {
    */
   handoverTarget?: HandoverTarget | null;
   /**
+   * Opt in to the simplified direct handover for a SHIFT_TO_SHIFT target: the outgoing employee must
+   * record a closing cash disposition before finishing, and the incoming employee acknowledges one
+   * reviewed summary. Ignored for BRANCH_CUSTODY and when no handover is required.
+   */
+  directHandover?: boolean;
+  /**
    * What the ROUTE established this actor may do, resolved before the
    * transaction opened.
    *
@@ -708,6 +714,7 @@ export async function closeShiftWithSettlement(
         outgoingUserId: locked.cashierId,
         at: closedAt,
         target,
+        direct: args.directHandover === true,
       });
       handoverId = created.handoverId;
       freezeId = created.freezeId;

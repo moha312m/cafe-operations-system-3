@@ -1,0 +1,13 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+const configFile = path.resolve('artifacts/workspace-redesign-20261102/private-step1-config.json');
+const config = JSON.parse(fs.readFileSync(configFile, 'utf8'));
+process.env.NEXTCUP_WORKSPACE_CONFIG = configFile;
+process.env.NEXTCUP_WORKSPACE_FIXTURES = path.resolve('artifacts/workspace-redesign-20261102/private-fixtures.json');
+process.env.DATABASE_URL = config.databaseUrl;
+const { verifyWorkspace } = await import('../workspace-redesign-20261102/workspace-guard.mjs');
+await verifyWorkspace({ requireCorrespondence: true });
+const result = spawnSync(process.execPath, ['--import', 'tsx', '--test', '--test-concurrency=1', 'tests/workspace-tables-runtime.test.ts', 'tests/experience-step1-tables.test.ts'], { stdio: 'inherit', env: process.env });
+if (result.error) throw result.error;
+process.exitCode = result.status ?? 1;

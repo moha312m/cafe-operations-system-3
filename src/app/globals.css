@@ -307,6 +307,21 @@ html[data-cashier-touch="true"] .touch-number > input { width: 3rem; }
 .app-workspace :is(button,[role=button],summary) { min-height: 44px; }
 .app-workspace :is(button,a,input,select,textarea,summary):focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
 .workspace-nav-link { min-height: 44px; }
+.workspace-main-nav :is(.workspace-nav-link, .workspace-nav-group, .workspace-report-group) {
+  background-color: #090909;
+  border: 1px solid #414141;
+  color: #f4f4f4;
+}
+.workspace-main-nav :is(.workspace-nav-link, .workspace-nav-group, .workspace-report-group):hover {
+  background-color: #1c1c1c;
+}
+.workspace-main-nav :is([aria-current="page"], .workspace-nav-group[aria-disabled="true"]) {
+  background-color: #111;
+  border-color: #6ee7b7;
+}
+.workspace-main-nav .workspace-nav-link[aria-current="page"] > svg {
+  color: #6ee7b7;
+}
 /* Report filter toolbar: dense on pointer-fine desktops, 44px elsewhere. Specificity must beat the .app-workspace control rules above. */
 @media (min-width: 768px) and (pointer: fine) {
   .app-workspace .report-dense :is(input:not([type=checkbox]):not([type=radio]),select,textarea,button,summary) { min-height: 36px; font-size: .875rem; }

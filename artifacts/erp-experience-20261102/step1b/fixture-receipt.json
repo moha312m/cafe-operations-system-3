@@ -1,0 +1,84 @@
+{
+  "state": "RETAINED",
+  "at": "2026-11-02T17:06:03.592Z",
+  "runId": "workspace20261102-1949053d4248",
+  "cafeId": "wr_58219e03d5874f45a23bff3fbf850a95",
+  "proof": {
+    "at": "2026-11-02T17:05:46.162Z",
+    "name": "cafe_ops_test_integr20261101_replay_66515e42c85e8ec4",
+    "host": "127.0.0.1",
+    "port": "5434",
+    "directory": "C:/Dev/_nextcup_test_postgres/pgdata",
+    "system_identifier": "7693368256609479860",
+    "oid": "65538",
+    "markerVerified": true,
+    "completedMigrations": 91,
+    "sourceFiles": 954,
+    "sourceSha256": "c124dc9092c07770db730446e12c472fc036754f8190e33984a39fd9cf3e5037"
+  },
+  "categories": [
+    {
+      "id": "wr_e02cb0c9915b477db01d28c22122e2b4",
+      "name": "القهوة · تجريبي"
+    },
+    {
+      "id": "wr_107f871a3d954aa0ba4540306b052865",
+      "name": "مشروبات باردة · تجريبي"
+    },
+    {
+      "id": "wr_acd170b335084991a27c9f579db3ac4c",
+      "name": "مخبوزات · تجريبي"
+    }
+  ],
+  "products": [
+    {
+      "id": "wr_104b3de597964986b5b59cd54631df4b",
+      "name": "إسبريسو · تجريبي",
+      "sku": "S1B-ESP",
+      "price": 25,
+      "categoryId": "wr_e02cb0c9915b477db01d28c22122e2b4"
+    },
+    {
+      "id": "wr_247760c9bb1e48f79503fd7e02906198",
+      "name": "كابتشينو · تجريبي",
+      "sku": "S1B-CAP",
+      "price": 35,
+      "categoryId": "wr_e02cb0c9915b477db01d28c22122e2b4"
+    },
+    {
+      "id": "wr_32964e50d1bd4d94930ec4a656491414",
+      "name": "لاتيه مثلج · تجريبي",
+      "sku": "S1B-ICED-LATTE",
+      "price": 45,
+      "categoryId": "wr_107f871a3d954aa0ba4540306b052865"
+    },
+    {
+      "id": "wr_b959a9a13b8841928a9ba556bc6b3193",
+      "name": "ليمون بالنعناع · تجريبي",
+      "sku": "S1B-LEMON",
+      "price": 30,
+      "categoryId": "wr_107f871a3d954aa0ba4540306b052865"
+    },
+    {
+      "id": "wr_cbca3db95b8d46c3a957cda3cd767a90",
+      "name": "كرواسون بالزبدة · تجريبي",
+      "sku": "S1B-CROISSANT",
+      "price": 18,
+      "categoryId": "wr_acd170b335084991a27c9f579db3ac4c"
+    },
+    {
+      "id": "wr_cb519cbb77d14c0bb566c435ebeda3a8",
+      "name": "ساندوتش جبنة باسم عربي طويل لاختبار القراءة · تجريبي",
+      "sku": "S1B-LONG-ARABIC-SKU-20261102",
+      "price": 40,
+      "categoryId": "wr_acd170b335084991a27c9f579db3ac4c"
+    }
+  ],
+  "variantIds": [
+    "wr_17aed3d1e7e540848c8721adb5a10bc9",
+    "wr_7bcb819827b9409ab2ac0cc608be427a"
+  ],
+  "retained": true,
+  "syntheticOnly": true,
+  "completedAt": "2026-11-02T17:06:04.673Z"
+}

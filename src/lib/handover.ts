@@ -108,8 +108,26 @@ import { buildStockBoundary, persistStockBoundary } from "@/lib/handover-boundar
 import { openHandoverVarianceCases } from "@/lib/stock-variance-attribution";
 import { ensureCustodyForShift, transferCustody } from "@/lib/custody";
 import { recordCashHandover } from "@/lib/cash-handover";
+import { recordDirectCashOpening } from "@/lib/cash-disposition";
+
+/**
+ * The owner-approved simplified acceptance of a direct SHIFT_TO_SHIFT handover.
+ *
+ * `reviewVersion` names the exact handover the incoming employee reviewed; the
+ * acceptance recomputes it under the locks with `computeVersion` (injected, so
+ * this module needs no import of the code that knows how to derive it) and refuses
+ * a stale one. It is an acknowledgement of the physical handover — it never writes a
+ * count, a per-line signature or a cash verification.
+ */
+export type DirectAcceptance = {
+  reviewVersion: string;
+  computeVersion: (tx: Prisma.TransactionClient, handoverId: string) => Promise<string>;
+};
 
 export const HANDOVER_STARTED_AUDIT_ACTION = "HANDOVER_STARTED";
+
+/** finish_outgoing refusal for a direct handover that has no recorded closing cash disposition. */
+export const DISPOSITION_REQUIRED_MESSAGE = "حدّد مصير النقدية المعدودة الأول (استلمها المالك / المدير / تُترك في الدرج) قبل إنهاء التسليم";
 
 /**
  * A 409 that carries its evidence.
@@ -253,6 +271,8 @@ export async function createHandoverSession(
     target: HandoverTarget;
     outgoingCashCustodyId: string | null;
     outgoingStockCustodyId: string | null;
+    /** Opted in to the simplified direct handover (closing cash disposition + one incoming acknowledgement). */
+    direct?: boolean;
   }
 ): Promise<{ handoverId: string }> {
   const created = await tx.handoverSession.create({
@@ -260,6 +280,7 @@ export async function createHandoverSession(
       cafeId: args.cafeId,
       branchId: args.branchId,
       status: "DRAFT",
+      directHandover: args.direct === true && args.target === "SHIFT_TO_SHIFT",
       outgoingShiftId: args.outgoingShiftId,
       outgoingUserId: args.outgoingUserId,
       outgoingCashCustodyId: args.outgoingCashCustodyId,
@@ -301,6 +322,8 @@ export async function createHandoverInClose(
     outgoingUserId: string;
     at: Date;
     target: HandoverTarget;
+    /** See {@link createHandoverSession}. Only meaningful for a SHIFT_TO_SHIFT target. */
+    direct?: boolean;
   }
 ): Promise<{ handoverId: string; freezeId: string; requiredItemCount: number }> {
   const plan = await planRequiredItems(tx, {
@@ -320,6 +343,7 @@ export async function createHandoverInClose(
     target: args.target,
     outgoingCashCustodyId: custody.cashCustodyId,
     outgoingStockCustodyId: custody.stockCustodyId,
+    direct: args.direct,
   });
 
   const { requiredItemCount } = await persistRequiredItems(tx, {
@@ -351,6 +375,7 @@ export async function createHandoverInClose(
       outgoingCashCustodyId: custody.cashCustodyId,
       outgoingStockCustodyId: custody.stockCustodyId,
       freezeId,
+      ...(args.direct === true && args.target === "SHIFT_TO_SHIFT" ? { directHandover: true } : {}),
     },
   });
 
@@ -1242,7 +1267,7 @@ export async function finishOutgoingHandover(args: {
     if (!(await lockHandover(tx, args.handoverId))) throw new ApiError(404, HANDOVER_NOT_FOUND);
     const handover = await tx.handoverSession.findUniqueOrThrow({
       where: { id: args.handoverId },
-      select: { id: true, cafeId: true, branchId: true, status: true, stockCountSessionId: true },
+      select: { id: true, cafeId: true, branchId: true, status: true, stockCountSessionId: true, directHandover: true, outgoingShiftId: true },
     });
     if (handover.cafeId !== args.cafeId) throw new ApiError(404, HANDOVER_NOT_FOUND);
     if (args.viewerBranchId !== null && handover.branchId !== args.viewerBranchId) {
@@ -1270,6 +1295,14 @@ export async function finishOutgoingHandover(args: {
     }
     if (handover.status !== "DRAFT") throw new ApiError(409, "التسليم مش في حالة تسمح بالتسليم");
     if (!handover.stockCountSessionId) throw new ApiError(409, "ابدأ جرد الخامات الأول");
+    // A handover opted in to the direct flow is not finished until the outgoing employee has recorded
+    // where the counted cash went. Evaluated under the handover lock, so a disposition cannot appear or
+    // vanish between this check and the transition. Handovers created before the opt-in existed keep
+    // their legacy rules and are never asked for an allocation nobody made.
+    if (handover.directHandover) {
+      const recorded = await tx.shiftCashDisposition.findUnique({ where: { shiftId: handover.outgoingShiftId }, select: { id: true } });
+      if (!recorded) throw new ApiError(409, DISPOSITION_REQUIRED_MESSAGE);
+    }
 
     // Same order as every other handover-bound count write: handover, then count.
     await tx.$queryRaw`SELECT "id" FROM "StockCountSession" WHERE "id"=${handover.stockCountSessionId} FOR UPDATE`;
@@ -1455,6 +1488,8 @@ async function incomingHandoverViewWithClient(
       outgoingUserId: true,
       submittedAt: true,
       stockCountSessionId: true,
+      directHandover: true,
+      directAcknowledgedAt: true,
       requiredItems: {
         select: {
           inventoryItemId: true,
@@ -1481,8 +1516,12 @@ async function incomingHandoverViewWithClient(
 
   // Existence, not content, and only for the round now in front of the reviewer: a signature on a
   // superseded round must not disclose the replacement's figures before its own first look.
+  // On an opted-in direct SHIFT_TO_SHIFT handover (or one already completed via direct acknowledgement),
+  // the incoming employee reviews one summary without a separate blind count or per-line signatures.
+  const directDisclosed = handover.directAcknowledgedAt !== null
+    || (handover.directHandover && handover.target === "SHIFT_TO_SHIFT" && (REVIEWABLE_HANDOVER_STATUSES.includes(handover.status) || handover.status === "COMPLETED"));
   const acknowledged = handover.stockCountSessionId !== null
-    && (await client.handoverStockAcknowledgement.findFirst({ where: { handoverId: handover.id, line: { sessionId: handover.stockCountSessionId } }, select: { id: true } })) !== null;
+    && (directDisclosed || (await client.handoverStockAcknowledgement.findFirst({ where: { handoverId: handover.id, line: { sessionId: handover.stockCountSessionId } }, select: { id: true } })) !== null);
 
   const session =
     handover.stockCountSessionId === null
@@ -2212,7 +2251,7 @@ type AcceptedEvidence = {
 async function resolveAcceptableEvidence(
   tx: Prisma.TransactionClient,
   handover: LockedHandover,
-  args: { cafeId: string; viewerBranchId: string | null; incomingShiftId?: string | null }
+  args: { cafeId: string; viewerBranchId: string | null; incomingShiftId?: string | null; direct?: boolean }
 ): Promise<AcceptedEvidence> {
   // Another tenant's handover is not confirmed to exist. A 403 here would
   // tell one café that an id belonging to another one is real.
@@ -2269,7 +2308,9 @@ async function resolveAcceptableEvidence(
     select: { stockCountLineId: true, decision: true },
   });
   const acknowledged = new Set(acknowledgements.map((a) => a.stockCountLineId));
-  if (countedLines.some((line) => !acknowledged.has(line.id))) {
+  // A DIRECT acceptance is the owner-approved single acknowledgement of the
+  // displayed handover: it replaces the per-line signatures, never a dispute.
+  if (!args.direct && countedLines.some((line) => !acknowledged.has(line.id))) {
     throw new ApiError(409, LINES_UNACKNOWLEDGED);
   }
   if (acknowledgements.some((a) => a.decision === "DISPUTED")) {
@@ -2599,6 +2640,8 @@ export async function acceptHandover(args: {
   idempotencyKey: string;
   cafeId: string;
   viewerBranchId: string | null;
+  /** Owner-approved direct acknowledgement; see {@link DirectAcceptance}. */
+  direct?: DirectAcceptance;
   /**
    * Test-only failure seam. See {@link AcceptanceCheckpoint}.
    *
@@ -2654,18 +2697,31 @@ export async function acceptHandover(args: {
     }
 
     // 3–4. The gate. Every refusal is thrown before the first write.
+    const direct = !!args.direct;
     let evidence = await resolveAcceptableEvidence(tx, handover, {
       cafeId: args.cafeId,
       viewerBranchId: args.viewerBranchId,
       incomingShiftId: args.incomingShiftId,
+      direct,
     });
     await prepareHandoverInventoryLocks(tx, handover, evidence.acceptedSessionId, evidence.incomingShiftId);
     await assertCurrentHandoverCountValidation(tx, handover.id);
-    evidence = await resolveAcceptableEvidence(tx, handover, { cafeId: args.cafeId, viewerBranchId: args.viewerBranchId, incomingShiftId: args.incomingShiftId });
+    evidence = await resolveAcceptableEvidence(tx, handover, { cafeId: args.cafeId, viewerBranchId: args.viewerBranchId, incomingShiftId: args.incomingShiftId, direct });
+    if (args.direct) {
+      // Only the employee whose own shift is waiting can acknowledge the handover for it.
+      if (evidence.incomingShiftCashierId !== args.incomingUserId) {
+        throw new ApiError(403, "الاستلام لصاحب الشيفت المستلم فقط");
+      }
+      // The reviewed version, recomputed under the locks. Anything that moved since the
+      // incoming employee looked (count round, allocation, carried orders) must be re-read.
+      if ((await args.direct.computeVersion(tx, handover.id)) !== args.direct.reviewVersion) {
+        throw new ApiError(409, "التسليم اتغير بعد ما راجعته — حدّث الصفحة وراجع الملخص قبل الاستلام");
+      }
+    }
 
     // No `exception`: an ordinary accept has no manager authority to carry,
     // and step 5 keeps its refusal.
-    return narrowAcceptResult(await runAcceptance(tx, evidence, args));
+    return narrowAcceptResult(await runAcceptance(tx, evidence, { ...args, direct: args.direct }));
   });
 }
 
@@ -2892,12 +2948,21 @@ async function runAcceptance(
     idempotencyKey: string;
     /** SH-21 only. Absent on every ordinary accept. See {@link AcceptanceException}. */
     exception?: AcceptanceException;
+    /** Direct handover: one acknowledgement of the reviewed version. No count, no per-line signature. */
+    direct?: DirectAcceptance;
     __afterStep?: AcceptanceCheckpoint;
   }
 ): Promise<AcceptanceOutcome> {
   const { handover, acceptedSessionId } = evidence;
   const exception = args.exception;
-  const cashVerification = evidence.outgoingCashCustodyId ? await recordCashHandover(tx, {
+  // Direct: the drawer opens with exactly what the outgoing employee retained.
+  // That is a declaration the incoming employee acknowledged, so it is NOT written
+  // as a cash verification (no counted figure, no verifier, no variance case).
+  const cashVerification = args.direct
+    ? (evidence.outgoingCashCustodyId ? await recordDirectCashOpening(tx, {
+        handoverId: handover.id, incomingShiftId: evidence.incomingShiftId, incomingUserId: args.incomingUserId, at: new Date(),
+      }) : null)
+    : evidence.outgoingCashCustodyId ? await recordCashHandover(tx, {
     handoverId: handover.id, incomingShiftId: evidence.incomingShiftId, incomingUserId: args.incomingUserId, at: new Date(),
     verifiedById: exception?.managerId,
     countedOpeningCash: args.countedOpeningCash, cashReasonCodeId: args.cashReasonCodeId ?? exception?.reasonCodeId,
@@ -3140,6 +3205,13 @@ async function runAcceptance(
       incomingShiftId: evidence.incomingShiftId,
       incomingStockCustodyId: stock.incomingPeriodId,
       incomingCashCustodyId,
+      ...(args.direct
+        ? {
+            directAcknowledgedAt: acceptedAt,
+            directAcknowledgedById: args.incomingUserId,
+            directReviewVersion: args.direct.reviewVersion,
+          }
+        : {}),
       ...(exception
         ? {
             exceptionById: exception.managerId,
@@ -3275,6 +3347,15 @@ async function runAcceptance(
       acceptedAt: acceptedAt.toISOString(),
       // Absent on an ordinary accept, so SH-20's row is byte-identical.
       ...(exception ? { missingItemIds } : {}),
+      // Present only on a direct acceptance: an acknowledgement, not a count.
+      ...(args.direct
+        ? {
+            acceptanceMode: "DIRECT_ACKNOWLEDGEMENT",
+            independentVerification: false,
+            reviewVersion: args.direct.reviewVersion,
+            retainedDrawerCash: cashVerification?.counted ?? null,
+          }
+        : {}),
     },
   });
 

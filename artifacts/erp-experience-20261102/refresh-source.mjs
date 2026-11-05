@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { sourceFiles, sha } from '../workspace-redesign-20261102/workspace-guard.mjs';
+const directory = path.resolve('artifacts/erp-experience-20261102');
+const original = path.resolve('artifacts/workspace-redesign-20261102/private-config.json');
+const configFile = path.resolve('artifacts/workspace-redesign-20261102/private-step1-config.json');
+const config = JSON.parse(fs.readFileSync(original, 'utf8'));
+assert.equal(config.root.replaceAll('\\', '/'), process.cwd().replaceAll('\\', '/'));
+const files = Object.fromEntries(sourceFiles().map(p => [p, sha(fs.readFileSync(p))]));
+const file = path.join(directory, 'source-step1.json');
+fs.writeFileSync(file, JSON.stringify(files, null, 2));
+config.source = { file, sha256: sha(fs.readFileSync(file)) };
+fs.writeFileSync(configFile, JSON.stringify(config, null, 2));
+console.log(JSON.stringify({ sourceFiles: Object.keys(files).length, sha256: config.source.sha256, originalConfigUnchanged: true }));

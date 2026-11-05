@@ -1,0 +1,170 @@
+{
+  "at": "2026-11-02T22:06:21.357066+00:00",
+  "implementationHead": "d6509f12a3a7063cc929baea0d7663d32d2b2a11",
+  "sourceFiles": [
+    "src/app/(app)/accounting/journal/page.tsx",
+    "src/app/(app)/accounting/ledger/page.tsx",
+    "src/app/(app)/accounting/page.tsx",
+    "src/app/(app)/accounting/trial-balance/page.tsx",
+    "src/app/(app)/finance/page.tsx",
+    "src/app/(app)/pos/page.tsx",
+    "src/app/(app)/recipe-review/page.tsx",
+    "src/app/(app)/reports/page.tsx",
+    "src/app/(app)/tables/setup/page.tsx",
+    "src/app/globals.css",
+    "src/components/accounting/accounting-shell.tsx",
+    "src/components/accounting/journal-entry-view.tsx",
+    "src/components/accounting/use-accounting-data.ts",
+    "src/components/app-shell.tsx",
+    "src/components/cafe/ui.tsx",
+    "src/components/cafe/use-workspace-read.ts",
+    "src/components/expenses/expense-workspace.tsx",
+    "src/components/pos/category-tabs.tsx",
+    "src/components/pos/collect-payment-panel.tsx",
+    "src/components/pos/customer-loyalty.tsx",
+    "src/components/pos/order-cart.tsx",
+    "src/components/pos/order-type-selector.tsx",
+    "src/components/pos/product-card.tsx",
+    "src/components/pos/product-grid.tsx",
+    "src/components/pos/quick-actions.tsx",
+    "src/components/pos/shift-controls.tsx",
+    "src/components/pos/table-invoices.tsx",
+    "src/components/reports/report-center.tsx",
+    "src/components/sales/reporting-controls.tsx",
+    "src/components/sales/sales-workspace.tsx",
+    "src/components/stale-orders-banner.tsx",
+    "src/components/treasury/treasury-client.tsx",
+    "src/components/treasury/treasury-details.tsx",
+    "src/components/treasury/treasury-workspace.tsx",
+    "src/components/ui/button.tsx",
+    "src/components/ui/input.tsx",
+    "src/components/ui/table.tsx",
+    "src/lib/client.ts",
+    "src/lib/workspace-navigation.ts",
+    "tests/experience-step1b-pos.test.tsx",
+    "tests/experience-step1b-sales.test.tsx",
+    "tests/experience-step1b-treasury.test.tsx",
+    "tests/receipt-001-post-payment-preview.test.ts",
+    "tests/workspace-navigation.test.ts",
+    "tests/workspace-read-deadline.test.ts"
+  ],
+  "pureComponentPendingReceipt": {
+    "passed": 92,
+    "failed": 0,
+    "skipped": 0,
+    "log": "pure-final-green.log"
+  },
+  "fullTypecheck": {
+    "exit": 0,
+    "log": "types-final-accounting.log",
+    "result": "types-final-accounting-result.json"
+  },
+  "focusedLint": {
+    "exit": 0,
+    "errors": 0,
+    "warnings": 9,
+    "log": "lint-final.log"
+  },
+  "accountingRetryAndReceiptHostLint": {
+    "exit": 0,
+    "log": "lint-accounting-retry.log"
+  },
+  "installedCssCompiler": {
+    "at": "2026-11-02T22:26:57.481Z",
+    "bytes": 164917,
+    "warnings": []
+  },
+  "stagedDiffCheck": {
+    "exit": 0
+  },
+  "staticReview": "No remaining actionable important regression in reviewed read-identity/pending-write/focus fixes; review-closeout.md",
+  "ownerVisualAcceptance": "PENDING",
+  "productionAuthorization": "NOT READY / NOT AUTHORIZED",
+  "limitations": [
+    "No fresh production build, human UAT, physical device or hardware claim",
+    "No new accountant approval or D7/D8 disposition",
+    "Earlier failed checks and memory-limited attempts retained"
+  ],
+  "finalSourceCorrespondence": {
+    "state": "VERIFIED",
+    "at": "2026-11-02T22:21:50.876Z",
+    "name": "cafe_ops_test_integr20261101_replay_66515e42c85e8ec4",
+    "host": "127.0.0.1",
+    "port": "5434",
+    "directory": "C:/Dev/_nextcup_test_postgres/pgdata",
+    "system_identifier": "7693368256609479860",
+    "oid": "65538",
+    "markerVerified": true,
+    "completedMigrations": 91,
+    "sourceFiles": 954,
+    "sourceSha256": "e7feaf6ebb83f3846cd1a8dbf8569ed830f82292216dbc50b3e4be2c39a74db6",
+    "url": "http://localhost:3113"
+  },
+  "protectedProcesses": {
+    "databaseControlPerformed": false,
+    "preview": [
+      {
+        "ProcessId": 23144,
+        "ParentProcessId": 21720,
+        "ExecutablePath": "C:\\nvm4w\\nodejs\\node.exe",
+        "CommandLine": "C:\\nvm4w\\nodejs\\node.exe C:\\Users\\Acer\\.codex\\worktrees\\nextcup-workspace-redesign\\cafe-operations-system-3\\node_modules\\next\\dist\\bin\\next dev --webpack --hostname 127.0.0.1 --port 3113",
+        "CreationDate": "/Date(1793656995168)/"
+      },
+      {
+        "ProcessId": 18380,
+        "ParentProcessId": 23144,
+        "ExecutablePath": "C:\\nvm4w\\nodejs\\node.exe",
+        "CommandLine": "C:\\nvm4w\\nodejs\\node.exe C:\\Dev\\cafe-operations-system-3\\node_modules\\next\\dist\\server\\lib\\start-server.js",
+        "CreationDate": "/Date(1793656998903)/"
+      }
+    ],
+    "protected": [
+      {
+        "id": 17800,
+        "identityPreserved": true,
+        "process": {
+          "ProcessId": 17800,
+          "ParentProcessId": 21336,
+          "ExecutablePath": "C:\\Dev\\_nextcup_postgres\\pg17\\bin\\postgres.exe",
+          "CommandLine": "\"C:/Dev/_nextcup_postgres/pg17/bin/postgres.exe\"  -D \"C:/Dev/_nextcup_postgres/pgdata\" -p 5433 ",
+          "CreationDate": "/Date(1793581028185)/"
+        }
+      },
+      {
+        "id": 25068,
+        "identityPreserved": true,
+        "process": {
+          "ProcessId": 25068,
+          "ParentProcessId": 21376,
+          "ExecutablePath": "C:\\nvm4w\\nodejs\\node.exe",
+          "CommandLine": "C:\\nvm4w\\nodejs\\node.exe C:\\Dev\\cafe-operations-system-3\\node_modules\\next\\dist\\bin\\next start --hostname 127.0.0.1 --port 3110",
+          "CreationDate": "/Date(1793581514128)/"
+        }
+      },
+      {
+        "id": 18820,
+        "identityPreserved": true,
+        "process": {
+          "ProcessId": 18820,
+          "ParentProcessId": 25588,
+          "ExecutablePath": "C:\\Dev\\_nextcup_postgres\\pg17\\bin\\postgres.exe",
+          "CommandLine": "\"C:/Dev/_nextcup_postgres/pg17/bin/postgres.exe\"  -D \"C:/Dev/_nextcup_test_postgres/pgdata\" -p 5434 ",
+          "CreationDate": "/Date(1793632847815)/"
+        }
+      }
+    ],
+    "at": "2026-11-02T22:09:03.4706962Z"
+  },
+  "sourceAndTestsGitClean": true,
+  "finalAt": "2026-11-02T22:24:45.255630+00:00",
+  "finalSourceSha256": "5c327b69fb480b84f591b006e460501a9a1f31d4efaf2ec9d511037546bdfbd9",
+  "currentPreviewStatus": "BLOCKED: existing disposable5434 unavailable",
+  "finalCorrespondence": "UNVERIFIED on final CSS revision; prior successful proof retained",
+  "overallStatus": "PARTIALLY COMPLETE",
+  "latestRuntimeFailure": {
+    "state": "UNVERIFIED",
+    "at": "2026-11-03T08:37:30.886Z",
+    "error": "Can't reach database server at `127.0.0.1:5434`\n\nPlease make sure your database server is running at `127.0.0.1:5434`.",
+    "noMutationsAttempted": true
+  }
+}

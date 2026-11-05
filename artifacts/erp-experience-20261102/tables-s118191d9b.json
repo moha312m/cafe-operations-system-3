@@ -1,0 +1,28 @@
+{
+  "at": "2026-11-02T15:32:15.466Z",
+  "proof": {
+    "at": "2026-11-02T15:32:05.835Z",
+    "name": "cafe_ops_test_integr20261101_replay_66515e42c85e8ec4",
+    "host": "127.0.0.1",
+    "port": "5434",
+    "directory": "C:/Dev/_nextcup_test_postgres/pgdata",
+    "system_identifier": "7693368256609479860",
+    "oid": "65538",
+    "markerVerified": true,
+    "completedMigrations": 91,
+    "sourceFiles": 947,
+    "sourceSha256": "d578e26a72b9003be335086b678e78a2fb3dcf7c0e5b82907c53d7d226c981ff"
+  },
+  "retained": [
+    "cmvzf3bjr001whl6scx9f17zh",
+    "s118191d9b-order-rename",
+    "cmvzf3cg30024hl6sb691ybu6",
+    "s118191d9b-order-session",
+    "cmvzf3cxf002ahl6skpiykgbe",
+    "cmvzf3d3b002ghl6skprburdq"
+  ],
+  "cases": [
+    "rename/session both PostgreSQL queue orders",
+    "create/edit/archive/restore/bulk audit rollback; hook removed"
+  ]
+}

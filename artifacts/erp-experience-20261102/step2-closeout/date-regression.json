@@ -1,0 +1,36 @@
+{
+  "at": "2026-11-03T19:28:37.743Z",
+  "proof": {
+    "at": "2026-11-03T19:28:35.501Z",
+    "name": "cafe_ops_test_integr20261101_replay_66515e42c85e8ec4",
+    "host": "127.0.0.1",
+    "port": "5434",
+    "directory": "C:/Dev/_nextcup_test_postgres/pgdata",
+    "system_identifier": "7693368256609479860",
+    "oid": "65538",
+    "markerVerified": true,
+    "completedMigrations": 91,
+    "sourceFiles": 986,
+    "sourceSha256": "f38ab10a19ea4a09981f6439dd22b5fe3578de3b3f5bcb3b7f732bf8a7e7ac4e"
+  },
+  "invoiceId": "wr_step2c_purchase_date_20261103",
+  "observations": [
+    {
+      "date": "2026-11-01",
+      "purchasePresent": true,
+      "displayedDate": "2026-11-01T10:00:00.000Z",
+      "supplierPaid": "0.00"
+    },
+    {
+      "date": "2026-11-02",
+      "purchasePresent": false,
+      "supplierPaid": "69.35"
+    },
+    {
+      "date": "2026-11-03",
+      "purchasePresent": false,
+      "supplierPaid": "0.00"
+    }
+  ],
+  "passed": true
+}

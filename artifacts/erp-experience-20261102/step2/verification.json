@@ -1,0 +1,83 @@
+{
+  "status": "PARTIALLY COMPLETE",
+  "sourceCommit": "6bcdefb8965010143f5d16609e07a9baba077106",
+  "pure": {
+    "passed": 43,
+    "failed": 0,
+    "skipped": 0,
+    "exitCode": 0,
+    "log": "pure-final.log"
+  },
+  "lint": {
+    "exitCode": 0,
+    "diagnostics": 0,
+    "log": "lint-final.log"
+  },
+  "productionBuild": {
+    "exitCode": 0,
+    "typecheckPassed": true,
+    "buildId": "c_vrlFB3ZoOgiOAaHWyhv",
+    "log": "build-final.log"
+  },
+  "independentSourceReview": {
+    "importantFindings": 3,
+    "closed": 3,
+    "runtimeClaims": false
+  },
+  "runtime": {
+    "state": "UNVERIFIED",
+    "at": "2026-11-03T14:57:54.798Z",
+    "sourceSha256": "a4ba493a392e9fe1fa4503ab114e2f360d53c5c18a3bad601bdccc8dbb6ed016",
+    "sourceFiles": 985,
+    "error": "Can't reach database server at `127.0.0.1:5434`\n\nPlease make sure your database server is running at `127.0.0.1:5434`.",
+    "noMutationsAttempted": true
+  },
+  "ownerVisualAcceptance": "PENDING",
+  "ownerDatabaseWrites": false,
+  "originalActivation": false,
+  "push": false,
+  "mainMerge": false,
+  "deployment": false,
+  "changedSourceFiles": [
+    "src/app/(app)/reports/product-sales/page.tsx",
+    "src/app/(app)/reports/purchase-sales/page.tsx",
+    "src/app/(app)/reports/sales-payments/page.tsx",
+    "src/app/(app)/reports/sales-staff/page.tsx",
+    "src/app/(app)/reports/shift-sales/page.tsx",
+    "src/app/(app)/reports/tables/page.tsx",
+    "src/app/api/reports/output/route.ts",
+    "src/app/api/reports/product-sales/output/route.ts",
+    "src/app/api/reports/product-sales/route.ts",
+    "src/app/api/reports/purchase-sales/output/route.ts",
+    "src/app/api/reports/purchase-sales/route.ts",
+    "src/app/api/reports/sales-payments/output/route.ts",
+    "src/app/api/reports/sales-payments/route.ts",
+    "src/app/api/reports/sales-staff/output/route.ts",
+    "src/app/api/reports/sales-staff/route.ts",
+    "src/app/api/reports/shift-sales/output/route.ts",
+    "src/app/api/reports/shift-sales/route.ts",
+    "src/app/api/reports/tables/output/route.ts",
+    "src/app/api/reports/tables/route.ts",
+    "src/app/api/sales/output/route.ts",
+    "src/components/app-shell.tsx",
+    "src/components/reports/sales-report-rows.tsx",
+    "src/components/reports/sales-report-workspace.tsx",
+    "src/components/sales/report-output-actions.tsx",
+    "src/components/sales/sales-workspace.tsx",
+    "src/lib/report-center.ts",
+    "src/lib/report-output.ts",
+    "src/lib/sales-invoice-filters.ts",
+    "src/lib/sales-query.ts",
+    "src/lib/sales-report-catalog.ts",
+    "src/lib/sales-report-contract.ts",
+    "src/lib/sales-report-math.ts",
+    "src/lib/sales-report-query.ts",
+    "src/lib/sales-report-server.ts",
+    "src/lib/workspace-navigation.ts",
+    "tests/sales-invoice-step2.test.ts",
+    "tests/sales-report-output-step2.test.ts",
+    "tests/sales-report-view-step2.test.tsx",
+    "tests/sales-reports-step2.test.ts",
+    "tests/workspace-navigation.test.ts"
+  ]
+}

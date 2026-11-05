@@ -1,0 +1,55 @@
+﻿{
+    "databaseControlPerformed":  false,
+    "preview":  [
+                    {
+                        "ProcessId":  23144,
+                        "ParentProcessId":  21720,
+                        "ExecutablePath":  "C:\\nvm4w\\nodejs\\node.exe",
+                        "CommandLine":  "C:\\nvm4w\\nodejs\\node.exe C:\\Users\\Acer\\.codex\\worktrees\\nextcup-workspace-redesign\\cafe-operations-system-3\\node_modules\\next\\dist\\bin\\next dev --webpack --hostname 127.0.0.1 --port 3113",
+                        "CreationDate":  "\/Date(1793656995168)\/"
+                    },
+                    {
+                        "ProcessId":  18380,
+                        "ParentProcessId":  23144,
+                        "ExecutablePath":  "C:\\nvm4w\\nodejs\\node.exe",
+                        "CommandLine":  "C:\\nvm4w\\nodejs\\node.exe C:\\Dev\\cafe-operations-system-3\\node_modules\\next\\dist\\server\\lib\\start-server.js",
+                        "CreationDate":  "\/Date(1793656998903)\/"
+                    }
+                ],
+    "protected":  [
+                      {
+                          "id":  17800,
+                          "identityPreserved":  true,
+                          "process":  {
+                                          "ProcessId":  17800,
+                                          "ParentProcessId":  21336,
+                                          "ExecutablePath":  "C:\\Dev\\_nextcup_postgres\\pg17\\bin\\postgres.exe",
+                                          "CommandLine":  "\"C:/Dev/_nextcup_postgres/pg17/bin/postgres.exe\"  -D \"C:/Dev/_nextcup_postgres/pgdata\" -p 5433 ",
+                                          "CreationDate":  "\/Date(1793581028185)\/"
+                                      }
+                      },
+                      {
+                          "id":  25068,
+                          "identityPreserved":  true,
+                          "process":  {
+                                          "ProcessId":  25068,
+                                          "ParentProcessId":  21376,
+                                          "ExecutablePath":  "C:\\nvm4w\\nodejs\\node.exe",
+                                          "CommandLine":  "C:\\nvm4w\\nodejs\\node.exe C:\\Dev\\cafe-operations-system-3\\node_modules\\next\\dist\\bin\\next start --hostname 127.0.0.1 --port 3110",
+                                          "CreationDate":  "\/Date(1793581514128)\/"
+                                      }
+                      },
+                      {
+                          "id":  18820,
+                          "identityPreserved":  true,
+                          "process":  {
+                                          "ProcessId":  18820,
+                                          "ParentProcessId":  25588,
+                                          "ExecutablePath":  "C:\\Dev\\_nextcup_postgres\\pg17\\bin\\postgres.exe",
+                                          "CommandLine":  "\"C:/Dev/_nextcup_postgres/pg17/bin/postgres.exe\"  -D \"C:/Dev/_nextcup_test_postgres/pgdata\" -p 5434 ",
+                                          "CreationDate":  "\/Date(1793632847815)\/"
+                                      }
+                      }
+                  ],
+    "at":  "2026-11-02T22:09:03.4706962Z"
+}

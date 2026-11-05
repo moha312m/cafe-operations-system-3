@@ -1,0 +1,8 @@
+﻿{
+    "at":  "2026-11-02T02:32:21.9219694Z",
+    "typecheckExit":  0,
+    "lintExit":  0,
+    "pureExit":  0,
+    "database":  "explicit unreachable 127.0.0.1:1",
+    "runtimeExecuted":  false
+}

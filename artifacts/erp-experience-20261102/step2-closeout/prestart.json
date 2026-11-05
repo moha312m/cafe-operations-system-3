@@ -1,0 +1,39 @@
+﻿{
+    "listenerAbsent":  true,
+    "version":  {
+                    "value":  "17",
+                    "PSPath":  "C:\\Dev\\_nextcup_test_postgres\\pgdata\\PG_VERSION",
+                    "PSParentPath":  "C:\\Dev\\_nextcup_test_postgres\\pgdata",
+                    "PSChildName":  "PG_VERSION",
+                    "PSDrive":  {
+                                    "CurrentLocation":  "Users\\Acer\\.codex\\worktrees\\nextcup-workspace-redesign\\cafe-operations-system-3",
+                                    "Name":  "C",
+                                    "Provider":  "Microsoft.PowerShell.Core\\FileSystem",
+                                    "Root":  "C:\\",
+                                    "Description":  "",
+                                    "MaximumSize":  null,
+                                    "Credential":  "System.Management.Automation.PSCredential",
+                                    "DisplayRoot":  null
+                                },
+                    "PSProvider":  {
+                                       "ImplementingType":  "Microsoft.PowerShell.Commands.FileSystemProvider",
+                                       "HelpFile":  "System.Management.Automation.dll-Help.xml",
+                                       "Name":  "FileSystem",
+                                       "PSSnapIn":  "Microsoft.PowerShell.Core",
+                                       "ModuleName":  "Microsoft.PowerShell.Core",
+                                       "Module":  null,
+                                       "Description":  "",
+                                       "Capabilities":  52,
+                                       "Home":  "C:\\Users\\Acer",
+                                       "Drives":  "C D E"
+                                   },
+                    "ReadCount":  1
+                },
+    "dataDirectory":  "C:\\Dev\\_nextcup_test_postgres\\pgdata",
+    "at":  "2026-11-03T15:18:24.7340073Z",
+    "oldPidAbsent":  true,
+    "port":  5434,
+    "systemIdentifier":  "7693368256609479860",
+    "manualPidDeletion":  false,
+    "authorizedStep":  "Step2 closeout"
+}

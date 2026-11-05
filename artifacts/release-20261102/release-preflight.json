@@ -1,0 +1,158 @@
+{
+  "at": "2026-11-02T10:49:01.152Z",
+  "status": "PASS",
+  "candidateCommit": "f4ff365c472f55fca101250bc4ed897f8175b4d6",
+  "buildSourceFilesVerified": 963,
+  "gitMigrationChecksumsMatchAllApplied": 57,
+  "pendingMigrationAudit": [
+    {
+      "name": "20261002121500_staff_temporary_branch",
+      "sha256": "47377b07246566add817c2e94b0e916c737e4fa209187bae1b1cc493fa7dacdf"
+    },
+    {
+      "name": "20261002200000_low_stock_alert_percent",
+      "sha256": "74aa369e6a762903018efc68892c40d8f37bc556c87e2236e1e4f9acd210cabb"
+    },
+    {
+      "name": "20261002210000_carry_open_orders_on_handover",
+      "sha256": "f723e758166e335a5a9a0d2541f4da71eb27d794d643e7bbb29c5a5b72a604d2"
+    },
+    {
+      "name": "20261002230000_stale_order_alert_hours",
+      "sha256": "38ac7d6832f7a36b185023e340659eb8d1073f12d20d2997410b1c691e4af365"
+    },
+    {
+      "name": "20261003000000_whatsapp_shift_report",
+      "sha256": "b4ec0a25e008d9352f4ff40913a6cbcb33199672b8ede013bf497ccbbfd98f38"
+    },
+    {
+      "name": "20261003010000_deferred_stock_deduction",
+      "sha256": "e4a2ca47c71abb2fce0310c9c2a91dffb34e70f6f69c8e6eb36d345c3feac48b"
+    },
+    {
+      "name": "20261004010000_overnight_cash_storage",
+      "sha256": "6bbee04b7ad0e20d37451dc51a1388edac8df6654faa0a3f9782675d14821049"
+    },
+    {
+      "name": "20261004011000_overnight_cash_mismatch",
+      "sha256": "d559a16b465921ea220cb1b3ac88f1988ed214b26d472a887e42ba3716d0e7fd"
+    },
+    {
+      "name": "20261004020000_place_receipts",
+      "sha256": "90ea923c225630b77e359f5012353f2f07248fbd6db507fa5cecae2e03cec1c0"
+    },
+    {
+      "name": "20261004021000_place_photos",
+      "sha256": "c46908cc4ed76cc0f3051f28510f6a08ec81edd942a4b1d36c0e365f82f97a57"
+    },
+    {
+      "name": "20261004030000_owner_action_approvals",
+      "sha256": "aae99cf4d50d0836a8755185d0d019f68435c54a49d5306a6eee055a4df1d379"
+    },
+    {
+      "name": "20261004030500_owner_action_execution_expiry",
+      "sha256": "d3fe2e43c47454827616a099317cc3c1dd72f5c76f656e617852ac021491d83f"
+    },
+    {
+      "name": "20261004031000_owner_passcodes",
+      "sha256": "156a92c6aa9f5e934676bc8d99a368275fd5449becddaea9dc608c61ea0eee22"
+    },
+    {
+      "name": "20261004032000_saved_order_item_void",
+      "sha256": "a2b0277964095431e4af996805d7a515ce3c88537391b47618e2523ac1a3e778"
+    },
+    {
+      "name": "20261004033000_void_approval_set_null",
+      "sha256": "74dfe38caf517f57f4e3dd97c669645154c49a37c9b82fafe4a8766e79e3d3cd"
+    },
+    {
+      "name": "20261004190000_nextcup_historical_sales",
+      "sha256": "62df74313f02d4eb671002e1f3888f67048d7d7f792296dac1949803b6f658fc"
+    },
+    {
+      "name": "20261005160000_request_idempotency",
+      "sha256": "4cc85ce167181f1d7cb2b1ae8ccba45db19b07e40bd80ffaefc86ec0076cdbf1"
+    },
+    {
+      "name": "20261005180000_idempotency_failed",
+      "sha256": "f50618e49f8da0d7184d89dd426722d91d624cf86a80bdce5bea52c54f0102a6"
+    },
+    {
+      "name": "20261008120000_session_revocation",
+      "sha256": "7e20b7b6008a6b11712e6d9cab7023c037e9c8a83469580559db25e148ba6f06"
+    },
+    {
+      "name": "20261011210000_finished_goods_sales",
+      "sha256": "e42c498a467e4bd4fcd1a99ca7fb412bd95a46ef3fd8df4b6e8bebf7c2e100aa"
+    },
+    {
+      "name": "20261024130000_stale_order_alert_minutes",
+      "sha256": "cf79fa4067a7215bc96c12bfb4770a6f24de697b0efe080cb3c0a0d9a5419a25"
+    },
+    {
+      "name": "20261024150000_sales_amendments",
+      "sha256": "234b43bf0ea008fd9aaa193674f7dbc0c6596bda23457945a8f6a0fd3880fff8"
+    },
+    {
+      "name": "20261024153000_amendment_kitchen_delta",
+      "sha256": "d2166917d01f21684acb1e430585088ebe5c68382814cfd11e3b665d6e59fce3"
+    },
+    {
+      "name": "20261024160000_amendment_owner_target_shape",
+      "sha256": "d13e43ec5bfe70942d4b09cd1273205312dad00407da6de6c756547d70905b7a"
+    },
+    {
+      "name": "20261024163000_amendment_tender_reference",
+      "sha256": "19c289986b198e6c26b6deb36690e6651c340efb33a4430218ab5bd52e873371"
+    },
+    {
+      "name": "20261025070000_branch_reporting_hours",
+      "sha256": "7c10f3a3ded3c6a07f4663b1c0b32b10daef7ca1c875d1c0a5c232495049544c"
+    },
+    {
+      "name": "20261025070100_reporting_version_immutable",
+      "sha256": "99dabb5df91f087fb1e6a94b542e0f7eff163cb076a6bbc15899e37d6c38f8a6"
+    },
+    {
+      "name": "20261028193000_purchase_payment_funding_source",
+      "sha256": "cc27ef4ecac8009abf01ea0b5c621231b859e05da7b46dd829b04c0e016ded11"
+    },
+    {
+      "name": "20261028200000_accounting_ledger_core",
+      "sha256": "daffdf0a39e02c2f177f3072aba107768b5b1b6db50e6c897bb14400a5ebb248"
+    },
+    {
+      "name": "20261029100000_accounting_projection_tracking",
+      "sha256": "015b55ad7bb05a4a2ba4245e2391194f780a2cad0e769ab62d8b1d54e8fd3da5"
+    },
+    {
+      "name": "20261030130000_hnd_ux_004_materials_cadence",
+      "sha256": "68a441b4f89577464bb11bf9fcd873592c231de49abeb70bf07d232cd978a0a2"
+    },
+    {
+      "name": "20261030170000_cash_receipt_optional_reason",
+      "sha256": "a59df8efb95444bd1efa4d970982d7838fdc86a496d5a8bd805ce32c3897bf62"
+    },
+    {
+      "name": "20261030190000_drawer_operating_expenses",
+      "sha256": "c97d38d9859a10c69f5e0fbb40099ec3819e72dd6efe26e8994e5576beea7efe"
+    },
+    {
+      "name": "20261031220000_treasury_accounts_transfers",
+      "sha256": "df1cc04762a22b6ed6e1303102400848f65effbc2cf5a2fb5fd8f0bdef410765"
+    }
+  ],
+  "noBusinessRewriteStatements": true,
+  "checks": {
+    "inventoryTenantMismatches": 0,
+    "duplicateBranchTableNumbers": 0
+  },
+  "productionBuildExit": 0,
+  "pureTests": {
+    "passed": 29,
+    "failed": 0,
+    "skipped": 0
+  },
+  "lintExit": 0,
+  "backup": "Railway volume snapshot 2026-11-02 12:40 Cairo, 123 MB; screenshot retained"
+}

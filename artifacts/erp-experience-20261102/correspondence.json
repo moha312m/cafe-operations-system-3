@@ -1,0 +1,15 @@
+{
+  "state": "VERIFIED",
+  "at": "2026-11-02T22:21:50.876Z",
+  "name": "cafe_ops_test_integr20261101_replay_66515e42c85e8ec4",
+  "host": "127.0.0.1",
+  "port": "5434",
+  "directory": "C:/Dev/_nextcup_test_postgres/pgdata",
+  "system_identifier": "7693368256609479860",
+  "oid": "65538",
+  "markerVerified": true,
+  "completedMigrations": 91,
+  "sourceFiles": 954,
+  "sourceSha256": "e7feaf6ebb83f3846cd1a8dbf8569ed830f82292216dbc50b3e4be2c39a74db6",
+  "url": "http://localhost:3113"
+}

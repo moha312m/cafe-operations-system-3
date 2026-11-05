@@ -1,0 +1,17 @@
+import assert from 'node:assert/strict';
+import {readFileSync,writeFileSync} from 'node:fs';
+import path from 'node:path';
+import {sha,sourceFiles} from './workspace-guard.mjs';
+const here=path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/,'$1'));
+const file=path.join(here,'private-config.json'),config=JSON.parse(readFileSync(file,'utf8'));
+assert.equal(sha(readFileSync(config.source.file)),config.source.sha256);
+const before=JSON.parse(readFileSync(config.source.file,'utf8'));
+const after=Object.fromEntries(sourceFiles().map(f=>[f,sha(readFileSync(path.join(config.root,f)))]));
+assert.deepEqual(Object.keys(before).sort(),Object.keys(after).sort());
+const changed=Object.keys(after).filter(f=>before[f]!==after[f]);
+assert.deepEqual(changed,['src/app/api/expenses/route.ts']);
+writeFileSync(path.join(here,'private-config-before-expense-fix.json'),readFileSync(file),{flag:'wx'});
+const next=path.join(here,'source-v2.json');writeFileSync(next,JSON.stringify(after,null,2),{flag:'wx'});
+config.source={file:next,sha256:sha(readFileSync(next))};writeFileSync(file,JSON.stringify(config,null,2));
+writeFileSync(path.join(here,'expense-fix-source-delta.json'),JSON.stringify({at:new Date().toISOString(),changed,before:before[changed[0]],after:after[changed[0]],currentManifestSha256:config.source.sha256,reason:'Reproduced expense search500: DTO categoryName is stored as categoryNameSnapshot; explicit Prisma where type added.'},null,2),{flag:'wx'});
+console.log('Recorded exact one-route expense fix as immutable sourcev2; all other source inputs unchanged.');

@@ -1,0 +1,67 @@
+{
+  "startedAt": "2026-11-02T09:15:44.170Z",
+  "completedAt": "2026-11-02T09:16:04.436Z",
+  "status": "PASS",
+  "cases": [
+    {
+      "name": "unconfigured statement GET creates no entity/chart/period/journal/projection rows",
+      "status": "PASS"
+    },
+    {
+      "name": "missing report/accounting permissions and revoked current login fail server-side",
+      "status": "PASS"
+    },
+    {
+      "name": "branch-pinned reader cannot widen purchase or cafe-wide financial statement scope",
+      "status": "PASS"
+    },
+    {
+      "name": "purchase canonical query agrees with pagination and full-filter totals",
+      "status": "PASS"
+    },
+    {
+      "name": "purchase screen/snapshot/CSV/print/Excel agree; Arabic formulas remain text",
+      "status": "PASS"
+    },
+    {
+      "name": "wrong tenant cannot select fixture branch or drill into original purchase",
+      "status": "PASS"
+    },
+    {
+      "name": "old purchase snapshot is refused after each current source/export permission is revoked",
+      "status": "PASS"
+    },
+    {
+      "name": "same actor cannot export purchase snapshot after assignment changes to another branch",
+      "status": "PASS"
+    },
+    {
+      "name": "configured statements equal canonical backend calculations and GET/output create no accounting rows",
+      "status": "PASS"
+    },
+    {
+      "name": "configured branch income remains scoped despite wider requested branch/cafe",
+      "status": "PASS"
+    },
+    {
+      "name": "owner-selected branch income uses canonical branch query and exports its exact snapshot",
+      "status": "PASS"
+    },
+    {
+      "name": "old statement snapshot requires current accounting.view/accounting.export/reports.export",
+      "status": "PASS"
+    },
+    {
+      "name": "old cafe-wide statement snapshot fails after current owner assignment narrows to branch",
+      "status": "PASS"
+    }
+  ],
+  "totals": {
+    "pass": 13,
+    "fail": 0,
+    "notRun": 0
+  },
+  "retained": true,
+  "runId": "workspace20261102-1949053d4248",
+  "sourceSha256": "1561dc1f3b10cde88e6d212168d211ede6ccdaa5e8cc1db11f0ec50264973abb"
+}

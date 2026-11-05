@@ -49,6 +49,8 @@ export function buildHandoverReport(p: HandoverPayload, meta: ReportMeta): Hando
     ["الإقفال المالي", stamp(o.financiallyClosedAt, tz)],
     ["تقديم العهدة", stamp(o.signatures.submittedAt, tz)],
     ["اكتمال التسليم", stamp(o.signatures.completedAt, tz)],
+    ["إقرار الاستلام", o.signatures.directAcknowledgedAt ? `إقرار استلام مباشر بدون عدّ مستقل (${o.signatures.directAcknowledgedBy ?? o.signatures.incomingName ?? "المستلم"} — ${stamp(o.signatures.directAcknowledgedAt, tz)})` : branchCustody ? "توقيع باسم الفرع" : o.signatures.acceptedAt ? `ورقة استلام تفصيلية (${o.signatures.incomingName ?? "المستلم"})` : "لم يتم بعد"],
+    ["توزيع النقدية عند الإقفال", o.cashDisposition ? `مُسلَّم للمالك/المدير: ${o.cashDisposition.deliveredAmount} ${cur} · متروك في الدرج كعهدة: ${o.cashDisposition.retainedAmount} ${cur}` : "غير مسجل"],
     ["وقت إنشاء التقرير", stamp(meta.generatedAt, tz)],
     ["أنشأه", meta.viewerName],
     ["المنطقة الزمنية", tz],
@@ -71,6 +73,11 @@ export function buildHandoverReport(p: HandoverPayload, meta: ReportMeta): Hando
         amt("الدرج المتوقع", m.expectedDrawer), amt("المعدود عند الإقفال", m.closingCount), amt("فرق الكاش عند الإقفال", m.closingDifference),
         ["سبب فرق الكاش", m.closingReason ?? (num(m.closingDifference) ? "غير مسجل" : "—")],
         amt("المحوّل المقترح للشيفت التالي", m.proposedTransfer), amt("الكاش المستلم عند الاستلام", m.receivedCash), amt("فرق الاستلام", m.receiptDifference),
+        ...(o.cashDisposition ? [
+          ["النقدية المُسلَّمة للمالك/المدير", o.cashDisposition.deliveredAmount] as XlsxCell[],
+          ["النقدية المتروكة في الدرج كعهدة (افتتاح الشيفت التالي)", o.cashDisposition.retainedAmount] as XlsxCell[],
+          ["حالة عهدة الدرج المتروكة", o.cashDisposition.retainedCustody.statusLabel] as XlsxCell[],
+        ] : []),
         ["عدد الطلبات", m.orderCount],
       ],
     });
@@ -80,26 +87,92 @@ export function buildHandoverReport(p: HandoverPayload, meta: ReportMeta): Hando
     });
   }
 
+  // Cash disposition & recipient confirmations — allocations, retained drawer custody and confirmation/dispute states.
+  tables.push({
+    key: "cash_disposition",
+    title: "توزيع النقدية والتسليمات",
+    note: o.cashDisposition
+      ? "توزيع النقدية المعدودة عند الإقفال بين التسليم للمالك/المدير والمتروك في الدرج كعهدة للشيفت التالي. البطاقة والمحفظة تسويات إلكترونية ولا تدخل في توزيع النقدية."
+      : "لم يُسجّل توزيع نقدية لهذا التسليم.",
+    columns: ["الجهة", "المستلم / المسؤول", `المبلغ (${cur})`, "الحالة", "وقت الإعلان / التأكيد", "ملاحظات / تفاصيل الاختلاف"],
+    rows: o.cashDisposition ? [
+      ...o.cashDisposition.deliveries.map((d) => [
+        d.destinationLabel,
+        d.recipientName,
+        d.amount,
+        d.statusLabel,
+        d.confirmedAt ? stamp(d.confirmedAt, tz) : stamp(d.declaredAt, tz),
+        d.status === "DISPUTED"
+          ? `اختلاف مُبلَّغ: ${d.disputeNote ?? "—"}${d.claimedReceivedAmount !== null ? ` (المستلم فعليًا: ${d.claimedReceivedAmount})` : ""}`
+          : d.status === "RESOLVED"
+            ? `تمت التسوية بمبلغ ${d.resolvedAmount ?? "—"}: ${d.resolutionNote ?? "—"}`
+            : (d.reference ?? "—"),
+      ] as XlsxCell[]),
+      [
+        o.cashDisposition.retainedCustody.destinationLabel,
+        o.cashDisposition.retainedCustody.holderName,
+        o.cashDisposition.retainedCustody.amount,
+        o.cashDisposition.retainedCustody.statusLabel,
+        stamp(o.cashDisposition.declaredAt, tz),
+        o.cashDisposition.note ?? "رصيد افتتاح الشيفت المستلم",
+      ],
+    ] : [],
+  });
+
   // Inventory — outgoing/expected figures only once the server disclosed them (p.acknowledged).
   const acks = new Map(p.workflow.acknowledgements.map((a) => [a.stockCountLineId, a]));
   const lines = (p.count?.lines ?? []) as ReportLine[];
   const disclosed = p.acknowledged;
+  const directAcked = Boolean(o.signatures.directAcknowledgedAt);
   tables.push({
     key: "inventory", title: "الجرد",
-    note: p.count === null ? "لا يوجد جرد مربوط بالتسليم." : disclosed ? "الكميات بوحدة كل صنف؛ لا تُجمع كميات بوحدات مختلفة." : "كميات المُسلّم مخفية حتى يوقّع صاحب الاستلام (قاعدة العدّ المستقل).",
+    note: p.count === null ? "لا يوجد جرد مربوط بالتسليم." : directAcked ? "الكميات بوحدة كل صنف؛ استُلمت بإقرار مباشر من المستلم بدون إعادة عدّ مستقل." : disclosed ? "الكميات بوحدة كل صنف؛ لا تُجمع كميات بوحدات مختلفة." : "كميات المُسلّم مخفية حتى يوقّع صاحب الاستلام (قاعدة العدّ المستقل).",
     columns: ["الصنف", "الوحدة", "حالة السطر", "جرد المُسلّم", "الفرق عن المتوقع", branchCustody ? "توقيع الفرع" : "قرار الاستلام", "عدّ المستلم", "المُسلَّم", "فرق الاستلام"],
     rows: lines.map((l) => {
       const a = acks.get(l.id);
-      const decision = !a ? (l.disposition === "PENDING" ? "غير معدود — خارج التوقيع" : branchCustody ? "لم يُوقّع بعد" : "لم يُسجّل استلام") : a.decision === "DISPUTED" ? "معترض عليه" : branchCustody ? "موقّع باسم الفرع" : "مُستلَم";
+      const decision = !a
+        ? (l.disposition === "PENDING" ? "غير معدود — خارج التوقيع" : directAcked ? "إقرار استلام مباشر" : branchCustody ? "لم يُوقّع بعد" : "لم يُسجّل استلام")
+        : a.decision === "DISPUTED" ? "معترض عليه" : branchCustody ? "موقّع باسم الفرع" : "مُستلَم";
       return [
         l.inventoryItem.name, l.unit, DISPOSITION_LABEL[l.disposition as keyof typeof DISPOSITION_LABEL] ?? l.disposition,
         disclosed ? (num(l.countedQuantity) ?? "—") : HIDDEN, disclosed ? (num(l.varianceQuantity) ?? "—") : HIDDEN,
         decision,
-        a ? (a.incomingCountedQuantity == null ? "بدون عدّ مستقل" : num(a.incomingCountedQuantity) ?? "—") : "—",
-        a ? (num(a.handedOverQuantity) ?? "—") : "—",
+        a ? (a.incomingCountedQuantity == null ? "بدون عدّ مستقل" : num(a.incomingCountedQuantity) ?? "—") : (directAcked && l.disposition !== "PENDING" ? "بدون عدّ مستقل" : "—"),
+        a ? (num(a.handedOverQuantity) ?? "—") : (directAcked && disclosed && l.disposition !== "PENDING" ? (num(l.countedQuantity) ?? "—") : "—"),
         a && a.incomingCountedQuantity != null ? (num(a.varianceQuantity) ?? "—") : "—",
       ];
     }),
+  });
+
+  // Reported handover issues and delivery disputes.
+  const deliveryDisputes = (o.cashDisposition?.deliveries ?? []).filter((d) => d.status === "DISPUTED" || d.status === "RESOLVED");
+  tables.push({
+    key: "issues",
+    title: "الاختلافات والملاحظات المسجلة",
+    note: "البلاغات المسجلة على التسليم أو تسليمات النقدية؛ تبقى في السجل ولا تغيّر الأرقام التاريخية.",
+    columns: ["النوع", "الصنف / الجهة", "القيمة", "الوصف", "الوقت", "المُبلِّغ / المستلم", "الحالة", "نتيجة المراجعة"],
+    rows: [
+      ...(o.issues ?? []).map((i) => [
+        i.kind === "CASH" ? "نقدية" : i.kind === "STOCK_ITEM" ? "صنف مخزون" : "أخرى",
+        i.itemNameSnapshot ?? "—",
+        i.amount ?? "—",
+        i.description,
+        `${stamp(i.reportedAt, tz)} (${i.afterAcceptance ? "بعد الاستلام" : "قبل الاستلام"})`,
+        i.reportedByName,
+        i.status === "RESOLVED" ? "تمت المراجعة" : "مفتوح",
+        i.resolutionNote ? `${i.resolutionNote}${i.resolvedByName ? ` — ${i.resolvedByName}` : ""}` : "—",
+      ] as XlsxCell[]),
+      ...deliveryDisputes.map((d) => [
+        "اختلاف تسليم نقدية",
+        d.destinationLabel,
+        d.amount,
+        d.disputeNote ?? "—",
+        stamp(d.disputedAt ?? d.declaredAt, tz),
+        d.recipientName,
+        d.statusLabel,
+        d.status === "RESOLVED" ? `المبلغ المعتمد: ${d.resolvedAmount ?? "—"} — ${d.resolutionNote ?? "—"}` : `المستلم فعليًا: ${d.claimedReceivedAmount ?? "غير محدد"}`,
+      ] as XlsxCell[]),
+    ],
   });
 
   // Carried orders.
@@ -128,7 +201,8 @@ export function buildHandoverReport(p: HandoverPayload, meta: ReportMeta): Hando
       [stamp(sig.submittedAt, tz), "تقديم العهدة", sig.outgoingName, "—"],
       [stamp(sig.acceptedAt, tz), branchCustody ? "قبول باسم الفرع" : "قبول المستلم", branchCustody ? "الفرع (توقيع مسؤول)" : (sig.incomingName ?? "لم يُسجل"), "—"],
       [stamp(sig.completedAt, tz), "اكتمال التسليم", "—", "—"],
-      [stamp(sig.cashVerifiedAt, tz), "تحقق النقدية", sig.cashVerifiedBy ?? "لم يُسجل", "—"],
+      ...(sig.directAcknowledgedAt ? [[stamp(sig.directAcknowledgedAt, tz), "إقرار استلام مباشر (بدون عدّ مستقل)", sig.directAcknowledgedBy ?? sig.incomingName ?? "لم يُسجل", "إقرار باستلام العهدة كما عُرضت في الملخص"] as XlsxCell[]] : []),
+      [stamp(sig.cashVerifiedAt, tz), "تحقق النقدية", sig.cashVerifiedBy ?? "لم يُسجل", sig.directAcknowledgedAt && !sig.cashVerifiedAt ? "غير مطلوب في الاستلام المباشر" : "—"],
     ],
   });
   return { identity, tables };

@@ -1,0 +1,13 @@
+{
+  "at": "2026-11-02T15:28:35.895882+00:00",
+  "file": "C:\\Users\\Acer\\.codex\\worktrees\\nextcup-workspace-redesign\\cafe-operations-system-3\\tests\\experience-step1-tables.test.ts",
+  "oldSHA256": "6355f01c55bd8882a1d44c0a531c555bbbf66c753231de8c0f1e6ffae0cd38e4",
+  "newSHA256": "171d6be819223bc16bcd9620362fa0d3b82be742b63bdb9b7d3debae6009d7a6",
+  "changes": [
+    "warm owned PATCH before queue timing",
+    "bounded table identifiers 19/20 characters",
+    "verified wr_ synthetic ID namespace"
+  ],
+  "applicationCodeChanged": false,
+  "historicalGuardChanged": false
+}

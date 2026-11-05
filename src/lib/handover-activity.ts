@@ -25,6 +25,14 @@ const LABELS: Record<string, string> = {
   SHIFT_CUSTODY_GATE_REDECIDED: "الشيفت المنتظر انتقل للتحقق من العهدة الافتتاحية",
   BRANCH_CUSTODY_VERIFIED: "التحقق من العهدة الافتتاحية",
   CASH_DIFFERENCE_DETECTED: "تسجيل فرق نقدية",
+  SHIFT_CASH_DISPOSITION_RECORDED: "تحديد مصير نقدية الإقفال",
+  CASH_DELIVERY_DECLARED: "إعلان تسليم نقدية للمالك/المدير",
+  CASH_DELIVERY_CONFIRMED: "تأكيد استلام النقدية المُسلَّمة",
+  CASH_DELIVERY_DISPUTED: "إبلاغ المستلم عن اختلاف في النقدية المُسلَّمة",
+  CASH_DELIVERY_DISPUTE_RESOLVED: "تسوية المالك لاختلاف النقدية المُسلَّمة",
+  HANDOVER_DIRECT_CASH_OPENING: "انتقال النقدية المتروكة في الدرج للشيفت المستلم",
+  HANDOVER_ISSUE_REPORTED: "الإبلاغ عن اختلاف في التسليم",
+  HANDOVER_ISSUE_RESOLVED: "مراجعة وإقفال بلاغ اختلاف",
 };
 const ACTIONS = Object.keys(LABELS);
 
@@ -40,6 +48,9 @@ export async function handoverActivity(args: { cafeId: string; handoverId: strin
         { entity: "Shift", entityId: { in: shiftIds } },
         // A shift that was waiting and carried to opening verification by this handover's conversion.
         { entity: "Shift", action: "SHIFT_CUSTODY_GATE_REDECIDED", details: { path: ["handoverId"], equals: args.handoverId } },
+        { entity: "ShiftCashDisposition", details: { path: ["shiftId"], equals: args.outgoingShiftId } },
+        { entity: "CashDeliveryDeclaration", details: { path: ["shiftId"], equals: args.outgoingShiftId } },
+        { entity: "HandoverIssue", details: { path: ["handoverId"], equals: args.handoverId } },
         ...(args.countSessionIds.length ? [{ entity: "StockCountSession", entityId: { in: args.countSessionIds } }] : []),
       ],
     },
@@ -49,9 +60,13 @@ export async function handoverActivity(args: { cafeId: string; handoverId: strin
   return rows.map((r) => {
     const d = (r.details && typeof r.details === "object" ? r.details : {}) as Record<string, unknown>;
     const note = typeof d.note === "string" && d.note.trim() ? d.note.trim() : null;
+    const desc = typeof d.description === "string" && d.description.trim() ? d.description.trim() : null;
     const detail = r.action === "HANDOVER_MANAGER_EXCEPTION" ? note
       : r.action === "HANDOVER_RECOUNT_REQUESTED" && typeof d.disputedCount === "number" ? `${d.disputedCount} سطر معترض عليه`
-      : r.action === "HANDOVER_ORDERS_CARRIED" && typeof d.count === "number" ? `${d.count} طلب` : null;
+      : r.action === "HANDOVER_ORDERS_CARRIED" && typeof d.count === "number" ? `${d.count} طلب`
+      : r.action === "HANDOVER_ACCEPTED" && d.acceptanceMode === "DIRECT_ACKNOWLEDGEMENT" ? "إقرار استلام مباشر (بدون عدّ مستقل)"
+      : r.action === "CASH_DELIVERY_DISPUTED" || r.action === "CASH_DELIVERY_DISPUTE_RESOLVED" || r.action === "HANDOVER_ISSUE_RESOLVED" ? note
+      : r.action === "HANDOVER_ISSUE_REPORTED" ? desc : null;
     return { at: r.createdAt.toISOString(), action: r.action, label: LABELS[r.action] ?? r.action, actor: r.user?.name ?? null, detail };
   });
 }

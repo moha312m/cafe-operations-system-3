@@ -95,9 +95,18 @@ export function BranchSigningPanel({ handoverId, lines, acknowledgements, signed
 
   return (
     <section className="space-y-3 rounded-xl border p-3" data-testid="branch-custody-sign" aria-label="توقيع سطور الجرد لعهدة الفرع">
+      <div className="rounded-lg bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 p-3 text-sm text-blue-900 dark:text-blue-100">
+        <p className="font-semibold flex items-center gap-1.5 mb-1 text-blue-900 dark:text-blue-200">
+          <span>💡</span>
+          <span>كيف يتم توقيع السطور؟ (لا توجد خانة لكتابة توقيع أو نص)</span>
+        </p>
+        <p className="text-xs leading-relaxed text-blue-800 dark:text-blue-300">
+          المقصود بـ «التوقيع» هنا ليس كتابة اسمك أو توقيع يدوي بالقلم، بل <strong>مجرد الضغط على الزر بالأسفل</strong> («اضغط هنا: تأكيد واعتماد السطور باسم الفرع»). عند الضغط عليه، يقوم النظام بتسجيل اعتماد السطور المعدودة إلكترونياً باسمك فوراً.
+        </p>
+      </div>
       <div>
-        <p className="font-medium">توقيع سطور الجرد باسم الفرع</p>
-        <p className="text-xs text-muted-foreground">مفيش موظف مستلم في عهدة الفرع، فمسؤول بصلاحية الاستثناء بيوقّع باسم الفرع. التوقيع مابيغيّرش الكميات المعدودة، ومش عدًّا مستقلًا.</p>
+        <p className="font-medium">تأكيد واعتماد سطور الجرد باسم الفرع</p>
+        <p className="text-xs text-muted-foreground">مفيش موظف مستلم في عهدة الفرع (إغلاق مبيت)، فمسؤول بصلاحية الاستثناء بيعتمد السطور بالزر باسم الفرع. الإجراء مابيغيّرش الكميات المعدودة، ومش عدًّا مستقلًا.</p>
       </div>
       <dl className="grid gap-2 text-sm sm:grid-cols-3">
         <div className="rounded-lg border bg-muted/30 p-2"><dt className="text-xs text-muted-foreground">سطور هتتوقّع</dt><dd className="font-semibold tabular-nums" data-testid="branch-sign-eligible">{pendingIds.length}</dd></div>
@@ -115,8 +124,8 @@ export function BranchSigningPanel({ handoverId, lines, acknowledgements, signed
         </div>
       )}
 
-      <Button size="sm" disabled={running} onClick={() => setConfirm(true)} data-testid="branch-custody-sign-all">
-        {running ? "جارٍ التوقيع…" : progress.phase === "stopped" ? "متابعة التوقيع" : "توقيع السطور باسم الفرع"}
+      <Button size="sm" disabled={running} onClick={() => setConfirm(true)} data-testid="branch-custody-sign-all" className="font-medium">
+        {running ? "جارٍ الاعتماد والتوقيع…" : progress.phase === "stopped" ? "متابعة التوقيع" : "اضغط هنا: تأكيد واعتماد السطور باسم الفرع (زر إلكتروني)"}
       </Button>
       <ConfirmHandoverAction title="توقيع باسم الفرع" open={confirm} busy={running} onCancel={() => setConfirm(false)} onConfirm={() => void run()}>
         هتوقّع {pendingIds.length} سطر جرد باسم الفرع كمستخدم «{actorName}». التوقيع بيؤكد إنك راجعت السطور المعدودة بدون عدّ جديد، ومابيغيّرش الكميات. السطور غير المعدودة ({excluded.length}) خارج التوقيع. التوقيع بيتسجل بوقته واسمك.

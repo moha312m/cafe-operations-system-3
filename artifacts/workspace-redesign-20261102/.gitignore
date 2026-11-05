@@ -1,0 +1,2 @@
+# Synthetic runtime credentials and cookies stay local to this disposable run.
+private*.json

@@ -1,0 +1,54 @@
+{
+  "at": "2026-11-02T15:48:50.883Z",
+  "proof": {
+    "at": "2026-11-02T15:48:44.789Z",
+    "name": "cafe_ops_test_integr20261101_replay_66515e42c85e8ec4",
+    "host": "127.0.0.1",
+    "port": "5434",
+    "directory": "C:/Dev/_nextcup_test_postgres/pgdata",
+    "system_identifier": "7693368256609479860",
+    "oid": "65538",
+    "markerVerified": true,
+    "completedMigrations": 91,
+    "sourceFiles": 947,
+    "sourceSha256": "d578e26a72b9003be335086b678e78a2fb3dcf7c0e5b82907c53d7d226c981ff"
+  },
+  "testHooksRemaining": [],
+  "testFunctionsRemaining": [],
+  "order": {
+    "id": "cmvzffc2a004vhl6spottt21m",
+    "orderNumber": 25,
+    "status": "CONFIRMED",
+    "total": "12.5",
+    "paidAmount": "12.5",
+    "remainingAmount": "0",
+    "paymentStatus": "PAID",
+    "saleShiftId": "cmvz1x8nm017phlw4cxujad58",
+    "stockDeductedAt": null,
+    "items": [
+      {
+        "productId": "cmvzfenxb0003hlbkbjco0ift",
+        "quantity": 1
+      }
+    ],
+    "payments": [
+      {
+        "id": "cmvzffc42004zhl6stuauhasj",
+        "amount": "12.5",
+        "method": "CASH",
+        "type": "COLLECTION",
+        "status": "PAID",
+        "shiftId": "cmvz1x8nm017phlw4cxujad58"
+      }
+    ]
+  },
+  "restoredTable": {
+    "id": "cmvzf79st004nhl6sf5fmax0g",
+    "tableNumber": "UI-LONG-20261102-ABC",
+    "displayName": "ترابيزة تجربة الواجهة",
+    "archivedAt": null,
+    "isActive": false
+  },
+  "allSyntheticEvidenceRetained": true,
+  "ownerDatabaseAccessed": false
+}

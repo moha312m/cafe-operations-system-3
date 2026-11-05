@@ -1,0 +1,40 @@
+{
+  "at": "2026-11-02T09:23:32.480Z",
+  "runId": "workspace20261102-1949053d4248",
+  "sourceSha256": "1561dc1f3b10cde88e6d212168d211ede6ccdaa5e8cc1db11f0ec50264973abb",
+  "status": "FAIL",
+  "cases": [
+    {
+      "name": "account create/replay preserves unknown balances; named search, kind and branch filters use scoped canonical rows",
+      "status": "PASS"
+    },
+    {
+      "name": "account edits preserve version conflicts and archive/list active status; statements do not invent balances",
+      "status": "PASS"
+    },
+    {
+      "name": "draft/replay has one effect, dispatch needs actual confirmation and refuses unknown opening; cancel records no movements",
+      "status": "FAIL",
+      "detail": "Search is account names/reference, not note\n\n1 !== 0\n"
+    },
+    {
+      "name": "treasury owner-only, revoked-session and tenant guards remain authoritative",
+      "status": "PASS"
+    },
+    {
+      "name": "expense filters/count/totals match actual retained drawer payouts; retry creates one receipt",
+      "status": "FAIL",
+      "detail": "Expected values to be strictly equal:\n\n500 !== 200\n"
+    }
+  ],
+  "retainedIds": {
+    "bank": "cmvz1wsll0171hlw4rslw7e1i",
+    "wallet": "cmvz1wswf0175hlw44gml4lpi",
+    "safe": "cmvz1wt4n0179hlw4j0y7eveq",
+    "otherBank": "cmvz1wtdr017dhlw4ie0w9efj",
+    "transfer": "cmvz1x1ic017lhlw4nj35rpz9",
+    "shift": "cmvz1x8nm017phlw4cxujad58",
+    "expense": "cmvz1xakx0185hlw43eouty3p",
+    "expenseOther": "cmvz1xasy0189hlw4w8p0rmx4"
+  }
+}

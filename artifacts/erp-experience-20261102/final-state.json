@@ -1,0 +1,19 @@
+{
+  "status": "PARTIALLY COMPLETE",
+  "head": "fe38dab1118ecf8c3e69a78e54b8f638a4ac709f",
+  "sourceCommit": "c4bd90f3ac457294d4e3477238e2912c1e56361e",
+  "branch": "codex/nextcup-workspace-redesign-20261102",
+  "sourcePins": 947,
+  "trackedTaskSource": "clean",
+  "taskIndex": "empty",
+  "ownerHeadUnchanged": true,
+  "ownerIndex": "empty",
+  "upstreamUnchanged": true,
+  "preview": "unverified and stopped",
+  "pure": {
+    "pass": 51,
+    "fail": 0,
+    "runtimeSkipped": 1
+  },
+  "noPushMergeDeploy": true
+}

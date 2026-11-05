@@ -1,0 +1,14 @@
+﻿[
+    {
+        "check":  "focused pure/component/pending-intent/receipt",
+        "exit":  1
+    },
+    {
+        "check":  "focused eslint",
+        "exit":  0
+    },
+    {
+        "check":  "full integration typecheck",
+        "exit":  0
+    }
+]

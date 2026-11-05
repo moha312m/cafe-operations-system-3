@@ -1,0 +1,31 @@
+{
+  "at": "2026-11-03T15:47:39.598Z",
+  "proof": {
+    "at": "2026-11-03T15:47:38.565Z",
+    "name": "cafe_ops_test_integr20261101_replay_66515e42c85e8ec4",
+    "host": "127.0.0.1",
+    "port": "5434",
+    "directory": "C:/Dev/_nextcup_test_postgres/pgdata",
+    "system_identifier": "7693368256609479860",
+    "oid": "65538",
+    "markerVerified": true,
+    "completedMigrations": 91,
+    "sourceFiles": 986,
+    "sourceSha256": "38f3c9356fecd3ea080bf6f571e0f26b6359f3af881b74c494906026c7c19f74"
+  },
+  "canonicalDailyNetSales": 9915,
+  "allResultsWithPageSize1": 61,
+  "pageSize101Status": 400,
+  "oversizedSnapshotStatus": 400,
+  "xlsxArabicAndLeadingZeroText": true,
+  "syntheticDiscountMetadataCorrected": 1,
+  "amountsOrPricesChanged": false,
+  "retainedPosReceipt": {
+    "orderId": "cmvziv84c000chl7k8573scsa",
+    "total": "60",
+    "paymentCount": 1,
+    "moneyUnchanged": true,
+    "stockBeforeAndAfter": "26",
+    "auditedReprintIncrement": 1
+  }
+}

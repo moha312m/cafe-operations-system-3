@@ -1,0 +1,43 @@
+{
+  "at": "2026-11-02T10:05:14.971238+00:00",
+  "comparison": "Concrete process arrays normalized explicitly from retained PowerShell serialization; every PID/executable/command/creation value compared",
+  "comparedOwnerPids": [
+    17800,
+    25068
+  ],
+  "ownerProcesses": [
+    {
+      "ProcessId": 17800,
+      "ExecutablePath": "C:\\Dev\\_nextcup_postgres\\pg17\\bin\\postgres.exe",
+      "CommandLine": "\"C:/Dev/_nextcup_postgres/pg17/bin/postgres.exe\"  -D \"C:/Dev/_nextcup_postgres/pgdata\" -p 5433 ",
+      "CreationDate": "/Date(1793581028185)/"
+    },
+    {
+      "ProcessId": 25068,
+      "ExecutablePath": "C:\\nvm4w\\nodejs\\node.exe",
+      "CommandLine": "C:\\nvm4w\\nodejs\\node.exe C:\\Dev\\cafe-operations-system-3\\node_modules\\next\\dist\\bin\\next start --hostname 127.0.0.1 --port 3110",
+      "CreationDate": "/Date(1793581514128)/"
+    }
+  ],
+  "ownedPreviewProcesses": [
+    {
+      "ProcessId": 20568,
+      "ParentProcessId": 16120,
+      "ExecutablePath": "C:\\nvm4w\\nodejs\\node.exe",
+      "CommandLine": "C:\\nvm4w\\nodejs\\node.exe C:\\Users\\Acer\\.codex\\worktrees\\nextcup-workspace-redesign\\cafe-operations-system-3\\node_modules\\next\\dist\\bin\\next dev --webpack --hostname 127.0.0.1 --port 3113",
+      "CreationDate": "/Date(1793610469833)/"
+    },
+    {
+      "ProcessId": 23188,
+      "ParentProcessId": 20568,
+      "ExecutablePath": "C:\\nvm4w\\nodejs\\node.exe",
+      "CommandLine": "C:\\nvm4w\\nodejs\\node.exe C:\\Dev\\cafe-operations-system-3\\node_modules\\next\\dist\\server\\lib\\start-server.js",
+      "CreationDate": "/Date(1793610473472)/"
+    }
+  ],
+  "ownerProcessIdentitiesPreserved": true,
+  "ownerLoginHttpStatus": 200,
+  "noProcessControlPerformed": true,
+  "noOwnerDatabaseQueriesPerformed": true,
+  "rawEvidenceSha256": "c323d0d048be25a88ad9bfb59d4ee492c9983c9f964a0f5a83ab75c52f57390c"
+}

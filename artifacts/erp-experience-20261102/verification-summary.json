@@ -1,0 +1,10 @@
+{
+  "strictTypes": "PASS",
+  "codeLint": "PASS",
+  "purePass": 51,
+  "pureFail": 0,
+  "runtimeSkipped": 1,
+  "arabicPlaceholderScan": "PASS",
+  "historicalGuard": "unchanged",
+  "logEncoding": "PowerShell UTF-16LE preserved and decoded"
+}

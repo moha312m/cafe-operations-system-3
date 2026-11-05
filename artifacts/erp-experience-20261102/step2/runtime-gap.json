@@ -1,0 +1,6 @@
+{
+  "state": "UNVERIFIED",
+  "at": "2026-11-03T14:32:53.101Z",
+  "error": "Can't reach database server at `127.0.0.1:5434`\n\nPlease make sure your database server is running at `127.0.0.1:5434`.",
+  "noMutationsAttempted": true
+}

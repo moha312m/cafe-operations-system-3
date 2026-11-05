@@ -1,0 +1,32 @@
+{
+  "at": "2026-11-02T17:20:12.441Z",
+  "proof": {
+    "at": "2026-11-02T17:19:55.645Z",
+    "name": "cafe_ops_test_integr20261101_replay_66515e42c85e8ec4",
+    "host": "127.0.0.1",
+    "port": "5434",
+    "directory": "C:/Dev/_nextcup_test_postgres/pgdata",
+    "system_identifier": "7693368256609479860",
+    "oid": "65538",
+    "markerVerified": true,
+    "completedMigrations": 91,
+    "sourceFiles": 954,
+    "sourceSha256": "bf8da34bd2d2184b6eee166f46c8f6a182cc1c830be8f686aad852081ac0b7b7"
+  },
+  "orderId": "cmvziv84c000chl7k8573scsa",
+  "invoiceNumber": 26,
+  "status": "CONFIRMED",
+  "total": "60.00",
+  "quantity": 2,
+  "variantId": "wr_7bcb819827b9409ab2ac0cc608be427a",
+  "note": "Step1B · اختبار اصطناعي — بدون سكر",
+  "paymentId": "cmvziv8jm000ghl7k2z9xt3wg",
+  "paymentCount": 1,
+  "method": "CASH",
+  "collected": "60.00",
+  "remaining": "0.00",
+  "shiftId": "cmvz1x8nm017phlw4cxujad58",
+  "stockBefore": "26",
+  "stockAfter": "26",
+  "served": false
+}

@@ -1,0 +1,119 @@
+{
+  "at": "2026-11-02T21:39:38.427Z",
+  "proof": {
+    "at": "2026-11-02T21:38:38.592Z",
+    "name": "cafe_ops_test_integr20261101_replay_66515e42c85e8ec4",
+    "host": "127.0.0.1",
+    "port": "5434",
+    "directory": "C:/Dev/_nextcup_test_postgres/pgdata",
+    "system_identifier": "7693368256609479860",
+    "oid": "65538",
+    "markerVerified": true,
+    "completedMigrations": 91,
+    "sourceFiles": 954,
+    "sourceSha256": "2d8bfd31c71c6b9407276a791c481801a3bc8b90cd18c268b82b407a54d4f1fa"
+  },
+  "requests": [
+    {
+      "route": "/api/reports/daily?reportMode=business&businessFrom=2026-11-02&businessTo=2026-11-02",
+      "phase": "first-observed",
+      "ms": 19690,
+      "status": 200,
+      "hasError": false
+    },
+    {
+      "route": "/api/reports/daily?reportMode=business&businessFrom=2026-11-02&businessTo=2026-11-02",
+      "phase": "warm",
+      "ms": 387,
+      "status": 200,
+      "hasError": false
+    },
+    {
+      "route": "/api/recipes/review",
+      "phase": "first-observed",
+      "ms": 14653,
+      "status": 200,
+      "hasError": false
+    },
+    {
+      "route": "/api/recipes/review",
+      "phase": "warm",
+      "ms": 334,
+      "status": 200,
+      "hasError": false
+    },
+    {
+      "route": "/api/expenses/categories",
+      "phase": "first-observed",
+      "ms": 150,
+      "status": 200,
+      "hasError": false
+    },
+    {
+      "route": "/api/expenses/categories",
+      "phase": "warm",
+      "ms": 92,
+      "status": 200,
+      "hasError": false
+    },
+    {
+      "route": "/api/expenses?page=1",
+      "phase": "first-observed",
+      "ms": 110,
+      "status": 200,
+      "count": 2,
+      "hasError": false
+    },
+    {
+      "route": "/api/expenses?page=1",
+      "phase": "warm",
+      "ms": 104,
+      "status": 200,
+      "count": 2,
+      "hasError": false
+    },
+    {
+      "route": "/api/tables/config?branchId=wr_768a4910b7034ed5b6737e05b6930456&includeArchived=1",
+      "phase": "first-observed",
+      "ms": 3770,
+      "status": 200,
+      "hasError": false
+    },
+    {
+      "route": "/api/tables/config?branchId=wr_768a4910b7034ed5b6737e05b6930456&includeArchived=1",
+      "phase": "warm",
+      "ms": 79,
+      "status": 200,
+      "hasError": false
+    },
+    {
+      "route": "/api/treasury/transfers/cmvz1x1ic017lhlw4nj35rpz9",
+      "phase": "first-observed",
+      "ms": 26848,
+      "status": 200,
+      "hasError": false
+    },
+    {
+      "route": "/api/treasury/transfers/cmvz1x1ic017lhlw4nj35rpz9",
+      "phase": "warm",
+      "ms": 349,
+      "status": 200,
+      "hasError": false
+    },
+    {
+      "route": "/api/treasury/accounts/cmvz1wt4n0179hlw4j0y7eveq",
+      "phase": "first-observed",
+      "ms": 12854,
+      "status": 200,
+      "hasError": false
+    },
+    {
+      "route": "/api/treasury/accounts/cmvz1wt4n0179hlw4j0y7eveq",
+      "phase": "warm",
+      "ms": 433,
+      "status": 200,
+      "hasError": false
+    }
+  ],
+  "readOnlyHttp": true
+}

@@ -50,6 +50,8 @@ const closeSchema = z
     // Where the stock is going, when the branch's policy says it has to go
     // somewhere. Stated, never inferred — see `ShiftCloseArgs.handoverTarget`.
     handoverTarget: z.enum(["SHIFT_TO_SHIFT", "BRANCH_CUSTODY"]).optional(),
+    // Opt in to the simplified direct handover (closing cash disposition required before finishing).
+    directHandover: z.boolean().optional(),
   })
   .strip();
 
@@ -129,6 +131,7 @@ export async function POST(request: NextRequest, { params }: Params) {
       actor: session,
       closedByManager: !isOwnShift,
       handoverTarget: data.handoverTarget,
+      directHandover: data.directHandover,
       grants,
     });
 

@@ -1,0 +1,10 @@
+{
+  "at": "2026-11-02T09:25:24.088Z",
+  "changed": [
+    "src/app/api/expenses/route.ts"
+  ],
+  "before": "e36df6d67f4ce8b2657163aaa07f1383def4d7c6f03ace0fc3f6a7e12942a1e2",
+  "after": "7decaf8707931a8f2f1735c0cbf665943e90d9649aa0e3689966a20d1cad10db",
+  "currentManifestSha256": "c7115584a703d03429b4df0dbc95568d718d9d31ac0d3448749d92ad301cb17e",
+  "reason": "Reproduced expense search500: DTO categoryName is stored as categoryNameSnapshot; explicit Prisma where type added."
+}

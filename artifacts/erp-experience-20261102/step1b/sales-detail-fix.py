@@ -1,0 +1,11 @@
+﻿from pathlib import Path
+p=Path('src/components/sales/sales-workspace.tsx');s=p.read_text(encoding='utf-8-sig')
+s=s.replace('detailController=useRef<AbortController|null>(null);','detailController=useRef<AbortController|null>(null),detailGeneration=useRef(0);')
+s=s.replace('async function reloadDetail(id:string){detailController.current?.abort();const controller=new AbortController();detailController.current=controller;const d=await api<Detail>', 'async function reloadDetail(id:string){detailController.current?.abort();const generation=++detailGeneration.current;const controller=new AbortController();detailController.current=controller;const d=await api<Detail>')
+s=s.replace('if(!controller.signal.aborted)setDetail(d);return d;', 'if(!controller.signal.aborted&&generation===detailGeneration.current)setDetail(d);return d;')
+s=s.replace('if(!v){setDetail(null);setEdit(null);setPreview(null);}', 'if(!v){++detailGeneration.current;detailController.current?.abort();setDetail(null);setEdit(null);setPreview(null);}')
+s=s.replace('<p>الكاشير الأصلي: {detail.order.createdBy?.name??\'طلب عميل\'} · الفرع: {detail.order.branch.name}</p><ItemTable', '''<p>الكاشير الأصلي: {detail.order.createdBy?.name??'طلب عميل'} · الفرع: {detail.order.branch.name}</p>
+    <div className="flex flex-wrap gap-3 rounded-lg bg-muted/35 p-3 text-sm"><span>حالة الدفع: {statusName[detail.order.paymentStatus]??detail.order.paymentStatus}</span><span>صافي التحصيل <bdi>{money(detail.order.paidAmount)}</bdi></span><span>المتبقي <bdi>{money(detail.order.remainingAmount)}</bdi></span><span>وسائل الدفع: {[...new Set(detail.order.payments.map(p=>p.method))].join(' / ')||'لا يوجد'}</span></div>
+    <details className="text-sm text-muted-foreground"><summary className="cursor-pointer">هوية الفاتورة والشيفت الأصلي</summary><p className="mt-2 break-all">المعرّف: <bdi>{detail.order.id}</bdi> · الشيفت الأصلي: <bdi>{detail.order.saleShiftId??detail.order.revisions[0]?.originalShiftId??detail.order.payments.find(p=>p.type==='COLLECTION')?.shiftId??'غير مسجل تاريخيًا'}</bdi></p></details><ItemTable''')
+s=s.replace("async function load(){try{setData(await api('/api/sales/limits'));}","async function load(){try{setData(await api('/api/sales/limits',{readTimeoutMs:20_000}));}")
+p.write_text(s,encoding='utf-8')

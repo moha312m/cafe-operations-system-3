@@ -1,0 +1,37 @@
+﻿[
+    {
+        "ProcessId":  17800,
+        "ParentProcessId":  21336,
+        "ExecutablePath":  "C:\\Dev\\_nextcup_postgres\\pg17\\bin\\postgres.exe",
+        "CommandLine":  "\"C:/Dev/_nextcup_postgres/pg17/bin/postgres.exe\"  -D \"C:/Dev/_nextcup_postgres/pgdata\" -p 5433 ",
+        "CreationDate":  "\/Date(1793581028185)\/"
+    },
+    {
+        "ProcessId":  25068,
+        "ParentProcessId":  21376,
+        "ExecutablePath":  "C:\\nvm4w\\nodejs\\node.exe",
+        "CommandLine":  "C:\\nvm4w\\nodejs\\node.exe C:\\Dev\\cafe-operations-system-3\\node_modules\\next\\dist\\bin\\next start --hostname 127.0.0.1 --port 3110",
+        "CreationDate":  "\/Date(1793581514128)\/"
+    },
+    {
+        "ProcessId":  18820,
+        "ParentProcessId":  25588,
+        "ExecutablePath":  "C:\\Dev\\_nextcup_postgres\\pg17\\bin\\postgres.exe",
+        "CommandLine":  "\"C:/Dev/_nextcup_postgres/pg17/bin/postgres.exe\"  -D \"C:/Dev/_nextcup_test_postgres/pgdata\" -p 5434 ",
+        "CreationDate":  "\/Date(1793632847815)\/"
+    },
+    {
+        "ProcessId":  15088,
+        "ParentProcessId":  5056,
+        "ExecutablePath":  "C:\\nvm4w\\nodejs\\node.exe",
+        "CommandLine":  "C:\\nvm4w\\nodejs\\node.exe C:\\Users\\Acer\\.codex\\worktrees\\nextcup-workspace-redesign\\cafe-operations-system-3\\node_modules\\next\\dist\\bin\\next dev --webpack --hostname 127.0.0.1 --port 3113",
+        "CreationDate":  "\/Date(1793632917095)\/"
+    },
+    {
+        "ProcessId":  22276,
+        "ParentProcessId":  15088,
+        "ExecutablePath":  "C:\\nvm4w\\nodejs\\node.exe",
+        "CommandLine":  "C:\\nvm4w\\nodejs\\node.exe C:\\Dev\\cafe-operations-system-3\\node_modules\\next\\dist\\server\\lib\\start-server.js",
+        "CreationDate":  "\/Date(1793632920628)\/"
+    }
+]

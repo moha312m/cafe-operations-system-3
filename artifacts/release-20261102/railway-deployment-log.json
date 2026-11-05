@@ -1,0 +1,506 @@
+{
+  "deploymentId": "c4500142-57c1-4197-925b-a440c347d305",
+  "status": "SUCCESS",
+  "messages": [
+    {
+      "at": "2026-11-02T10:56:20.515143718Z",
+      "message": "npm warn config production Use `--omit=dev` instead."
+    },
+    {
+      "at": "2026-11-02T10:56:20.905525746Z",
+      "message": "Starting Container"
+    },
+    {
+      "at": "2026-11-02T10:56:20.946331733Z",
+      "message": "Prisma schema loaded from prisma/schema.prisma"
+    },
+    {
+      "at": "2026-11-02T10:56:20.946341219Z",
+      "message": "Datasource \"db\": PostgreSQL database \"railway\", schema \"public\" at \"postgres.railway.internal:5432\""
+    },
+    {
+      "at": "2026-11-02T10:56:21.189080544Z",
+      "message": ""
+    },
+    {
+      "at": "2026-11-02T10:56:21.189086214Z",
+      "message": "91 migrations found in prisma/migrations"
+    },
+    {
+      "at": "2026-11-02T10:56:21.189089715Z",
+      "message": ""
+    },
+    {
+      "at": "2026-11-02T10:56:21.516787344Z",
+      "message": "Applying migration `20261002121500_staff_temporary_branch`"
+    },
+    {
+      "at": "2026-11-02T10:56:21.571686166Z",
+      "message": "Applying migration `20261002200000_low_stock_alert_percent`"
+    },
+    {
+      "at": "2026-11-02T10:56:21.715603759Z",
+      "message": "Applying migration `20261002210000_carry_open_orders_on_handover`"
+    },
+    {
+      "at": "2026-11-02T10:56:21.793277620Z",
+      "message": "Applying migration `20261002230000_stale_order_alert_hours`"
+    },
+    {
+      "at": "2026-11-02T10:56:21.882122226Z",
+      "message": "Applying migration `20261003000000_whatsapp_shift_report`"
+    },
+    {
+      "at": "2026-11-02T10:56:22.006857940Z",
+      "message": "Applying migration `20261003010000_deferred_stock_deduction`"
+    },
+    {
+      "at": "2026-11-02T10:56:22.150064191Z",
+      "message": "Applying migration `20261004010000_overnight_cash_storage`"
+    },
+    {
+      "at": "2026-11-02T10:56:22.531645402Z",
+      "message": "Applying migration `20261004011000_overnight_cash_mismatch`"
+    },
+    {
+      "at": "2026-11-02T10:56:22.531650977Z",
+      "message": "Applying migration `20261004020000_place_receipts`"
+    },
+    {
+      "at": "2026-11-02T10:56:22.610254922Z",
+      "message": "Applying migration `20261004021000_place_photos`"
+    },
+    {
+      "at": "2026-11-02T10:56:22.728374740Z",
+      "message": "Applying migration `20261004030000_owner_action_approvals`"
+    },
+    {
+      "at": "2026-11-02T10:56:22.833013242Z",
+      "message": "Applying migration `20261004030500_owner_action_execution_expiry`"
+    },
+    {
+      "at": "2026-11-02T10:56:22.993517344Z",
+      "message": "Applying migration `20261004031000_owner_passcodes`"
+    },
+    {
+      "at": "2026-11-02T10:56:23.115373245Z",
+      "message": "Applying migration `20261004032000_saved_order_item_void`"
+    },
+    {
+      "at": "2026-11-02T10:56:23.531414950Z",
+      "message": "Applying migration `20261004033000_void_approval_set_null`"
+    },
+    {
+      "at": "2026-11-02T10:56:23.531420296Z",
+      "message": "Applying migration `20261004190000_nextcup_historical_sales`"
+    },
+    {
+      "at": "2026-11-02T10:56:23.572290817Z",
+      "message": "Applying migration `20261005160000_request_idempotency`"
+    },
+    {
+      "at": "2026-11-02T10:56:23.676063238Z",
+      "message": "Applying migration `20261005180000_idempotency_failed`"
+    },
+    {
+      "at": "2026-11-02T10:56:23.766319631Z",
+      "message": "Applying migration `20261008120000_session_revocation`"
+    },
+    {
+      "at": "2026-11-02T10:56:23.944383606Z",
+      "message": "Applying migration `20261011210000_finished_goods_sales`"
+    },
+    {
+      "at": "2026-11-02T10:56:24.066541854Z",
+      "message": "Applying migration `20261024130000_stale_order_alert_minutes`"
+    },
+    {
+      "at": "2026-11-02T10:56:24.216786753Z",
+      "message": "Applying migration `20261024150000_sales_amendments`"
+    },
+    {
+      "at": "2026-11-02T10:56:24.583028375Z",
+      "message": "Applying migration `20261024153000_amendment_kitchen_delta`"
+    },
+    {
+      "at": "2026-11-02T10:56:24.583031735Z",
+      "message": "Applying migration `20261024160000_amendment_owner_target_shape`"
+    },
+    {
+      "at": "2026-11-02T10:56:24.583034608Z",
+      "message": "Applying migration `20261024163000_amendment_tender_reference`"
+    },
+    {
+      "at": "2026-11-02T10:56:24.704078205Z",
+      "message": "Applying migration `20261025070000_branch_reporting_hours`"
+    },
+    {
+      "at": "2026-11-02T10:56:24.780703644Z",
+      "message": "Applying migration `20261025070100_reporting_version_immutable`"
+    },
+    {
+      "at": "2026-11-02T10:56:24.896007427Z",
+      "message": "Applying migration `20261028193000_purchase_payment_funding_source`"
+    },
+    {
+      "at": "2026-11-02T10:56:25.024367256Z",
+      "message": "Applying migration `20261028200000_accounting_ledger_core`"
+    },
+    {
+      "at": "2026-11-02T10:56:25.188435374Z",
+      "message": "Applying migration `20261029100000_accounting_projection_tracking`"
+    },
+    {
+      "at": "2026-11-02T10:56:25.263621591Z",
+      "message": "Applying migration `20261030130000_hnd_ux_004_materials_cadence`"
+    },
+    {
+      "at": "2026-11-02T10:56:25.606127307Z",
+      "message": "Applying migration `20261030170000_cash_receipt_optional_reason`"
+    },
+    {
+      "at": "2026-11-02T10:56:25.606135149Z",
+      "message": "Applying migration `20261030190000_drawer_operating_expenses`"
+    },
+    {
+      "at": "2026-11-02T10:56:25.687371847Z",
+      "message": "Applying migration `20261031220000_treasury_accounts_transfers`"
+    },
+    {
+      "at": "2026-11-02T10:56:25.776483542Z",
+      "message": ""
+    },
+    {
+      "at": "2026-11-02T10:56:25.776488070Z",
+      "message": "The following migration(s) have been applied:"
+    },
+    {
+      "at": "2026-11-02T10:56:25.776491553Z",
+      "message": ""
+    },
+    {
+      "at": "2026-11-02T10:56:25.776495930Z",
+      "message": "migrations/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.776500628Z",
+      "message": "  └─ 20261002121500_staff_temporary_branch/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.776504128Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.776507354Z",
+      "message": "  └─ 20261002200000_low_stock_alert_percent/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.776512528Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.776516375Z",
+      "message": "  └─ 20261002210000_carry_open_orders_on_handover/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.776519677Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.776523746Z",
+      "message": "  └─ 20261002230000_stale_order_alert_hours/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.776527040Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.776544187Z",
+      "message": "  └─ 20261003000000_whatsapp_shift_report/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.776548443Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.776551976Z",
+      "message": "  └─ 20261003010000_deferred_stock_deduction/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.776555953Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.776560551Z",
+      "message": "  └─ 20261004010000_overnight_cash_storage/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.776564383Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.776568226Z",
+      "message": "  └─ 20261004011000_overnight_cash_mismatch/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.776571934Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.776575345Z",
+      "message": "  └─ 20261004020000_place_receipts/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.776579689Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.776583606Z",
+      "message": "  └─ 20261004021000_place_photos/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.776587202Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.776590665Z",
+      "message": "  └─ 20261004030000_owner_action_approvals/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.776594050Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.776597887Z",
+      "message": "  └─ 20261004030500_owner_action_execution_expiry/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.777149096Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.777156555Z",
+      "message": "  └─ 20261004031000_owner_passcodes/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.777161721Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.777165752Z",
+      "message": "  └─ 20261004032000_saved_order_item_void/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.777169957Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.777173631Z",
+      "message": "  └─ 20261004033000_void_approval_set_null/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.777177112Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.777181154Z",
+      "message": "  └─ 20261004190000_nextcup_historical_sales/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.777184929Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.777188548Z",
+      "message": "  └─ 20261005160000_request_idempotency/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.777192041Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.777196561Z",
+      "message": "  └─ 20261005180000_idempotency_failed/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.777200215Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.777203619Z",
+      "message": "  └─ 20261008120000_session_revocation/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.777207221Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.777210672Z",
+      "message": "  └─ 20261011210000_finished_goods_sales/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.777214138Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.777218014Z",
+      "message": "  └─ 20261024130000_stale_order_alert_minutes/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.777221088Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.777224813Z",
+      "message": "  └─ 20261024150000_sales_amendments/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.777229633Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.777234983Z",
+      "message": "  └─ 20261024153000_amendment_kitchen_delta/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.777239179Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.777243545Z",
+      "message": "  └─ 20261024160000_amendment_owner_target_shape/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.777248294Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.777252464Z",
+      "message": "  └─ 20261024163000_amendment_tender_reference/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.778596162Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.778602457Z",
+      "message": "  └─ 20261025070000_branch_reporting_hours/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.778606645Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.778610359Z",
+      "message": "  └─ 20261025070100_reporting_version_immutable/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.778614948Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.778618775Z",
+      "message": "  └─ 20261028193000_purchase_payment_funding_source/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.778622643Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.778626495Z",
+      "message": "  └─ 20261028200000_accounting_ledger_core/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.778630193Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.778634472Z",
+      "message": "  └─ 20261029100000_accounting_projection_tracking/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.778637729Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.778641215Z",
+      "message": "  └─ 20261030130000_hnd_ux_004_materials_cadence/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.778649247Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.778654296Z",
+      "message": "  └─ 20261030170000_cash_receipt_optional_reason/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.778657816Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.778660771Z",
+      "message": "  └─ 20261030190000_drawer_operating_expenses/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.778664020Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.778667520Z",
+      "message": "  └─ 20261031220000_treasury_accounts_transfers/"
+    },
+    {
+      "at": "2026-11-02T10:56:25.778670845Z",
+      "message": "    └─ migration.sql"
+    },
+    {
+      "at": "2026-11-02T10:56:25.778673676Z",
+      "message": "      "
+    },
+    {
+      "at": "2026-11-02T10:56:25.778676480Z",
+      "message": "All migrations have been successfully applied."
+    },
+    {
+      "at": "2026-11-02T10:56:35.893107617Z",
+      "message": "Starting Container"
+    },
+    {
+      "at": "2026-11-02T10:56:36.925648787Z",
+      "message": "- Local:         http://localhost:8080"
+    },
+    {
+      "at": "2026-11-02T10:56:36.925657157Z",
+      "message": "- Network:       http://10.200.205.51:8080"
+    },
+    {
+      "at": "2026-11-02T10:56:36.925665306Z",
+      "message": "✓ Ready in 101ms"
+    },
+    {
+      "at": "2026-11-02T10:56:36.925676456Z",
+      "message": "npm warn config production Use `--omit=dev` instead."
+    },
+    {
+      "at": "2026-11-02T10:56:36.925682537Z",
+      "message": ""
+    },
+    {
+      "at": "2026-11-02T10:56:36.925687767Z",
+      "message": "> cafe-ops@0.1.0 start"
+    },
+    {
+      "at": "2026-11-02T10:56:36.925692837Z",
+      "message": "> next start"
+    },
+    {
+      "at": "2026-11-02T10:56:36.925697657Z",
+      "message": ""
+    },
+    {
+      "at": "2026-11-02T10:56:36.925703897Z",
+      "message": "▲ Next.js 16.2.10"
+    }
+  ]
+}

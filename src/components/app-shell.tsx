@@ -74,6 +74,7 @@ type NavItem = {
   anyKey?: string[];
   allKeys?: string[];
   reportGroup?: string;
+  reportId?: string;
   feature?: (f: CafeFeatures) => boolean;
 };
 
@@ -169,7 +170,7 @@ export function AppShell({
   };
 
   const catalog=visibleReportCatalog({keys:keySet,features:features??{},role:user.role,branchId:user.branchId});
-  const reportNav:NavItem[]=catalog.map(report=>({href:report.href,label:report.title,icon:'',permission:'reports:read',group:'reports',allKeys:report.keys,reportGroup:report.group}));
+  const reportNav:NavItem[]=catalog.map(report=>({href:report.href,label:report.title,icon:'',permission:'reports:read',group:'reports',allKeys:report.keys,reportGroup:report.group,reportId:report.id}));
   const navItems = [...NAV,...reportNav].filter(
     (item) =>
       // An explicit `key` (new granular gate) wins; else fall back to the
@@ -266,9 +267,9 @@ export function AppShell({
     const active = currentHref === item.href && item.group === activeGroup;
     const ancestor = !active && pathname.startsWith(item.href + "/");
     const Icon = item.reportGroup
-      ? REPORT_ICONS[item.href.split("?")[0].split("/").pop() ?? ""] ?? REPORT_GROUP_ICONS[item.reportGroup] ?? FileChartColumn
+      ? REPORT_ICONS[item.reportId ?? ""] ?? REPORT_GROUP_ICONS[item.reportGroup] ?? FileChartColumn
       : NAV_ICONS[item.href.split("?")[0]] ?? BookOpen;
-    if(item.group==="sales")return <Suspense key={item.href} fallback={<Link className="workspace-nav-link block px-3 py-2.5 text-sm" href={item.href}>{item.label}</Link>}><SalesNavLink item={item} close={()=>setMobileNavOpen(false)}/></Suspense>;
+    if(item.group==="sales")return <Suspense key={item.href} fallback={<Link className="workspace-nav-link block rounded-lg px-3 py-2.5 text-sm" href={item.href}>{item.label}</Link>}><SalesNavLink item={item} close={()=>setMobileNavOpen(false)}/></Suspense>;
     return (
       <Link
         key={item.href}
@@ -312,7 +313,7 @@ export function AppShell({
             </div>
           </div>
 
-          <nav aria-label="التنقل الرئيسي" className="min-h-0 flex-1 space-y-0.5 overflow-y-auto overscroll-contain p-3 [@media(max-height:760px)]:p-2">
+          <nav aria-label="التنقل الرئيسي" className="workspace-main-nav min-h-0 flex-1 space-y-1.5 overflow-y-auto overscroll-contain p-3 [@media(max-height:760px)]:p-2">
             {navItems.filter((item) => !item.group).map(navLink)}
             {NAV_GROUPS.map((group) => {
               const items = navItems.filter((item) => item.group === group.id);
@@ -329,7 +330,7 @@ export function AppShell({
                     aria-expanded={open}
                     aria-controls={`nav-group-${group.id}`}
                     aria-disabled={isCurrent || undefined}
-                    className="workspace-nav-group flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-xs font-semibold text-sidebar-muted-foreground transition-colors hover:text-sidebar-accent-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sidebar-ring"
+                    className="workspace-nav-group flex w-full items-center gap-2 rounded-lg px-3 py-1.5 text-sm font-semibold text-sidebar-muted-foreground transition-colors hover:text-sidebar-accent-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sidebar-ring"
                   >
                     <span className="flex-1 text-start">{group.label}</span>
                     {badge > 0 && (
@@ -339,9 +340,9 @@ export function AppShell({
                     )}
                     <ChevronDown aria-hidden="true" className={cn("size-3", !open && "rotate-90")} />
                   </button>
-                  <div id={`nav-group-${group.id}`} hidden={!open} className="space-y-0.5">
+                  <div id={`nav-group-${group.id}`} hidden={!open} className="mt-1.5 space-y-1.5">
                     {items.filter(item=>!item.reportGroup).map(navLink)}
-                    {group.id==='reports'&&REPORT_GROUPS.map(reportGroup=>{const children=items.filter(item=>item.reportGroup===reportGroup.id);if(!children.length)return null;const active=children.some(item=>item.href===currentHref);return <details key={reportGroup.id} open={active||undefined} className="ms-2 border-s border-sidebar-border ps-1"><summary className="min-h-10 cursor-pointer px-3 py-2 text-sm font-medium">تقارير {reportGroup.title}</summary>{children.map(navLink)}</details>;})}
+                    {group.id==='reports'&&REPORT_GROUPS.map(reportGroup=>{const children=items.filter(item=>item.reportGroup===reportGroup.id);if(!children.length)return null;const active=children.some(item=>item.href===currentHref);return <details key={reportGroup.id} open={active||undefined} className="ms-2 space-y-1.5 border-s border-sidebar-border ps-1"><summary className="workspace-report-group min-h-10 cursor-pointer rounded-lg px-3 py-2 text-sm font-medium">تقارير {reportGroup.title}</summary>{children.map(navLink)}</details>;})}
                   </div>
                 </div>
               );

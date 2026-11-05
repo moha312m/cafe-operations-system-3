@@ -1,0 +1,32 @@
+{
+  "at": "2026-11-02T16:01:26.686Z",
+  "status": "COMPLETE",
+  "scope": "Local Step 1 only",
+  "head": "0513bcd1693b74c011d208df1b0383b18a4c5457",
+  "branch": "codex/nextcup-workspace-redesign-20261102",
+  "trackedSourceClean": true,
+  "indexEmpty": true,
+  "localOnly": true,
+  "preview": "http://localhost:3113/tables/setup",
+  "runtime": {
+    "tapTestsPassed": 9,
+    "failed": 0,
+    "skipped": 0,
+    "leafCases": 7
+  },
+  "cashierFocusedRetest": {
+    "pass": 10,
+    "fail": 0
+  },
+  "finalTypesExit": 0,
+  "finalFocusedLintExit": 0,
+  "preservedPriorPurePasses": 51,
+  "ownerSourceAndDataUnchanged": true,
+  "ownerActivationPerformed": false,
+  "pushMergeDeploymentPerformed": false,
+  "step2Started": false,
+  "limitations": [
+    "No human UAT or physical-device checks",
+    "No production build or production-readiness claim"
+  ]
+}

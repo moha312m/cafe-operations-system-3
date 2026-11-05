@@ -1,0 +1,15 @@
+{
+  "runId": "workspace20261102-1949053d4248",
+  "baseUrl": "http://localhost:3113",
+  "database": "cafe_ops_test_integr20261101_replay_66515e42c85e8ec4",
+  "oid": "65538",
+  "source": {
+    "file": "C:\\Users\\Acer\\.codex\\worktrees\\nextcup-workspace-redesign\\cafe-operations-system-3\\artifacts\\workspace-redesign-20261102\\source-v1.json",
+    "sha256": "1561dc1f3b10cde88e6d212168d211ede6ccdaa5e8cc1db11f0ec50264973abb"
+  },
+  "nonce": "workspace20261102-1949053d4248-PROBE-fdb5e8a5-0cb5-468f-a1ef-c9326a3962cc",
+  "cafeId": "cmvz1dpg70000hlxs7t9k2rpn",
+  "branchId": "cmvz1dpga0001hlxsawkr1l6o",
+  "retained": true,
+  "verifiedAt": "2026-11-02T09:08:50.175Z"
+}

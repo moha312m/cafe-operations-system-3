@@ -1,0 +1,14 @@
+{
+  "at": "2026-11-02T11:02:51.081Z",
+  "status": "APPLIED",
+  "cafeId": "cmrmxkpel0004pi0p974rpmil",
+  "cafeSlug": "next",
+  "oldValue": "ALLOW_NEGATIVE_STOCK",
+  "newValue": "OVERRIDE_ALL",
+  "changedFields": [
+    "inventoryEnforcementMode",
+    "updatedAt"
+  ],
+  "transactionalAudit": true,
+  "staffImpersonation": false
+}

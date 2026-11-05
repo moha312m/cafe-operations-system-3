@@ -1,0 +1,18 @@
+{
+  "tag": "wr_s2c_20261103",
+  "branchId": "wr_s2c_20261103_branch",
+  "readerId": "wr_s2c_20261103_reader",
+  "serverId": "wr_s2c_20261103_server",
+  "roleId": "wr_s2c_20261103_role",
+  "categoryId": "wr_s2c_20261103_category",
+  "shiftA": "wr_s2c_20261103_shift_A",
+  "shiftB": "wr_s2c_20261103_shift_B",
+  "shiftC": "wr_s2c_20261103_shift_C",
+  "session1": "wr_s2c_20261103_visit_1",
+  "session2": "wr_s2c_20261103_visit_2",
+  "cafeId": "wr_58219e03d5874f45a23bff3fbf850a95",
+  "orders": 61,
+  "tagged": true,
+  "retained": true,
+  "financialWorkflowClaim": false
+}

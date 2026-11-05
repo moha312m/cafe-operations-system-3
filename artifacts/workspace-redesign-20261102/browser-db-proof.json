@@ -1,0 +1,58 @@
+{
+  "at": "2026-11-02T10:07:07.014Z",
+  "status": "PASS",
+  "runId": "workspace20261102-1949053d4248",
+  "sourceSha256": "c7115584a703d03429b4df0dbc95568d718d9d31ac0d3448749d92ad301cb17e",
+  "identity": {
+    "at": "2026-11-02T10:06:53.848Z",
+    "name": "cafe_ops_test_integr20261101_replay_66515e42c85e8ec4",
+    "host": "127.0.0.1",
+    "port": "5434",
+    "directory": "C:/Dev/_nextcup_test_postgres/pgdata",
+    "system_identifier": "7693368256609479860",
+    "oid": "65538",
+    "markerVerified": true,
+    "completedMigrations": 91,
+    "sourceFiles": 946,
+    "sourceSha256": "c7115584a703d03429b4df0dbc95568d718d9d31ac0d3448749d92ad301cb17e"
+  },
+  "mode": {
+    "read_only": "on",
+    "isolation": "repeatable read"
+  },
+  "table": {
+    "id": "cmvz2d0pf018hhlw4i31p0b5g",
+    "number": "UI-WINDOW-01",
+    "displayName": "ترابيزة الشباك",
+    "area": "الصالة",
+    "seatsCount": 6,
+    "isActive": true,
+    "archivedAt": null,
+    "auditActions": [
+      "TABLE_CREATED",
+      "TABLE_UPDATED",
+      "TABLE_ARCHIVED",
+      "TABLE_REACTIVATED",
+      "TABLE_REACTIVATED"
+    ]
+  },
+  "purchases": {
+    "count": 26,
+    "total": "260.00",
+    "paid": "52.00",
+    "remaining": "208.00"
+  },
+  "expenses": {
+    "count": 2,
+    "total": "17.34"
+  },
+  "moneyAccounts": {
+    "count": 4,
+    "allOpeningsUnset": true,
+    "movements": 0
+  },
+  "primaryBooksUnconfigured": true,
+  "configuredShadowEntries": 5,
+  "noOpeningEntries": true,
+  "allReversibleHooksRestored": true
+}

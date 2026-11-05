@@ -1,0 +1,6 @@
+{
+  "state": "UNVERIFIED",
+  "at": "2026-11-03T14:13:56.626Z",
+  "error": "Exact native source inventory required\n+ actual - expected\n... Skipped lines\n\n  [\n    'components.json',\n    'eslint.config.mjs',\n    'next.config.ts',\n    'package-lock.json',\n...\n    'src/lib/sales-recognition.ts',\n+   'src/lib/sales-report-contract.ts',\n+   'src/lib/sales-report-math.ts',\n    'src/lib/secret-box.ts',\n    'src/lib/serving-policy.ts',\n    'src/lib/shift-report.ts',\n    'src/lib/shifts.ts',\n    'src/lib/staff-branch.ts',\n...\n    'tests/sales-amendments.integration.test.ts',\n+   'tests/sales-reports-step2.test.ts',\n    'tests/sec-001-auth-secret.test.ts',\n    'tests/sec-002-login-throttle.test.ts',\n    'tests/sec-003-seed-guard.test.ts',\n    'tests/sec-004-session-revocation.test.ts',\n    'tests/sec-005-refund-authorization.test.ts',\n",
+  "noMutationsAttempted": true
+}

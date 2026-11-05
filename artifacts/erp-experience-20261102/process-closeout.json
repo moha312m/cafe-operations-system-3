@@ -1,0 +1,36 @@
+﻿{
+    "reason":  "Disposable database unavailable; no verified preview can be delivered",
+    "ownerProcesses":  [
+                           {
+                               "ProcessId":  17800,
+                               "ParentProcessId":  21336,
+                               "ExecutablePath":  "C:\\Dev\\_nextcup_postgres\\pg17\\bin\\postgres.exe",
+                               "CommandLine":  "\"C:/Dev/_nextcup_postgres/pg17/bin/postgres.exe\"  -D \"C:/Dev/_nextcup_postgres/pgdata\" -p 5433 ",
+                               "CreationDate":  "\/Date(1793581028185)\/"
+                           },
+                           {
+                               "ProcessId":  25068,
+                               "ParentProcessId":  21376,
+                               "ExecutablePath":  "C:\\nvm4w\\nodejs\\node.exe",
+                               "CommandLine":  "C:\\nvm4w\\nodejs\\node.exe C:\\Dev\\cafe-operations-system-3\\node_modules\\next\\dist\\bin\\next start --hostname 127.0.0.1 --port 3110",
+                               "CreationDate":  "\/Date(1793581514128)\/"
+                           }
+                       ],
+    "ownedPreviewBeforeStop":  [
+                                   {
+                                       "ProcessId":  19988,
+                                       "ParentProcessId":  22456,
+                                       "ExecutablePath":  "C:\\nvm4w\\nodejs\\node.exe",
+                                       "CommandLine":  "C:\\nvm4w\\nodejs\\node.exe C:\\Users\\Acer\\.codex\\worktrees\\nextcup-workspace-redesign\\cafe-operations-system-3\\node_modules\\next\\dist\\bin\\next dev --webpack --hostname 127.0.0.1 --port 3113",
+                                       "CreationDate":  "\/Date(1793630329572)\/"
+                                   },
+                                   {
+                                       "ProcessId":  3412,
+                                       "ParentProcessId":  19988,
+                                       "ExecutablePath":  "C:\\nvm4w\\nodejs\\node.exe",
+                                       "CommandLine":  "C:\\nvm4w\\nodejs\\node.exe C:\\Dev\\cafe-operations-system-3\\node_modules\\next\\dist\\server\\lib\\start-server.js",
+                                       "CreationDate":  "\/Date(1793630336875)\/"
+                                   }
+                               ],
+    "at":  "2026-11-02T14:44:04.7394618Z"
+}

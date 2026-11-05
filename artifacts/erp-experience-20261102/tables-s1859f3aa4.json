@@ -1,0 +1,23 @@
+{
+  "at": "2026-11-02T15:24:29.462Z",
+  "proof": {
+    "at": "2026-11-02T15:24:13.455Z",
+    "name": "cafe_ops_test_integr20261101_replay_66515e42c85e8ec4",
+    "host": "127.0.0.1",
+    "port": "5434",
+    "directory": "C:/Dev/_nextcup_test_postgres/pgdata",
+    "system_identifier": "7693368256609479860",
+    "oid": "65538",
+    "markerVerified": true,
+    "completedMigrations": 91,
+    "sourceFiles": 947,
+    "sourceSha256": "8550de8cb2d54d813eed457d4fb76f06efa9adf9c0e4ef3c14f28240ca2f532a"
+  },
+  "retained": [
+    "cmvzeteca0001hl6s63wh75iu",
+    "s1859f3aa4-order-rename",
+    "cmvzethm30005hl6s9m6i2e5w",
+    "cmvzethok0009hl6s1urqjtz7"
+  ],
+  "cases": []
+}

@@ -1,0 +1,8 @@
+﻿{
+    "at":  "2026-11-02T09:54:34.3649652Z",
+    "pureExit":  0,
+    "lintExit":  0,
+    "changedCodePaths":  43,
+    "database":  "explicit unreachable 127.0.0.1:1",
+    "runtimeRepeated":  false
+}

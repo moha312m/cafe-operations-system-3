@@ -1,0 +1,13 @@
+{
+  "at": "2026-11-02T15:56:11.168Z",
+  "ownerSourcePins": 921,
+  "ownerAgentsHistoricalSqlAndUtilities": "unchanged",
+  "ownerHead": "7c4e1ae936dc3f508778c9a55626da1f79224450",
+  "ownerTrackedWorkAndIndexPreserved": true,
+  "mainUnchanged": true,
+  "taskChangedCode": [
+    "src/components/pos/category-tabs.tsx",
+    "tests/experience-step1-tables.test.ts"
+  ],
+  "ownerDatabaseAccessed": false
+}

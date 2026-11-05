@@ -1,0 +1,67 @@
+{
+  "runId": "workspace20261102-1949053d4248",
+  "tag": "93aac4c5",
+  "at": "2026-11-02T15:32:29.913Z",
+  "retained": [
+    {
+      "kind": "CafeTable",
+      "id": "cmvzf3kju0036hl6s2wku26af"
+    },
+    {
+      "kind": "Order",
+      "id": "workspace-93aac4c5-history"
+    },
+    {
+      "kind": "CafeTable",
+      "id": "cmvzf3mvl003xhl6sqq3w8cxv"
+    },
+    {
+      "kind": "Order",
+      "id": "workspace-93aac4c5-occupied"
+    },
+    {
+      "kind": "CafeTable",
+      "id": "cmvzf3ol40043hl6sj1xcsamo"
+    },
+    {
+      "kind": "Order",
+      "id": "workspace-93aac4c5-inactive"
+    },
+    {
+      "kind": "CafeTable",
+      "id": "cmvzf3pug0049hl6sdyvn3sup"
+    },
+    {
+      "kind": "CafeTable",
+      "id": "cmvzf3qr2004dhl6sfye9e67f"
+    },
+    {
+      "kind": "Order",
+      "id": "workspace-93aac4c5-race-archive"
+    },
+    {
+      "kind": "CafeTable",
+      "id": "cmvzf3r3h004jhl6sok4pmtun"
+    },
+    {
+      "kind": "Order",
+      "id": "workspace-93aac4c5-race-session"
+    },
+    {
+      "kind": "Order",
+      "id": "workspace-93aac4c5-sale-wallet"
+    },
+    {
+      "kind": "Order",
+      "id": "workspace-93aac4c5-sale-cash"
+    }
+  ],
+  "cases": [
+    "single/bulk/duplicate/edit/archive/restore/history/audits",
+    "occupied guards and inactive target",
+    "selector and management/tenant/branch/revoked denials",
+    "actual PostgreSQL race both orders",
+    "payment-filter/list/count/totals/signed-export"
+  ],
+  "noCleanup": true
+}

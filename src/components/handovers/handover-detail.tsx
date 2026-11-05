@@ -11,6 +11,8 @@ import { BranchSigningPanel } from "./branch-signing-panel";
 import { OpeningCashPanel } from "./opening-cash-panel";
 import { OpeningVerificationPanel } from "./opening-verification-panel";
 import { PlaceReceiptPanel } from "./place-receipt-panel";
+import { DirectHandoverPanel } from "./direct-handover-panel";
+import { CashDeliveriesPanel } from "./cash-deliveries-panel";
 import { buildJourney, type JourneyInput, type Panel } from "./handover-journey";
 import { ActivityPanel, JourneyStatus, PANELS, StageList, SummaryCard, TabBar, fmtDateTime } from "./handover-workspace-parts";
 import type { ActivityEvent } from "@/lib/handover-activity";
@@ -59,7 +61,7 @@ type HandoverLine = {
 };
 
 type HandoverView = {
-  overview: Overview;
+  overview: Overview & { directHandover?: boolean };
   workflow: { branchName: string; acknowledgements: ReceivingAck[]; incomingShift: { id: string; shiftNumber: number; cashierId: string; cashier: { name: string } } | null; incomingAmbiguous: boolean; readiness: ShiftReadiness[]; timezone: string; currency: string };
   activity: ActivityEvent[];
   segregatedReturns?: { id: string; quantity: number; inventoryItemId: string }[];
@@ -220,6 +222,8 @@ export function HandoverDetail({
     incomingAmbiguous: view.workflow.incomingAmbiguous, readiness: readinessFocus,
     can: { submit: canKey("handover.submit"), confirmCount: canKey("stock_count.confirm"), accept: canKey("handover.accept"), exception: canKey("handover.exception") },
     viewer: { isOutgoing: view.outgoingUserId === user.id, isRecipient, name: user.name },
+    directHandover: !!view.overview.directHandover,
+    dispositionRecorded: !!view.overview.cashDisposition,
   }) : null;
 
   // Cards: each states exactly what it counts. Lines are counted as lines, never summed across units.
@@ -318,6 +322,16 @@ export function HandoverDetail({
                 )}
               </section>
 
+              {view.target === "SHIFT_TO_SHIFT" && (
+                <DirectHandoverPanel
+                  key={`direct:${view.handoverId}:${view.status}:${view.overview.signatures.directAcknowledgedAt ?? ""}`}
+                  handoverId={view.handoverId}
+                  branchId={view.branchId}
+                  requiredItems={view.requiredItems}
+                  onAccepted={after}
+                />
+              )}
+
               {receivingDisputed && step !== "complete" && (
                 // The current dispute outranks any earlier all-clear: the outgoing count may well have matched,
                 // and it still says nothing about what the receiver found.
@@ -369,6 +383,7 @@ export function HandoverDetail({
                 {tab === "cash" && (
                   <div role="tabpanel" id="handover-panel-cash" aria-labelledby="handover-tab-cash" className="space-y-4">
                     <HandoverOverview overview={view.overview} part="money" currency={currency} timezone={tz} />
+                    <CashDeliveriesPanel onChanged={after} currency={currency} />
                     <OpeningCashPanel branchId={view.branchId} />
                   </div>
                 )}
@@ -406,7 +421,7 @@ export function HandoverDetail({
                                 <TableHead>الصنف</TableHead>
                                 <TableHead>الوحدة</TableHead>
                                 <TableHead>جرد المُسلّم</TableHead>
-                                <TableHead className="text-end">{branchCustody ? "توقيع الفرع" : "استلام"}</TableHead>
+                                <TableHead className="text-end">{branchCustody ? "اعتماد الفرع" : "استلام"}</TableHead>
                               </TableRow>
                             </TableHeader>
                             <TableBody>
@@ -427,7 +442,7 @@ export function HandoverDetail({
                                         </>}
                                       </TableCell>
                                       <TableCell className="min-w-40 whitespace-normal text-end max-sm:block max-sm:text-start">
-                                        {row.state === "pending" ? <span className="text-muted-foreground">{line.disposition === "PENDING" ? "—" : branchCustody ? "لم يُوقّع بعد" : "لم يُسجّل استلام بعد"}</span> : <>
+                                        {row.state === "pending" ? <span className="text-muted-foreground">{line.disposition === "PENDING" ? "—" : branchCustody ? "بانتظار الضغط على زر الاعتماد" : "لم يُسجّل استلام بعد"}</span> : <>
                                           <div className={row.state === "disputed" ? "font-semibold" : undefined}>{row.state === "disputed" ? "معترض عليه — اطلب إعادة الجرد" : branchCustody ? "موقّع باسم الفرع (بدون عدّ مستقل)" : "تم استلام السطر"}</div>
                                           {!branchCustody && <div className="text-xs text-muted-foreground tabular-nums">عدّ المستلم: {row.incomingCount} · المُسلَّم: {row.handedOver}</div>}
                                           {!branchCustody && <div className="text-xs text-muted-foreground tabular-nums">فرق الاستلام: {row.receivingDifference}</div>}

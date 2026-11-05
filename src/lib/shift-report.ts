@@ -1,5 +1,6 @@
 import { db } from "@/lib/db";
 import { DEFAULT_TZ, zonedBusinessDayStart } from "@/lib/date-range";
+import { dispositionForShift, type PresentedDisposition } from "@/lib/cash-disposition";
 
 // The shift close report: what the drawer held against what it should have,
 // what was sold, and what was handed on to the next shift. Built only from
@@ -38,7 +39,30 @@ export type ShiftReport = {
     unpaidTotal: number;
     orders: Array<{ orderNumber: number; status: string; paymentStatus: string; remaining: number }>;
   };
-  handover: null | { status: string; target: string | null; incomingName: string | null; acceptedAt: string | null };
+  cashDisposition: PresentedDisposition | null;
+  handover: null | {
+    status: string;
+    target: string | null;
+    incomingName: string | null;
+    acceptedAt: string | null;
+    directHandover: boolean;
+    directAcknowledgedAt: string | null;
+    directAcknowledgedByName: string | null;
+    issues: Array<{
+      id: string;
+      kind: string;
+      status: string;
+      afterAcceptance: boolean;
+      itemNameSnapshot: string | null;
+      amount: number | null;
+      description: string;
+      reportedByName: string;
+      reportedAt: string;
+      resolutionNote: string | null;
+      resolvedByName: string | null;
+      resolvedAt: string | null;
+    }>;
+  };
 };
 
 const num = (v: { toString(): string } | null | undefined) => (v === null || v === undefined ? null : Number(v.toString()));
@@ -65,11 +89,29 @@ export async function buildShiftReport(shiftId: string, cafeId: string): Promise
   });
   if (!shift || !SETTLED.includes(shift.status)) return null;
 
-  const handover = await db.handoverSession.findFirst({
-    where: { outgoingShiftId: shift.id },
-    orderBy: { createdAt: "desc" },
-    select: { status: true, target: true, acceptedAt: true, incomingUser: { select: { name: true } } },
-  });
+  const [handover, cashDisposition] = await Promise.all([
+    db.handoverSession.findFirst({
+      where: { outgoingShiftId: shift.id },
+      orderBy: { createdAt: "desc" },
+      select: {
+        status: true,
+        target: true,
+        acceptedAt: true,
+        directHandover: true,
+        directAcknowledgedAt: true,
+        incomingUser: { select: { name: true } },
+        directAcknowledgedBy: { select: { name: true } },
+        issues: {
+          orderBy: { reportedAt: "asc" },
+          include: {
+            reportedBy: { select: { name: true } },
+            resolvedBy: { select: { name: true } },
+          },
+        },
+      },
+    }),
+    dispositionForShift(db, shift.id),
+  ]);
 
   const carriedOrders = shift.carriedOrders.map((o) => ({
     orderNumber: o.orderNumber,
@@ -121,12 +163,30 @@ export async function buildShiftReport(shiftId: string, cafeId: string): Promise
       unpaidTotal: Math.round(carriedOrders.reduce((s, o) => s + o.remaining, 0) * 100) / 100,
       orders: carriedOrders,
     },
+    cashDisposition,
     handover: handover
       ? {
           status: handover.status,
           target: handover.target,
           incomingName: handover.incomingUser?.name ?? null,
           acceptedAt: handover.acceptedAt?.toISOString() ?? null,
+          directHandover: handover.directHandover,
+          directAcknowledgedAt: handover.directAcknowledgedAt?.toISOString() ?? null,
+          directAcknowledgedByName: handover.directAcknowledgedBy?.name ?? null,
+          issues: handover.issues.map((i) => ({
+            id: i.id,
+            kind: i.kind,
+            status: i.status,
+            afterAcceptance: i.afterAcceptance,
+            itemNameSnapshot: i.itemNameSnapshot,
+            amount: i.amount === null ? null : Number(i.amount),
+            description: i.description,
+            reportedByName: i.reportedBy.name,
+            reportedAt: i.reportedAt.toISOString(),
+            resolutionNote: i.resolutionNote,
+            resolvedByName: i.resolvedBy?.name ?? null,
+            resolvedAt: i.resolvedAt?.toISOString() ?? null,
+          })),
         }
       : null,
   };
@@ -247,7 +307,8 @@ export async function buildShiftMaterialsReport(
     orderBy: { createdAt: "desc" },
     select: {
       id: true, status: true, submittedAt: true, acceptedAt: true, outgoingNote: true, stockCountSessionId: true,
-      outgoingUser: { select: { name: true } }, incomingUser: { select: { name: true } },
+      directHandover: true, directAcknowledgedAt: true,
+      outgoingUser: { select: { name: true } }, incomingUser: { select: { name: true } }, directAcknowledgedBy: { select: { name: true } },
     },
   });
   const session = handover?.stockCountSessionId
@@ -351,6 +412,13 @@ export async function buildShiftMaterialsReport(
           difference: f ? num(ack.varianceQuantity) : null,
           acknowledgedAt: ack.acknowledgedAt.toISOString(),
           acknowledgedByName: ack.acknowledgedBy.name,
+        } : handover?.directAcknowledgedAt ? {
+          decision: "DIRECT_ACKNOWLEDGED",
+          incomingCounted: null,
+          handedOver: f ? num(line.effectiveCountedQuantity ?? line.countedQuantity) : null,
+          difference: null,
+          acknowledgedAt: handover.directAcknowledgedAt.toISOString(),
+          acknowledgedByName: handover.directAcknowledgedBy?.name ?? handover.incomingUser?.name ?? "—",
         } : null,
       };
     }),

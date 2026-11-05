@@ -1,0 +1,35 @@
+﻿{
+    "status":  "TECHNICALLY COMPLETE",
+    "ownerVisualAcceptance":  "PENDING",
+    "sourceCommit":  "4ec914f166228e9cc8296d6b8dd123a9f49d5bba",
+    "buildId":  "3CpBRLmpvaT0JJp6jkZ9K",
+    "preview":  "http://localhost:3113",
+    "appPid":  24440,
+    "database":  {
+                     "at":  "2026-11-03T19:27:36.476Z",
+                     "name":  "cafe_ops_test_integr20261101_replay_66515e42c85e8ec4",
+                     "host":  "127.0.0.1",
+                     "port":  "5434",
+                     "directory":  "C:/Dev/_nextcup_test_postgres/pgdata",
+                     "system_identifier":  "7693368256609479860",
+                     "oid":  "65538",
+                     "markerVerified":  true,
+                     "completedMigrations":  91,
+                     "sourceFiles":  986,
+                     "sourceSha256":  "f38ab10a19ea4a09981f6439dd22b5fe3578de3b3f5bcb3b7f732bf8a7e7ac4e"
+                 },
+    "postgresPid":  10352,
+    "targetedTestsPassed":  21,
+    "runtimeGroupsPassed":  9,
+    "finalBrowserMatrixPassed":  18,
+    "dateBasis":  "invoiceDate for confirmed purchases, paidAt for settlements",
+    "browserScopeRetained":  true,
+    "ownerDatabaseTouched":  false,
+    "pushMergeDeploy":  false,
+    "screenshots":  "C:/Dev/cafe-operations-system-3/artifacts/erp-experience-20261102/step2-closeout/screenshots",
+    "limitations":  [
+                        "Owner visual review pending",
+                        "Desktop and mobile CSS viewport emulation",
+                        "Print HTML verified, physical print outside scope"
+                    ]
+}

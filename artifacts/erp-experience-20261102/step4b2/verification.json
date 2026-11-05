@@ -1,0 +1,43 @@
+{
+  "at": "2026-11-04T13:42:16.965Z",
+  "proof": {
+    "at": "2026-11-04T13:42:14.903Z",
+    "name": "cafe_ops_test_integr20261101_replay_66515e42c85e8ec4",
+    "host": "127.0.0.1",
+    "port": "5434",
+    "directory": "C:/Dev/_nextcup_test_postgres/pgdata",
+    "system_identifier": "7693368256609479860",
+    "oid": "65538",
+    "markerVerified": true,
+    "completedMigrations": 93,
+    "sourceFiles": 1011,
+    "sourceSha256": "97301cc196e7a64e4759cbbcff961f3a60d029b4bd0668f99c323e10c4ac2333"
+  },
+  "results": [
+    {
+      "name": "chart read carries edit locks with reasons and an eligibility-filtered selector",
+      "detail": {
+        "rows": 36
+      }
+    },
+    {
+      "name": "root group, sub-group and posting account created; duplicate, posting parent, posting root and cycle refused"
+    },
+    {
+      "name": "cost of sales refused as a mapping target; mapped account cannot be deactivated"
+    },
+    {
+      "name": "rename and recode: the saved mapping and the ledger link follow the account"
+    },
+    {
+      "name": "XLSX (full + mapping sheet) and filtered CSV match the chart, no formulas, UTF-8 BOM",
+      "detail": {
+        "fullRows": 39,
+        "filteredRows": 6
+      }
+    },
+    {
+      "name": "permissions and tenancy: waiter 403 on export and writes; other café cannot see or edit these accounts"
+    }
+  ]
+}

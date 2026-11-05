@@ -1,0 +1,32 @@
+{
+  "at": "2026-11-03T19:27:27.160Z",
+  "pid": 24440,
+  "executable": "C:\\nvm4w\\nodejs\\node.exe",
+  "args": [
+    "C:\\Users\\Acer\\.codex\\worktrees\\nextcup-workspace-redesign\\cafe-operations-system-3\\node_modules\\next\\dist\\bin\\next",
+    "start",
+    "--hostname",
+    "127.0.0.1",
+    "--port",
+    "3113"
+  ],
+  "cwd": "C:\\Users\\Acer\\.codex\\worktrees\\nextcup-workspace-redesign\\cafe-operations-system-3",
+  "stdout": "C:\\Users\\Acer\\.codex\\worktrees\\nextcup-workspace-redesign\\cafe-operations-system-3\\artifacts\\erp-experience-20261102\\step2-closeout\\preview-closeout-1793734047136.stdout.log",
+  "stderr": "C:\\Users\\Acer\\.codex\\worktrees\\nextcup-workspace-redesign\\cafe-operations-system-3\\artifacts\\erp-experience-20261102\\step2-closeout\\preview-closeout-1793734047136.stderr.log",
+  "sourceSha256": "f38ab10a19ea4a09981f6439dd22b5fe3578de3b3f5bcb3b7f732bf8a7e7ac4e",
+  "buildId": "3CpBRLmpvaT0JJp6jkZ9K",
+  "database": {
+    "at": "2026-11-03T19:27:36.476Z",
+    "name": "cafe_ops_test_integr20261101_replay_66515e42c85e8ec4",
+    "host": "127.0.0.1",
+    "port": "5434",
+    "directory": "C:/Dev/_nextcup_test_postgres/pgdata",
+    "system_identifier": "7693368256609479860",
+    "oid": "65538",
+    "markerVerified": true,
+    "completedMigrations": 91,
+    "sourceFiles": 986,
+    "sourceSha256": "f38ab10a19ea4a09981f6439dd22b5fe3578de3b3f5bcb3b7f732bf8a7e7ac4e"
+  },
+  "baseUrl": "http://localhost:3113"
+}

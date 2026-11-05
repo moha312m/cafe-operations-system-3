@@ -32,6 +32,8 @@ export type JourneyInput = {
   readiness: ShiftReadiness | null;
   can: { submit: boolean; confirmCount: boolean; accept: boolean; exception: boolean };
   viewer: { isOutgoing: boolean; isRecipient: boolean; name: string };
+  directHandover?: boolean;
+  dispositionRecorded?: boolean;
 };
 
 export type RequiredNow = {
@@ -116,12 +118,22 @@ function requiredNow(i: JourneyInput, phase: ReturnType<typeof countPhase>, stag
     return { ...base, title: rejected ? "التسليم اترجع: افتح جرد إعادة التسليم" : i.countStatus === null ? "افتح جرد التسليم وسجّل الكميات الفعلية" : "كمّل الجرد وأرسله", actor: i.outgoingName, panel: "inventory", actionLabel: "فتح الجرد", blocker: i.viewer.isOutgoing && i.can.submit ? null : `ده شغل ${i.outgoingName} (المُسلّم).` };
   }
   if (phase === "review") return { ...base, title: "الجرد مُرسل ومستني الاعتماد", actor: "مسؤول بصلاحية تأكيد الجرد", panel: "inventory", actionLabel: "مراجعة الجرد", blocker: i.can.confirmCount ? null : "اعتماد الجرد يحتاج مسؤولًا بصلاحية تأكيد الجرد." };
-  if (phase === "submit") return { ...base, title: "الجرد معتمد — قدّم العهدة", actor: i.outgoingName, panel: "inventory", actionLabel: "تقديم العهدة", blocker: i.viewer.isOutgoing && i.can.submit ? null : `التقديم من ${i.outgoingName} (المُسلّم).` };
+  if (phase === "submit") return { ...base, title: i.directHandover && i.dispositionRecorded === false ? "حدّد مصير النقدية ثم قدّم العهدة" : "الجرد معتمد — قدّم العهدة", actor: i.outgoingName, panel: "inventory", actionLabel: "تقديم العهدة", blocker: i.viewer.isOutgoing && i.can.submit ? null : `التقديم من ${i.outgoingName} (المُسلّم).` };
   if (phase === "receive") {
     if (i.disputed) return { ...base, title: "الاستلام معترض عليه — اطلب إعادة الجرد", actor: "مسؤول بصلاحية طلب إعادة الجرد", panel: "inventory", actionLabel: "طلب إعادة الجرد", blocker: null };
+    if (i.directHandover && !branch) {
+      return {
+        ...base,
+        title: "راجع ملخص العهدة واضغط «فتح ورديتي واستلام العهدة»",
+        actor: i.incomingShift ? `${i.incomingShift.name} (شيفت #${i.incomingShift.shiftNumber})` : "الموظف المستلم",
+        panel: "summary",
+        actionLabel: "ملخص الاستلام المباشر",
+        blocker: i.incomingAmbiguous ? "فيه أكتر من شيفت ممكن يستلم؛ النظام مش هيختار بالنيابة عنك." : null,
+      };
+    }
     if (branch) {
       const mayAct = i.can.accept && i.can.exception;
-      return { ...base, title: i.unreviewedLines > 0 ? `وقّع ${i.unreviewedLines} سطر جرد باسم الفرع ثم حوّل العهدة لعهدة الفرع` : "سطور الجرد موقّعة — حوّل العهدة لعهدة الفرع", actor: "مسؤول بصلاحية الاستثناء (باسم الفرع)", panel: "inventory", actionLabel: i.unreviewedLines > 0 ? "توقيع السطور" : "تحويل لعهدة الفرع", blocker: mayAct ? null : "التوقيع والتحويل لعهدة الفرع لمسؤول بصلاحية الاستثناء." };
+      return { ...base, title: i.unreviewedLines > 0 ? `وقّع ${i.unreviewedLines} سطر جرد باسم الفرع (بالضغط على زر الاعتماد بالأسفل) ثم حوّل العهدة لعهدة الفرع` : "سطور الجرد موقّعة — حوّل العهدة لعهدة الفرع", actor: "مسؤول بصلاحية الاستثناء (باسم الفرع)", panel: "inventory", actionLabel: i.unreviewedLines > 0 ? "تأكيد السطور بالزر" : "تحويل لعهدة الفرع", blocker: mayAct ? null : "التوقيع والتحويل لعهدة الفرع لمسؤول بصلاحية الاستثناء." };
     }
     if (!i.incomingShift) return { ...base, title: i.incomingAmbiguous ? "حدّد المستلم قبل القبول" : "المستلم يفتح شيفته أولًا", actor: "المستلم", panel: "inventory", actionLabel: null, blocker: i.incomingAmbiguous ? "فيه أكتر من شيفت ممكن يستلم؛ النظام مش هيختار بالنيابة عنك." : "مفيش شيفت مستلم مفتوح في الفرع لتسجيل ورقة الاستلام." };
     return { ...base, title: i.unreviewedLines > 0 ? `راجع ورقة الاستلام (${i.unreviewedLines} سطر)` : "أكّد استلام عهدة الشيفت", actor: `${i.incomingShift.name} (شيفت #${i.incomingShift.shiftNumber})`, panel: "inventory", actionLabel: "فتح ورقة الاستلام", blocker: i.viewer.isRecipient && i.can.accept ? null : `ورقة الاستلام توقيع ${i.incomingShift.name} صاحب الشيفت المستلم.` };

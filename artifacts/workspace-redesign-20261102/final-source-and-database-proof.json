@@ -1,0 +1,31 @@
+{
+  "at": "2026-11-02T10:01:30.915Z",
+  "runId": "workspace20261102-1949053d4248",
+  "disposable": {
+    "at": "2026-11-02T10:00:59.805Z",
+    "name": "cafe_ops_test_integr20261101_replay_66515e42c85e8ec4",
+    "host": "127.0.0.1",
+    "port": "5434",
+    "directory": "C:/Dev/_nextcup_test_postgres/pgdata",
+    "system_identifier": "7693368256609479860",
+    "oid": "65538",
+    "markerVerified": true,
+    "completedMigrations": 91,
+    "sourceFiles": 946,
+    "sourceSha256": "c7115584a703d03429b4df0dbc95568d718d9d31ac0d3448749d92ad301cb17e"
+  },
+  "currentSource": {
+    "file": "C:\\Users\\Acer\\.codex\\worktrees\\nextcup-workspace-redesign\\cafe-operations-system-3\\artifacts\\workspace-redesign-20261102\\source-v2.json",
+    "sha256": "c7115584a703d03429b4df0dbc95568d718d9d31ac0d3448749d92ad301cb17e"
+  },
+  "sourceFiles": 946,
+  "originalOwnerSourceFilesVerified": 921,
+  "originalAgentsAnd89SqlBytesPreserved": true,
+  "ownerUtilitiesPreserved": true,
+  "ownerHeadPreserved": true,
+  "ownerTrackedChangesPreserved": true,
+  "bothIndexesEmpty": true,
+  "mainUnchanged": true,
+  "finalExpenseOnlySourceDelta": true,
+  "noOwnerDatabaseConnectionByThisScript": true
+}

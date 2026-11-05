@@ -1,0 +1,121 @@
+{
+  "at": "2026-11-03T15:30:54.314Z",
+  "proof": {
+    "at": "2026-11-03T15:30:49.642Z",
+    "name": "cafe_ops_test_integr20261101_replay_66515e42c85e8ec4",
+    "host": "127.0.0.1",
+    "port": "5434",
+    "directory": "C:/Dev/_nextcup_test_postgres/pgdata",
+    "system_identifier": "7693368256609479860",
+    "oid": "65538",
+    "markerVerified": true,
+    "completedMigrations": 91,
+    "sourceFiles": 986,
+    "sourceSha256": "415c101890ef59cc850ae285d25ee8e3b1a678c6a2628131d2d3d76fec820011"
+  },
+  "fixtures": {
+    "tag": "wr_s2c_20261103",
+    "branchId": "wr_s2c_20261103_branch",
+    "readerId": "wr_s2c_20261103_reader",
+    "serverId": "wr_s2c_20261103_server",
+    "roleId": "wr_s2c_20261103_role",
+    "categoryId": "wr_s2c_20261103_category",
+    "shiftA": "wr_s2c_20261103_shift_A",
+    "shiftB": "wr_s2c_20261103_shift_B",
+    "shiftC": "wr_s2c_20261103_shift_C",
+    "session1": "wr_s2c_20261103_visit_1",
+    "session2": "wr_s2c_20261103_visit_2"
+  },
+  "cases": [
+    {
+      "name": "six authenticated report routes",
+      "status": "PASS",
+      "data": {
+        "product-sales": 61,
+        "shift-sales": 3,
+        "sales-payments": 65,
+        "purchase-sales": 62,
+        "sales-staff": 1,
+        "tables": 2
+      }
+    },
+    {
+      "name": "real 40% scope denominator, stable same-name IDs,0012 vs12,variant,unmapped,61-row paging and full outputs",
+      "status": "FAIL",
+      "error": "Expected values to be strictly equal:\n\n2 !== 1\n"
+    },
+    {
+      "name": "revision/refund/tax/service/unmapped reconciliation and honest brand/cost coverage",
+      "status": "PASS",
+      "data": {
+        "itemNet": "9990.00",
+        "canonicalNet": "9915.00",
+        "tax": "10.00",
+        "service": "20.00",
+        "bridge": "-105.00"
+      }
+    },
+    {
+      "name": "actual collection/refund legs, partial/mixed payments and legacy evidence",
+      "status": "PASS",
+      "data": {
+        "collections": "10030.00",
+        "refunds": "115.00",
+        "net": "9915.00"
+      }
+    },
+    {
+      "name": "creator A, collector B, server C and sale/service/refund shifts stay separate",
+      "status": "PASS",
+      "data": {
+        "creator": "wr_ac899e1cf47647f1a93b6781bdab7078",
+        "collector": "wr_s2c_20261103_reader",
+        "server": "wr_s2c_20261103_server",
+        "shiftAHours": 8,
+        "refundShift": "wr_s2c_20261103_shift_C"
+      }
+    },
+    {
+      "name": "repeated table visits do not merge; closed revision/legacy-payment visit remains visible",
+      "status": "PASS",
+      "data": {
+        "visits": 2,
+        "firstCollections": "4130.00",
+        "secondCollections": "200.00"
+      }
+    },
+    {
+      "name": "tenant,branch,direct invoice,customer,cost,restricted role and old output isolation",
+      "status": "PASS",
+      "data": {
+        "cafes": 2,
+        "roleRevocation": true,
+        "branchChange": true,
+        "customerRedaction": true,
+        "costRefusal": true
+      }
+    },
+    {
+      "name": "invoice source filtering,detail and audited receipt preserve money/stock",
+      "status": "PASS",
+      "data": {
+        "sourceCount": 31,
+        "receiptStatus": 200
+      }
+    },
+    {
+      "name": "report reads/outputs/receipt create no money,orders,stock or accounting entries",
+      "status": "PASS",
+      "data": {
+        "orders": 87,
+        "payments": 78,
+        "inventoryTransactions": 26,
+        "journalEntries": 0,
+        "itemStock": "26"
+      }
+    }
+  ],
+  "passed": 8,
+  "failed": 1,
+  "ownerVisualAcceptance": "PENDING"
+}

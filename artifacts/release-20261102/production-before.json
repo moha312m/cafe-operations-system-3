@@ -1,0 +1,1612 @@
+{
+  "at": "2026-11-02T10:46:01.679Z",
+  "identity": {
+    "database": "railway",
+    "read_only": "on",
+    "version": "18.6 (Debian 18.6-1.pgdg13+2)"
+  },
+  "readOnly": true,
+  "migrations": [
+    {
+      "migration_name": "20260708225047_init",
+      "checksum": "759cf5a53488c5e30494ebbc0483b42d071f0aef1d2157f63a58790f070df34f",
+      "finished_at": "2026-07-16T01:47:50.801Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260708232856_order_delivery_fields",
+      "checksum": "beafc3b81243caa6ddf9047c88639956bffb0a325d98fd24266905fdd663f2cb",
+      "finished_at": "2026-07-16T01:47:50.818Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260709010000_qr_approval_workflow",
+      "checksum": "c7a1b7f7469f0f0d507f0714a413cbc38288b74ef7232aa71ce665c90892d81f",
+      "finished_at": "2026-07-16T01:47:50.830Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260709020000_customer_menu_settings",
+      "checksum": "b4159696594e6424737da117454ffe02a13e33ee791215ca43af86874fe1d300",
+      "finished_at": "2026-07-16T01:47:50.842Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260709030000_pricing_system",
+      "checksum": "e6cdfd770d9fe018ed11abf1f4fd2210dd2c4a046f0f5af9a4c4f014087a9e8c",
+      "finished_at": "2026-07-16T01:47:50.851Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260709040000_kitchen_screen",
+      "checksum": "8415347134008a35ecfacb4c18a4c74406c5c719b6c67e0438a1af287fadaada",
+      "finished_at": "2026-07-16T01:47:50.857Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260710000000_shifts_payments_daily_closing",
+      "checksum": "08041b1e08c30865e5816ed250e16dff3b03d268c0028983d856e4739e96f302",
+      "finished_at": "2026-07-16T01:47:50.870Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260711000000_waiter_tracking_indexes",
+      "checksum": "f42662f33b8e7c86c619a4eba0c02db2e86cb685a216cfd3bdd7cb5d3da556ce",
+      "finished_at": "2026-07-16T01:47:50.876Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260711010000_staff_management_fields",
+      "checksum": "67f6f28b0e07fc957996d89b63273b9478d1cb7bfdbf622a5d8bcc7025cd5ed0",
+      "finished_at": "2026-07-16T01:47:50.881Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260711020000_barista_role",
+      "checksum": "c7e4b35fdb8a22b01f23d7c1c8736505a0821957a9790c04392230fc65b7b3f2",
+      "finished_at": "2026-07-16T01:47:50.889Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260711030000_inventory_module",
+      "checksum": "476e7a3cf3e28202687f58349091dcfd6625b2e5d48afa45cd7e7852f038b6ff",
+      "finished_at": "2026-07-16T01:47:50.901Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260711040000_recipe_costing",
+      "checksum": "744b6d210ae188219ca36c7525aaf62dde02a4ed4b74bb330a5e908ef2b0240e",
+      "finished_at": "2026-07-16T01:47:50.911Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260711050000_stock_precision",
+      "checksum": "7dd9a436969d076f2b1056245bd15409be899629813d1d38936aac4ee856ee5c",
+      "finished_at": "2026-07-16T01:47:50.924Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260716020121_super_admin_saas",
+      "checksum": "a9e7e8496e175e479d9514746f6fc4cd152baa149e93621c493390affb7d56d0",
+      "finished_at": "2026-07-16T02:27:25.458Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260716032828_cafe_settings_feature_flags",
+      "checksum": "afd7ed249a27f796e4e17cf1e7a2b06ee2fc027f1b31fce9dcfd01d53c0e1e7e",
+      "finished_at": "2026-07-16T03:56:09.374Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260727153800_add_payment_enums",
+      "checksum": "d069e7ff5fbd7d03603df1a001b3f44558935ddac8b495e0f416ee52a0e4674d",
+      "finished_at": "2026-07-27T17:22:21.117Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260727153858_payment_modes_financial_settings",
+      "checksum": "5e64f35fd9e22b790c8aca3f2d59dee2325143a284e2c7008ed47eb8c02f65fc",
+      "finished_at": "2026-07-27T17:22:21.130Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260727160000_add_cafe_roles",
+      "checksum": "66ab9151394af181c584492d69aa6fe813fce933b864c43bf450ccebb1d92d87",
+      "finished_at": "2026-07-27T17:22:21.144Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260727170000_table_sessions",
+      "checksum": "4949812e081cd1fb1b6346da3e2a463b8626cd73604908012589f8a6f9feb3d7",
+      "finished_at": "2026-07-27T20:26:20.498Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260727180000_purchases_suppliers",
+      "checksum": "d212a6e996d294501907adc7a55f08665d26e8bb2fe62b694dad061e1c96ffe5",
+      "finished_at": "2026-08-05T16:52:34.067Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260727190000_cafe_tables",
+      "checksum": "44defb11fa180385d2850be37980feb34f1b46873918a9d123d55f6a3de51686",
+      "finished_at": "2026-08-05T16:52:34.079Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260727200000_qr_approval_routing",
+      "checksum": "0136ca41688316723e80c5c01f0ce4ee1b09155d9814d6b3c05df1736201bcf7",
+      "finished_at": "2026-08-05T17:27:51.866Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260817000000_customer_loyalty",
+      "checksum": "f43292a99d7ecefe7dea5ca16f1ee5698a2cf7ac4476d31e2bebdacc13dac1b5",
+      "finished_at": "2026-08-17T00:59:04.274Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260823003901_payment_reversal_link",
+      "checksum": "a7c257ed0cf6b488b0a04a536ba5c38225f60b13e7bac1a525c051e26334407c",
+      "finished_at": "2026-08-29T20:44:42.584Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260824120000_payment_type",
+      "checksum": "20c840c340fa35948a79bff03a01ac4cba475e2c7645a0e1228c168adb12b156",
+      "finished_at": "2026-08-29T20:44:42.598Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260824170000_serving_payment_policy",
+      "checksum": "d7853fcea9f960d45ce50d864038cb44ca12004c57c9bafefed870871537f0c4",
+      "finished_at": "2026-08-29T20:44:42.613Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260825090000_variant_aware_recipes",
+      "checksum": "978aa3e94eb6645d3f01cb61192ddc1694b87162edfe0518401ce25e4245421c",
+      "finished_at": "2026-08-29T20:44:42.645Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260828090000_inventory_ledger_version",
+      "checksum": "c81c4fc6a3edddc2a3a7afd5016124b0c6c3359def1176f9a6ea1fc009f80bb0",
+      "finished_at": "2026-08-29T20:44:42.656Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260828100000_count_configuration",
+      "checksum": "fd794c933761a13478ae7ac2498b8aebcd04501a266cda9693893fe8de9d0607",
+      "finished_at": "2026-08-29T20:44:42.667Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260828110000_custody_period",
+      "checksum": "02fb788a054a58d1e8f80afd77f828aa4085d5bab5342897fc049d69085f0c5e",
+      "finished_at": "2026-08-29T20:44:42.685Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260828120000_stock_count_session",
+      "checksum": "ca6636a38e8e5b96133b35136962d61922f976849d7ca0d96eafc5fe50fa4ea0",
+      "finished_at": "2026-08-29T20:44:42.698Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260828130000_stock_count_line",
+      "checksum": "7e0ab63f12f9f38a7f54c446ad8cbf45d29a41ae2e1909231bfcc744ef182f7a",
+      "finished_at": "2026-08-29T20:44:42.709Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260828140000_tolerance_recount_correction",
+      "checksum": "af71a41243de619f817fbcb1b516988b936b1fe3039e946d842824bee7be8893",
+      "finished_at": "2026-08-29T20:44:42.730Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260828150000_tender_channel_invariant",
+      "checksum": "1210a32458e41de10823135968b1aba616427ab5a2fcc2b28c68a480bfa6de70",
+      "finished_at": "2026-08-29T20:44:42.740Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260828160000_tender_reconciliation",
+      "checksum": "bd8e1ce6e6ce1f67d8876f348558f923349ceb54578b3c71f109d25a3f1edcf8",
+      "finished_at": "2026-08-29T20:44:42.755Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260828170000_handover_session",
+      "checksum": "93c44bcf289c7dc7c4f5000285e432e8b9df973f861f4b6c18efc268b8bed9fd",
+      "finished_at": "2026-08-29T20:44:42.780Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260828180000_variance_case",
+      "checksum": "ee1895a549472bac4393482c943e4cabd914334c522a99e50fe40718e6e2a28f",
+      "finished_at": "2026-08-29T20:44:42.799Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260828190000_variance_policy",
+      "checksum": "ea79fc8cbf5bd392d72e516a4575293ebcb94ab595c72557893df9e158010c34",
+      "finished_at": "2026-08-29T20:44:42.808Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260828200000_variance_source_type_match",
+      "checksum": "5bce70babf6e6e00692338562f707f024c15363e9b2712951e57c61238c726a8",
+      "finished_at": "2026-08-29T20:44:42.817Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260828210000_stock_count_rebase",
+      "checksum": "749a6f282d3d8a8538ddf2ba780d2a81dc8bd34732e13ed0050b31e36e224d8e",
+      "finished_at": "2026-08-29T20:44:42.828Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260829100000_inventory_enforcement_mode",
+      "checksum": "cfed42a596c1beaee5bad7c83556e85dffe48b99e2335dc6c624930a5a893c1a",
+      "finished_at": "2026-08-29T20:44:42.839Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260829110000_order_inventory_policy_snapshot",
+      "checksum": "e58fc51238266b22e12d1b35fb10c8ea507d0c49274f8c59d3aa7fcd291bea5e",
+      "finished_at": "2026-08-29T20:44:42.850Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260830090000_shift_closed_by",
+      "checksum": "bb5848e33a825f34f2a61c1f432d7e435963e5cfd73e483c74f514b5129d388f",
+      "finished_at": "2026-09-26T21:24:20.294Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260830230911_custody_holder_and_ledger_attribution",
+      "checksum": "a72a6adc8c433c2e1725c9794d1bfcbc78ddd95584ac99549a0b834d3ddd99d7",
+      "finished_at": "2026-09-26T21:24:21.866Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260830231911_shift_custody_gate",
+      "checksum": "6dbd1cf10ea199ab6e0149ed7c6d1a46f1b56a1440fa6482790f675dedf411c5",
+      "finished_at": "2026-09-26T21:24:23.438Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260830232911_order_served_attribution",
+      "checksum": "b5201091e087abf70348f72f9195bc123a41aa37d5c339bf7b68040345c3a063",
+      "finished_at": "2026-09-26T21:24:25.012Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260830233911_handover_branch_configuration",
+      "checksum": "b61016dc4e63616a8aa7c85fb61fa83b67d9f22ed86d8cf68feda3b11fe51f30",
+      "finished_at": "2026-09-26T21:24:26.586Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260830234911_inventory_freeze",
+      "checksum": "4c5f518513947d8a08a0f58da906e7b530b4494da26ff3434e23efb6d37a10ab",
+      "finished_at": "2026-09-26T21:24:28.255Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260830235911_count_unit_cost_snapshot",
+      "checksum": "c3f6ff06db5cf2c4a839e9956e9a0f9d28d9a01a893eabae3efaa777a313fb0d",
+      "finished_at": "2026-09-26T21:24:29.829Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260831000911_handover_evidence_binding_and_required_items",
+      "checksum": "d1c7feb8a8cefca76c9b88ffeb86d3266045bda53161914f4da33f2f3112ea69",
+      "finished_at": "2026-09-26T21:24:31.401Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260831001911_handover_stock_boundary",
+      "checksum": "a4286fb0d33e8eb6f6e3307a4c63569dbbb3547ffe64408199cff1589ccf1fb1",
+      "finished_at": "2026-09-26T21:24:32.975Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260831002911_shift_status_awaiting_handover",
+      "checksum": "80c1883081578c6920eb626a7df602e134cf0ddd5bc794e5599db758d57ebe95",
+      "finished_at": "2026-09-26T21:24:34.546Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260831003911_shift_two_stage_close",
+      "checksum": "c651ddcccc2214e7f756be1db1a6a95e8e740188b3dc797a3e2b0d505933976a",
+      "finished_at": "2026-09-26T21:24:36.115Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260831004911_variance_attribution_and_span",
+      "checksum": "8584b5eb3400b001c6e0f107070ffeb2148e1cd3398810b07d0c615acccad6aa",
+      "finished_at": "2026-09-26T21:24:37.733Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260831005911_variance_span_opening_evidence",
+      "checksum": "e9220dfac59590d166ac104f4ac9b9e030929ebf0e4d22cf1466117fc5fc73ce",
+      "finished_at": "2026-09-26T21:24:40.185Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260927000000_open_table_session_guard",
+      "checksum": "c9cc367b922849b7d64f7f572911c242a4392afa1d1f10202b703d8a118c0fda",
+      "finished_at": "2026-09-30T00:19:07.922Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    },
+    {
+      "migration_name": "20260930000000_open_shift_guard",
+      "checksum": "050d42774dc5e9a7962421519d5e68cf460e236fa3d62e397208891e036e660e",
+      "finished_at": "2026-09-30T00:19:07.995Z",
+      "rolled_back_at": null,
+      "applied_steps_count": 1
+    }
+  ],
+  "pending": [
+    "20261002121500_staff_temporary_branch",
+    "20261002200000_low_stock_alert_percent",
+    "20261002210000_carry_open_orders_on_handover",
+    "20261002230000_stale_order_alert_hours",
+    "20261003000000_whatsapp_shift_report",
+    "20261003010000_deferred_stock_deduction",
+    "20261004010000_overnight_cash_storage",
+    "20261004011000_overnight_cash_mismatch",
+    "20261004020000_place_receipts",
+    "20261004021000_place_photos",
+    "20261004030000_owner_action_approvals",
+    "20261004030500_owner_action_execution_expiry",
+    "20261004031000_owner_passcodes",
+    "20261004032000_saved_order_item_void",
+    "20261004033000_void_approval_set_null",
+    "20261004190000_nextcup_historical_sales",
+    "20261005160000_request_idempotency",
+    "20261005180000_idempotency_failed",
+    "20261008120000_session_revocation",
+    "20261011210000_finished_goods_sales",
+    "20261024130000_stale_order_alert_minutes",
+    "20261024150000_sales_amendments",
+    "20261024153000_amendment_kitchen_delta",
+    "20261024160000_amendment_owner_target_shape",
+    "20261024163000_amendment_tender_reference",
+    "20261025070000_branch_reporting_hours",
+    "20261025070100_reporting_version_immutable",
+    "20261028193000_purchase_payment_funding_source",
+    "20261028200000_accounting_ledger_core",
+    "20261029100000_accounting_projection_tracking",
+    "20261030130000_hnd_ux_004_materials_cadence",
+    "20261030170000_cash_receipt_optional_reason",
+    "20261030190000_drawer_operating_expenses",
+    "20261031220000_treasury_accounts_transfers"
+  ],
+  "checksumMismatches": [],
+  "lineEndingOnlyChecksums": [
+    "20260708225047_init",
+    "20260708232856_order_delivery_fields",
+    "20260709010000_qr_approval_workflow",
+    "20260709020000_customer_menu_settings",
+    "20260709030000_pricing_system",
+    "20260709040000_kitchen_screen",
+    "20260710000000_shifts_payments_daily_closing",
+    "20260711000000_waiter_tracking_indexes",
+    "20260711010000_staff_management_fields",
+    "20260711020000_barista_role",
+    "20260711030000_inventory_module",
+    "20260711040000_recipe_costing",
+    "20260711050000_stock_precision",
+    "20260716020121_super_admin_saas",
+    "20260716032828_cafe_settings_feature_flags",
+    "20260727153800_add_payment_enums",
+    "20260727153858_payment_modes_financial_settings",
+    "20260727160000_add_cafe_roles",
+    "20260727170000_table_sessions",
+    "20260727180000_purchases_suppliers",
+    "20260727190000_cafe_tables",
+    "20260727200000_qr_approval_routing",
+    "20260817000000_customer_loyalty",
+    "20260823003901_payment_reversal_link",
+    "20260824120000_payment_type",
+    "20260824170000_serving_payment_policy",
+    "20260825090000_variant_aware_recipes",
+    "20260828090000_inventory_ledger_version",
+    "20260828100000_count_configuration",
+    "20260828110000_custody_period",
+    "20260828120000_stock_count_session",
+    "20260828130000_stock_count_line",
+    "20260828140000_tolerance_recount_correction",
+    "20260828150000_tender_channel_invariant",
+    "20260828160000_tender_reconciliation",
+    "20260828170000_handover_session",
+    "20260828180000_variance_case",
+    "20260828190000_variance_policy",
+    "20260828200000_variance_source_type_match",
+    "20260828210000_stock_count_rebase",
+    "20260829100000_inventory_enforcement_mode",
+    "20260829110000_order_inventory_policy_snapshot",
+    "20260830090000_shift_closed_by",
+    "20260830230911_custody_holder_and_ledger_attribution",
+    "20260830231911_shift_custody_gate",
+    "20260830232911_order_served_attribution",
+    "20260830233911_handover_branch_configuration",
+    "20260830234911_inventory_freeze",
+    "20260830235911_count_unit_cost_snapshot",
+    "20260831000911_handover_evidence_binding_and_required_items",
+    "20260831001911_handover_stock_boundary",
+    "20260831002911_shift_status_awaiting_handover",
+    "20260831003911_shift_two_stage_close",
+    "20260831004911_variance_attribution_and_span",
+    "20260831005911_variance_span_opening_evidence",
+    "20260927000000_open_table_session_guard",
+    "20260930000000_open_shift_guard"
+  ],
+  "failedMigrations": [],
+  "records": {
+    "AddOn": {
+      "columns": [
+        "id",
+        "cafeId",
+        "name",
+        "price",
+        "isActive"
+      ],
+      "count": 17,
+      "hash": "5f66359735f29efce3f42d59dccb6048"
+    },
+    "AuditLog": {
+      "columns": [
+        "id",
+        "cafeId",
+        "userId",
+        "action",
+        "entity",
+        "entityId",
+        "details",
+        "createdAt"
+      ],
+      "count": 966,
+      "hash": "47c5a8a3a45d40692ad07729fa512ae5"
+    },
+    "Branch": {
+      "columns": [
+        "id",
+        "cafeId",
+        "name",
+        "address",
+        "phone",
+        "isActive",
+        "createdAt",
+        "updatedAt",
+        "menuSlug",
+        "publicMenuEnabled",
+        "dineInServingPolicyOverride",
+        "takeawayServingPolicyOverride",
+        "stockCountPolicyOverride",
+        "handoverCountTypeOverride",
+        "periodicCountTypeOverride",
+        "stockCountModeOverride",
+        "periodicFullCountScheduleOverride",
+        "periodicFullCountWeekdayOverride"
+      ],
+      "count": 4,
+      "hash": "39bf71c908afa9451920b6fe0bd70632"
+    },
+    "BranchFinancialSettings": {
+      "columns": [
+        "id",
+        "branchId",
+        "cafeId",
+        "taxEnabled",
+        "taxRate",
+        "applyTaxTo",
+        "serviceChargeEnabled",
+        "serviceChargeType",
+        "serviceChargeRate",
+        "serviceChargeFixedAmount",
+        "applyServiceTo",
+        "createdAt",
+        "updatedAt"
+      ],
+      "count": 3,
+      "hash": "852f1c3699d43b2b764f4c8b730977ae"
+    },
+    "Cafe": {
+      "columns": [
+        "id",
+        "name",
+        "slug",
+        "currency",
+        "taxRate",
+        "isActive",
+        "createdAt",
+        "updatedAt",
+        "allowNegativeStock",
+        "planName",
+        "subscriptionEndsAt",
+        "subscriptionStartedAt",
+        "subscriptionStatus",
+        "suspendedAt",
+        "suspendedReason"
+      ],
+      "count": 2,
+      "hash": "f92b867f59101ed8429160924743013a"
+    },
+    "CafeRole": {
+      "columns": [
+        "id",
+        "cafeId",
+        "name",
+        "code",
+        "description",
+        "isSystemDefault",
+        "isActive",
+        "archivedAt",
+        "createdAt",
+        "updatedAt"
+      ],
+      "count": 14,
+      "hash": "6035f8cf451f35b8ccb1a93f33449c43"
+    },
+    "CafeRolePermission": {
+      "columns": [
+        "id",
+        "cafeRoleId",
+        "permissionKey",
+        "allowed",
+        "createdAt",
+        "updatedAt"
+      ],
+      "count": 606,
+      "hash": "f58942532f01077e559c9df1d1c08b97"
+    },
+    "CafeSettings": {
+      "columns": [
+        "id",
+        "cafeId",
+        "workflowMode",
+        "qrOrderRoutingMode",
+        "aiAssistantEnabled",
+        "qrMenuEnabled",
+        "waiterApprovalEnabled",
+        "kitchenScreenEnabled",
+        "inventoryEnabled",
+        "shiftManagementEnabled",
+        "advancedReportsEnabled",
+        "excelImportEnabled",
+        "recipeCostingEnabled",
+        "staffManagementEnabled",
+        "branchManagementEnabled",
+        "requireShiftForQrOrders",
+        "allowCashierToPrepareOrders",
+        "allowCashierToServeOrders",
+        "enableTables",
+        "createdAt",
+        "updatedAt",
+        "purchasesEnabled",
+        "allowCustomTables",
+        "dineInServingPolicy",
+        "takeawayServingPolicy",
+        "stockCountPolicy",
+        "handoverCountType",
+        "periodicCountType",
+        "stockCountMode",
+        "varianceBlocksHandover",
+        "varianceHardBlockAmount",
+        "recountRequiredOutsideTolerance",
+        "recountMaxAttempts",
+        "allowSelfRecount",
+        "inventoryEnforcementMode",
+        "periodicFullCountSchedule",
+        "periodicFullCountWeekday"
+      ],
+      "count": 2,
+      "hash": "8e3fb988a30c748ab2a5f895e429ea8d"
+    },
+    "CafeTable": {
+      "columns": [
+        "id",
+        "cafeId",
+        "branchId",
+        "tableNumber",
+        "displayName",
+        "area",
+        "seatsCount",
+        "isActive",
+        "sortOrder",
+        "archivedAt",
+        "createdAt",
+        "updatedAt"
+      ],
+      "count": 30,
+      "hash": "6f45dcbe801fa069ad6f61638fc11f71"
+    },
+    "CustodyParticipant": {
+      "columns": [
+        "id",
+        "custodyPeriodId",
+        "userId",
+        "role",
+        "joinedAt",
+        "leftAt"
+      ],
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "CustodyPeriod": {
+      "columns": [
+        "id",
+        "cafeId",
+        "branchId",
+        "scope",
+        "status",
+        "startedAt",
+        "endedAt",
+        "openingCashAmount",
+        "closingCashAmount",
+        "previousPeriodId",
+        "createdAt",
+        "updatedAt",
+        "holderType",
+        "openedById",
+        "acceptedById",
+        "acceptedAt",
+        "responsibleShiftId"
+      ],
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "Customer": {
+      "columns": [
+        "id",
+        "cafeId",
+        "name",
+        "phone",
+        "normalizedPhone",
+        "email",
+        "birthDate",
+        "notes",
+        "totalOrders",
+        "totalSpent",
+        "lastOrderAt",
+        "loyaltyPointsBalance",
+        "lifetimePointsEarned",
+        "lifetimePointsRedeemed",
+        "isActive",
+        "createdAt",
+        "updatedAt"
+      ],
+      "count": 1,
+      "hash": "1cd7c51951eb358f9d62e838f3fe1e86"
+    },
+    "HandoverRequiredItem": {
+      "columns": [
+        "id",
+        "handoverId",
+        "inventoryItemId",
+        "itemNameSnapshot",
+        "unitSnapshot",
+        "isCriticalSnapshot",
+        "satisfiedByLineId",
+        "omitted",
+        "omissionNote",
+        "createdAt",
+        "updatedAt"
+      ],
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "HandoverSession": {
+      "columns": [
+        "id",
+        "cafeId",
+        "branchId",
+        "status",
+        "outgoingCashCustodyId",
+        "outgoingStockCustodyId",
+        "incomingCashCustodyId",
+        "incomingStockCustodyId",
+        "outgoingShiftId",
+        "incomingShiftId",
+        "outgoingUserId",
+        "incomingUserId",
+        "stockCountSessionId",
+        "idempotencyKey",
+        "submittedAt",
+        "reviewedAt",
+        "acceptedAt",
+        "rejectedAt",
+        "completedAt",
+        "rejectionReasonCodeId",
+        "rejectionNote",
+        "exceptionById",
+        "exceptionReason",
+        "exceptionAt",
+        "proposedOpeningCash",
+        "countedOpeningCash",
+        "cashVarianceAmount",
+        "cashVerifiedAt",
+        "cashVerifiedById",
+        "createdAt",
+        "updatedAt",
+        "target",
+        "resolvedTarget",
+        "acceptedStockCountSessionId",
+        "stockMode",
+        "requiredItemTrigger",
+        "requiredItemCount",
+        "periodicScheduleSnapshot",
+        "periodicWeekdaySnapshot",
+        "configSnapshotAt",
+        "businessDateSnapshot"
+      ],
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "HandoverStockAcknowledgement": {
+      "columns": [
+        "id",
+        "handoverId",
+        "stockCountLineId",
+        "incomingCountedQuantity",
+        "handedOverQuantity",
+        "varianceQuantity",
+        "decision",
+        "disputeReasonCodeId",
+        "disputeNote",
+        "acknowledgedAt",
+        "acknowledgedById"
+      ],
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "HandoverStockBoundary": {
+      "columns": [
+        "id",
+        "handoverId",
+        "inventoryItemId",
+        "source",
+        "verified",
+        "quantity",
+        "itemVersion",
+        "stockCountLineId",
+        "unitCostSnapshot",
+        "unitCostSource",
+        "createdAt"
+      ],
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "InventoryFreeze": {
+      "columns": [
+        "id",
+        "cafeId",
+        "branchId",
+        "handoverId",
+        "startedAt",
+        "startedById",
+        "releasedAt",
+        "releasedById"
+      ],
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "InventoryItem": {
+      "columns": [
+        "id",
+        "cafeId",
+        "branchId",
+        "name",
+        "currentStock",
+        "minimumStock",
+        "updatedAt",
+        "unit",
+        "category",
+        "costPerUnit",
+        "supplierName",
+        "expiryDate",
+        "isActive",
+        "archivedAt",
+        "createdAt",
+        "ledgerVersion",
+        "isCritical"
+      ],
+      "count": 7,
+      "hash": "80722cd0e74796c8162f1df3b3524b57"
+    },
+    "InventoryTransaction": {
+      "columns": [
+        "id",
+        "cafeId",
+        "branchId",
+        "inventoryItemId",
+        "type",
+        "quantity",
+        "unitCost",
+        "totalCost",
+        "note",
+        "createdById",
+        "createdAt",
+        "orderId",
+        "itemVersion",
+        "custodyPeriodId",
+        "shiftId"
+      ],
+      "count": 11,
+      "hash": "f1e8b258b4222de7481a8cd1b36cdf87"
+    },
+    "LoyaltySettings": {
+      "columns": [
+        "id",
+        "cafeId",
+        "enabled",
+        "earnPointsPerAmount",
+        "earnAmountStep",
+        "pointValueAmount",
+        "minPointsToRedeem",
+        "maxRedeemPercentageOfOrder",
+        "pointsExpireDays",
+        "earnOnPaidOrdersOnly",
+        "customerPhoneRequiredForQr",
+        "createdAt",
+        "updatedAt"
+      ],
+      "count": 2,
+      "hash": "2f64a8c0637a3e8d001b501a592c92b8"
+    },
+    "LoyaltyTransaction": {
+      "columns": [
+        "id",
+        "cafeId",
+        "customerId",
+        "orderId",
+        "type",
+        "points",
+        "amountValue",
+        "note",
+        "createdByUserId",
+        "createdAt"
+      ],
+      "count": 9,
+      "hash": "5d6949cb329248e04e9da07208d5f68c"
+    },
+    "MenuCategory": {
+      "columns": [
+        "id",
+        "cafeId",
+        "name",
+        "sortOrder",
+        "isActive",
+        "createdAt",
+        "updatedAt",
+        "showInCustomerMenu"
+      ],
+      "count": 34,
+      "hash": "cdb3970d3a49cd5329e90f720bd0f815"
+    },
+    "OpeningException": {
+      "columns": [
+        "id",
+        "cafeId",
+        "branchId",
+        "shiftId",
+        "custodyPeriodId",
+        "handoverId",
+        "kind",
+        "proposedAmount",
+        "actualAmount",
+        "varianceAmount",
+        "reasonCodeId",
+        "note",
+        "authorizedById",
+        "createdAt"
+      ],
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "Order": {
+      "columns": [
+        "id",
+        "cafeId",
+        "branchId",
+        "orderNumber",
+        "type",
+        "status",
+        "customerName",
+        "tableNumber",
+        "notes",
+        "subtotal",
+        "taxAmount",
+        "discountAmount",
+        "total",
+        "createdById",
+        "createdAt",
+        "updatedAt",
+        "completedAt",
+        "customerPhone",
+        "deliveryAddress",
+        "source",
+        "approvedById",
+        "approvedAt",
+        "rejectedById",
+        "rejectedAt",
+        "rejectionReason",
+        "preparationStartedAt",
+        "readyAt",
+        "servedAt",
+        "stockDeductedAt",
+        "paidAmount",
+        "paymentStatus",
+        "remainingAmount",
+        "serviceChargeAmount",
+        "serviceRateSnapshot",
+        "taxRateSnapshot",
+        "tableSessionId",
+        "approvalStatus",
+        "approvalModeSnapshot",
+        "assignedApproverRole",
+        "assignedApproverUserId",
+        "customerId",
+        "loyaltyDiscountAmount",
+        "loyaltyPointsAwardedAt",
+        "loyaltyPointsEarned",
+        "loyaltyPointsRedeemed",
+        "inventoryEnforcementMode",
+        "servedById",
+        "servedStockCustodyPeriodId",
+        "servedShiftId"
+      ],
+      "count": 85,
+      "hash": "c7856642a7c1eee0fe8d845b021dab68"
+    },
+    "OrderItem": {
+      "columns": [
+        "id",
+        "orderId",
+        "productId",
+        "variantId",
+        "productName",
+        "variantName",
+        "unitPrice",
+        "quantity",
+        "lineTotal",
+        "notes",
+        "kitchenStatus"
+      ],
+      "count": 165,
+      "hash": "b9b204a47c118f136d221abb2bd457d6"
+    },
+    "OrderItemAddOn": {
+      "columns": [
+        "id",
+        "orderItemId",
+        "addOnId",
+        "addOnName",
+        "price"
+      ],
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "OrderItemPayment": {
+      "columns": [
+        "id",
+        "cafeId",
+        "branchId",
+        "tableSessionId",
+        "orderId",
+        "orderItemId",
+        "paymentId",
+        "quantityPaid",
+        "amountPaid",
+        "createdByUserId",
+        "createdAt"
+      ],
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "Payment": {
+      "columns": [
+        "id",
+        "cafeId",
+        "orderId",
+        "amount",
+        "method",
+        "status",
+        "receivedById",
+        "createdAt",
+        "branchId",
+        "cashierId",
+        "shiftId",
+        "paidAt",
+        "updatedAt",
+        "tableSessionId",
+        "note",
+        "reversalOfPaymentId",
+        "type",
+        "refundReason"
+      ],
+      "count": 80,
+      "hash": "b8ae6e2090c75aadb908acf174a2efa3"
+    },
+    "Product": {
+      "columns": [
+        "id",
+        "cafeId",
+        "categoryId",
+        "name",
+        "description",
+        "basePrice",
+        "imageUrl",
+        "isActive",
+        "createdAt",
+        "updatedAt",
+        "showInCustomerMenu",
+        "isAvailable",
+        "sortOrder",
+        "costPrice",
+        "showInPOS"
+      ],
+      "count": 224,
+      "hash": "f76c1299b5248f46000873151e750f7a"
+    },
+    "ProductAddOn": {
+      "columns": [
+        "productId",
+        "addOnId"
+      ],
+      "count": 34,
+      "hash": "1d8b148e55ad86c88e9b5e8df739fd0c"
+    },
+    "ProductBranchPrice": {
+      "columns": [
+        "id",
+        "productId",
+        "branchId",
+        "price"
+      ],
+      "count": 2,
+      "hash": "1dd674a91f00114238dc6d2ed9c8dfa9"
+    },
+    "ProductVariant": {
+      "columns": [
+        "id",
+        "productId",
+        "name",
+        "isActive",
+        "price",
+        "sortOrder"
+      ],
+      "count": 91,
+      "hash": "cf2b8f80a64583d55fbd97573184a6b9"
+    },
+    "PurchaseInvoice": {
+      "columns": [
+        "id",
+        "cafeId",
+        "branchId",
+        "supplierId",
+        "invoiceNumber",
+        "invoiceDate",
+        "status",
+        "confirmedAt",
+        "cancelledAt",
+        "subtotalAmount",
+        "discountAmount",
+        "taxAmount",
+        "totalAmount",
+        "paidAmount",
+        "remainingAmount",
+        "paymentStatus",
+        "notes",
+        "createdByUserId",
+        "createdAt",
+        "updatedAt"
+      ],
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "PurchaseInvoiceItem": {
+      "columns": [
+        "id",
+        "cafeId",
+        "branchId",
+        "purchaseInvoiceId",
+        "inventoryItemId",
+        "quantity",
+        "unit",
+        "unitCost",
+        "totalCost",
+        "expiryDate",
+        "createdAt",
+        "updatedAt"
+      ],
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "PurchasePayment": {
+      "columns": [
+        "id",
+        "cafeId",
+        "branchId",
+        "purchaseInvoiceId",
+        "amount",
+        "method",
+        "paidAt",
+        "note",
+        "createdByUserId",
+        "createdAt"
+      ],
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "QrOrderApprovalSettings": {
+      "columns": [
+        "id",
+        "cafeId",
+        "branchId",
+        "enabled",
+        "approvalMode",
+        "targetRole",
+        "targetUserId",
+        "autoConfirm",
+        "allowApproverToEditOrder",
+        "allowApproverToRejectOrder",
+        "sendToKitchenAfterApproval",
+        "createdAt",
+        "updatedAt"
+      ],
+      "count": 1,
+      "hash": "302ee70344554d0d39413ccbc412755b"
+    },
+    "ReasonCode": {
+      "columns": [
+        "id",
+        "cafeId",
+        "domain",
+        "code",
+        "label",
+        "isActive",
+        "createdAt",
+        "updatedAt"
+      ],
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "Recipe": {
+      "columns": [
+        "id",
+        "cafeId",
+        "productId",
+        "variantId",
+        "addOnId",
+        "appliesToAllVariants",
+        "notApplicable",
+        "notApplicableReason",
+        "verifiedById",
+        "verifiedAt",
+        "verifiedFingerprint",
+        "createdById",
+        "updatedById",
+        "createdAt",
+        "updatedAt"
+      ],
+      "count": 5,
+      "hash": "9d9af20cba085ab5ee82569550f1a49d"
+    },
+    "RecipeItem": {
+      "columns": [
+        "id",
+        "recipeId",
+        "inventoryItemId",
+        "quantity",
+        "unit",
+        "wastePercentage",
+        "createdAt",
+        "updatedAt"
+      ],
+      "count": 15,
+      "hash": "a5650cbcf4133b97c05f454c529a8b8b"
+    },
+    "Shift": {
+      "columns": [
+        "id",
+        "cafeId",
+        "branchId",
+        "cashierId",
+        "shiftNumber",
+        "openedAt",
+        "closedAt",
+        "openingCashAmount",
+        "expectedCashAmount",
+        "actualCashAmount",
+        "cashDifference",
+        "totalSales",
+        "totalCashSales",
+        "totalCardSales",
+        "totalWalletSales",
+        "totalRefunds",
+        "totalDiscounts",
+        "orderCount",
+        "status",
+        "notes",
+        "createdAt",
+        "updatedAt",
+        "cashWithinTolerance",
+        "cashToleranceAmount",
+        "cashReasonCodeId",
+        "cashReasonNote",
+        "cashVarianceCaseId",
+        "closedById",
+        "custodyReadyAt",
+        "custodyGateReason",
+        "handoverRequired",
+        "financiallyClosedAt",
+        "stockClosedAt"
+      ],
+      "count": 8,
+      "hash": "bc19b64b0f01676e41ed0dc40b3e1788"
+    },
+    "ShiftCustody": {
+      "columns": [
+        "id",
+        "shiftId",
+        "custodyPeriodId",
+        "scope",
+        "linkedAt"
+      ],
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "StockCountCorrection": {
+      "columns": [
+        "id",
+        "lineId",
+        "oldCountedQuantity",
+        "newCountedQuantity",
+        "reasonCodeId",
+        "note",
+        "actorId",
+        "status",
+        "approvedById",
+        "approvedAt",
+        "rejectedReason",
+        "postCustodyTransfer",
+        "createdAt"
+      ],
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "StockCountLine": {
+      "columns": [
+        "id",
+        "sessionId",
+        "inventoryItemId",
+        "unit",
+        "expectedQuantity",
+        "countedQuantity",
+        "effectiveCountedQuantity",
+        "varianceQuantity",
+        "countedAt",
+        "counterId",
+        "itemVersion",
+        "expectedBasis",
+        "confidence",
+        "confidenceIssues",
+        "confidenceWindowFrom",
+        "disposition",
+        "costImpact",
+        "costImpactAvailable",
+        "costUnavailableReason",
+        "reasonCodeId",
+        "reasonNote",
+        "createdAt",
+        "updatedAt",
+        "unitCostSnapshot",
+        "unitCostSource",
+        "unitCostCapturedAt"
+      ],
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "StockCountRebase": {
+      "columns": [
+        "id",
+        "sessionId",
+        "lineId",
+        "inventoryItemId",
+        "countedQuantity",
+        "stockBefore",
+        "replayedDelta",
+        "replayedMovementCount",
+        "stockAfter",
+        "rebaseItemVersion",
+        "ledgerTransactionId",
+        "rebasedAt",
+        "rebasedById"
+      ],
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "StockCountRecount": {
+      "columns": [
+        "id",
+        "lineId",
+        "attempt",
+        "kind",
+        "countedQuantity",
+        "expectedQuantity",
+        "itemVersion",
+        "varianceQuantity",
+        "countedAt",
+        "counterId",
+        "resolved"
+      ],
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "StockCountSession": {
+      "columns": [
+        "id",
+        "cafeId",
+        "branchId",
+        "shiftId",
+        "custodyPeriodId",
+        "type",
+        "status",
+        "mode",
+        "scopeDerivation",
+        "startedAt",
+        "submittedAt",
+        "confirmedAt",
+        "lockedAt",
+        "initiatedById",
+        "firstCounterId",
+        "confirmedById",
+        "idempotencyKey",
+        "notes",
+        "createdAt",
+        "updatedAt",
+        "lockedByHandoverId",
+        "accountabilityContext",
+        "handoverId",
+        "openingBranchCustodyPeriodId"
+      ],
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "StockVarianceSpan": {
+      "columns": [
+        "id",
+        "varianceCaseId",
+        "inventoryItemId",
+        "fromBoundaryId",
+        "fromVerifiedAt",
+        "toBoundaryId",
+        "toVerifiedAt",
+        "unverifiedBoundaryCount",
+        "createdAt",
+        "toStockCountLineId"
+      ],
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "StockVarianceSpanCustody": {
+      "columns": [
+        "id",
+        "spanId",
+        "custodyPeriodId",
+        "createdAt"
+      ],
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "Supplier": {
+      "columns": [
+        "id",
+        "cafeId",
+        "name",
+        "phone",
+        "email",
+        "address",
+        "notes",
+        "isActive",
+        "createdAt",
+        "updatedAt"
+      ],
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "TableSession": {
+      "columns": [
+        "id",
+        "cafeId",
+        "branchId",
+        "tableNumber",
+        "status",
+        "startedAt",
+        "closedAt",
+        "totalAmount",
+        "paidAmount",
+        "remainingAmount",
+        "openedByUserId",
+        "closedByUserId",
+        "customerName",
+        "notes",
+        "createdAt",
+        "updatedAt"
+      ],
+      "count": 13,
+      "hash": "8ff51a20f9c14119074cb852bc8a5291"
+    },
+    "TenderReconciliation": {
+      "columns": [
+        "id",
+        "cafeId",
+        "branchId",
+        "shiftId",
+        "method",
+        "expectedAmount",
+        "actualAmount",
+        "varianceAmount",
+        "toleranceAmount",
+        "reasonCodeId",
+        "reasonNote",
+        "status",
+        "submittedById",
+        "submittedAt",
+        "approvedById",
+        "approvedAt",
+        "createdAt",
+        "updatedAt"
+      ],
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "ToleranceRule": {
+      "columns": [
+        "id",
+        "cafeId",
+        "scope",
+        "branchId",
+        "category",
+        "inventoryItemId",
+        "tenderMethod",
+        "quantityTolerance",
+        "percentTolerance",
+        "amountTolerance",
+        "isActive",
+        "createdAt",
+        "updatedAt"
+      ],
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "User": {
+      "columns": [
+        "id",
+        "cafeId",
+        "branchId",
+        "email",
+        "passwordHash",
+        "name",
+        "role",
+        "isActive",
+        "createdAt",
+        "updatedAt",
+        "phone",
+        "lastLoginAt",
+        "archivedAt",
+        "cafeRoleId"
+      ],
+      "count": 11,
+      "hash": "2fa4db89ef985aede4b01fd7055d24b3"
+    },
+    "UserPermissionOverride": {
+      "columns": [
+        "id",
+        "userId",
+        "permissionKey",
+        "allowed",
+        "createdAt",
+        "updatedAt"
+      ],
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "VarianceCase": {
+      "columns": [
+        "id",
+        "cafeId",
+        "branchId",
+        "type",
+        "status",
+        "shiftId",
+        "custodyPeriodId",
+        "stockCountLineId",
+        "tenderReconciliationId",
+        "openingExceptionId",
+        "quantityVariance",
+        "amountVariance",
+        "financialImpact",
+        "financialImpactAvailable",
+        "financialImpactUnavailableReason",
+        "confidence",
+        "assignedResponsibilityUserId",
+        "blocking",
+        "openedAt",
+        "openedById",
+        "resolvedAt",
+        "resolvedById",
+        "resolutionNote",
+        "createdAt",
+        "updatedAt",
+        "acceptedHandoverId",
+        "attribution"
+      ],
+      "count": 1,
+      "hash": "05deab0ebe0860e0d62fe363026d936c"
+    }
+  }
+}

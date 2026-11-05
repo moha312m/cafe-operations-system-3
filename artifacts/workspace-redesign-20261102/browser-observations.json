@@ -1,0 +1,115 @@
+{
+  "at": "2026-11-02T10:10:57.296Z",
+  "preview": "http://localhost:3113",
+  "ownerOriginUntouched": "http://127.0.0.1:3110",
+  "checks": [
+    {
+      "journey": "Finance landing",
+      "url": "http://localhost:3113/finance",
+      "snapshot": "- complementary:\n  - generic: ☕\n  - paragraph: workspace20261102-1949053d4248 مساحة العمل\n  - paragraph: كافيه أوبس\n  - navigation \"التنقل الرئيسي\":\n    - link \"📊 لوحة التحكم\":\n      - /url: /dashboard\n      - generic: 📊\n      - generic: لوحة التحكم\n    - button \"التشغيل اليومي\" [expanded]:\n      - generic: التشغيل اليومي\n      - generic: ▾\n    - link \"🪑 إدارة الترابيزات\":\n      - /url: /tables/setup\n      - generic: 🪑\n      - generic: إدارة الترابيزات\n    - link \"🧾 الكاشير\":\n      - /url: /pos\n      - generic: 🧾\n      - generic: الكاشير\n    - link \"🧑‍💼 الشيفت الحالي\":\n      - /url: /current-shift\n      - generic: 🧑‍💼\n      - generic: الشيفت الحالي\n    - link \"🍽️ الترابيزات\":\n      - /url: /tables\n      - generic: 🍽️\n      - generic: الترابيزات\n    - link \"🔔 الطلبات\":\n      - /url: /orders\n      - generic: 🔔\n      - generic: الطلبات\n    - link \"📈 المبيعات\":\n      - /url: /sales\n      - generic: 📈\n      - generic: المبيعات\n    - link \"📱 طلبات المنيو 7\":\n      - /url: /approvals\n      - generic: 📱\n      - generic: طلبات المنيو\n      - generic: \"7\"\n    - link \"💳 العملاء\":\n      - /url: /customers\n      - generic: 💳\n      - generic: العملاء\n    - button \"المنيو والمخزون\" [expanded]:\n      - generic: المنيو والمخزون\n      - generic: ▾\n    - link \"📖 المنيو\":\n      - /url: /menu\n      - generic: 📖\n      - generic: المنيو\n    - link \"🧪 دقة الوصفات\":\n      - /url: /recipe-review\n      - generic: 🧪\n      - generic: دقة الوصفات\n    - link \"📦 المخزون\":\n      - /url: /inventory\n      - generic: 📦\n      - generic: المخزون\n    - link \"🛒 المشتريات\":\n      - /url: /purchases\n      - generic: 🛒\n      - generic: المشتريات\n    - link \"🚚 الموردين\":\n      - /url: /suppliers\n      - generic: 🚚\n      - generic: الموردين\n    - button \"الجرد والتسليم\" [expanded]:\n      - generic: الجرد والتسليم\n      - generic: ▾\n    - link \"📋 جرد المخزون\":\n      - /url: /stock-counts\n      - generic: 📋\n      - generic: جرد المخزون\n    - link \"⚖️ الفروقات\":\n      - /url: /variances\n      - generic: ⚖️\n      - generic: الفروقات\n    - link \"🤝 التسليم والاستلام\":\n      - /url: /handovers\n      - generic: 🤝\n      - generic: التسليم والاستلام\n    - button \"التقارير والمتابعة\" [expanded]:\n      - generic: التقارير والمتابعة\n      - generic: ▾\n    - link \"📊 مركز التقارير\":\n      - /url: /report-center\n      - generic: 📊\n      - generic: مركز التقارير\n    - link \"🔎 التتبّع\":\n      - /url: /tracing\n      - generic: 🔎\n      - generic: التتبّع\n    - link \"📈 تقرير اليوم\":\n      - /url: /reports\n      - generic: 📈\n      - generic: تقرير اليوم\n    - link \"🧮 تقارير الشيفتات\":\n      - /url: /shifts\n      - generic: 🧮\n      - generic: تقارير الشيفتات\n    - link \"🕓 سجل الحركات\":\n      - /url: /audit\n      - generic: 🕓\n      - generic: سجل الحركات\n    - button \"المحاسبة والماليات\" [disabled] [expanded]:\n      - generic: المحاسبة والماليات\n      - generic: ▾\n    - link \"💼 مساحة الماليات\" [active]:\n      - /url: /finance\n      - generic: 💼\n      - generic: مساحة الماليات\n    - link \"🏦 الحسابات والتحويلات\":\n      - /url: /treasury\n      - generic: 🏦\n      - generic: الحسابات والتحويلات\n    - link \"💸 المصروفات\":\n      - /url: /expenses\n      - generic: 💸\n      - generic: المصروفات\n    - link \"📒 المحاسبة (تجريبي)\":\n      - /url: /accounting\n      - generic: 📒\n      - generic: المحاسبة (تجريبي)\n    - button \"الإدارة\" [expanded]:\n      - generic: الإدارة\n      - generic: ▾\n    - link \"🏬 الفروع\":\n      - /url: /branches\n      - generic: 🏬\n      - generic: الفروع\n    - link \"👥 الموظفين\":\n      - /url: /staff\n      - generic: 👥\n      - generic: الموظفين\n    - link \"⚙️ الإعدادات\":\n      - /url: /settings\n      - generic: ⚙️\n      - generic: الإعدادات\n    - link \"🛡️ الأدوار والصلاحيات\":\n      - /url: /roles-permissions\n      - generic: 🛡️\n      - generic: الأدوار والصلاحيات\n  - generic: ما\n  - paragraph: مالك مساحة العمل\n  - paragraph: صاحب الكافيه\n  - button \"تسجيل الخروج\"\n- main:\n  - main:\n    - paragraph: NEXT CUP · مساحة العمل\n    - heading \"الماليات\" [level=1]\n    - paragraph: ابدأ بالمهمة المطلوبة، ثم راجع السجل وتفاصيل الحركة في مكانها.\n    - note: حسابات الأموال محدودة المصادر؛ الرصيد الافتتاحي غير المعتمد يظل غير معلوم. الدفاتر المحاسبية تجريبية SHADOW وتحتاج مراجعة المحاسب. التحويل الداخلي لا يُعد إيرادًا أو مصروفًا.\n    - navigation \"مهام الماليات\":\n      - link \"المصروفات والتصنيفات إيصالات الصرف ورد النقد وتصنيف المصروفات فتح القسم ←\":\n        - /url: /expenses\n        - heading \"المصروفات والتصنيفات\" [level=2]\n        - paragraph: إيصالات الصرف ورد النقد وتصنيف المصروفات\n        - generic: فتح القسم ←\n      - link \"حسابات الأموال الخزنة والبنك والمحفظة وكشوف الحركات فتح القسم ←\":\n        - /url: /treasury\n        - heading \"حسابات الأموال\" [level=2]\n        - paragraph: الخزنة والبنك والمحفظة وكشوف الحركات\n        - generic: فتح القسم ←\n      - link \"التحويلات الداخلية مسودة، خروج فعلي ثم استلام مؤكد فتح القسم ←\":\n        - /url: /treasury#transfers\n        - heading \"التحويلات الداخلية\" [level=2]\n        - paragraph: مسودة، خروج فعلي ثم استلام مؤكد\n        - generic: فتح القسم ←\n      - link \"ميزان المراجعة الافتتاح والمدين والدائن والختام فتح القسم ←\":\n        - /url: /accounting/trial-balance\n        - heading \"ميزان المراجعة\" [level=2]\n        - paragraph: الافتتاح والمدين والدائن والختام\n        - generic: فتح القسم ←\n      - link \"الميزانية العمومية الأصول والالتزامات وحقوق الملكية فتح القسم ←\":\n        - /url: /accounting/statements?kind=balance-sheet\n        - heading \"الميزانية العمومية\" [level=2]\n        - paragraph: الأصول والالتزامات وحقوق الملكية\n        - generic: فتح القسم ←\n      - link \"التدفقات النقدية المقبوضات والمدفوعات من الدفاتر فتح القسم ←\":\n        - /url: /accounting/statements?kind=cash-flow\n        - heading \"التدفقات النقدية\" [level=2]\n        - paragraph: المقبوضات والمدفوعات من الدفاتر\n        - generic: فتح القسم ←\n      - link \"قائمة الدخل الإيراد وتكلفة المبيعات والمصروفات فتح القسم ←\":\n        - /url: /accounting/statements?kind=income\n        - heading \"قائمة الدخل\" [level=2]\n        - paragraph: الإيراد وتكلفة المبيعات والمصروفات\n        - generic: فتح القسم ←\n      - link \"دفتر الأستاذ حركة كل حساب مع الرصيد المرحّل فتح القسم ←\":\n        - /url: /accounting/ledger\n        - heading \"دفتر الأستاذ\" [level=2]\n        - paragraph: حركة كل حساب مع الرصيد المرحّل\n        - generic: فتح القسم ←\n      - link \"القيود اليومية تفاصيل القيد وروابط مصدره فتح القسم ←\":\n        - /url: /accounting/journal\n        - heading \"القيود اليومية\" [level=2]\n        - paragraph: تفاصيل القيد وروابط مصدره\n        - generic: فتح القسم ←\n- region \"Notifications alt+T\"\n- button \"Open Next.js Dev Tools\":\n- alert",
+      "layout": {
+        "dir": "rtl",
+        "lang": "ar",
+        "overflow": false,
+        "primary": "#3b7a6c"
+      }
+    },
+    {
+      "journey": "Treasury search, duplicate-account retention and exact metadata recovery",
+      "url": "http://localhost:3113/treasury",
+      "unknownBalanceVisible": true,
+      "duplicateInputRetained": true,
+      "pendingRequestReviewed": true
+    },
+    {
+      "journey": "Expenses list, in-dialog branch selection and categories",
+      "url": "http://localhost:3113/expenses",
+      "expenseTotal": "17.34",
+      "branchSelectionInsideDialog": true,
+      "categoriesInDialog": true
+    },
+    {
+      "journey": "Sales workspace",
+      "url": "http://localhost:3113/sales",
+      "newSaleVisible": true,
+      "filters": [
+        "search",
+        "date",
+        "branch",
+        "cashier",
+        "payment status",
+        "collection method"
+      ],
+      "recognitionCollectionsHistoryExplained": true
+    },
+    {
+      "journey": "Dining tables create/edit/archive/restore",
+      "url": "http://localhost:3113/tables/setup",
+      "tableNumber": "UI-WINDOW-01",
+      "name": "ترابيزة الشباك",
+      "area": "الصالة",
+      "seats": 6,
+      "restoreInitiallyInactive": true,
+      "occupiedArchiveDisabled": true,
+      "gridAndList": true
+    },
+    {
+      "journey": "Report center",
+      "url": "http://localhost:3113/report-center",
+      "categories": 6,
+      "availableEntries": 19,
+      "operationalLimitationsExplicit": true
+    },
+    {
+      "journey": "Purchasing report",
+      "url": "http://localhost:3113/report-center/purchases",
+      "matchedInvoices": 26,
+      "total": "260.00",
+      "paid": "52.00",
+      "remaining": "208.00",
+      "csvDownloadPath": "C:\\Users\\Acer\\Downloads\\purchase-report.csv"
+    },
+    {
+      "journey": "Viewport calibration: requested390, actual520",
+      "dir": "rtl",
+      "docWidth": 500,
+      "overflow": false,
+      "url": "http://localhost:3113/report-center/purchases",
+      "width": 520
+    },
+    {
+      "journey": "Viewport calibration: requested820, actual1093",
+      "docWidth": 1073,
+      "overflow": false,
+      "width": 1093
+    },
+    {
+      "journey": "Phone purchasing actual CSS viewport",
+      "docWidth": 370,
+      "height": 844,
+      "overflow": false,
+      "width": 390
+    },
+    {
+      "journey": "Tablet purchasing actual CSS viewport",
+      "height": 1180,
+      "overflow": false,
+      "width": 820
+    },
+    {
+      "journey": "Configured shadow income statement",
+      "url": "http://localhost:3113/accounting/statements?kind=income",
+      "text": "المحاسبة والماليات\nتجريبي — غير معتمد\n\nدي دفاتر تجريبية للمراجعة بس، ومش دفاتر رسمية. الأرقام محتاجة مراجعة المحاسب، ومفيش تاريخ بداية ولا أرصدة افتتاحية معتمدة لحد دلوقتي.\n\nتسجيل ومراجعة مصروفات الدرج\nنظرة عامة\nميزان المراجعة\nالقوائم المالية\nدفتر الأستاذ\nالقيود\nالقوائم المالية\nالقائمة\nقائمة الدخل\nالميزانية العمومية\nالتدفقات النقدية\nالفرع\nكل الكافيه\nدفتر الفرع الأول\nدفتر الفرع الثاني\nمن تاريخ — القاهرة\nإلى تاريخ — القاهرة\nقائمة الدخل\nطباعة فترة التقرير والإجماليات\nتصدير CSV — اللقطة المعروضة\nتصدير Excel — نفس اللقطة\n\nصافي الإيرادات\n\n150 ج.م\n\nمجمل الربح\n\n150 ج.م\n\nالمصروفات الأخرى\n\n15 ج.م\n\nصافي الدخل\n\n135 ج.م\n\nالإيرادات\nالمبيعات4100\n150 ج.م\nتكلفة المبيعات\n\nلا توجد حركة مسجلة في هذا القسم.\n\nالمصروفات\nمصروفات تشغيل أخرى5900\n15 ج.م"
+    },
+    {
+      "journey": "Restricted role direct Finance denial",
+      "url": "http://localhost:3113/treasury",
+      "text": "الحسابات والتحويلات متاحة للمالك المخوّل فقط."
+    },
+    {
+      "journey": "Restricted role table management denied",
+      "url": "http://localhost:3113/tables/setup",
+      "text": "إعداد الترابيزات\n\nليس لديك صلاحية لإدارة الترابيزات"
+    }
+  ]
+}

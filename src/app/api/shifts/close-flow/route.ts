@@ -6,6 +6,7 @@ import { resolvePermissions } from "@/lib/perms/effective";
 import { resolveBranchHandoverConfig } from "@/lib/handover-config";
 import { decideMaterialsCount, readMaterialsSchedule } from "@/lib/materials-schedule";
 import { fullCountDue } from "@/lib/stock-count-policy";
+import { dispositionForShift, listEligibleRecipients } from "@/lib/cash-disposition";
 
 // GET /api/shifts/close-flow — where the requester's OWN close stands (HND-UX-004).
 //
@@ -70,6 +71,7 @@ export async function GET(request: NextRequest) {
         },
         handover: { enabled: config.enabled && config.configError?.code !== "CYCLE_POLICY_UNSUPPORTED" },
         materials: { cadence: config.materials.cadence, duePreview: preview?.due ?? true, nextDueAt: preview?.nextDueAt ?? null, branchCustodyFullCountDue },
+        recipients: await listEligibleRecipients(db, { cafeId: branch.cafeId, branchId, excludeUserId: session.id }),
       });
     }
 
@@ -92,7 +94,7 @@ export async function GET(request: NextRequest) {
         handoversOutgoing: {
           orderBy: { createdAt: "desc" },
           take: 1,
-          select: { id: true, status: true, stockCountSessionId: true, requiredItemCount: true, outgoingNote: true, submittedAt: true },
+          select: { id: true, status: true, target: true, directHandover: true, stockCountSessionId: true, requiredItemCount: true, outgoingNote: true, submittedAt: true },
         },
       },
     });
@@ -103,7 +105,11 @@ export async function GET(request: NextRequest) {
       : "DONE";
     const { handoversOutgoing: _unused, ...shift } = last;
     void _unused;
-    return NextResponse.json({ stage, branch: { id: branch.id, name: branch.name }, shift, handover });
+    const [cashDisposition, recipients] = await Promise.all([
+      dispositionForShift(db, last.id),
+      listEligibleRecipients(db, { cafeId: branch.cafeId, branchId, excludeUserId: session.id }),
+    ]);
+    return NextResponse.json({ stage, branch: { id: branch.id, name: branch.name }, shift, handover, cashDisposition, recipients });
   } catch (error) {
     return handleApiError(error);
   }

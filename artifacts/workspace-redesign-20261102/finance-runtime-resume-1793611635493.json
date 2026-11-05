@@ -1,0 +1,22 @@
+{
+  "at": "2026-11-02T09:27:15.492Z",
+  "runId": "workspace20261102-1949053d4248",
+  "initial": {
+    "file": "finance-runtime-1793611412480.json",
+    "sha256": "3cf928da2bb9062c0e509487b15b71003946d2a54948b4321799462b4477a7f5",
+    "retained": true
+  },
+  "sourceSha256": "c7115584a703d03429b4df0dbc95568d718d9d31ac0d3448749d92ad301cb17e",
+  "cases": [
+    {
+      "name": "retained draft replay/filter/unknown-opening refusal/cancellation has no money effect",
+      "status": "PASS"
+    },
+    {
+      "name": "exact retained expense search regression returns matching receipt/count/totals and stored category snapshot search",
+      "status": "PASS"
+    }
+  ],
+  "status": "PASS",
+  "noNewBusinessFixtures": true
+}

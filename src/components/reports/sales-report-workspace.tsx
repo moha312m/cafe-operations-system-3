@@ -48,7 +48,12 @@ function ReportInner({kind,identity}:{kind:SalesReportKind;identity:string}){
  const advancedCount=chips.filter(([k])=>k!=='q'&&k!=='branchId').length;
  const activePreset=PRESETS.find(([,d])=>params.get('from')===addDays(today,-d)&&params.get('to')===(d===1?addDays(today,-1):today))?.[0];
  function preset(days:number){const next=new URLSearchParams(query);next.set('from',addDays(today,-days));next.set('to',days===1?addDays(today,-1):today);next.set('page','1');navigate(next);}
- function reset(){navigate(new URLSearchParams(defaultRange));}
+ function clearFilters(range:{from:string;to:string}) {
+  const next=new URLSearchParams(range);
+  const cafeId=params.get('cafeId');
+  if(cafeId)next.set('cafeId',cafeId);
+  navigate(next);
+ }
  const title=SALES_REPORT_CATALOG.find(r=>r.id===kind)!.title;
  return <div dir="rtl" className="workspace-page min-w-0 space-y-4">
   <nav aria-label="مسار التنقل" className="flex flex-wrap items-center gap-1.5 text-sm text-muted-foreground"><span>التقارير</span><span aria-hidden="true">/</span><Link href="/report-center" className="text-primary hover:underline">مركز التقارير</Link><span aria-hidden="true">/</span><span aria-current="page" className="text-foreground">{title}</span></nav>
@@ -69,9 +74,9 @@ function ReportInner({kind,identity}:{kind:SalesReportKind;identity:string}){
      {(kind==='sales-payments'||kind==='sales-staff'&&params.get('basis')==='collector')&&<label className="space-y-1 text-xs text-muted-foreground">وسيلة التحصيل<select className={selectClass} name="method" defaultValue={params.get('method')??''}><option value="">كل الوسائل</option>{['CASH','CARD','WALLET','MIXED'].map(v=><option key={v}>{v}</option>)}</select></label>}
      <div className="grid grid-cols-2 gap-2 border-t pt-3"><label className="space-y-1 text-xs text-muted-foreground">الترتيب<select className={selectClass} name="sort" defaultValue={params.get('sort')??'revenue_desc'}><option value="revenue_desc">المبلغ تنازلياً</option><option value="revenue_asc">المبلغ تصاعدياً</option><option value="name">الاسم / التاريخ</option></select></label><label className="space-y-1 text-xs text-muted-foreground">حجم الصفحة<select className={selectClass} name="pageSize" defaultValue={params.get('pageSize')??'30'}>{[15,30,60,100].map(v=><option key={v}>{v}</option>)}</select></label></div>
     </AdvancedFilters>
-    <div className="flex gap-2 md:ms-auto"><Button type="submit" size="sm" className={btnClass}>تطبيق</Button><Button type="button" size="sm" variant="ghost" className={btnClass} onClick={reset}>إعادة ضبط</Button></div>
+    <div className="flex gap-2 md:ms-auto"><Button type="submit" size="sm" className={btnClass}>تطبيق</Button><Button type="button" size="sm" variant="ghost" className={btnClass} onClick={()=>clearFilters(defaultRange)}>إعادة ضبط</Button></div>
    </div>
-   {chips.length>0&&<div className="flex flex-wrap items-center gap-2 border-t pt-3" aria-label="الفلاتر المطبقة">{chips.map(([key,value])=><button key={key} type="button" className="inline-flex min-h-8 max-w-full min-w-0 items-center gap-1 rounded-full bg-muted px-3 py-1 text-sm hover:bg-muted/70" onClick={()=>change(key,'')} aria-label={'إزالة فلتر '+CHIP_LABELS[key]}><span className="text-muted-foreground">{CHIP_LABELS[key]}:</span><bdi className="truncate">{value}</bdi><span aria-hidden="true">×</span></button>)}<Button type="button" size="sm" variant="ghost" className={btnClass} onClick={()=>navigate(new URLSearchParams({from:params.get('from')!,to:params.get('to')!}))}>مسح الكل</Button></div>}
+   {chips.length>0&&<div className="flex flex-wrap items-center gap-2 border-t pt-3" aria-label="الفلاتر المطبقة">{chips.map(([key,value])=><button key={key} type="button" className="inline-flex min-h-8 max-w-full min-w-0 items-center gap-1 rounded-full bg-muted px-3 py-1 text-sm hover:bg-muted/70" onClick={()=>change(key,'')} aria-label={'إزالة فلتر '+CHIP_LABELS[key]}><span className="text-muted-foreground">{CHIP_LABELS[key]}:</span><bdi className="truncate">{value}</bdi><span aria-hidden="true">×</span></button>)}<Button type="button" size="sm" variant="ghost" className={btnClass} onClick={()=>clearFilters({from:params.get('from')!,to:params.get('to')!})}>مسح الكل</Button></div>}
   </form>
   {loading&&<div role="status" className="workspace-state animate-pulse">جارٍ تحميل التقرير… الفلاتر محفوظة.</div>}
   {error&&<div role="alert" className="workspace-state space-y-3 border-destructive/30"><p>{error}</p><Button variant="outline" onClick={refresh}>إعادة المحاولة</Button></div>}

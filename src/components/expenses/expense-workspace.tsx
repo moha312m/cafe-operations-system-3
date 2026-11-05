@@ -21,7 +21,7 @@ const field = nativeFieldClassName;
 const button = nativeButtonClassName;
 const primary = nativePrimaryButtonClassName;
 const label = "mb-1.5 block text-base font-semibold";
-const linkButton = cn(nativePrimaryButtonClassName, "min-h-11 justify-center text-base");
+const expenseRow = "grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1 px-3 sm:px-4 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)_10rem_7rem]";
 const issueMap = (issues: { path: PropertyKey[]; message: string }[]) => {
   const out: Record<string, string> = {};
   for (const i of issues) { const k = String(i.path[0] ?? "form"); out[k] = out[k] ? out[k] + "؛ " + i.message : i.message; }
@@ -229,22 +229,37 @@ export function ExpenseWorkspace() {
 
     {loading ? <p role="status" className="workspace-state text-base">جارٍ تحميل المصروفات…</p> : listing && <section aria-label="سجل المصروفات" className="space-y-5">
       <h2 className="text-xl font-bold">سجل المصروفات <span className="text-base font-normal text-muted-foreground">({listing.count})</span></h2>
-      {listing.expenses.length === 0 ? <p className="workspace-state text-base">لا توجد مصروفات في النطاق المحدد.</p> : <ul className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{listing.expenses.map(e => <li key={e.id}>
-        <article className="flex h-full flex-col gap-4 rounded-2xl border border-border/70 bg-card p-5 shadow-sm" aria-label={`${e.categoryName} — ${money(e.amount, "EGP")}`}>
-          <header className="space-y-2">
-            <p className="text-3xl font-bold tabular-nums leading-tight"><bdi>{money(e.amount, "EGP")}</bdi></p>
-            <p className="inline-block rounded-full bg-primary/10 px-3 py-1 text-sm font-semibold text-primary [overflow-wrap:anywhere]">{e.categoryName}</p>
-          </header>
-          <dl className="flex-1 divide-y divide-border/60 text-base">
-            <div className="py-2"><dt className="text-sm text-muted-foreground">الوصف</dt><dd className="[overflow-wrap:anywhere]">{e.description}</dd></div>
-            <div className="py-2"><dt className="text-sm text-muted-foreground">الفرع</dt><dd>{listing.branchNames[e.branchId] ?? "فرع غير متاح"}</dd></div>
-            <div className="py-2"><dt className="text-sm text-muted-foreground">الموظف</dt><dd>{e.actorName}</dd></div>
-            <div className="py-2"><dt className="text-sm text-muted-foreground">التاريخ (القاهرة)</dt><dd>{date(e.occurredAt)}</dd></div>
-            <div className="py-2"><dt className="text-sm text-muted-foreground">النقد المرتجع</dt><dd className="font-semibold tabular-nums"><bdi>{money(e.returnedAmount, "EGP")}</bdi></dd></div>
-          </dl>
-          <Link href={`/expenses/${e.id}`} className={linkButton + " w-full"}>عرض التفاصيل</Link>
-        </article>
-      </li>)}</ul>}
+      {listing.expenses.length === 0 ? <p className="workspace-state text-base">لا توجد مصروفات في النطاق المحدد.</p> : (
+        <div className="overflow-hidden rounded-2xl border border-border/70 bg-card">
+          <div aria-hidden="true" className={expenseRow + " hidden bg-muted py-2 text-sm font-semibold text-muted-foreground lg:grid"}>
+            <span>التصنيف والوصف</span>
+            <span>الفرع والتاريخ (القاهرة)</span>
+            <span>المبلغ</span>
+            <span>الإجراء</span>
+          </div>
+          <ul role="list" className="divide-y divide-border/70">
+            {listing.expenses.map(e => (
+              <li key={e.id} className={expenseRow + " grid py-2.5 hover:bg-muted/40"}>
+                <div className="min-w-0">
+                  <p className="text-base font-semibold [overflow-wrap:anywhere]">{e.categoryName}</p>
+                  <p className="truncate text-sm text-muted-foreground">{e.description}</p>
+                </div>
+                <div className="col-start-1 row-start-2 min-w-0 text-sm lg:col-start-2 lg:row-start-1">
+                  <p className="[overflow-wrap:anywhere]">{listing.branchNames[e.branchId] ?? "فرع غير متاح"}</p>
+                  <time dateTime={e.occurredAt} className="block text-muted-foreground">{date(e.occurredAt)}</time>
+                </div>
+                <div className="col-start-2 row-start-1 text-end tabular-nums lg:col-start-3 lg:text-start">
+                  <p className="whitespace-nowrap text-base font-bold"><bdi>{money(e.amount, "EGP")}</bdi></p>
+                  {e.returnedAmount > 0 && <p className="text-sm text-muted-foreground">مرتجع <bdi className="whitespace-nowrap">{money(e.returnedAmount, "EGP")}</bdi></p>}
+                </div>
+                <Link href={`/expenses/${e.id}`} className={button + " col-start-2 row-start-2 inline-flex min-h-11 items-center justify-self-end whitespace-nowrap px-3 text-sm font-semibold lg:col-start-4 lg:row-start-1 lg:justify-self-start"}>
+                  عرض التفاصيل
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <div className="flex flex-wrap items-center justify-center gap-4"><button className={button + " min-h-11 px-5 text-base"} disabled={page === 1} onClick={() => { setPage(p => p - 1); setLoading(true); }}>السابق</button><span className="text-base font-medium">صفحة {page}</span><button className={button + " min-h-11 px-5 text-base"} disabled={page * listing.pageSize >= listing.count} onClick={() => { setPage(p => p + 1); setLoading(true); }}>التالي</button></div>
       {listing.breakdown.length > 0 && <section className="rounded-2xl border border-border/70 bg-muted/40 p-5" aria-label="ملخص الصرف حسب الفرع والتصنيف">
         <h2 className="text-lg font-bold">الصرف حسب الفرع والتصنيف</h2>

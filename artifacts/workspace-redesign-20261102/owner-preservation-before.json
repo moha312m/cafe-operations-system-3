@@ -1,0 +1,33 @@
+﻿{
+    "at":  "2026-11-02T02:36:47.1692969Z",
+    "ownerTrackedChanges":  [
+                                " M AGENTS.md",
+                                " M prisma/migrations/20260824120000_payment_type/migration.sql",
+                                " M prisma/migrations/20260824170000_serving_payment_policy/migration.sql",
+                                " M prisma/migrations/20260828110000_custody_period/migration.sql",
+                                " M prisma/migrations/20260828120000_stock_count_session/migration.sql",
+                                " M prisma/migrations/20260828130000_stock_count_line/migration.sql",
+                                " M prisma/migrations/20260828140000_tolerance_recount_correction/migration.sql",
+                                " M prisma/migrations/20260828150000_tender_channel_invariant/migration.sql",
+                                " M prisma/migrations/20260828160000_tender_reconciliation/migration.sql",
+                                " M prisma/migrations/20260828170000_handover_session/migration.sql",
+                                " M prisma/migrations/20260828180000_variance_case/migration.sql",
+                                " M prisma/migrations/20260828190000_variance_policy/migration.sql",
+                                " M prisma/migrations/20260828200000_variance_source_type_match/migration.sql",
+                                " M prisma/migrations/20260828210000_stock_count_rebase/migration.sql"
+                            ],
+    "ownerProcesses":  [
+                           {
+                               "ProcessId":  17800,
+                               "ExecutablePath":  "C:\\Dev\\_nextcup_postgres\\pg17\\bin\\postgres.exe",
+                               "CommandLine":  "\"C:/Dev/_nextcup_postgres/pg17/bin/postgres.exe\"  -D \"C:/Dev/_nextcup_postgres/pgdata\" -p 5433 ",
+                               "CreationDate":  "\/Date(1793581028185)\/"
+                           },
+                           {
+                               "ProcessId":  25068,
+                               "ExecutablePath":  "C:\\nvm4w\\nodejs\\node.exe",
+                               "CommandLine":  "C:\\nvm4w\\nodejs\\node.exe C:\\Dev\\cafe-operations-system-3\\node_modules\\next\\dist\\bin\\next start --hostname 127.0.0.1 --port 3110",
+                               "CreationDate":  "\/Date(1793581514128)\/"
+                           }
+                       ]
+}

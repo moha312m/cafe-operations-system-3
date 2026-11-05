@@ -1,0 +1,24 @@
+{
+  "state": "SPAWNED_UNVERIFIED",
+  "at": "2026-11-02T14:38:49.442Z",
+  "runId": "workspace20261102-1949053d4248",
+  "executable": "C:\\nvm4w\\nodejs\\node.exe",
+  "args": [
+    "C:\\Users\\Acer\\.codex\\worktrees\\nextcup-workspace-redesign\\cafe-operations-system-3\\node_modules\\next\\dist\\bin\\next",
+    "dev",
+    "--webpack",
+    "--hostname",
+    "127.0.0.1",
+    "--port",
+    "3113"
+  ],
+  "cwd": "C:/Users/Acer/.codex/worktrees/nextcup-workspace-redesign/cafe-operations-system-3",
+  "stdout": "C:\\Users\\Acer\\.codex\\worktrees\\nextcup-workspace-redesign\\cafe-operations-system-3\\artifacts\\erp-experience-20261102\\preview-1793630329435-0473e4df.stdout.log",
+  "stderr": "C:\\Users\\Acer\\.codex\\worktrees\\nextcup-workspace-redesign\\cafe-operations-system-3\\artifacts\\erp-experience-20261102\\preview-1793630329435-0473e4df.stderr.log",
+  "baseUrl": "http://localhost:3113",
+  "database": "cafe_ops_test_integr20261101_replay_66515e42c85e8ec4",
+  "oid": "65538",
+  "sourceSha256": "cfe63a6b257d6ada7eafda85fb94c395eae6486038c9e3f0d0ea634e22100c02",
+  "pid": 19988,
+  "spawnedAt": "2026-11-02T14:38:49.630Z"
+}

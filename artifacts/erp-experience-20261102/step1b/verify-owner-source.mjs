@@ -1,0 +1,12 @@
+﻿import fs from 'node:fs';import path from 'node:path';import {createHash} from'node:crypto';import {execFileSync} from'node:child_process';
+const root='C:/Dev/cafe-operations-system-3';const dir=root+'/artifacts/integration-all-approved-20261101';const sha=b=>createHash('sha256').update(b).digest('hex');
+const manifest=JSON.parse(fs.readFileSync(dir+'/continuation-20261101/source-manifest-v2.json','utf8'));const changed=[];
+for(const [file,entry] of Object.entries(manifest))if(sha(fs.readFileSync(path.join(root,file)))!==entry.sha256)changed.push(file);
+const starting=JSON.parse(fs.readFileSync(dir+'/starting-state.json','utf8')).sources.root.files;
+const special=['AGENTS.md',...Object.keys(starting).filter(f=>f.startsWith('prisma/migrations/')&&f.endsWith('/migration.sql')),'scripts/import-nextcup-recipes.mjs','scripts/import-nextcup.mjs','scripts/nextcup-source.mjs'];
+const specialChanged=special.filter(f=>sha(fs.readFileSync(path.join(root,f)))!==starting[f].sha256);
+const git=(...args)=>execFileSync('git',['--no-optional-locks','-C',root,...args],{encoding:'utf8'}).trim();
+const before=JSON.parse(fs.readFileSync('artifacts/workspace-redesign-20261102/owner-preservation-before.json','utf8').replace(/^\uFEFF/,''));
+const ownerChanges=git('status','--short','--untracked-files=no').split(/\r?\n/).map(x=>x.trim());
+const result={at:new Date().toISOString(),ownerSourcePins:Object.keys(manifest).length,changed,specialChanged,ownerHead:git('rev-parse','HEAD'),main:git('rev-parse','main'),indexEmpty:git('diff','--cached','--name-only')==='',trackedChangesPreserved:JSON.stringify(ownerChanges)===JSON.stringify(before.ownerTrackedChanges.map(x=>x.trim())),ownerDatabaseAccessed:false};
+fs.writeFileSync('artifacts/erp-experience-20261102/step1b/owner-source-preservation.json',JSON.stringify(result,null,2));console.log(JSON.stringify(result));

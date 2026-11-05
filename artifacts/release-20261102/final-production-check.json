@@ -1,0 +1,241 @@
+{
+  "at": "2026-11-02T11:10:50.325Z",
+  "status": "PASS",
+  "readOnly": true,
+  "unchangedTables": 51,
+  "records": {
+    "AddOn": {
+      "count": 17,
+      "hash": "5f66359735f29efce3f42d59dccb6048"
+    },
+    "Branch": {
+      "count": 4,
+      "hash": "39bf71c908afa9451920b6fe0bd70632"
+    },
+    "BranchFinancialSettings": {
+      "count": 3,
+      "hash": "852f1c3699d43b2b764f4c8b730977ae"
+    },
+    "Cafe": {
+      "count": 2,
+      "hash": "f92b867f59101ed8429160924743013a"
+    },
+    "CafeRole": {
+      "count": 14,
+      "hash": "6035f8cf451f35b8ccb1a93f33449c43"
+    },
+    "CafeTable": {
+      "count": 30,
+      "hash": "6f45dcbe801fa069ad6f61638fc11f71"
+    },
+    "CustodyParticipant": {
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "CustodyPeriod": {
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "Customer": {
+      "count": 1,
+      "hash": "1cd7c51951eb358f9d62e838f3fe1e86"
+    },
+    "HandoverRequiredItem": {
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "HandoverSession": {
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "HandoverStockAcknowledgement": {
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "HandoverStockBoundary": {
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "InventoryFreeze": {
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "InventoryItem": {
+      "count": 7,
+      "hash": "80722cd0e74796c8162f1df3b3524b57"
+    },
+    "InventoryTransaction": {
+      "count": 11,
+      "hash": "f1e8b258b4222de7481a8cd1b36cdf87"
+    },
+    "LoyaltySettings": {
+      "count": 2,
+      "hash": "2f64a8c0637a3e8d001b501a592c92b8"
+    },
+    "LoyaltyTransaction": {
+      "count": 9,
+      "hash": "5d6949cb329248e04e9da07208d5f68c"
+    },
+    "MenuCategory": {
+      "count": 34,
+      "hash": "cdb3970d3a49cd5329e90f720bd0f815"
+    },
+    "OpeningException": {
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "Order": {
+      "count": 85,
+      "hash": "c7856642a7c1eee0fe8d845b021dab68"
+    },
+    "OrderItem": {
+      "count": 165,
+      "hash": "b9b204a47c118f136d221abb2bd457d6"
+    },
+    "OrderItemAddOn": {
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "OrderItemPayment": {
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "Payment": {
+      "count": 80,
+      "hash": "b8ae6e2090c75aadb908acf174a2efa3"
+    },
+    "Product": {
+      "count": 224,
+      "hash": "f76c1299b5248f46000873151e750f7a"
+    },
+    "ProductAddOn": {
+      "count": 34,
+      "hash": "1d8b148e55ad86c88e9b5e8df739fd0c"
+    },
+    "ProductBranchPrice": {
+      "count": 2,
+      "hash": "1dd674a91f00114238dc6d2ed9c8dfa9"
+    },
+    "ProductVariant": {
+      "count": 91,
+      "hash": "cf2b8f80a64583d55fbd97573184a6b9"
+    },
+    "PurchaseInvoice": {
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "PurchaseInvoiceItem": {
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "PurchasePayment": {
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "QrOrderApprovalSettings": {
+      "count": 1,
+      "hash": "302ee70344554d0d39413ccbc412755b"
+    },
+    "ReasonCode": {
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "Recipe": {
+      "count": 5,
+      "hash": "9d9af20cba085ab5ee82569550f1a49d"
+    },
+    "RecipeItem": {
+      "count": 15,
+      "hash": "a5650cbcf4133b97c05f454c529a8b8b"
+    },
+    "Shift": {
+      "count": 8,
+      "hash": "bc19b64b0f01676e41ed0dc40b3e1788"
+    },
+    "ShiftCustody": {
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "StockCountCorrection": {
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "StockCountLine": {
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "StockCountRebase": {
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "StockCountRecount": {
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "StockCountSession": {
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "StockVarianceSpan": {
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "StockVarianceSpanCustody": {
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "Supplier": {
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "TableSession": {
+      "count": 13,
+      "hash": "8ff51a20f9c14119074cb852bc8a5291"
+    },
+    "TenderReconciliation": {
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "ToleranceRule": {
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "UserPermissionOverride": {
+      "count": 0,
+      "hash": "d41d8cd98f00b204e9800998ecf8427e"
+    },
+    "VarianceCase": {
+      "count": 1,
+      "hash": "05deab0ebe0860e0d62fe363026d936c"
+    }
+  },
+  "migrations": {
+    "applied": 91,
+    "failed": 0
+  },
+  "trialPolicy": {
+    "cafeId": "cmrmxkpel0004pi0p974rpmil",
+    "slug": "next",
+    "mode": "OVERRIDE_ALL",
+    "enableTables": true,
+    "auditId": "cmvz5h0dz0001hl1ss71t222n",
+    "systemAudit": true
+  },
+  "noBooksCreated": {
+    "books": 0,
+    "moneyAccounts": 0,
+    "entries": 0
+  },
+  "ownerAccounts": [
+    {
+      "email": "next@next.cafe",
+      "name": "saife"
+    }
+  ],
+  "allowedChanges": [
+    "auth login audit/timestamps",
+    "runtime permission-catalog synchronization",
+    "owner-approved next trial policy and transactional system audit"
+  ],
+  "noSyntheticOrdersPaymentsOrShifts": true
+}

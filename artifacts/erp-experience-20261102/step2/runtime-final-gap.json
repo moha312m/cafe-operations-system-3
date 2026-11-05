@@ -1,0 +1,8 @@
+{
+  "state": "UNVERIFIED",
+  "at": "2026-11-03T14:57:54.798Z",
+  "sourceSha256": "a4ba493a392e9fe1fa4503ab114e2f360d53c5c18a3bad601bdccc8dbb6ed016",
+  "sourceFiles": 985,
+  "error": "Can't reach database server at `127.0.0.1:5434`\n\nPlease make sure your database server is running at `127.0.0.1:5434`.",
+  "noMutationsAttempted": true
+}

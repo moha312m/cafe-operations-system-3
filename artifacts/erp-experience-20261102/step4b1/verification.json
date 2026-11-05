@@ -1,0 +1,79 @@
+{
+  "at": "2026-11-04T10:17:31.161Z",
+  "proof": {
+    "at": "2026-11-04T10:17:29.077Z",
+    "name": "cafe_ops_test_integr20261101_replay_66515e42c85e8ec4",
+    "host": "127.0.0.1",
+    "port": "5434",
+    "directory": "C:/Dev/_nextcup_test_postgres/pgdata",
+    "system_identifier": "7693368256609479860",
+    "oid": "65538",
+    "markerVerified": true,
+    "completedMigrations": 91,
+    "sourceFiles": 994,
+    "sourceSha256": "1d726ba0297c51f3264132e188438f120fc1aa167d589d4b557cf367a7266db6"
+  },
+  "tag": "wr_4b1_9e6f7afc",
+  "books": "wr_73adcd38d99744d49bbdc6c46a4347e1",
+  "results": [
+    {
+      "name": "hierarchy: headers, depth, parent, non-postable and inactive states",
+      "detail": {
+        "total": 33
+      }
+    },
+    {
+      "name": "search by code, Arabic name, Arabic digits; empty result; over-long query rejected by Zod"
+    },
+    {
+      "name": "existing account selector route still returns postable accounts only",
+      "detail": {
+        "count": 28
+      }
+    },
+    {
+      "name": "authorized ledger link opens in scope; the same account id is 404 for another café",
+      "detail": {
+        "lines": 5
+      }
+    },
+    {
+      "name": "denied: waiter without accounting.view gets 403, anonymous gets 401"
+    },
+    {
+      "name": "tenant isolation: another café owner (even naming cafeId) sees only their own chart",
+      "detail": {
+        "configured": false
+      }
+    },
+    {
+      "name": "draft mapping: five proposals, wages pending, conflict at 5420, unmapped marketing, 5400 free",
+      "detail": {
+        "categories": 6,
+        "proposed": 4,
+        "payrollPending": 1,
+        "unmapped": 1,
+        "conflicts": 1
+      }
+    },
+    {
+      "name": "branch manager read",
+      "detail": {
+        "status": 200,
+        "mappingAllowed": false
+      }
+    },
+    {
+      "name": "expense categories and the category filter respond as before"
+    },
+    {
+      "name": "no accounts, entities, journal entries or categories were written by the reads",
+      "detail": {
+        "accounts": 33,
+        "entities": 4,
+        "entries": 5,
+        "categories": 6
+      }
+    }
+  ]
+}

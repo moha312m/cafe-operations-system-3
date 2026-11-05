@@ -21,6 +21,7 @@ import { pendingHandover } from "@/components/handovers/workflow-state";
 import { HandoverDetail } from "@/components/handovers/handover-detail";
 import { OpeningVerificationPanel } from "@/components/handovers/opening-verification-panel";
 import { PlaceReceiptPanel } from "@/components/handovers/place-receipt-panel";
+import { CashDeliveriesPanel } from "@/components/handovers/cash-deliveries-panel";
 import {
   HANDOVER_STATUSES,
   HANDOVER_STATUS_LABEL,
@@ -111,6 +112,7 @@ function HandoversWorkspace() {
 
   const auxiliary = (
     <div className="grid items-start gap-3 lg:grid-cols-3" data-testid="handover-auxiliary-panels">
+        <CashDeliveriesPanel key={`deliveries:${branchId}:${selectedId ?? "list"}`} onChanged={load} />
         <OpeningVerificationPanel key={`opening:${branchId}:${selectedId ?? "list"}`} branchId={branchId} />
         <PlaceReceiptPanel key={`place:${branchId}:${selectedId ?? "list"}`} branchId={branchId} />
     </div>
@@ -118,7 +120,7 @@ function HandoversWorkspace() {
 
   return (
     <main className="space-y-4 p-4 sm:p-6">
-      <header className="flex flex-wrap items-center gap-3">
+      <header className="flex flex-wrap items-center gap-3 [&_select]:max-w-[calc(100vw-2rem)]">
         <BranchScopeSelect value={branchId} onChange={selectBranch} />
         <h1 className="text-lg font-semibold">تسليم الشيفت</h1>
         <div className="ms-auto">

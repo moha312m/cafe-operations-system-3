@@ -1,0 +1,23 @@
+{
+  "commit": "c4bd90f3ac457294d4e3477238e2912c1e56361e",
+  "branch": "codex/nextcup-workspace-redesign-20261102",
+  "files": [
+    "src/app/(app)/reports/page.tsx",
+    "src/app/(app)/tables/setup/page.tsx",
+    "src/app/globals.css",
+    "src/components/accounting/accounting-shell.tsx",
+    "src/components/cafe/ui.tsx",
+    "src/components/expenses/expense-workspace.tsx",
+    "src/components/recipe-import/recipe-exchange.tsx",
+    "src/components/sales/reporting-controls.tsx",
+    "src/components/sales/sales-workspace.tsx",
+    "src/components/treasury/treasury-client.tsx",
+    "src/components/treasury/treasury-details.tsx",
+    "src/components/treasury/treasury-workspace.tsx",
+    "src/components/ui/button.tsx",
+    "src/components/ui/input.tsx",
+    "tests/experience-step1-tables.test.ts"
+  ],
+  "upstream": "f4ff365c472f55fca101250bc4ed897f8175b4d6",
+  "runtimeStatus": "NOT RUN"
+}

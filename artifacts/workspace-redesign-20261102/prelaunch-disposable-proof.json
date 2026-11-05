@@ -1,0 +1,15 @@
+{
+  "runId": "workspace20261102-1949053d4248",
+  "at": "2026-11-02T09:06:48.661Z",
+  "name": "cafe_ops_test_integr20261101_replay_66515e42c85e8ec4",
+  "host": "127.0.0.1",
+  "port": "5434",
+  "directory": "C:/Dev/_nextcup_test_postgres/pgdata",
+  "system_identifier": "7693368256609479860",
+  "oid": "65538",
+  "markerVerified": true,
+  "completedMigrations": 91,
+  "sourceFiles": 946,
+  "sourceSha256": "1561dc1f3b10cde88e6d212168d211ede6ccdaa5e8cc1db11f0ec50264973abb",
+  "noBusinessWrites": true
+}

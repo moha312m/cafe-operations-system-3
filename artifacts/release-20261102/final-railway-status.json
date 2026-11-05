@@ -1,0 +1,72 @@
+{
+  "environment": {
+    "id": "30335f2f-8c3a-49a4-a0d2-4f7aa6cc51d8",
+    "name": "production"
+  },
+  "services": [
+    {
+      "serviceId": "72799173-4033-4dab-b610-93aaff4d1980",
+      "serviceName": "cheerful-grace",
+      "state": "online",
+      "statusText": "Online",
+      "activeDeployments": [
+        {
+          "id": "c4500142-57c1-4197-925b-a440c347d305",
+          "status": "SUCCESS",
+          "createdAt": "2026-11-02T10:50:38.983Z",
+          "statusUpdatedAt": "2026-11-02T10:56:39.908Z"
+        }
+      ],
+      "replicaStatus": {
+        "running": 1,
+        "crashed": 0,
+        "total": 1
+      },
+      "cronJob": null,
+      "issues": {
+        "warningCount": 0,
+        "criticalCount": 0
+      },
+      "recentFailures": 0,
+      "recentFailedDeployments": [],
+      "hasIssues": false,
+      "isCronJob": false,
+      "hasVolume": false
+    },
+    {
+      "serviceId": "3f0b458a-a618-4105-af17-b74eb9b04eaf",
+      "serviceName": "Postgres",
+      "state": "online",
+      "statusText": "Online",
+      "activeDeployments": [
+        {
+          "id": "e161fdf0-e469-46c6-a57e-6f6c92bf0967",
+          "status": "SUCCESS",
+          "createdAt": "2026-08-16T19:22:15.192Z",
+          "statusUpdatedAt": "2026-08-16T19:22:19.112Z"
+        }
+      ],
+      "replicaStatus": {
+        "running": 1,
+        "crashed": 0,
+        "total": 1
+      },
+      "cronJob": null,
+      "issues": {
+        "warningCount": 0,
+        "criticalCount": 0
+      },
+      "recentFailures": 0,
+      "recentFailedDeployments": [],
+      "hasIssues": false,
+      "isCronJob": false,
+      "hasVolume": true
+    }
+  ],
+  "pendingWork": [],
+  "summary": {
+    "totalServices": 2,
+    "servicesWithIssues": 0,
+    "totalFailures": 0
+  }
+}
