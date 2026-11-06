@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api } from "@/lib/client";
 import { t, formatDateTime } from "@/lib/i18n";
+import { auditActionLabel } from "@/lib/audit-action-labels";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -74,10 +75,15 @@ export default function AuditPage() {
                 )}
               </TableCell>
               <TableCell>
-                <Badge variant="outline">{log.action}</Badge>
+                <Badge variant="outline" title={log.action}>{auditActionLabel(log.action)}</Badge>
               </TableCell>
-              <TableCell className="max-w-md truncate text-sm text-muted-foreground">
-                {log.details ? JSON.stringify(log.details) : "—"}
+              <TableCell className="max-w-md text-sm text-muted-foreground">
+                {log.details ? (
+                  <details>
+                    <summary className="cursor-pointer">عرض</summary>
+                    <pre dir="ltr" className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-all text-xs">{JSON.stringify(log.details, null, 2)}</pre>
+                  </details>
+                ) : "—"}
               </TableCell>
             </TableRow>
           ))}

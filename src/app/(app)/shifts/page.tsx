@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api, money } from "@/lib/client";
 import { t } from "@/lib/i18n";
+import { auditActionLabel } from "@/lib/audit-action-labels";
 import { useApp } from "@/components/app-shell";
 import { RefundOrderDialog, type RefundTarget } from "@/components/refund-order-dialog";
 import { Input } from "@/components/ui/input";
@@ -435,7 +436,7 @@ export default function ShiftReportsPage() {
                 <Section title={`${t.shifts.auditTrail} (${detail.auditLogs.length})`}>
                   {detail.auditLogs.map((a) => (
                     <div key={a.id} className="flex justify-between text-xs">
-                      <span>{a.action}</span>
+                      <span title={a.action}>{auditActionLabel(a.action)}</span>
                       <span className="text-muted-foreground">
                         {a.user?.name ?? "—"} · {fmtTime(a.createdAt)}
                       </span>
