@@ -38,26 +38,27 @@ describe("UI-007 grouped sidebar and compact banners", () => {
     };
     assert.equal(groupOf("/settings"), "admin");
     assert.equal(groupOf("/roles-permissions"), "admin");
-    assert.equal(groupOf("/reports"), "reports");
-    assert.equal(groupOf("/pos"), "daily");
+    // The reports hub replaced the single /reports entry; each report links from the catalog.
+    assert.equal(groupOf("/report-center"), "reports");
+    // The cashier moved into the sales workspace links (group "sales").
+    assert.ok(source("src/lib/sales-report-catalog.ts").includes("href:'/pos'"), "the cashier stays one click away");
   });
 
   test("sections are real disclosure buttons, the current section is always open and a collapsed one still shows a waiting QR approval", () => {
     assert.match(shell, /aria-expanded=\{open\}/);
     assert.match(shell, /aria-controls=\{`nav-group-\$\{group\.id\}`\}/);
-    assert.match(shell, /const open = isCurrent \|\| !collapsedGroups\.includes\(group\.id\)/);
+    assert.match(shell, /const open = rail \|\| isCurrent \|\| !collapsedGroups\.includes\(group\.id\)/);
     assert.match(shell, /items\.some\(\(item\) => item\.href === "\/approvals"\) \? pendingQr : 0/);
     assert.match(shell, /hidden=\{!open\}/);
   });
 
-  test("the saved choice is read defensively and short screens start collapsed only when nothing is saved", () => {
+  test("the saved choice is read defensively and every section starts collapsed when nothing is saved", () => {
     assert.match(shell, /try \{[\s\S]*window\.localStorage\.getItem\(NAV_COLLAPSED_KEY\)[\s\S]*\} catch/);
-    assert.match(shell, /if \(saved\) setCollapsedGroups\(saved\);\s*else if \(window\.matchMedia\(SHORT_SCREEN\)\.matches\)/);
-    assert.match(shell, /const SHORT_SCREEN = "\(max-height: 760px\)"/);
+    assert.match(shell, /if \(saved\) setCollapsedGroups\(saved\);\s*else setCollapsedGroups\(NAV_GROUPS\.map\(\(g\) => g\.id\)\)/);
   });
 
   test("the sidebar and both banners tighten only on short screens", () => {
-    assert.ok(shell.includes(`${SHORT}:py-1.5`), "links are denser");
+    assert.ok(shell.includes("workspace-nav-link flex min-h-11"), "links keep the 44px touch target on every screen");
     assert.ok(shell.includes(`${SHORT}:py-3`), "brand header is shorter");
     assert.ok(shell.includes(`${SHORT}:p-2.5`), "footer is tighter");
     const stock = source("src/components/low-stock-banner.tsx");
@@ -65,7 +66,7 @@ describe("UI-007 grouped sidebar and compact banners", () => {
     assert.ok(stock.includes(`${SHORT}:hidden`), "the item list is hidden on short screens");
     assert.match(stock, /افتح المخزون/, "the way to the details remains");
     const stale = source("src/components/stale-orders-banner.tsx");
-    assert.ok(stale.includes(`${SHORT}:p-2.5`) && stale.includes(`${SHORT}:mb-3`));
+    assert.ok(stale.includes("px-4 py-2"), "the stale-orders banner is compact on every screen");
     assert.match(stale, /data-testid="stale-orders-banner"/);
   });
 
