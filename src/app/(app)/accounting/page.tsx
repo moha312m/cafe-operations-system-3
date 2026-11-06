@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { useApp } from "@/components/app-shell";
 import { formatTime } from "@/lib/i18n";
@@ -47,7 +46,6 @@ export default function AccountingOverviewPage() {
             <li>يتحدد تاريخ البداية ومين هيوقّع الأرصدة الافتتاحية.</li>
             <li>بعدها يتشغّل الترحيل التجريبي على فترة محددة، ويتراجع قبل أي اعتماد.</li>
           </ol>
-          <p className="text-muted-foreground">شاشات الإعداد والترحيل بتيجي في الدفعة الجاية؛ الشاشة دي بتعرض بس.</p>
         </CardContent>
       </Card>
     );
@@ -95,12 +93,10 @@ export default function AccountingOverviewPage() {
         </Card>
       )}
 
+      {data.issues.open.length > 0 && (
       <Card>
         <CardHeader><CardTitle className="text-base">مشاكل الترحيل المفتوحة</CardTitle></CardHeader>
         <CardContent>
-          {data.issues.open.length === 0 ? (
-            <p className="text-sm text-muted-foreground">مفيش مشاكل مفتوحة.</p>
-          ) : (
             <ul className="divide-y text-sm">
               {data.issues.open.map((i) => (
                 <li key={`${i.kind}:${i.sourceKey}`} className="py-2">
@@ -110,15 +106,11 @@ export default function AccountingOverviewPage() {
                 </li>
               ))}
             </ul>
-          )}
         </CardContent>
       </Card>
+      )}
 
-      <div className="flex flex-wrap gap-3 text-sm">
-        <Link className="text-primary underline" href="/accounting/trial-balance">ميزان المراجعة ←</Link>
-        <Link className="text-primary underline" href="/accounting/journal">القيود ←</Link>
-        <span className="text-muted-foreground">كل المبالغ بعملة {currency}.</span>
-      </div>
+      <p className="text-sm text-muted-foreground">كل المبالغ بعملة {currency}.</p>
     </div>
   );
 }
