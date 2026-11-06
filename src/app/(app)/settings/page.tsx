@@ -10,6 +10,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { currencySymbol } from "@/lib/currency";
+import { BranchCurrencyCard } from "@/components/settings/branch-currency-card";
 import { ServingPolicyCard } from "@/components/settings/serving-policy-card";
 import { InventoryPolicyCard } from "@/components/settings/inventory-policy-card";
 import { BranchOpeningSettingsCard } from "@/components/settings/branch-opening-settings-card";
@@ -51,6 +53,8 @@ type LoyaltySettingsView = {
 // برنامج الولاء والنقاط — cafe-level (not per-branch), gated by
 // loyalty.settings_edit server-side.
 function LoyaltySettingsCard() {
+  const { cafe } = useApp();
+  const currency = cafe?.currency ?? "EGP";
   const [s, setS] = useState<LoyaltySettingsView | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -99,7 +103,7 @@ function LoyaltySettingsCard() {
           <>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1.5">
-                <Label>كل كام جنيه يكسب نقطة (ج.م)</Label>
+                <Label>كل كام وحدة عملة تكسب نقطة ({currencySymbol(currency)})</Label>
                 <Input type="number" min="1" step="0.01" dir="ltr" value={String(s.earnAmountStep)} onChange={(e) => set("earnAmountStep", Number(e.target.value))} />
               </div>
               <div className="space-y-1.5">
@@ -107,7 +111,7 @@ function LoyaltySettingsCard() {
                 <Input type="number" min="0" dir="ltr" value={String(s.earnPointsPerAmount)} onChange={(e) => set("earnPointsPerAmount", Number(e.target.value))} />
               </div>
               <div className="space-y-1.5">
-                <Label>قيمة النقطة بالجنيه (ج.م)</Label>
+                <Label>قيمة النقطة ({currencySymbol(currency)})</Label>
                 <Input type="number" min="0" step="0.01" dir="ltr" value={String(s.pointValueAmount)} onChange={(e) => set("pointValueAmount", Number(e.target.value))} />
               </div>
               <div className="space-y-1.5">
@@ -122,7 +126,7 @@ function LoyaltySettingsCard() {
             <Toggle label="النقاط تُضاف عند الدفع فقط" checked={s.earnOnPaidOrdersOnly} onChange={(v) => set("earnOnPaidOrdersOnly", v)} />
             <Toggle label="رقم الموبايل مطلوب في منيو QR" checked={s.customerPhoneRequiredForQr} onChange={(v) => set("customerPhoneRequiredForQr", v)} />
             <p className="text-xs text-muted-foreground">
-              مثال: كل {Number(s.earnAmountStep) || 10} ج.م = {s.earnPointsPerAmount} نقطة، والنقطة تساوي {Number(s.pointValueAmount) || 0} ج.م خصم.
+              مثال: كل {Number(s.earnAmountStep) || 10} {currencySymbol(currency)} = {s.earnPointsPerAmount} نقطة، والنقطة تساوي {Number(s.pointValueAmount) || 0} {currencySymbol(currency)} خصم.
             </p>
           </>
         )}
@@ -148,7 +152,8 @@ function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: 
 }
 
 function SettingsWorkspace() {
-  const { user, canKey } = useApp();
+  const { user, canKey, cafe } = useApp();
+  const currency = cafe?.currency ?? "EGP";
   const params = useSearchParams();
   const requestedBranchId = params.get("branchId");
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -310,7 +315,7 @@ function SettingsWorkspace() {
                       </div>
                     ) : (
                       <div className="space-y-1.5">
-                        <Label>{t.finance.serviceFixed} (ج.م)</Label>
+                        <Label>{t.finance.serviceFixed} ({currencySymbol(currency)})</Label>
                         <Input type="number" min="0" step="0.01" dir="ltr" value={String(s.serviceChargeFixedAmount)} onChange={(e) => set("serviceChargeFixedAmount", e.target.value)} />
                       </div>
                     )}
@@ -327,6 +332,8 @@ function SettingsWorkspace() {
           </Card>
 
           <Button onClick={save} disabled={busy}>{t.finance.save}</Button>
+
+          <BranchCurrencyCard branchId={branchId} />
 
           {/* Loyalty program (cafe-level; hidden without permission) */}
           {/* Payment & serving policy — café default, with a branch
