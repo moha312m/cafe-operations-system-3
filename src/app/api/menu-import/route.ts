@@ -39,6 +39,7 @@ export async function POST(request: NextRequest) {
     const body = bodySchema.parse(await request.json());
     const cafeId = resolveCafeId(session, body.cafeId);
     await requireCatalogPriceAuthority(session, cafeId);
+    const cafeCurrency = (await db.cafe.findUnique({ where: { id: cafeId }, select: { currency: true } }))?.currency ?? "EGP";
     const mode: ImportMode = body.mode;
 
     if (body.rows.length > MAX_IMPORT_ROWS) {
@@ -226,7 +227,7 @@ export async function POST(request: NextRequest) {
               productName: group.productName,
               oldPrice,
               newPrice: head.price,
-              currency: "EGP",
+              currency: cafeCurrency,
               fileName: body.fileName,
             },
           });

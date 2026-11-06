@@ -3,6 +3,7 @@ import { requireActiveSession, ApiError } from "@/lib/api";
 import { resolvePermissions } from "@/lib/perms/effective";
 import { audit } from "@/lib/audit";
 import { PrintActions } from "@/components/receipts/print-actions";
+import { receiptMoney } from "@/lib/currency";
 
 export const dynamic = "force-dynamic";
 
@@ -10,11 +11,6 @@ const METHOD_LABEL: Record<string, string> = {
   CASH: "كاش", CARD: "فيزا", WALLET: "محفظة", MIXED: "مختلط",
 };
 
-function fmtMoney(v: number | string | { toString(): string }): string {
-  const n = Number(v);
-  const s = Number.isInteger(n) ? String(n) : n.toFixed(2);
-  return `${s} ج.م`;
-}
 function fmtDateTime(d: Date): string {
   return d.toLocaleString("ar-EG", {
     day: "numeric", month: "short", year: "numeric",
@@ -103,7 +99,7 @@ export default async function ReceiptPage({
     where: { id: paymentId, cafeId: session.cafeId ?? "" },
     include: {
       cafe: { select: { name: true } },
-      branch: { select: { name: true, address: true, phone: true } },
+      branch: { select: { name: true, address: true, phone: true, currencyCode: true } },
       receivedBy: { select: { name: true } },
       order: {
         include: {
@@ -117,6 +113,7 @@ export default async function ReceiptPage({
     },
   });
   if (!payment) return <Message text="الإيصال غير موجود" />;
+  const fmtMoney = receiptMoney(payment.branch?.currencyCode ?? "EGP");
   if (session.branchId && payment.branchId && payment.branchId !== session.branchId) {
     return <Message text="الإيصال تبع فرع تاني" />;
   }

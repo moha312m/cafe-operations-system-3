@@ -5,7 +5,8 @@ import {useWorkspaceRead} from "@/components/cafe/use-workspace-read";
 import Link from "next/link";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { t } from "@/lib/i18n";
+import { t, formatMoney } from "@/lib/i18n";
+import { useApp } from "@/components/app-shell";
 
 import { TONE_SIDE, TONE_SURFACE, type Tone } from "@/components/ui/tone";
 import { TableInvoices } from "./table-invoices";
@@ -71,6 +72,8 @@ export function OrderTypeSelector({
   onTypeChange: (type: OrderType) => void;
   onDetailsChange: (details: CustomerDetails) => void;
 }) {
+  const { cafe } = useApp();
+  const currency = cafe?.currency ?? "EGP";
   const set = (patch: Partial<CustomerDetails>) =>
     onDetailsChange({ ...details, ...patch });
 
@@ -147,7 +150,7 @@ export function OrderTypeSelector({
                 </p>
                 {selectedSession ? (
                   <p className="text-[11px] leading-snug">
-                    المتبقي {selectedSession.remainingAmount} ج.م · {sinceLabel(selectedSession.startedAt)} · الطلب الجديد يُضاف على نفس الحساب.{" "}
+                    المتبقي {formatMoney(selectedSession.remainingAmount, currency)} · {sinceLabel(selectedSession.startedAt)} · الطلب الجديد يُضاف على نفس الحساب.{" "}
                     <Link href="/tables" className="font-semibold underline">عرض الحساب</Link>
                   </p>
                 ) : (
@@ -192,7 +195,7 @@ export function OrderTypeSelector({
                     <span className={cn("rounded-full px-2 py-0.5 text-[10px] font-medium leading-none", st.badge)}>{st.label}</span>
                     {tbl.session && (
                       <span className="text-[10px] leading-tight text-muted-foreground">
-                        المتبقي {tbl.session.remainingAmount} ج.م
+                        المتبقي {formatMoney(tbl.session.remainingAmount, currency)}
                         <br />
                         {sinceLabel(tbl.session.startedAt)}
                       </span>

@@ -1,5 +1,6 @@
 "use client";
 
+import { currencySymbol } from "@/lib/currency";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { api, money } from "@/lib/client";
@@ -333,7 +334,7 @@ export default function CustomersPage() {
                           <th className="p-2 text-start">التاريخ</th>
                           <th className="p-2 text-start">النوع</th>
                           <th className="p-2 text-start">النقاط</th>
-                          <th className="p-2 text-start">القيمة بالجنيه</th>
+                          <th className="p-2 text-start">القيمة ({currencySymbol(currency)})</th>
                           <th className="p-2 text-start">الطلب</th>
                           <th className="p-2 text-start">الموظف</th>
                           <th className="p-2 text-start">ملاحظة</th>

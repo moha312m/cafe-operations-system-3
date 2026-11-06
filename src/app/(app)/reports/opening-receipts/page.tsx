@@ -188,10 +188,10 @@ export default function HandoverAccountabilityPage() {
         </p>
 
         <section aria-label="المؤشرات" className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-          <Kpi label="عجز نقدي" value={formatMoney(k.cashShortage)} tone="clay" sub={`صافي ${formatAmount(k.cashNet)}`} />
-          <Kpi label="زيادة نقدية" value={formatMoney(k.cashOverage)} tone="caramel" sub={`${formatCount(k.matched)} إقفال مطابق من ${formatCount(k.closes)}`} />
-          <Kpi label="عجز خامات" value={k.ingredientShortage === null ? HIDDEN : formatMoney(k.ingredientShortage)} tone="clay" sub={k.ingredientUnpriced ? `${formatCount(k.ingredientUnpriced)} فرق بلا تكلفة` : "بتكلفة وقت العدّ"} />
-          <Kpi label="زيادة خامات" value={k.ingredientOverage === null ? HIDDEN : formatMoney(k.ingredientOverage)} tone="caramel" sub={k.ingredientNet === null ? undefined : `صافي ${formatAmount(k.ingredientNet)}`} />
+          <Kpi label="عجز نقدي" value={formatMoney(k.cashShortage, report.currency)} tone="clay" sub={`صافي ${formatAmount(k.cashNet)}`} />
+          <Kpi label="زيادة نقدية" value={formatMoney(k.cashOverage, report.currency)} tone="caramel" sub={`${formatCount(k.matched)} إقفال مطابق من ${formatCount(k.closes)}`} />
+          <Kpi label="عجز خامات" value={k.ingredientShortage === null ? HIDDEN : formatMoney(k.ingredientShortage, report.currency)} tone="clay" sub={k.ingredientUnpriced ? `${formatCount(k.ingredientUnpriced)} فرق بلا تكلفة` : "بتكلفة وقت العدّ"} />
+          <Kpi label="زيادة خامات" value={k.ingredientOverage === null ? HIDDEN : formatMoney(k.ingredientOverage, report.currency)} tone="caramel" sub={k.ingredientNet === null ? undefined : `صافي ${formatAmount(k.ingredientNet)}`} />
           <Kpi label="فرق مشترك غير منسوب" value={formatCount(k.sharedCount)} tone="caramel"
             sub={`خامات: عجز ${k.sharedStockShortage === null ? HIDDEN : formatAmount(k.sharedStockShortage)} · زيادة ${k.sharedStockOverage === null ? HIDDEN : formatAmount(k.sharedStockOverage)} — نقدية: عجز ${formatAmount(k.sharedCashShortage)} · زيادة ${formatAmount(k.sharedCashOverage)}`} />
           <Kpi label="فتح بدون استلام مسجل" value={formatCount(k.openingsWithoutReceipt)} tone={k.openingsWithoutReceipt ? "clay" : "sage"} />
@@ -302,7 +302,7 @@ export default function HandoverAccountabilityPage() {
               <li key={x.id} className={`flex flex-wrap items-baseline justify-between gap-2 rounded-lg border p-2 text-sm ${x.stale ? TONE_SURFACE.clay : ""}`}>
                 <span className="font-semibold">{EXCEPTION_LABELS[x.kind]}</span>
                 <span className="text-muted-foreground">{x.branch.name}{x.shiftNumber !== null ? ` · شيفت #${x.shiftNumber}` : ""} · {x.people.map((p) => p.name).join("، ") || "—"}</span>
-                <span className="tabular-figures">{x.amount !== null ? formatMoney(x.amount) + " · " : ""}{formatDate(x.at)} {formatTime(x.at)}{x.stale ? " · أقدم من 24 ساعة" : ""}</span>
+                <span className="tabular-figures">{x.amount !== null ? formatMoney(x.amount, report.currency) + " · " : ""}{formatDate(x.at)} {formatTime(x.at)}{x.stale ? " · أقدم من 24 ساعة" : ""}</span>
                 {x.note && <span className="basis-full text-muted-foreground">{x.note}</span>}
               </li>
             ))}
@@ -390,10 +390,10 @@ function EmployeeDetail({ summary: e, report, hide }: { summary: EmployeeSummary
         <DialogDescription>{ROLE_LABELS[e.employee.role]} · {formatDateStr(report.period.from)} — {formatDateStr(report.period.to)}</DialogDescription>
       </DialogHeader>
       <div className="grid grid-cols-2 gap-2">
-        <Kpi label="عجز نقدي" value={formatMoney(e.cash.shortage)} tone="clay" />
-        <Kpi label="زيادة نقدية" value={formatMoney(e.cash.overage)} tone="caramel" />
-        <Kpi label="عجز خامات" value={hide ? HIDDEN : formatMoney(e.stock.shortageValue ?? 0)} tone="clay" />
-        <Kpi label="زيادة خامات" value={hide ? HIDDEN : formatMoney(e.stock.overageValue ?? 0)} tone="caramel" />
+        <Kpi label="عجز نقدي" value={formatMoney(e.cash.shortage, report.currency)} tone="clay" />
+        <Kpi label="زيادة نقدية" value={formatMoney(e.cash.overage, report.currency)} tone="caramel" />
+        <Kpi label="عجز خامات" value={hide ? HIDDEN : formatMoney(e.stock.shortageValue ?? 0, report.currency)} tone="clay" />
+        <Kpi label="زيادة خامات" value={hide ? HIDDEN : formatMoney(e.stock.overageValue ?? 0, report.currency)} tone="caramel" />
       </div>
       <section>
         <h3 className="mb-2 font-semibold">التسليمات ({formatCount(rows.length)})</h3>

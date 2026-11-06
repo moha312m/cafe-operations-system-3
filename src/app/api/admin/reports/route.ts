@@ -1,3 +1,4 @@
+import { platformCurrency } from "@/lib/currency";
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { requirePermission, handleApiError } from "@/lib/api";
@@ -39,7 +40,7 @@ export async function GET(request: NextRequest) {
       db.payment.groupBy({ by: ["method"], where: payWhere, _sum: { amount: true } }),
       db.order.groupBy({ by: ["cafeId"], where: orderWhere, _sum: { total: true }, _count: true }),
       db.order.groupBy({ by: ["cafeId"], where: orderWhere, _count: true }),
-      db.cafe.findMany({ select: { id: true, name: true, isActive: true } }),
+      db.cafe.findMany({ select: { id: true, name: true, isActive: true, currency: true } }),
     ]);
 
     const nameOf = (id: string) => cafes.find((c) => c.id === id)?.name ?? "—";
@@ -49,6 +50,7 @@ export async function GET(request: NextRequest) {
       .map((r) => ({
         cafeId: r.cafeId,
         name: nameOf(r.cafeId),
+        currency: cafes.find((c) => c.id === r.cafeId)?.currency ?? "EGP",
         sales: Number(r._sum.total ?? 0),
         orders: ordersMap.get(r.cafeId) ?? 0,
       }))
@@ -67,6 +69,8 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       range: { from: from.toISOString(), to: to.toISOString() },
+      // Null when the cafes in scope use different currencies: totals are then not shown.
+      currency: platformCurrency((cafeId ? cafes.filter((c) => c.id === cafeId) : cafes).map((c) => c.currency)),
       totals: {
         totalSales,
         totalOrders,

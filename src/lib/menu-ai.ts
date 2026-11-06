@@ -1,6 +1,7 @@
 // Server-only module: imports the Prisma client and reads server env vars.
 // Never import this from a client component.
 import { db } from "@/lib/db";
+import { currencySymbol } from "@/lib/currency";
 import { loadCustomerMenu } from "@/lib/customer-menu";
 import type { MenuData } from "@/components/customer-menu/types";
 
@@ -68,7 +69,7 @@ function menuForPrompt(menu: MenuData) {
         name: p.name,
         category: p.category.name,
         description: p.description ?? "",
-        price: `${price} ج.م`,
+        price: `${price} ${currencySymbol(menu.cafe.currency)}`,
         addOns: addOns || undefined,
       };
     });

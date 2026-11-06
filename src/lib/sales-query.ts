@@ -1,6 +1,7 @@
 import {z} from 'zod';
 import type {Prisma} from '@prisma/client';
 import {db} from '@/lib/db';
+import {moneyHeader} from '@/lib/currency';
 import {ApiError,resolveReadScope,resolveCafeId} from '@/lib/api';
 import type {SessionUser} from '@/lib/auth';
 import {salesAuthority,json} from '@/lib/order-amendments';
@@ -40,6 +41,7 @@ export async function listSales(actor:SessionUser,params:URLSearchParams){
  const paymentLabels:Record<string,string>={PAID:'مدفوع',UNPAID:'غير مدفوع',PARTIAL:'مدفوع جزئيًا',REFUNDED:'مرتجع',PENDING_COLLECTION:'بانتظار التحصيل'};
  const amount=(value:Prisma.Decimal|null)=>value?.toFixed(2)??0;
  const summary=totals._sum;
+ const currency=(await db.cafe.findUnique({where:{id:scope.cafeId??actor.cafeId??''},select:{currency:true}}))?.currency??'EGP';
  const outputSnapshot=signReportOutput(actor.id,{
   readerFriendly:true,
   title:'سجل المبيعات',
@@ -53,13 +55,13 @@ export async function listSales(actor:SessionUser,params:URLSearchParams){
   },
   reporting:{invoiceScopeFingerprint:JSON.stringify([actor.id,scope.cafeId,resolveReadScope(actor).branchId??null,actor.role,[...keys].sort()]),filters:f,mode:reporting?.mode,windows:reporting?.windows,branches:reporting?.branches,label:period?(f.business==='1'?'أيام العمل':'أيام القاهرة المدنية'):'جميع التواريخ'},
   metrics:{
-   'إجمالي الفواتير (ج.م)':amount(summary.total),
-   'المحصّل (ج.م)':amount(summary.paidAmount),
-   'المتبقي (ج.م)':amount(summary.remainingAmount),
-   'قبل الخصومات (ج.م)':amount(summary.subtotal),
-   'الخصومات (ج.م)':amount(summary.discountAmount),
-   'الضريبة (ج.م)':amount(summary.taxAmount),
-   'الخدمة (ج.م)':amount(summary.serviceChargeAmount),
+   [moneyHeader('إجمالي الفواتير',currency)]:amount(summary.total),
+   [moneyHeader('المحصّل',currency)]:amount(summary.paidAmount),
+   [moneyHeader('المتبقي',currency)]:amount(summary.remainingAmount),
+   [moneyHeader('قبل الخصومات',currency)]:amount(summary.subtotal),
+   [moneyHeader('الخصومات',currency)]:amount(summary.discountAmount),
+   [moneyHeader('الضريبة',currency)]:amount(summary.taxAmount),
+   [moneyHeader('الخدمة',currency)]:amount(summary.serviceChargeAmount),
    'عدد الفواتير المطابقة':count,
    'عدد الفواتير في الملف':orders.length,
    'رقم الصفحة':f.page,
@@ -70,9 +72,9 @@ export async function listSales(actor:SessionUser,params:URLSearchParams){
    'الفرع':o.branch.name,
    'الموظف':o.createdBy?.name??'—',
    'حالة الدفع':paymentLabels[o.paymentStatus]??'غير متاح',
-   'الإجمالي (ج.م)':amount(o.total),
-   'المحصّل (ج.م)':amount(o.paidAmount),
-   'المتبقي (ج.م)':amount(o.remainingAmount),
+   [moneyHeader('الإجمالي',currency)]:amount(o.total),
+   [moneyHeader('المحصّل',currency)]:amount(o.paidAmount),
+   [moneyHeader('المتبقي',currency)]:amount(o.remainingAmount),
   })),
   generatedAt:new Date().toISOString(),
  });

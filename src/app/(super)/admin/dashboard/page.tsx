@@ -12,7 +12,7 @@ type Overview = {
   stats: {
     totalCafes: number; activeCafes: number; suspendedCafes: number;
     totalBranches: number; totalUsers: number; totalOrders: number;
-    todaySales: number; monthSales: number; openShifts: number;
+    currency: string | null; todaySales: number; monthSales: number; openShifts: number;
     todayOrders: number; avgOrderValue: number;
     topCafeToday: string; topCafeMonth: string;
   };
@@ -47,10 +47,13 @@ export default function AdminDashboardPage() {
 
   const s = data.stats;
   const pm = t.paymentMethods;
+  const showMoney = (v: number) => (s.currency ? money(v, s.currency) : "—");
 
   return (
     <>
       <PageHeader title={t.admin.nav.dashboard} subtitle="نظرة شاملة على كل الكافيهات في المنصة" />
+
+      {s.currency === null && <p role="status" className="mb-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">فيه كافيهات بعملات مختلفة، فالمبالغ المجمّعة والرسوم المالية مخفية — شوف كل كافيه بعملته.</p>}
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
         <StatCard label={t.admin.stats.totalCafes} value={s.totalCafes} icon="☕" accent="indigo" />
@@ -61,36 +64,37 @@ export default function AdminDashboardPage() {
         <StatCard label={t.admin.stats.totalOrders} value={s.totalOrders} icon="🧾" accent="slate" />
         <StatCard label={t.admin.stats.openShifts} value={s.openShifts} icon="🕒" accent="amber" />
         <StatCard label={t.admin.stats.todayOrders} value={s.todayOrders} icon="📦" accent="indigo" />
-        <StatCard label={t.admin.stats.todaySales} value={money(s.todaySales)} icon="💵" accent="emerald" />
-        <StatCard label={t.admin.stats.monthSales} value={money(s.monthSales)} icon="📅" accent="emerald" />
-        <StatCard label={t.admin.stats.avgOrderValue} value={money(s.avgOrderValue)} icon="📊" accent="violet" />
+        <StatCard label={t.admin.stats.todaySales} value={showMoney(s.todaySales)} icon="💵" accent="emerald" />
+        <StatCard label={t.admin.stats.monthSales} value={showMoney(s.monthSales)} icon="📅" accent="emerald" />
+        <StatCard label={t.admin.stats.avgOrderValue} value={showMoney(s.avgOrderValue)} icon="📊" accent="violet" />
         <StatCard label={t.admin.stats.topCafeToday} value={s.topCafeToday} hint={t.admin.stats.topCafeMonth + ": " + s.topCafeMonth} icon="🏆" accent="amber" />
       </div>
 
       <div className="mt-4 grid gap-4 lg:grid-cols-2">
-        <Panel title={t.admin.charts.sales7}>
+        {s.currency && <Panel title={t.admin.charts.sales7}>
           <BarChart
             data={data.charts.days.map((d) => ({ label: WEEKDAY(d.date), value: d.sales }))}
             format="money"
+            currency={s.currency}
           />
-        </Panel>
+        </Panel>}
         <Panel title={t.admin.charts.orders7}>
           <BarChart
             data={data.charts.days.map((d) => ({ label: WEEKDAY(d.date), value: d.orders }))}
             color="#0ea5e9"
           />
         </Panel>
-        <Panel title={t.admin.charts.topCafes}>
-          <RankBars data={data.charts.topCafes} />
-        </Panel>
-        <Panel title={t.admin.charts.byPayment}>
+        {s.currency && <Panel title={t.admin.charts.topCafes}>
+          <RankBars data={data.charts.topCafes} currency={s.currency} />
+        </Panel>}
+        {s.currency && <Panel title={t.admin.charts.byPayment}>
           <Donut
             data={data.charts.paymentSplit.map((p) => ({
               label: pm[p.method as keyof typeof pm] ?? p.method,
               value: p.value,
             }))}
           />
-        </Panel>
+        </Panel>}
         <Panel title={t.admin.charts.cafeGrowth} className="lg:col-span-2">
           <BarChart data={data.charts.growth} color="#8b5cf6" />
         </Panel>

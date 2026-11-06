@@ -3,6 +3,7 @@
 // R8: Western digits everywhere, money as `1,234.50 ج.م`, quantities with their
 // unit, dates `05/11/2026`, times `5:06 م`, all on Cairo time.
 import { DEFAULT_TZ } from "@/lib/date-range";
+import { currencyMeta } from "@/lib/currency";
 
 export const REPORT_TZ = DEFAULT_TZ;
 export const NOT_RECORDED = "لم يُسجَّل";
@@ -45,9 +46,10 @@ const moneyFormat = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, m
 const qtyFormat = new Intl.NumberFormat("en-US", { minimumFractionDigits: 3, maximumFractionDigits: 3 });
 const intFormat = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
 
-/** `1,234.50 ج.م`. A negative sign leads, so it reads the same in RTL text. */
-export function formatMoney(value: number): string {
-  return `${moneyFormat.format(value)} ج.م`;
+/** `1,234.50 ج.م` (or the cafe currency's symbol). A negative sign leads, so it reads the same in RTL text. */
+export function formatMoney(value: number, currency = "EGP"): string {
+  const meta = currencyMeta(currency);
+  return `${moneyFormat.format(value)} ${meta?.supported ? meta.symbol : currency}`;
 }
 export function formatAmount(value: number): string {
   return moneyFormat.format(value);

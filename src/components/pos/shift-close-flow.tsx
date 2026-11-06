@@ -203,7 +203,7 @@ function MoneyStep({ flow, currency, onCommitted }: {
     <div className="space-y-2">
       <Label htmlFor="close-cash">النقدية الموجودة في الدرج</Label>
       <p className="text-xs text-muted-foreground">كل الكاش اللي في الدرج، ومعاه رصيد الافتتاح ({money(shift.openingCashAmount, currency)}).</p>
-      <CashDenominationCalculator onApply={(value) => setCash(value)} />
+      {currency === "EGP" && <CashDenominationCalculator onApply={(value) => setCash(value)} />}
       <TouchNumberInput id="close-cash" type="number" min="0" step="0.01" dir="ltr" placeholder="0.00" value={cash} aria-label="النقدية الموجودة في الدرج" aria-invalid={cash.trim() !== "" && cashValue === null} onValueChange={setCash} />
       {cash.trim() !== "" && cashValue === null && <p role="alert" className="text-xs text-destructive">اكتب مبلغ صحيح (صفر أو أكتر، لحد قرشين).</p>}
     </div>

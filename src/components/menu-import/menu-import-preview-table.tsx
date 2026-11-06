@@ -1,5 +1,6 @@
 "use client";
 
+import { useApp } from "@/components/app-shell";
 import { money } from "@/lib/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -37,6 +38,8 @@ export function MenuImportPreviewTable({
   ignored: Set<number>;
   onToggleIgnore: (rowNumber: number) => void;
 }) {
+  const { cafe } = useApp();
+  const currency = cafe?.currency ?? "EGP";
   return (
     <div className="max-h-80 overflow-y-auto rounded-md border">
       <Table>
@@ -65,7 +68,7 @@ export function MenuImportPreviewTable({
                   {row.productName || "—"}
                 </TableCell>
                 <TableCell className="tabular-nums">
-                  {row.price !== null ? money(row.price, "EGP") : "—"}
+                  {row.price !== null ? money(row.price, currency) : "—"}
                 </TableCell>
                 <TableCell className="text-xs text-muted-foreground">
                   {[

@@ -168,8 +168,8 @@ export default function AdminCafesPage() {
                     <TableCell className="text-end tabular-nums">{c.branches}</TableCell>
                     <TableCell className="text-end tabular-nums">{c.users}</TableCell>
                     <TableCell className="text-end tabular-nums">{c.orders}</TableCell>
-                    <TableCell className="text-end tabular-nums">{money(c.todaySales)}</TableCell>
-                    <TableCell className="text-end tabular-nums">{money(c.monthSales)}</TableCell>
+                    <TableCell className="text-end tabular-nums">{money(c.todaySales, c.currency)}</TableCell>
+                    <TableCell className="text-end tabular-nums">{money(c.monthSales, c.currency)}</TableCell>
                     <TableCell className="text-xs text-slate-500">
                       {c.lastOrderAt ? formatDateTime(c.lastOrderAt) : "—"}
                     </TableCell>

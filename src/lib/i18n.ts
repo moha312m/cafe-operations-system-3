@@ -1,3 +1,4 @@
+import { formatMoney as formatCurrency } from "./currency";
 // Arabic (Egyptian) UI labels — the single place for shared wording.
 // Pages import from here for anything used in more than one spot;
 // one-off strings live inline in their page.
@@ -474,18 +475,10 @@ export const t = {
 
 // ── Formatters ─────────────────────────────────────────────────
 
-// Prices like "95 ج.م" — Western digits for readability, Arabic
-// currency mark for EGP; other currencies fall back to Intl.
+// Prices like "95 ج.م" or "95 ر.س": Western digits, the currency's Arabic symbol
+// after the number. The formatter and the currency table live in lib/currency.ts.
 export function formatMoney(value: number | string, currency = "EGP"): string {
-  const n = Number(value);
-  if (currency === "EGP") {
-    const formatted = new Intl.NumberFormat("en-EG", {
-      minimumFractionDigits: n % 1 === 0 ? 0 : 2,
-      maximumFractionDigits: 2,
-    }).format(n);
-    return `${formatted} ج.م`;
-  }
-  return new Intl.NumberFormat("en", { style: "currency", currency }).format(n);
+  return formatCurrency(value, currency);
 }
 
 // Arabic date/time with readable Western digits.

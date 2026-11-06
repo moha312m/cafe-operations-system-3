@@ -164,7 +164,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
           productName: product.name,
           oldPrice,
           newPrice: data.basePrice,
-          currency: "EGP",
+          currency: (await db.cafe.findUnique({ where: { id: existing.cafeId }, select: { currency: true } }))?.currency ?? "EGP",
         },
       });
     }

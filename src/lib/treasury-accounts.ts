@@ -17,6 +17,7 @@ export async function createAccount(tx:Prisma.TransactionClient,actor:SessionUse
  actor=await assertMoneyActor(tx,actor,"treasury.manage_accounts");const data=accountCreateInput.parse(input);const branchId=data.branchId??null;
  if(actor.branchId&&branchId!==actor.branchId)throw new ApiError(403,"الحساب خارج نطاق الفرع");
  if(branchId&&!await tx.branch.findFirst({where:{id:branchId,cafeId:actor.cafeId!},select:{id:true}}))throw new ApiError(404,"الفرع غير موجود في نطاقك");
+ const cafe=await tx.cafe.findUniqueOrThrow({where:{id:actor.cafeId!},select:{currency:true}});if(cafe.currency!=="EGP")throw new ApiError(400,"الحسابات والتحويلات تدعم الجنيه المصري فقط حاليًا");
  const row=await tx.moneyAccount.create({data:{...data,branchId,cafeId:actor.cafeId!,currency:"EGP",createdById:actor.id}});
  await auditInTransaction(tx,{cafeId:actor.cafeId,userId:actor.id,action:"MONEY_ACCOUNT_CREATED",entity:"MoneyAccount",entityId:row.id,details:{code:row.code,kind:row.kind,branchId,openingState:"UNSET"}});return accountDto(tx,row);
 }

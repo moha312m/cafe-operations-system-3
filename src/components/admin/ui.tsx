@@ -188,10 +188,12 @@ export function BarChart({
   data,
   color = "#4f46e5",
   format = "number",
+  currency = "EGP",
 }: {
   data: { label: string; value: number }[];
   color?: string;
   format?: "number" | "money";
+  currency?: string;
 }) {
   const max = Math.max(1, ...data.map((d) => d.value));
   return (
@@ -208,7 +210,7 @@ export function BarChart({
                   backgroundColor: color,
                   opacity: 0.45 + (h / 100) * 0.55,
                 }}
-                title={format === "money" ? money(d.value) : String(d.value)}
+                title={format === "money" ? money(d.value, currency) : String(d.value)}
               />
             </div>
             <span className="text-[10px] font-medium text-slate-500">{d.label}</span>
@@ -223,9 +225,11 @@ export function BarChart({
 export function RankBars({
   data,
   format = "money",
+  currency = "EGP",
 }: {
   data: { label: string; value: number }[];
   format?: "number" | "money";
+  currency?: string;
 }) {
   const max = Math.max(1, ...data.map((d) => d.value));
   if (data.length === 0) return <EmptyState message="—" icon="📊" />;
@@ -236,7 +240,7 @@ export function RankBars({
           <div className="flex items-center justify-between text-xs">
             <span className="truncate font-medium text-slate-700">{d.label}</span>
             <span className="shrink-0 tabular-nums text-slate-500">
-              {format === "money" ? money(d.value) : d.value}
+              {format === "money" ? money(d.value, currency) : d.value}
             </span>
           </div>
           <div className="h-2 overflow-hidden rounded-full bg-slate-100">

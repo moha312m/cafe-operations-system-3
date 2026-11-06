@@ -1,5 +1,6 @@
 "use client";
 
+import { currencyMeta, currencySymbol } from "@/lib/currency";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
@@ -350,7 +351,7 @@ export default function MenuPage() {
         <h1 className="text-2xl font-semibold">المنيو والأسعار</h1>
         <p className="text-sm text-muted-foreground">
           المصدر الوحيد للمنتجات والأسعار — أي تعديل هنا بيظهر فوراً في الكاشير
-          ومنيو العميل. العملة: جنيه مصري.
+          ومنيو العميل. العملة: {currencyMeta(currency)?.nameAr ?? currency}.
         </p>
       </div>
 
@@ -845,7 +846,7 @@ export default function MenuPage() {
               {/* Pricing */}
               <div className="grid grid-cols-3 gap-3">
                 <div className="space-y-2">
-                  <Label>سعر البيع (جنيه)</Label>
+                  <Label>سعر البيع ({currencySymbol(currency)})</Label>
                   <Input
                     type="number"
                     step="0.5"

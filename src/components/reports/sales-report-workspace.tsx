@@ -1,4 +1,5 @@
 "use client";
+import {currencySymbol} from '@/lib/currency';
 import {useEffect,useRef,useState,Children,isValidElement,type ReactNode} from 'react';
 import Link from 'next/link';
 import {usePathname,useRouter,useSearchParams} from 'next/navigation';
@@ -28,7 +29,7 @@ export function SalesReportWorkspace({kind}:{kind:SalesReportKind}){
  return <ReportInner key={identity+kind} kind={kind} identity={identity}/>;
 }
 function ReportInner({kind,identity}:{kind:SalesReportKind;identity:string}){
- const {user,canKey}=useApp(),search=useSearchParams(),router=useRouter(),pathname=usePathname();
+ const {user,canKey,cafe}=useApp(),search=useSearchParams(),router=useRouter(),pathname=usePathname();
  const params=new URLSearchParams(search.toString()),today=dateStrInTz(new Date());
  if(!params.has('from'))params.set('from',addDays(today,-6));if(!params.has('to'))params.set('to',today);
  params.delete('export');const query=params.toString();
@@ -81,7 +82,7 @@ function ReportInner({kind,identity}:{kind:SalesReportKind;identity:string}){
   {loading&&<div role="status" className="workspace-state animate-pulse">جارٍ تحميل التقرير… الفلاتر محفوظة.</div>}
   {error&&<div role="alert" className="workspace-state space-y-3 border-destructive/30"><p>{error}</p><Button variant="outline" onClick={refresh}>إعادة المحاولة</Button></div>}
   {data&&<>
-   <div className="grid grid-cols-1 gap-3 sm:grid-cols-[repeat(auto-fit,minmax(11rem,1fr))]">{data.summaries.map(s=><div key={s.key} className="min-w-0 rounded-xl border bg-card px-4 py-3"><p className="text-sm font-medium text-muted-foreground">{s.label}</p><p className="mt-1 break-words text-2xl font-bold leading-8 tabular-nums"><bdi>{s.value??'غير متاح'}</bdi>{s.value&&/^-?\d+\.\d+$/.test(s.value)&&<span className="ms-1 text-xs font-normal text-muted-foreground">ج.م</span>}</p></div>)}</div>
+   <div className="grid grid-cols-1 gap-3 sm:grid-cols-[repeat(auto-fit,minmax(11rem,1fr))]">{data.summaries.map(s=><div key={s.key} className="min-w-0 rounded-xl border bg-card px-4 py-3"><p className="text-sm font-medium text-muted-foreground">{s.label}</p><p className="mt-1 break-words text-2xl font-bold leading-8 tabular-nums"><bdi>{s.value??'غير متاح'}</bdi>{s.value&&/^-?\d+\.\d+$/.test(s.value)&&<span className="ms-1 text-xs font-normal text-muted-foreground">{currencySymbol(cafe?.currency??'EGP')}</span>}</p></div>)}</div>
    <details className="workspace-surface px-4 py-3"><summary className="cursor-pointer text-sm font-semibold">أساس الحساب وتغطية البيانات <span className="ms-2 text-xs font-normal text-muted-foreground">أنشئت اللقطة: <bdi>{new Intl.DateTimeFormat('ar-EG-u-nu-latn',{timeZone:'Africa/Cairo',dateStyle:'medium',timeStyle:'short'}).format(new Date(data.generatedAt))}</bdi></span></summary><p className="mt-3 text-sm leading-7">{data.metricBasis}</p><ul className="mt-3 list-inside list-disc space-y-2 text-sm leading-7">{data.coverage.map(c=><li key={c}>{c}</li>)}</ul></details>
    <section className="workspace-surface space-y-4 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-lg font-semibold">{data.total} نتيجة مطابقة</h2><div className="flex items-center gap-2"><Button type="button" size="sm" variant="outline" className="md:min-h-9 md:py-1" onClick={refresh}>تحديث</Button><details><summary className="cursor-pointer text-sm">اختيار الأعمدة</summary><div className="grid gap-2 p-3 sm:grid-cols-2">{data.columns.map(c=><label key={c.key} className="flex min-h-10 items-center gap-2 text-sm"><input type="checkbox" checked={!hidden.includes(c.key)} onChange={e=>{const next=e.target.checked?hidden.filter(k=>k!==c.key):[...hidden,c.key];setHidden(next);try{localStorage.setItem(preferenceKey,JSON.stringify(next));}catch{/* optional preference */}}}/>{c.label}</label>)}</div></details></div></div>
     <ReportOutputActions snapshot={data.outputSnapshot} disabled={loading||!!error} endpoint={'/api/reports/'+kind+'/output'} scopeLabel="الصفحة المعروضة"/>

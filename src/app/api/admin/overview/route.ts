@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { requirePermission, handleApiError } from "@/lib/api";
+import { platformCurrency } from "@/lib/currency";
 
 // Platform-wide dashboard. SUPER_ADMIN only — aggregates across every
 // tenant. No cafeId scoping here by design (this is the one place that
@@ -57,7 +58,7 @@ export async function GET() {
         _sum: { amount: true },
       }),
       db.cafe.findMany({
-        select: { id: true, name: true, createdAt: true },
+        select: { id: true, name: true, createdAt: true, currency: true },
       }),
       db.cafe.findMany({ select: { createdAt: true }, orderBy: { createdAt: "asc" } }),
     ]);
@@ -127,6 +128,8 @@ export async function GET() {
         totalBranches,
         totalUsers,
         totalOrders,
+        // Null when the platform hosts more than one currency: such amounts are never added together.
+        currency: platformCurrency(cafes.map((c) => c.currency)),
         todaySales,
         monthSales: Number(monthAgg._sum.total ?? 0),
         openShifts,

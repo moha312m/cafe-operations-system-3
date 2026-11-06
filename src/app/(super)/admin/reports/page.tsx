@@ -13,8 +13,9 @@ import {
 import { PageHeader, StatCard, Panel, EmptyState, LoadingBlock } from "@/components/admin/ui";
 
 type Report = {
+  currency: string | null;
   totals: { totalSales: number; totalOrders: number; avgOrderValue: number; cash: number; card: number; wallet: number };
-  topCafes: { cafeId: string; name: string; sales: number; orders: number }[];
+  topCafes: { cafeId: string; name: string; currency: string; sales: number; orders: number }[];
   lowActivity: { cafeId: string; name: string; isActive: boolean }[];
 };
 
@@ -35,6 +36,7 @@ export default function AdminReportsPage() {
   const [cafeId, setCafeId] = useState("");
   const [method, setMethod] = useState("");
   const [data, setData] = useState<Report | null>(null);
+  const showMoney = (v: number) => (data?.currency ? money(v, data.currency) : "—");
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -65,8 +67,8 @@ export default function AdminReportsPage() {
     if (!data) return;
     csvDownload(
       [
-        ["الكافيه", "المبيعات", "عدد الطلبات"],
-        ...data.topCafes.map((c) => [c.name, c.sales, c.orders]),
+        ["الكافيه", "المبيعات", "العملة", "عدد الطلبات"],
+        ...data.topCafes.map((c) => [c.name, c.sales, c.currency, c.orders]),
       ],
       "platform-report.csv"
     );
@@ -113,13 +115,14 @@ export default function AdminReportsPage() {
         <LoadingBlock label={t.admin.loading} />
       ) : (
         <>
+          {data.currency === null && <p role="status" className="mb-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">فيه كافيهات بعملات مختلفة، فالإجماليات المجمّعة مخفية — الأرقام بتظهر لكل كافيه بعملته.</p>}
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
-            <StatCard label="إجمالي المبيعات" value={money(data.totals.totalSales)} icon="💰" accent="emerald" />
+            <StatCard label="إجمالي المبيعات" value={showMoney(data.totals.totalSales)} icon="💰" accent="emerald" />
             <StatCard label="إجمالي الطلبات" value={data.totals.totalOrders} icon="🧾" accent="indigo" />
-            <StatCard label="متوسط قيمة الطلب" value={money(data.totals.avgOrderValue)} icon="📊" accent="violet" />
-            <StatCard label={`${t.paymentMethods.CASH}`} value={money(data.totals.cash)} icon="💵" accent="emerald" />
-            <StatCard label={`${t.paymentMethods.CARD}`} value={money(data.totals.card)} icon="💳" accent="slate" />
-            <StatCard label={`${t.paymentMethods.WALLET}`} value={money(data.totals.wallet)} icon="📱" accent="amber" />
+            <StatCard label="متوسط قيمة الطلب" value={showMoney(data.totals.avgOrderValue)} icon="📊" accent="violet" />
+            <StatCard label={`${t.paymentMethods.CASH}`} value={showMoney(data.totals.cash)} icon="💵" accent="emerald" />
+            <StatCard label={`${t.paymentMethods.CARD}`} value={showMoney(data.totals.card)} icon="💳" accent="slate" />
+            <StatCard label={`${t.paymentMethods.WALLET}`} value={showMoney(data.totals.wallet)} icon="📱" accent="amber" />
           </div>
 
           <div className="mt-4 grid gap-4 lg:grid-cols-2">
@@ -135,7 +138,7 @@ export default function AdminReportsPage() {
                     {data.topCafes.map((c) => (
                       <TableRow key={c.cafeId}>
                         <TableCell className="font-medium">{c.name}</TableCell>
-                        <TableCell className="text-end tabular-nums">{money(c.sales)}</TableCell>
+                        <TableCell className="text-end tabular-nums">{money(c.sales, c.currency)}</TableCell>
                         <TableCell className="text-end tabular-nums">{c.orders}</TableCell>
                       </TableRow>
                     ))}

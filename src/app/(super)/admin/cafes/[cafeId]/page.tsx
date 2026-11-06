@@ -132,9 +132,9 @@ export default function CafeDetailPage({ params }: { params: Promise<{ cafeId: s
             <StatCard label="عدد الفروع" value={o.branches} icon="🏬" accent="violet" />
             <StatCard label="عدد الموظفين" value={o.staff} icon="👥" accent="slate" />
             <StatCard label="طلبات الشهر" value={o.orders} icon="🧾" accent="indigo" />
-            <StatCard label="مبيعات اليوم" value={money(o.todaySales)} icon="💵" accent="emerald" />
-            <StatCard label="مبيعات الشهر" value={money(o.monthSales)} icon="📅" accent="emerald" />
-            <StatCard label={t.admin.stats.avgOrderValue} value={money(o.avgOrderValue)} icon="📊" accent="violet" />
+            <StatCard label="مبيعات اليوم" value={money(o.todaySales, data.cafe.currency)} icon="💵" accent="emerald" />
+            <StatCard label="مبيعات الشهر" value={money(o.monthSales, data.cafe.currency)} icon="📅" accent="emerald" />
+            <StatCard label={t.admin.stats.avgOrderValue} value={money(o.avgOrderValue, data.cafe.currency)} icon="📊" accent="violet" />
             <StatCard label="آخر نشاط" value={o.lastOrderAt ? formatDateTime(o.lastOrderAt) : "—"} icon="🕒" accent="amber" />
           </div>
         </TabsContent>
@@ -158,8 +158,8 @@ export default function CafeDetailPage({ params }: { params: Promise<{ cafeId: s
                       <TableRow key={b.id}>
                         <TableCell className="font-medium">{b.name}</TableCell>
                         <TableCell className="text-end tabular-nums">{b.orders}</TableCell>
-                        <TableCell className="text-end tabular-nums">{money(b.todaySales)}</TableCell>
-                        <TableCell className="text-end tabular-nums">{money(b.monthSales)}</TableCell>
+                        <TableCell className="text-end tabular-nums">{money(b.todaySales, data.cafe.currency)}</TableCell>
+                        <TableCell className="text-end tabular-nums">{money(b.monthSales, data.cafe.currency)}</TableCell>
                         <TableCell className="text-end tabular-nums">{b.staff}</TableCell>
                         <TableCell className="text-end tabular-nums">{b.openShifts}</TableCell>
                       </TableRow>
@@ -236,7 +236,7 @@ export default function CafeDetailPage({ params }: { params: Promise<{ cafeId: s
                       <TableRow key={p.name}>
                         <TableCell className="font-medium">{p.name}</TableCell>
                         <TableCell className="text-end tabular-nums">{p.quantity}</TableCell>
-                        <TableCell className="text-end tabular-nums">{money(p.revenue)}</TableCell>
+                        <TableCell className="text-end tabular-nums">{money(p.revenue, data.cafe.currency)}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
@@ -272,7 +272,7 @@ export default function CafeDetailPage({ params }: { params: Promise<{ cafeId: s
                         <TableCell>{ord.branch.name}</TableCell>
                         <TableCell>{t.orderSource[ord.source as keyof typeof t.orderSource] ?? ord.source}</TableCell>
                         <TableCell>{t.orderStatus[ord.status as keyof typeof t.orderStatus] ?? ord.status}</TableCell>
-                        <TableCell className="text-end tabular-nums">{money(ord.total)}</TableCell>
+                        <TableCell className="text-end tabular-nums">{money(ord.total, data.cafe.currency)}</TableCell>
                         <TableCell className="text-xs text-slate-500">{formatDateTime(ord.createdAt)}</TableCell>
                       </TableRow>
                     ))}
@@ -306,8 +306,8 @@ export default function CafeDetailPage({ params }: { params: Promise<{ cafeId: s
                         <TableCell>{sh.branch.name}</TableCell>
                         <TableCell className="text-xs text-slate-500">{formatDateTime(sh.openedAt)}</TableCell>
                         <TableCell className="text-xs text-slate-500">{sh.closedAt ? formatDateTime(sh.closedAt) : t.shiftStatus.OPEN}</TableCell>
-                        <TableCell className="text-end tabular-nums">{money(sh.totalSales)}</TableCell>
-                        <TableCell className="text-end tabular-nums">{sh.cashDifference != null ? money(sh.cashDifference) : "—"}</TableCell>
+                        <TableCell className="text-end tabular-nums">{money(sh.totalSales, data.cafe.currency)}</TableCell>
+                        <TableCell className="text-end tabular-nums">{sh.cashDifference != null ? money(sh.cashDifference, data.cafe.currency) : "—"}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>

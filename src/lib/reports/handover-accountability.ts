@@ -164,6 +164,8 @@ export type AccountabilityReport = {
   exceptionsOnly: boolean;
   generatedAt: string;
   generatedBy: { id: string; name: string };
+  /** ISO currency of the cafe (one per cafe in v1); every amount in the report is in it. */
+  currency: string;
   visibility: { ingredientValues: boolean };
   kpis: {
     handovers: number;
@@ -294,7 +296,7 @@ export async function loadHandoverAccountability(args: ReportArgs): Promise<Acco
   const canSeeCost = args.viewer.role === "CAFE_OWNER" || args.viewer.keys.has("purchases.view_cost");
 
   // One read-only transaction: every section sees the same snapshot.
-  const [closed, opened, cases, branch, employeeFilter] = await db.$transaction(async (tx) => {
+  const [closed, opened, cases, branch, employeeFilter, cafeRow] = await db.$transaction(async (tx) => {
     await tx.$executeRawUnsafe("SET TRANSACTION READ ONLY");
     return Promise.all([
       all<ClosedShift>((c) => tx.shift.findMany({ where: { ...scope, OR: [{ financiallyClosedAt: window }, { financiallyClosedAt: null, closedAt: window }] }, select: CLOSED_SHIFT, ...pageArgs(c) })),
@@ -302,6 +304,7 @@ export async function loadHandoverAccountability(args: ReportArgs): Promise<Acco
       all<StockCase>((c) => tx.varianceCase.findMany({ where: { ...scope, type: "STOCK", openedAt: window }, select: STOCK_CASE, ...pageArgs(c) })),
       args.branchId ? tx.branch.findFirst({ where: { id: args.branchId, cafeId: args.cafeId }, select: { id: true, name: true } }) : null,
       args.employeeId ? tx.user.findFirst({ where: { id: args.employeeId, cafeId: args.cafeId }, select: PERSON }) : null,
+      tx.cafe.findUnique({ where: { id: args.cafeId }, select: { currency: true } }),
     ]);
   }, { isolationLevel: "RepeatableRead", timeout: 60000 });
 
@@ -442,6 +445,7 @@ export async function loadHandoverAccountability(args: ReportArgs): Promise<Acco
     exceptionsOnly: !!args.exceptionsOnly,
     generatedAt: now.toISOString(),
     generatedBy: { id: args.viewer.id, name: args.viewer.name },
+    currency: cafeRow?.currency ?? "EGP",
     visibility: { ingredientValues: canSeeCost },
     kpis,
     employees,

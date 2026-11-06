@@ -120,6 +120,7 @@ export function summaryRows(r: AccountabilityReport): [string, Cell][] {
     ["الفترة", text(`${r.period.label}: ${formatDateStr(r.period.from)} — ${formatDateStr(r.period.to)}`)],
     ["أساس اليوم", text(r.period.dayBasis)],
     ["الفرع", text(r.branch?.name ?? "كل الفروع المسموح بها")],
+    ["العملة", text(r.currency)],
     ["الموظف", text(r.employeeFilter?.name ?? "كل الموظفين")],
     ["الاستثناءات فقط", text(r.exceptionsOnly ? "نعم" : "لا")],
     ["أنشأه", text(r.generatedBy.name)],

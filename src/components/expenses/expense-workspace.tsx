@@ -1,4 +1,5 @@
 "use client";
+import { EgpOnlyNotice } from "@/components/finance/egp-only-notice";
 import { nativeFieldClassName } from "@/components/ui/input";
 import { nativeButtonClassName, nativePrimaryButtonClassName } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -190,6 +191,7 @@ export function ExpenseWorkspace() {
         <Link href="/finance" className="inline-flex min-h-11 items-center text-base font-medium text-primary underline">مساحة الماليات ←</Link>
       </div>
     </PageHeader>
+    <EgpOnlyNotice what="مصروفات التشغيل" />
     <p className="max-w-3xl text-base leading-relaxed text-muted-foreground">مصروف تشغيلي مدفوع فورًا من درجك الحالي بالجنيه المصري. المشتريات وسداد الموردين والسلف والأجور والأصول ومسحوبات المالك لها مسارات منفصلة.</p>
     {setupError && <p role="alert" className="rounded-xl border border-destructive/40 bg-destructive/5 p-4 text-base text-destructive">تعذر تحميل الفروع والتصنيفات: {setupError} <button className={button} onClick={refresh}>إعادة التحميل</button></p>}
     {readError && <p role="alert" className="rounded-xl border border-destructive/40 bg-destructive/5 p-4 text-base text-destructive">{readError} <button className={button} onClick={refresh}>إعادة التحميل</button></p>}
