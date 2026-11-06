@@ -1,5 +1,5 @@
 "use client";
-import { EgpOnlyNotice } from "@/components/finance/egp-only-notice";
+import { currencySymbol } from "@/lib/currency";
 import { nativeFieldClassName } from "@/components/ui/input";
 import { nativeButtonClassName, nativePrimaryButtonClassName } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -33,7 +33,8 @@ const uncertainResult = (error: unknown) => !(error instanceof ApiRequestError) 
 const date = (iso: string) => new Date(iso).toLocaleString("ar-EG", { timeZone: "Africa/Cairo" });
 
 export function ExpenseWorkspace() {
-  const { user, canKey, permKeys } = useApp();
+  const { user, canKey, permKeys, cafe } = useApp();
+  const currency = cafe?.currency ?? "EGP";
   const view = canKey("expenses.view");
   const intentOwner = (user.cafeId ?? "") + ":" + user.id;
   const [pending, setPending] = useState<ExpenseIntent | null>(null);
@@ -191,20 +192,19 @@ export function ExpenseWorkspace() {
         <Link href="/finance" className="inline-flex min-h-11 items-center text-base font-medium text-primary underline">مساحة الماليات ←</Link>
       </div>
     </PageHeader>
-    <EgpOnlyNotice what="مصروفات التشغيل" />
-    <p className="max-w-3xl text-base leading-relaxed text-muted-foreground">مصروف تشغيلي مدفوع فورًا من درجك الحالي بالجنيه المصري. المشتريات وسداد الموردين والسلف والأجور والأصول ومسحوبات المالك لها مسارات منفصلة.</p>
+    <p className="max-w-3xl text-base leading-relaxed text-muted-foreground">مصروف تشغيلي مدفوع فورًا من درجك الحالي بعملة الكافيه. المشتريات وسداد الموردين والسلف والأجور والأصول ومسحوبات المالك لها مسارات منفصلة.</p>
     {setupError && <p role="alert" className="rounded-xl border border-destructive/40 bg-destructive/5 p-4 text-base text-destructive">تعذر تحميل الفروع والتصنيفات: {setupError} <button className={button} onClick={refresh}>إعادة التحميل</button></p>}
     {readError && <p role="alert" className="rounded-xl border border-destructive/40 bg-destructive/5 p-4 text-base text-destructive">{readError} <button className={button} onClick={refresh}>إعادة التحميل</button></p>}
 
     <section aria-label="ملخص المصروفات" className="grid gap-4 md:grid-cols-2">
       <div className="rounded-2xl border border-border/70 bg-card p-5 shadow-sm">
         <h2 className="text-base font-semibold text-muted-foreground">إجمالي المصروفات</h2>
-        <p className="mt-2 text-4xl font-bold tabular-nums leading-tight text-foreground">{listing ? <bdi>{money(listing.totals.paid, "EGP")}</bdi> : "—"}</p>
+        <p className="mt-2 text-4xl font-bold tabular-nums leading-tight text-foreground">{listing ? <bdi>{money(listing.totals.paid, currency)}</bdi> : "—"}</p>
         <p className="mt-2 text-sm text-muted-foreground">صرف نقدي من الدرج ضمن النطاق: {rangeLabel} — {branchLabel}{categoryLabel ? ` — ${categoryLabel}` : ""}</p>
       </div>
       <div className="rounded-2xl border border-border/70 bg-card p-5 shadow-sm">
         <h2 className="text-base font-semibold text-muted-foreground">النقد المرتجع</h2>
-        <p className="mt-2 text-4xl font-bold tabular-nums leading-tight text-primary">{listing ? <bdi>{money(listing.totals.returned, "EGP")}</bdi> : "—"}</p>
+        <p className="mt-2 text-4xl font-bold tabular-nums leading-tight text-primary">{listing ? <bdi>{money(listing.totals.returned, currency)}</bdi> : "—"}</p>
         <p className="mt-2 text-sm text-muted-foreground">يشمل النقد المرتبط بالمصروفات المطابقة فقط، بصرف النظر عن تاريخ الرد.</p>
       </div>
     </section>
@@ -251,8 +251,8 @@ export function ExpenseWorkspace() {
                   <time dateTime={e.occurredAt} className="block text-muted-foreground">{date(e.occurredAt)}</time>
                 </div>
                 <div className="col-start-2 row-start-1 text-end tabular-nums lg:col-start-3 lg:text-start">
-                  <p className="whitespace-nowrap text-base font-bold"><bdi>{money(e.amount, "EGP")}</bdi></p>
-                  {e.returnedAmount > 0 && <p className="text-sm text-muted-foreground">مرتجع <bdi className="whitespace-nowrap">{money(e.returnedAmount, "EGP")}</bdi></p>}
+                  <p className="whitespace-nowrap text-base font-bold"><bdi>{money(e.amount, currency)}</bdi></p>
+                  {e.returnedAmount > 0 && <p className="text-sm text-muted-foreground">مرتجع <bdi className="whitespace-nowrap">{money(e.returnedAmount, currency)}</bdi></p>}
                 </div>
                 <Link href={`/expenses/${e.id}`} className={button + " col-start-2 row-start-2 inline-flex min-h-11 items-center justify-self-end whitespace-nowrap px-3 text-sm font-semibold lg:col-start-4 lg:row-start-1 lg:justify-self-start"}>
                   عرض التفاصيل
@@ -268,7 +268,7 @@ export function ExpenseWorkspace() {
         <p className="mt-1 text-sm text-muted-foreground">لكل النتائج المطابقة لفترة الصرف والفلاتر. الأسماء كما سُجلت وقت الصرف. النقد المرتجع معروض في بطاقة الملخص أعلاه.</p>
         <ul className="mt-4 grid gap-3 md:grid-cols-2">{listing.breakdown.map(group => <li className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-card p-4" key={JSON.stringify([group.branchId, group.categoryId, group.categoryName, group.categoryCode])}>
           <div className="min-w-0"><p className="text-base font-semibold [overflow-wrap:anywhere]">{group.categoryName} <bdi className="text-sm font-normal text-muted-foreground">({group.categoryCode})</bdi></p><p className="text-sm text-muted-foreground">{group.branchName} — {group.count} {group.count === 1 ? "مصروف" : "مصروفات"}</p></div>
-          <p className="text-xl font-bold tabular-nums"><bdi>{money(group.paid, "EGP")}</bdi></p>
+          <p className="text-xl font-bold tabular-nums"><bdi>{money(group.paid, currency)}</bdi></p>
         </li>)}</ul>
       </section>}
     </section>}
@@ -280,7 +280,7 @@ export function ExpenseWorkspace() {
         <fieldset disabled={busy || uncertain || !intentReady} className="space-y-5">
           <div className="space-y-4 rounded-xl border border-border/70 p-4">
             <p className="text-base font-bold">١. المبلغ والفرع</p>
-            <div><label className={label} htmlFor="expense-amount">المبلغ — ج.م</label>
+            <div><label className={label} htmlFor="expense-amount">المبلغ — {currencySymbol(currency)}</label>
               <input id="expense-amount" className={field + " h-14 text-2xl font-bold"} type="number" inputMode="decimal" min="0.01" step="0.01" max="9999999999.99" placeholder="0.00" aria-invalid={!!fieldErrors.amount} aria-describedby={fieldErrors.amount ? "expense-amount-error" : undefined} value={amount} onChange={e => setAmount(e.target.value)} />
               {fieldErrors.amount && <p id="expense-amount-error" role="alert" className="mt-1 text-sm font-medium text-destructive">{fieldErrors.amount}</p>}</div>
             <div><label className={label} htmlFor="expense-create-branch">فرع الصرف — درج الصرف</label>
@@ -356,7 +356,8 @@ export function ExpenseWorkspace() {
 }
 
 export function ExpenseDetail({ id }: { id: string }) {
-  const { user, permKeys, canKey } = useApp();
+  const { user, permKeys, canKey, cafe } = useApp();
+  const currency = cafe?.currency ?? "EGP";
   const view = canKey("expenses.view");
   const intentOwner = (user.cafeId ?? "") + ":" + user.id;
   const intentPath = "/api/expenses/" + id + "/returns";
@@ -417,7 +418,7 @@ export function ExpenseDetail({ id }: { id: string }) {
     {data && <>
       <article className="space-y-5 rounded-2xl border border-border/70 bg-card p-5 shadow-sm" aria-label="إيصال المصروف">
         <header className="space-y-2">
-          <p className="text-4xl font-bold tabular-nums leading-tight"><bdi>{money(data.expense.amount, "EGP")}</bdi></p>
+          <p className="text-4xl font-bold tabular-nums leading-tight"><bdi>{money(data.expense.amount, currency)}</bdi></p>
           <p className="inline-block rounded-full bg-primary/10 px-3 py-1 text-base font-semibold text-primary [overflow-wrap:anywhere]">{data.expense.categoryName}</p>
           <p className="text-sm text-muted-foreground">مصروف تشغيلي مدفوع من الدرج — {data.expense.currency}</p>
         </header>
@@ -427,11 +428,11 @@ export function ExpenseDetail({ id }: { id: string }) {
           <div className="py-2"><dt className="text-sm text-muted-foreground">الفرع / الوردية الأصلية</dt><dd className="break-all">{data.expense.branchId} / {data.expense.shiftId}</dd></div>
           <div className="py-2"><dt className="text-sm text-muted-foreground">المنفذ ووقت الصرف — القاهرة</dt><dd>{data.expense.actorName} — {date(data.expense.occurredAt)}</dd></div>
           <div className="py-2"><dt className="text-sm text-muted-foreground">مرجع المستند</dt><dd className="[overflow-wrap:anywhere]">{data.expense.documentReference ?? "لا يوجد"}</dd></div>
-          <div className="py-2"><dt className="text-sm text-muted-foreground">النقد المرتجع / المتبقي غير المرتجع</dt><dd className="font-semibold tabular-nums"><bdi>{money(data.expense.returnedAmount, "EGP")}</bdi> / <bdi>{money(data.expense.unrecoveredAmount, "EGP")}</bdi></dd></div>
+          <div className="py-2"><dt className="text-sm text-muted-foreground">النقد المرتجع / المتبقي غير المرتجع</dt><dd className="font-semibold tabular-nums"><bdi>{money(data.expense.returnedAmount, currency)}</bdi> / <bdi>{money(data.expense.unrecoveredAmount, currency)}</bdi></dd></div>
         </dl>
         <section className="space-y-2"><h3 className="text-lg font-bold">ردود نقدية موثقة</h3>
         {data.expense.returns.length === 0 ? <p className="text-base text-muted-foreground">لم يُسجل رد نقد.</p> : <ul className="space-y-3">{data.expense.returns.map(r => <li key={r.id} className="rounded-xl border border-border/70 p-3 text-base">
-          <p className="font-semibold tabular-nums"><bdi>{money(r.amount, "EGP")}</bdi> — <span className="font-normal [overflow-wrap:anywhere]">{r.reason}</span></p><p className="text-sm text-muted-foreground">{r.actorName} — {date(r.occurredAt)}</p><p className="text-sm text-muted-foreground">مرجع: {r.documentReference ?? "لا يوجد"}</p>
+          <p className="font-semibold tabular-nums"><bdi>{money(r.amount, currency)}</bdi> — <span className="font-normal [overflow-wrap:anywhere]">{r.reason}</span></p><p className="text-sm text-muted-foreground">{r.actorName} — {date(r.occurredAt)}</p><p className="text-sm text-muted-foreground">مرجع: {r.documentReference ?? "لا يوجد"}</p>
         </li>)}</ul>}</section>
         <button className={button + " expense-no-print min-h-11 text-base"} onClick={() => window.print()}>طباعة الإيصال</button>
       </article>
@@ -440,7 +441,7 @@ export function ExpenseDetail({ id }: { id: string }) {
         <p className="text-base text-muted-foreground">لا يمحو المصروف. يُقبل فقط إلى الدرج الأصلي وهو مفتوح وفي عهدتك. الرد إلى درج آخر أو بعد الإقفال يحتاج مسارًا منفصلًا.</p>
         {data.drawerStatus !== "OPEN" && !pending ? <p role="status" className="text-base">الدرج الأصلي مغلق أو قيد التسليم؛ الرد غير متاح في هذه الدفعة.</p> : <form onSubmit={receive} className="space-y-4">
           <fieldset disabled={busy || uncertain || !intentReady} className="space-y-4">
-            <div><label className={label} htmlFor="return-amount">النقد الذي عاد — ج.م</label><input id="return-amount" className={field + " h-14 text-2xl font-bold"} type="number" inputMode="decimal" min="0.01" step="0.01" max={data.expense.unrecoveredAmount} value={amount} onChange={e => setAmount(e.target.value)} required /></div>
+            <div><label className={label} htmlFor="return-amount">النقد الذي عاد — {currencySymbol(currency)}</label><input id="return-amount" className={field + " h-14 text-2xl font-bold"} type="number" inputMode="decimal" min="0.01" step="0.01" max={data.expense.unrecoveredAmount} value={amount} onChange={e => setAmount(e.target.value)} required /></div>
             <div><label className={label} htmlFor="return-reason">سبب ودليل عودة النقد</label><textarea id="return-reason" className={field + " min-h-24"} maxLength={500} value={reason} onChange={e => setReason(e.target.value)} required /></div>
             <div><label className={label} htmlFor="return-reference">مرجع المستند — اختياري</label><input id="return-reference" className={field} maxLength={200} value={reference} onChange={e => setReference(e.target.value)} /></div>
             <label className="flex items-start gap-3 text-base"><input type="checkbox" className="mt-1 size-5" required />أؤكد استلام النقد فعليًا في الدرج الأصلي.</label>

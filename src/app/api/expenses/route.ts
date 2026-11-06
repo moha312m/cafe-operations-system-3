@@ -26,6 +26,7 @@ export async function GET(request: NextRequest) {
         }),
         tx.branch.findMany({ where: { cafeId: scope.cafeId, ...(scope.branchId ? { id: scope.branchId } : {}) }, select: { id: true, name: true } }),
       ]);
+      const currency = (await tx.cafe.findUnique({ where: { id: scope.cafeId }, select: { currency: true } }))?.currency ?? "EGP";
       const branchNames = Object.fromEntries(branches.map(branch => [branch.id, branch.name]));
       const breakdown = groups.map(group => ({
         branchId: group.branchId, branchName: branchNames[group.branchId] ?? "فرع غير متاح",
@@ -34,7 +35,7 @@ export async function GET(request: NextRequest) {
       }));
       const count = breakdown.reduce((total, group) => total + group.count, 0);
       const paid = groups.reduce((total, group) => total.plus(group._sum.amount ?? 0), new Prisma.Decimal(0));
-      return { branchNames, breakdown, expenses: rows.map(expenseDto), count, page: q.page, pageSize: 25, totals: { paid: paid.toNumber(), returned: returns._sum.amount?.toNumber() ?? 0 }, currency: "EGP", timezone: "Africa/Cairo" };
+      return { branchNames, breakdown, expenses: rows.map(expenseDto), count, page: q.page, pageSize: 25, totals: { paid: paid.toNumber(), returned: returns._sum.amount?.toNumber() ?? 0 }, currency, timezone: "Africa/Cairo" };
     }));
   } catch (error) { return handleApiError(error); }
 }

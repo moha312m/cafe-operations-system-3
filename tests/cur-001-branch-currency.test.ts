@@ -100,20 +100,13 @@ describe("CUR-001 source guards", () => {
     return statSync(full).isDirectory() ? walk(full) : /\.(ts|tsx)$/.test(name) ? [full] : [];
   });
 
-  // Files that may name the Egyptian pound on purpose, with the reason. Everything else must go through
+  // Files that may name the Egyptian pound on purpose, with the reason (drawer expenses and the treasury now follow
+  // the cafe currency and are no longer listed). Everything else must go through
   // lib/currency.ts and the cafe's currency.
   const ALLOWED: Record<string, string> = {
     "lib/currency.ts": "the symbol table",
     "lib/i18n.ts": "documentation of the formatter default",
     "lib/reports/handover-accountability-format.ts": "formatter default and documentation",
-    "lib/expenses.ts": "drawer expenses are EGP-only (database CHECK on the table)",
-    "lib/treasury-accounts.ts": "treasury accounts are EGP-only (database CHECK on the table)",
-    "lib/treasury-transfers.ts": "treasury transfers are EGP-only (database CHECK on the table)",
-    "app/api/expenses/route.ts": "drawer expenses are EGP-only",
-    "components/expenses/expense-workspace.tsx": "drawer expenses are EGP-only; shows the notice for other currencies",
-    "components/treasury/treasury-details.tsx": "treasury is EGP-only",
-    "components/treasury/treasury-workspace.tsx": "treasury is EGP-only; shows the notice for other currencies",
-    "components/finance/egp-only-notice.tsx": "the EGP-only notice",
     "components/pos/cash-denomination-calculator.tsx": "Egyptian banknote helper; hidden for other currencies",
     "components/pos/shift-close-flow.tsx": "shows the banknote helper for EGP only",
     "app/(super)/admin/settings/page.tsx": "platform default shown to the platform owner",

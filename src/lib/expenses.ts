@@ -1,3 +1,4 @@
+import { isSupportedCurrency } from "@/lib/currency";
 import type { Prisma, OperatingExpense, OperatingExpenseReturn } from "@prisma/client";
 import { ApiError } from "@/lib/api";
 import type { SessionUser } from "@/lib/auth";
@@ -25,7 +26,8 @@ export function expenseDto(row: ExpenseWithReturns) {
 export async function recordOperatingExpense(tx: Prisma.TransactionClient, actor: SessionUser, data: z.infer<typeof expenseInput>, identity: Identity) {
   const branch = await tx.branch.findFirst({ where: { id: data.branchId, cafeId: actor.cafeId! }, select: { cafe: { select: { currency: true } } } });
   if (!branch || (actor.branchId && actor.branchId !== data.branchId)) throw new ApiError(404, "الفرع غير موجود في نطاقك");
-  if (branch.cafe.currency !== "EGP") throw new ApiError(400, "هذه الدفعة تدعم مصروفات الجنيه المصري فقط");
+  const currency = branch.cafe.currency;
+  if (!isSupportedCurrency(currency)) throw new ApiError(400, "عملة الكافيه غير مدعومة للمصروفات حاليًا");
   const shift = await requireCashCustodyInTx(tx, data.branchId, actor.id);
   const categories = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "ExpenseCategory" WHERE "id"=${data.categoryId} AND "cafeId"=${actor.cafeId!} AND "archivedAt" IS NULL FOR SHARE`;
   if (!categories.length) throw new ApiError(400, "اختر بند مصروف تشغيلي معتمد وغير مؤرشف");
@@ -36,13 +38,13 @@ export async function recordOperatingExpense(tx: Prisma.TransactionClient, actor
   if (amount.gt(decimal(fresh.expectedCashAmount))) throw new ApiError(400, "النقد المتوقع المتاح لا يكفي للصرف؛ تحقق من الدرج");
   const expense = await tx.operatingExpense.create({ data: {
     cafeId: actor.cafeId!, branchId: data.branchId, shiftId: shift.id, categoryId: category.id,
-    categoryCodeSnapshot: category.code, categoryNameSnapshot: category.nameAr, amount, currency: "EGP",
+    categoryCodeSnapshot: category.code, categoryNameSnapshot: category.nameAr, amount, currency,
     description: data.description, documentReference: data.documentReference ?? null,
     actorId: actor.id, actorNameSnapshot: actor.name, ...identity,
   }, include: { returns: true } });
   await recomputeExpenseDrawer(shift.id, tx);
   await auditInTransaction(tx, { cafeId: actor.cafeId, userId: actor.id, action: "OPERATING_EXPENSE_PAID", entity: "OperatingExpense", entityId: expense.id,
-    details: { branchId: expense.branchId, shiftId: shift.id, amount: amount.toNumber(), currency: "EGP", categoryId: category.id, sourceKey: expenseSourceKey("expense", expense.id) } });
+    details: { branchId: expense.branchId, shiftId: shift.id, amount: amount.toNumber(), currency, categoryId: category.id, sourceKey: expenseSourceKey("expense", expense.id) } });
   return expenseDto(expense);
 }
 export async function recordOperatingExpenseReturn(tx: Prisma.TransactionClient, actor: SessionUser, id: string, data: z.infer<typeof returnInput>, identity: Identity) {

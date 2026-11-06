@@ -22,8 +22,9 @@ export async function createTransfer(tx:Prisma.TransactionClient,actor:SessionUs
  const old=await tx.moneyTransfer.findUnique({where:{cafeId_createdById_creationKey:{cafeId:actor.cafeId!,createdById:actor.id,creationKey:key}}});
  if(old){await findTransfer(tx,actor,old.id);if(old.creationFingerprint!==fingerprint)throw new ApiError(409,"المفتاح مستخدم لمسودة مختلفة");return receipt(tx,old,"create");}
  await lockMoneyAccounts(tx,[data.fromAccountId,data.toAccountId]);const from=await findAccount(tx,actor,data.fromAccountId),to=await findAccount(tx,actor,data.toAccountId);
- if(!from.isActive||!to.isActive||from.currency!=="EGP"||to.currency!=="EGP"||!channelAllowed(data.channel,from,to))throw new ApiError(400,"الحسابات أو قناة التحويل غير متاحة");
- const row=await tx.moneyTransfer.create({data:{...data,cafeId:actor.cafeId!,currency:"EGP",fromNameSnapshot:from.name,toNameSnapshot:to.name,creationKey:key,creationFingerprint:fingerprint,createdById:actor.id}});
+ const cafe=await tx.cafe.findUniqueOrThrow({where:{id:actor.cafeId!},select:{currency:true}});
+ if(!from.isActive||!to.isActive||from.currency!==cafe.currency||to.currency!==cafe.currency||!channelAllowed(data.channel,from,to))throw new ApiError(400,"الحسابات أو قناة التحويل غير متاحة");
+ const row=await tx.moneyTransfer.create({data:{...data,cafeId:actor.cafeId!,currency:cafe.currency,fromNameSnapshot:from.name,toNameSnapshot:to.name,creationKey:key,creationFingerprint:fingerprint,createdById:actor.id}});
  await auditInTransaction(tx,{cafeId:actor.cafeId,userId:actor.id,action:"MONEY_TRANSFER_CREATED",entity:"MoneyTransfer",entityId:row.id,details:{...data,amount:row.amount.toFixed(2),creationKey:key,recordedAt:row.createdAt}});return receipt(tx,row,"create");
 }
 async function assertMoneyPeriodOpen(tx:Prisma.TransactionClient,cafeId:string,at:Date){
