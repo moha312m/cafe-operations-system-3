@@ -8,13 +8,19 @@ import { useApp } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import type { PendingReport } from "./next-step-model";
 
 type SnapshotItem = { id: string; name: string; area: string | null; checkpoints: Array<{ id: string; label: string; required: boolean; critical: boolean }> };
 type ReceiptRow = { id: string; status: string; assignedUser: { id: string; name: string }; incomingShift: { shiftNumber: number; openedAt: string }; snapshot: SnapshotItem[] };
 type Detail = ReceiptRow & { observations: Array<{ id: string; assetId: string; checkpointId: string; side: string; condition: string; note: string | null; incident: { id: string; status: string } | null; photos: Array<{ id: string }> }>; incidents: Array<{ id: string; status: string; assetId: string }> };
 const conditions = [{ value: "OK", label: "سليم" }, { value: "NOTE", label: "ملاحظة" }, { value: "FAULT", label: "عطل" }, { value: "NOT_CHECKED", label: "لم يتم الفحص" }];
 
-export function PlaceReceiptPanel({ branchId }: { branchId: string }) {
+export function PlaceReceiptPanel({ branchId, hideWhenEmpty = false, onPending }: {
+  branchId: string;
+  /** On the /handovers list: render nothing unless a check is waiting, one is open, or loading failed. */
+  hideWhenEmpty?: boolean;
+  onPending?: (report: PendingReport) => void;
+}) {
   const { user, canKey } = useApp();
   const [rows, setRows] = useState<ReceiptRow[]>([]);
   const [detail, setDetail] = useState<Detail | null>(null);
@@ -24,6 +30,7 @@ export function PlaceReceiptPanel({ branchId }: { branchId: string }) {
   const [repair, setRepair] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
     if (!branchId || !canKey("handover.view")) return;
@@ -31,6 +38,7 @@ export function PlaceReceiptPanel({ branchId }: { branchId: string }) {
     try {
       const result = await api<{ receipts: ReceiptRow[] }>("/api/place-receipts?branchId=" + encodeURIComponent(branchId));
       setRows(result.receipts);
+      setLoaded(true);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "تعذر تحميل استلام المكان"); }
   }, [branchId, canKey]);
 
@@ -43,7 +51,12 @@ export function PlaceReceiptPanel({ branchId }: { branchId: string }) {
     const timer = window.setTimeout(() => { void load(); }, 0);
     return () => window.clearTimeout(timer);
   }, [load]);
-  if (!canKey("handover.view")) return null;
+  // Folded away unless a check is waiting, one is open, or loading failed.
+  const pendingPlace = rows.filter((row) => row.status === "PENDING").length;
+  const mayView = canKey("handover.view");
+  const pending: PendingReport = !mayView ? 0 : error ? "error" : loaded ? pendingPlace : null;
+  useEffect(() => { onPending?.(pending); }, [onPending, pending]);
+  if (!mayView) return null;
 
   async function observe(item: SnapshotItem, checkpointId: string) {
     if (!detail) return;
@@ -81,9 +94,8 @@ export function PlaceReceiptPanel({ branchId }: { branchId: string }) {
     finally { setBusy(false); }
   }
 
-  // Folded away unless a check is waiting, one is open, or loading failed.
-  const pendingPlace = rows.filter((row) => row.status === "PENDING").length;
-  return <details className="rounded-xl border p-4" data-testid="place-receipt-panel" open={pendingPlace > 0 || !!detail || !!error}>
+  if (hideWhenEmpty && pendingPlace === 0 && !detail && !error) return null;
+  return <details id="handover-step-place" className="rounded-xl border p-4" data-testid="place-receipt-panel" open={pendingPlace > 0 || !!detail || !!error}>
     <summary className="cursor-pointer font-semibold">استلام المكان والأجهزة<span className="ms-2 text-xs font-normal text-muted-foreground">{pendingPlace > 0 ? `— ${pendingPlace} ينتظر الفحص` : "— مفيش استلام مستني"}</span></summary>
     <div className="mt-3 space-y-3"><div className="flex justify-end"><Button size="sm" variant="ghost" disabled={busy} onClick={() => void load()}>تحديث</Button></div>
     <p className="text-xs text-muted-foreground">الموظف المعيّن يسجل حالة كل جهاز. قبول الكاش أو الخامات منفصل عن اعتماد المكان.</p>

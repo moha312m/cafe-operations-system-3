@@ -133,7 +133,8 @@ function requiredNow(i: JourneyInput, phase: ReturnType<typeof countPhase>, stag
     }
     if (branch) {
       const mayAct = i.can.accept && i.can.exception;
-      return { ...base, title: i.unreviewedLines > 0 ? `وقّع ${i.unreviewedLines} سطر جرد باسم الفرع (بالضغط على زر الاعتماد بالأسفل) ثم حوّل العهدة لعهدة الفرع` : "سطور الجرد موقّعة — حوّل العهدة لعهدة الفرع", actor: "مسؤول بصلاحية الاستثناء (باسم الفرع)", panel: "inventory", actionLabel: i.unreviewedLines > 0 ? "تأكيد السطور بالزر" : "تحويل لعهدة الفرع", blocker: mayAct ? null : "التوقيع والتحويل لعهدة الفرع لمسؤول بصلاحية الاستثناء." };
+      // One press signs the counted lines in the branch's name (each line still recorded with its signer and time) and then converts.
+      return { ...base, title: i.unreviewedLines > 0 ? `احفظ العهدة في عهدة الفرع — زر واحد يوقّع ${i.unreviewedLines} سطر جرد باسم الفرع ويحوّلها` : "سطور الجرد موقّعة — احفظ العهدة في عهدة الفرع", actor: "مسؤول بصلاحية الاستثناء (باسم الفرع)", panel: "inventory", actionLabel: "حفظ في عهدة الفرع", blocker: mayAct ? null : "التوقيع والتحويل لعهدة الفرع لمسؤول بصلاحية الاستثناء." };
     }
     if (!i.incomingShift) return { ...base, title: i.incomingAmbiguous ? "حدّد المستلم قبل القبول" : "المستلم يفتح شيفته أولًا", actor: "المستلم", panel: "inventory", actionLabel: null, blocker: i.incomingAmbiguous ? "فيه أكتر من شيفت ممكن يستلم؛ النظام مش هيختار بالنيابة عنك." : "مفيش شيفت مستلم مفتوح في الفرع لتسجيل ورقة الاستلام." };
     return { ...base, title: i.unreviewedLines > 0 ? `راجع ورقة الاستلام (${i.unreviewedLines} سطر)` : "أكّد استلام عهدة الشيفت", actor: `${i.incomingShift.name} (شيفت #${i.incomingShift.shiftNumber})`, panel: "inventory", actionLabel: "فتح ورقة الاستلام", blocker: i.viewer.isRecipient && i.can.accept ? null : `ورقة الاستلام توقيع ${i.incomingShift.name} صاحب الشيفت المستلم.` };

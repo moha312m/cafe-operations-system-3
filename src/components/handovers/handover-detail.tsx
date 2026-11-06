@@ -187,13 +187,24 @@ export function HandoverDetail({
     return (PANELS as string[]).includes(hash) ? (hash as Panel) : "summary";
   });
   const [pickedFilter, setPickedFilter] = useState<"action" | "discrepancy" | "excluded" | "all" | null>(null);
+  // The first render can happen without a location (server render), so a link that names a section
+  // (`#inventory` from the close's Done screen) is honoured once the page is in the browser.
+  useEffect(() => {
+    const hash = window.location.hash.replace("#", "");
+    if ((PANELS as string[]).includes(hash)) setTab(hash as Panel);
+  }, []);
+  // A direct handover is one summary and one button; everything else waits behind «التفاصيل».
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const openPanel = useCallback((p: Panel) => {
     setTab(p);
+    setDetailsOpen(true);
     try { window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#${p}`); } catch { /* the tab still switches */ }
     requestAnimationFrame(() => document.getElementById(`handover-panel-${p}`)?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
   }, []);
 
   const branchCustody = view?.target === "BRANCH_CUSTODY";
+  const directMode = !!view?.overview.directHandover && view?.target === "SHIFT_TO_SHIFT";
+  const directReviewing = directMode && ["OUTGOING_SUBMITTED", "INCOMING_REVIEW"].includes(view?.status ?? "");
   const isRecipient = !!view && view.workflow.incomingShift?.cashierId === user.id;
   const mayReviewStock = !!view && canKey("handover.accept") && ["OUTGOING_SUBMITTED", "INCOMING_REVIEW"].includes(view.status)
     && isRecipient && !view.workflow.incomingAmbiguous && view.target === "SHIFT_TO_SHIFT";
@@ -286,6 +297,7 @@ export function HandoverDetail({
                     <a className="inline-flex min-h-9 items-center rounded-lg border px-3 text-xs font-medium hover:bg-muted" href={reportUrl("html")} target="_blank" rel="noopener" data-testid="handover-print">طباعة التقرير</a>
                   </>}
                 </div>
+                {!directMode && <>
                 <dl className="grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2 lg:grid-cols-3">
                   <div><dt className="inline text-muted-foreground">المُسلّم: </dt><dd className="inline font-medium">{view.overview.signatures.outgoingName} (شيفت #{view.financialSummary?.shiftNumber ?? view.overview.shiftNumber})</dd></div>
                   <div><dt className="inline text-muted-foreground">{branchCustody ? "الجهة المستلمة: " : "المستلم: "}</dt><dd className="inline font-medium">{branchCustody ? "عهدة الفرع (توقيع باسم الفرع)" : view.workflow.incomingShift ? `${view.workflow.incomingShift.cashier.name} (شيفت #${view.workflow.incomingShift.shiftNumber})` : "لم يُحدد بعد"}</dd></div>
@@ -295,10 +307,12 @@ export function HandoverDetail({
                   <div><dt className="inline text-muted-foreground">اكتمال التسليم: </dt><dd className="inline font-medium">{fmtDateTime(view.overview.signatures.completedAt, tz)}</dd></div>
                 </dl>
                 <JourneyStatus journey={journey} />
+                </>}
               </section>
 
-              {/* REQUIRED NOW — one prominent panel: what, who, why blocked, and the direct action. */}
-              <section className="space-y-2 rounded-xl border border-primary/30 bg-primary/5 p-3" aria-label="المطلوب الآن" data-testid="handover-required-now">
+              {/* REQUIRED NOW — one prominent panel: what, who, why blocked, and the direct action. On a direct
+                  handover under review the summary below IS that panel, so it is not said twice. */}
+              {!directReviewing && <section className="space-y-2 rounded-xl border border-primary/30 bg-primary/5 p-3" aria-label="المطلوب الآن" data-testid="handover-required-now">
                 <p className="text-xs font-medium text-muted-foreground">المطلوب الآن</p>
                 <p className="text-base font-semibold [overflow-wrap:anywhere]">{journey.requiredNow.title}</p>
                 <p className="text-xs text-muted-foreground">المسؤول: {journey.requiredNow.actor}</p>
@@ -320,7 +334,7 @@ export function HandoverDetail({
                     <ul className="space-y-1">{journey.requiredNow.parallel.map((s) => <li key={s.id} className="flex flex-wrap items-center gap-2 text-xs"><span className="font-medium">{s.label}</span><span className="text-muted-foreground">— {s.actor}</span><button type="button" className="text-primary underline" onClick={() => openPanel(s.panel)}>افتح</button></li>)}</ul>
                   </div>
                 )}
-              </section>
+              </section>}
 
               {view.target === "SHIFT_TO_SHIFT" && (
                 <DirectHandoverPanel
@@ -340,7 +354,7 @@ export function HandoverDetail({
                   {view.count?.systemValidated ? " جرد المُسلّم كان مطابقًا وتحقّق منه النظام، لكن عدّ المستلم يختلف عمّا سُلّم." : ""}
                 </p>
               )}
-              {step === "receive" && !branchCustody && !canReceiveLines && !stockReviewReady && !receivingDisputed && (
+              {step === "receive" && !branchCustody && !directMode && !canReceiveLines && !stockReviewReady && !receivingDisputed && (
                 <div role="status" data-testid="handover-receive-blocker-callout" className={`flex flex-wrap items-center justify-between gap-3 rounded-xl border p-3 text-sm font-medium ${TONE_SURFACE.caramel} ${TONE_SIDE.caramel}`}>
                   <span>
                     {!view.workflow.incomingShift
@@ -357,6 +371,8 @@ export function HandoverDetail({
               {view.workflow.incomingAmbiguous && <p role="alert" className="text-amber-800 dark:text-amber-200">فيه أكتر من شيفت ممكن يستلم — لازم يتحدد المستلم قبل القبول، والنظام مش هيختار بالنيابة عنك.</p>}
               {view.status === "REJECTED" && <p role="status">الجرد اترجع للمُسلّم: افتح جرد إعادة التسليم. الجرد القديم وسجل الاعتراض محفوظين ومش هيتحسبوا كدليل مقبول.</p>}
 
+              <FoldWhen fold={directMode} open={detailsOpen} onOpenChange={setDetailsOpen}>
+              {directMode && <JourneyStatus journey={journey} />}
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="ملخص التسليم" data-testid="handover-cards">
                 <SummaryCard panel="cash" tone={cashDifference || tenderDifferences > 0 ? "clay" : cashPending?.state === "pending" ? "caramel" : "sage"} title="المال واستلام الكاش"
                   value={money ? (money.closingDifference == null ? "غير مسجل" : formatMoney(Number(money.closingDifference), currency)) : "غير متاح"}
@@ -442,7 +458,7 @@ export function HandoverDetail({
                                         </>}
                                       </TableCell>
                                       <TableCell className="min-w-40 whitespace-normal text-end max-sm:block max-sm:text-start">
-                                        {row.state === "pending" ? <span className="text-muted-foreground">{line.disposition === "PENDING" ? "—" : branchCustody ? "بانتظار الضغط على زر الاعتماد" : "لم يُسجّل استلام بعد"}</span> : <>
+                                        {row.state === "pending" ? <span className="text-muted-foreground">{line.disposition === "PENDING" ? "—" : branchCustody ? "بانتظار «حفظ في عهدة الفرع»" : "لم يُسجّل استلام بعد"}</span> : <>
                                           <div className={row.state === "disputed" ? "font-semibold" : undefined}>{row.state === "disputed" ? "معترض عليه — اطلب إعادة الجرد" : branchCustody ? "موقّع باسم الفرع (بدون عدّ مستقل)" : "تم استلام السطر"}</div>
                                           {!branchCustody && <div className="text-xs text-muted-foreground tabular-nums">عدّ المستلم: {row.incomingCount} · المُسلَّم: {row.handedOver}</div>}
                                           {!branchCustody && <div className="text-xs text-muted-foreground tabular-nums">فرق الاستلام: {row.receivingDifference}</div>}
@@ -500,6 +516,7 @@ export function HandoverDetail({
                   </div>
                 )}
               </div>
+              </FoldWhen>
             </div>
           )}
       </DetailFrame>
@@ -507,5 +524,16 @@ export function HandoverDetail({
 
 
     </>
+  );
+}
+
+/** The workspace below the summary: inline as before, or folded behind «التفاصيل» on a direct handover. */
+function FoldWhen({ fold, open, onOpenChange, children }: { fold: boolean; open: boolean; onOpenChange: (open: boolean) => void; children: ReactNode }) {
+  if (!fold) return <>{children}</>;
+  return (
+    <details className="space-y-4 rounded-xl border p-3" open={open} onToggle={(e) => onOpenChange(e.currentTarget.open)} data-testid="handover-details-fold">
+      <summary className="cursor-pointer text-sm font-semibold text-muted-foreground">التفاصيل — المال، الجرد، الطلبات، السجل، وإجراءات المدير</summary>
+      <div className="mt-3 space-y-4">{children}</div>
+    </details>
   );
 }

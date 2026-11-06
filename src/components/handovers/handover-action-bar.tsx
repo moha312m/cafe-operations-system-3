@@ -189,18 +189,18 @@ export function HandoverActionBar({
             >
               استلام استثنائي
             </Button>}
-            {/* On a BRANCH_CUSTODY handover this IS the completing action, so it is the primary one;
-                the server also needs every counted line signed first, so it waits for that. */}
-            <Button
+            {/* On a BRANCH_CUSTODY handover the completing action is «حفظ في عهدة الفرع» in the signing
+                panel (sign the counted lines, then convert, under one confirmation); here it is only the
+                exception of parking a shift-to-shift handover on the branch. */}
+            {target !== "BRANCH_CUSTODY" && <Button
               size="sm"
-              variant={target === "BRANCH_CUSTODY" ? "default" : "ghost"}
-              disabled={busy || (target === "BRANCH_CUSTODY" && !stockReviewReady)}
-              title={target === "BRANCH_CUSTODY" && !stockReviewReady ? "اضغط على زر تأكيد سطور الجرد بالأعلى أولاً" : undefined}
+              variant="ghost"
+              disabled={busy}
               onClick={() => start("branch")}
               data-testid="handover-to-branch-custody"
             >
               تحويل لعهدة الفرع
-            </Button>
+            </Button>}
           </>
         )}
       </div>

@@ -9,17 +9,22 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { ReasonCodeSelect } from '@/components/stock-counts/reason-code-select';
+import type { PendingReport } from '@/components/handovers/next-step-model';
 type Storage={id:string;drawerLabel:string;leftInDrawer:string;toTreasury:string;expectedAmount:number;declaredBy:{name:string};declaredAt:string;outgoingShift:{shiftNumber:number;cashier:{name:string}};handover:{status:string};receipt:{id:string;claimantId:string;status:string;claimant:{name:string}}|null};
-export function OpeningCashPanel({branchId,onAccepted}:{branchId:string;onAccepted?:()=>void}) {
+export function OpeningCashPanel({branchId,onAccepted,hideWhenEmpty=false,onPending}:{branchId:string;onAccepted?:()=>void;
+  /** On the /handovers list: render nothing unless a drawer is waiting (or loading failed). */
+  hideWhenEmpty?:boolean;onPending?:(report:PendingReport)=>void}) {
   const {user,canKey,cafe}=useApp();const currency=cafe?.currency??'EGP';
-  const [storages,setStorages]=useState<Storage[]>([]),[selected,setSelected]=useState(''),[count,setCount]=useState(''),[note,setNote]=useState(''),[reason,setReason]=useState(''),[override,setOverride]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState('');
+  const [storages,setStorages]=useState<Storage[]>([]),[selected,setSelected]=useState(''),[count,setCount]=useState(''),[note,setNote]=useState(''),[reason,setReason]=useState(''),[override,setOverride]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(''),[loaded,setLoaded]=useState(false);
   const keys=useRef(new Map<string,string>()),currentBranch=useRef(branchId);
   const loadSequence=useRef(0);
   useLayoutEffect(()=>{currentBranch.current=branchId;},[branchId]);
   const mayView=canKey('handover.view');
   useLayoutEffect(()=>{loadSequence.current++;return()=>{loadSequence.current++;};},[branchId,mayView]);
-  const load=useCallback(async()=>{if(!branchId||!mayView)return;const context=branchId,sequence=++loadSequence.current;setError('');try{const result=await api<{storages:Storage[]}>(`/api/cash-storage/pending?branchId=${branchId}`);if(currentBranch.current===context&&loadSequence.current===sequence)setStorages(result.storages);}catch(e){if(currentBranch.current===context&&loadSequence.current===sequence)setError(e instanceof Error?e.message:'تعذر تحميل استلام الكاش');}},[branchId,mayView]);
-  useEffect(()=>{setStorages([]);setSelected('');setCount('');setNote('');setReason('');setOverride(false);void load();},[load]);
+  const load=useCallback(async()=>{if(!branchId||!mayView)return;const context=branchId,sequence=++loadSequence.current;setError('');try{const result=await api<{storages:Storage[]}>(`/api/cash-storage/pending?branchId=${branchId}`);if(currentBranch.current===context&&loadSequence.current===sequence){setStorages(result.storages);setLoaded(true);}}catch(e){if(currentBranch.current===context&&loadSequence.current===sequence)setError(e instanceof Error?e.message:'تعذر تحميل استلام الكاش');}},[branchId,mayView]);
+  useEffect(()=>{setStorages([]);setLoaded(false);setSelected('');setCount('');setNote('');setReason('');setOverride(false);void load();},[load]);
+  const pending:PendingReport=!mayView?0:error?'error':loaded?storages.length:null;
+  useEffect(()=>{onPending?.(pending);},[onPending,pending]);
   if(!mayView)return null;
   const storage=storages.find(s=>s.id===selected)??storages.find(s=>s.receipt?.claimantId===user.id)??storages[0];
   const isClaimant=storage?.receipt?.claimantId===user.id;
@@ -40,8 +45,9 @@ export function OpeningCashPanel({branchId,onAccepted}:{branchId:string;onAccept
       await load();if(action==='ACCEPT'){setCount('');setNote('');setReason('');setOverride(false);onAccepted?.();}
     }catch(e){if(currentBranch.current===context)setError(e instanceof Error?e.message:'تعذر تسجيل الاستلام');}finally{setBusy(false);}
   }
+  if(hideWhenEmpty&&!storage&&!error)return null;
   // Folded away when nothing is waiting, open by itself when a drawer is.
-  return <details className="rounded-xl border p-4" data-testid="opening-cash-panel" open={!!storage||!!error}>
+  return <details id="handover-step-night-cash" className="rounded-xl border p-4" data-testid="opening-cash-panel" open={!!storage||!!error}>
     <summary className="cursor-pointer font-semibold">استلام كاش الدرج من شيفت الليل{!storage&&<span className="ms-2 text-xs font-normal text-muted-foreground">— مفيش كاش مستني استلام</span>}</summary>
     <div className="mt-3 space-y-3"><p className="text-xs text-muted-foreground">عدّ النقدية بنفسك ثم أكد المبلغ الفعلي. استلام الخامات منفصل عن تأكيد الكاش.</p>
     {error&&<p role="alert" className="text-sm text-destructive">{error}</p>}

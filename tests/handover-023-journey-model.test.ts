@@ -52,7 +52,8 @@ test("C. branch custody with a shift already waiting: complete handover leaves t
     { id: "place-receipt", label: "استلام المكان والأجهزة", state: "not-required", detail: null },
   ] });
   const before = buildJourney({ ...base, target: "BRANCH_CUSTODY", unreviewedLines: 0, can: { submit: false, confirmCount: false, accept: true, exception: true }, readiness: waiting });
-  assert.match(before.requiredNow.title, /حوّل العهدة لعهدة الفرع/);
+  assert.match(before.requiredNow.title, /احفظ العهدة في عهدة الفرع/);
+  assert.equal(before.requiredNow.actionLabel, "حفظ في عهدة الفرع");
   assert.equal(stage(before, "opening-verification").state, "pending", "verification waits for the conversion");
   assert.deepEqual(before.readiness.remaining, ["اكتمال تسليم العهدة", "التحقق من العهدة الافتتاحية"]);
 

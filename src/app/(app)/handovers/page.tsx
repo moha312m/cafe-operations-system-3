@@ -10,7 +10,7 @@
 // will open, and sends what a person decided. Every guard stays on the
 // server — nothing here grants anything.
 
-import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { api } from "@/lib/client";
@@ -22,6 +22,9 @@ import { HandoverDetail } from "@/components/handovers/handover-detail";
 import { OpeningVerificationPanel } from "@/components/handovers/opening-verification-panel";
 import { PlaceReceiptPanel } from "@/components/handovers/place-receipt-panel";
 import { CashDeliveriesPanel } from "@/components/handovers/cash-deliveries-panel";
+import { OpeningCashPanel } from "@/components/handovers/opening-cash-panel";
+import { NextStepCard } from "@/components/handovers/next-step-card";
+import type { PendingReport, PendingReports, PendingSource } from "@/components/handovers/next-step-model";
 import {
   HANDOVER_STATUSES,
   HANDOVER_STATUS_LABEL,
@@ -44,6 +47,8 @@ function HandoversWorkspace() {
   const branchId = user.branchId ?? params.get("branchId") ?? "";
   const [status, setStatus] = useState<string>(ANY);
   const [loading, setLoading] = useState(true);
+  // Open handovers of this branch, read from the unfiltered list, so the status filter never hides a waiting step.
+  const [openIds, setOpenIds] = useState<{ branchId: string; ids: string[] | "error" } | null>(null);
   const selectionScope = `${branchId}:${params.toString()}`;
   const [selectionState, setSelectionState] = useState<{scope: string; id: string | null} | null>(null);
   const selection = selectionState?.scope === selectionScope ? selectionState.id : undefined;
@@ -53,6 +58,18 @@ function HandoversWorkspace() {
 
   const loadSequence = useRef(0);
   const allowed = canKey("handover.view");
+
+  // Each panel reports what is waiting; the card turns that into the one step due now.
+  const [reports, setReports] = useState<{ branchId: string; values: PendingReports }>({ branchId, values: {} });
+  const reporters = useMemo(() => {
+    const make = (source: PendingSource) => (report: PendingReport) =>
+      setReports((current) => {
+        const values = current.branchId === branchId ? current.values : {};
+        return values[source] === report && current.branchId === branchId ? current : { branchId, values: { ...values, [source]: report } };
+      });
+    return { cashDeliveries: make("cash-deliveries"), nightCash: make("night-cash"), opening: make("opening"), place: make("place") };
+  }, [branchId]);
+  const pendingReports: PendingReports = reports.branchId === branchId ? reports.values : {};
 
   const load = useCallback(async () => {
     if (!allowed || !branchId) return;
@@ -69,6 +86,7 @@ function HandoversWorkspace() {
       );
       if (sequence !== loadSequence.current) return;
       setHandovers(handovers);
+      if (status === ANY) setOpenIds({ branchId, ids: handovers.filter((row) => row.branchId === branchId && row.status !== "COMPLETED").map((row) => row.id) });
       if (!params.get("handoverId")) {
         const pending = pendingHandover(handovers, branchId);
         if (pending) setSelectionState(previous => previous?.scope === selectionScope ? previous : {scope: selectionScope, id: pending.id});
@@ -77,6 +95,7 @@ function HandoversWorkspace() {
       if (sequence !== loadSequence.current) return;
       toast.error(e instanceof Error ? e.message : "تعذّر تحميل التسليمات");
       setHandovers([]);
+      if (status === ANY) setOpenIds({ branchId, ids: "error" });
     } finally {
       if (sequence === loadSequence.current) setLoading(false);
     }
@@ -110,20 +129,38 @@ function HandoversWorkspace() {
     );
   }
 
+  // Only panels with something waiting are drawn; each one still loads its own list from the server.
   const auxiliary = (
-    <div className="grid items-start gap-3 lg:grid-cols-3" data-testid="handover-auxiliary-panels">
-        <CashDeliveriesPanel key={`deliveries:${branchId}:${selectedId ?? "list"}`} onChanged={load} />
-        <OpeningVerificationPanel key={`opening:${branchId}:${selectedId ?? "list"}`} branchId={branchId} />
-        <PlaceReceiptPanel key={`place:${branchId}:${selectedId ?? "list"}`} branchId={branchId} />
+    <div className="grid items-start gap-3 lg:grid-cols-2" data-testid="handover-auxiliary-panels">
+        <OpeningCashPanel key={`cash:${branchId}:${selectedId ?? "list"}`} branchId={branchId} hideWhenEmpty onPending={reporters.nightCash} />
+        <OpeningVerificationPanel key={`opening:${branchId}:${selectedId ?? "list"}`} branchId={branchId} includeCash={false} hideWhenEmpty onPending={reporters.opening} />
+        <PlaceReceiptPanel key={`place:${branchId}:${selectedId ?? "list"}`} branchId={branchId} hideWhenEmpty onPending={reporters.place} />
+        <CashDeliveriesPanel key={`deliveries:${branchId}:${selectedId ?? "list"}`} onChanged={load} hideWhenEmpty onPending={reporters.cashDeliveries} />
     </div>
   );
+  const openReport = openIds?.branchId === branchId ? openIds.ids : null;
+  const openHandoverIds = Array.isArray(openReport) ? openReport : null;
+  const openStep = (source: PendingSource) => {
+    if (source !== "handover") return false;
+    if (openHandoverIds?.length === 1) { setSelectedId(openHandoverIds[0]); return true; }
+    document.getElementById("handover-history")?.scrollIntoView({ block: "start", behavior: "smooth" });
+    return true;
+  };
 
   return (
     <main className="space-y-4 p-4 sm:p-6">
       <header className="flex flex-wrap items-center gap-3 [&_select]:max-w-[calc(100vw-2rem)]">
         <BranchScopeSelect value={branchId} onChange={selectBranch} />
         <h1 className="text-lg font-semibold">تسليم الشيفت</h1>
-        <div className="ms-auto">
+      </header>
+
+      {!selectedId && branchId && <NextStepCard reports={{ ...pendingReports, handover: openReport === "error" ? "error" : openHandoverIds?.length ?? null }} sources={["handover", "night-cash", "opening", "place", "cash-deliveries"]} onOpen={openStep} />}
+      {!selectedId && auxiliary}
+
+      {!selectedId && <section id="handover-history" className="space-y-2" aria-label="سجل التسليمات">
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="text-sm font-semibold text-muted-foreground">سجل التسليمات</h2>
+          <div className="ms-auto">
           <Select value={status} onValueChange={(v) => setStatus(v ?? ANY)}>
             <SelectTrigger className="w-56" aria-label="الحالة">
               <SelectValue>{status === ANY ? "كل الحالات" : HANDOVER_STATUS_LABEL[status as keyof typeof HANDOVER_STATUS_LABEL]}</SelectValue>
@@ -137,11 +174,9 @@ function HandoversWorkspace() {
               ))}
             </SelectContent>
           </Select>
+          </div>
         </div>
-      </header>
-
-
-      {!selectedId && (loading ? (
+      {loading ? (
         <div className="h-40 animate-pulse rounded-xl border border-dashed bg-muted/30" />
       ) : (
         <HandoverList
@@ -151,7 +186,8 @@ function HandoversWorkspace() {
           viewerUserId={user.id}
           canReviewDraft={canKey("stock_count.confirm") && canKey("stock_count.view")}
         />
-      ))}
+      )}
+      </section>}
 
 
 
@@ -168,9 +204,8 @@ function HandoversWorkspace() {
         onClose={() => setSelectedId(null)}
         onChanged={load}
       />
-      {/* With a handover open, these panels live inside its tabs (cash, inventory, place); the same panels stay
-          here for the list and as the fallback when the open handover cannot be read. */}
-      {!selectedId && auxiliary}
+      {/* With a handover open, these panels live inside its tabs (cash, inventory, place); on the list they sit
+          under the next-step card, and they are also the fallback when the open handover cannot be read. */}
     </main>
   );
 }

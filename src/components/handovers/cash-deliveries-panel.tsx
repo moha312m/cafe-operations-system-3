@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import type { PendingReport } from "./next-step-model";
 
 export type AwaitingDelivery = {
   id: string;
@@ -34,9 +35,14 @@ export type AwaitingDelivery = {
 export function CashDeliveriesPanel({
   onChanged,
   currency: propCurrency,
+  hideWhenEmpty = false,
+  onPending,
 }: {
   onChanged?: () => void;
   currency?: string;
+  /** On the /handovers list: render nothing unless a delivery is waiting (or loading failed). */
+  hideWhenEmpty?: boolean;
+  onPending?: (report: PendingReport) => void;
 }) {
   const { user, cafe } = useApp();
   const currency = propCurrency ?? cafe?.currency ?? "EGP";
@@ -154,6 +160,10 @@ export function CashDeliveriesPanel({
     }
   }
 
+  const pending: PendingReport = loading ? null : error ? "error" : deliveries.length;
+  useEffect(() => { onPending?.(pending); }, [onPending, pending]);
+  if (hideWhenEmpty && !error && deliveries.length === 0) return null;
+
   const fmtDate = (iso: string) => {
     try {
       return new Intl.DateTimeFormat("ar-EG", { timeZone: "Africa/Cairo", dateStyle: "short", timeStyle: "short" }).format(new Date(iso));
@@ -164,6 +174,7 @@ export function CashDeliveriesPanel({
 
   return (
     <details
+      id="handover-step-cash-deliveries"
       className="rounded-xl border p-4 text-sm"
       data-testid="cash-deliveries-panel"
       open={deliveries.length > 0 || !!error}

@@ -70,13 +70,20 @@ describe("UI-008 simplified handover screen", () => {
     assert.match(overview, /<details className="rounded-lg border" open=\{tenderDifference\}>/);
   });
 
-  test("night cash, opening verification and place panels fold away unless something is waiting", () => {
+  test("night cash, opening verification and place panels fold away unless something is waiting, and leave the /handovers list when empty", () => {
     const cash = source("src/components/handovers/opening-cash-panel.tsx");
     const opening = source("src/components/handovers/opening-verification-panel.tsx");
     const place = source("src/components/handovers/place-receipt-panel.tsx");
-    assert.match(cash, /<details className="rounded-xl border p-4" data-testid="opening-cash-panel" open=\{!!storage\|\|!!error\}>/);
-    assert.match(opening, /<details className="rounded-xl border p-4" data-testid="opening-verification-panel" open=\{shifts\.length>0\|\|!!loadError\}>/);
-    assert.match(place, /<details className="rounded-xl border p-4" data-testid="place-receipt-panel" open=\{pendingPlace > 0 \|\| !!detail \|\| !!error\}>/);
+    const page = source("src/app/(app)/handovers/page.tsx");
+    assert.match(cash, /<details id="handover-step-night-cash" className="rounded-xl border p-4" data-testid="opening-cash-panel" open=\{!!storage\|\|!!error\}>/);
+    assert.match(cash, /if\(hideWhenEmpty&&!storage&&!error\)return null;/);
+    assert.match(opening, /<details id="handover-step-opening" className="rounded-xl border p-4" data-testid="opening-verification-panel" open=\{shifts\.length>0\|\|!!loadError\}>/);
+    assert.match(opening, /if\(hideWhenEmpty&&!shifts\.length&&!loadError\)return cash;/);
+    assert.match(place, /<details id="handover-step-place" className="rounded-xl border p-4" data-testid="place-receipt-panel" open=\{pendingPlace > 0 \|\| !!detail \|\| !!error\}>/);
+    assert.match(place, /if \(hideWhenEmpty && pendingPlace === 0 && !detail && !error\) return null;/);
     assert.match(place, /const pendingPlace = rows\.filter\(\(row\) => row\.status === "PENDING"\)\.length/);
+    for (const panel of ["OpeningCashPanel", "OpeningVerificationPanel", "PlaceReceiptPanel", "CashDeliveriesPanel"]) {
+      assert.match(page, new RegExp(`<${panel} [^>]*hideWhenEmpty onPending=\\{reporters\\.`), `${panel} hides when empty on the list`);
+    }
   });
 });

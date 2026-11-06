@@ -482,7 +482,12 @@ function DoneStep({ flow, currency, outcome }: { flow: ClosedFlow; currency: str
   const router = useRouter();
   const shift = flow.shift;
   const handover = flow.handover;
-  const waiting = shift.status === "AWAITING_HANDOVER" && handover && ["OUTGOING_SUBMITTED", "INCOMING_REVIEW"].includes(handover.status);
+  const submitted = shift.status === "AWAITING_HANDOVER" && handover && ["OUTGOING_SUBMITTED", "INCOMING_REVIEW"].includes(handover.status);
+  // Nobody arrives after a branch-custody night: the next act is the manager's «حفظ في عهدة الفرع», not handing the device over.
+  const branchNight = !!submitted && handover?.target === "BRANCH_CUSTODY";
+  const waiting = submitted && !branchNight;
+  const maySaveToBranch = canKey("handover.accept") && canKey("handover.exception");
+  const handoverHref = handover ? `/handovers?branchId=${encodeURIComponent(flow.branch.id)}&handoverId=${encodeURIComponent(handover.id)}` : null;
   const decision = shift.materialsDecision;
   const notDue = decision ? !decision.due : !!outcome?.notDue;
   const nextDueAt = decision?.nextDueAt ?? outcome?.notDue?.nextDueAt ?? null;
@@ -491,7 +496,7 @@ function DoneStep({ flow, currency, outcome }: { flow: ClosedFlow; currency: str
   const hasDifferences = (outcome?.recordedDifferences ?? 0) > 0 || moneyDifference;
   async function handOver() {
     await fetch("/api/auth/logout", { method: "POST" });
-    const next = handover ? `/handovers?branchId=${encodeURIComponent(flow.branch.id)}&handoverId=${encodeURIComponent(handover.id)}` : "/pos";
+    const next = handoverHref ?? "/pos";
     router.push(`/login?next=${encodeURIComponent(next)}`);
     router.refresh();
   }
@@ -499,6 +504,7 @@ function DoneStep({ flow, currency, outcome }: { flow: ClosedFlow; currency: str
     <p className="text-4xl" aria-hidden>✓</p>
     <h1 className="text-xl font-bold">تم تسجيل تسليم شيفتك</h1>
     {waiting && <p className="text-sm text-muted-foreground">بانتظار استلام الموظف الجاي من حسابه.</p>}
+    {branchNight && <p className="text-sm text-muted-foreground" data-testid="close-branch-night">باقي خطوة واحدة: {maySaveToBranch ? "اضغط «حفظ في عهدة الفرع»" : "المدير يضغط «حفظ في عهدة الفرع» من صفحة التسليم"}. شيفت الصبح بيجرد ويتحقق قبل البيع.</p>}
     {notDue && <p className="text-sm" data-testid="materials-not-due">جرد الخامات غير مستحق حسب الجدول{nextDueAt ? ` · الجرد الجاي: ${dateTime(nextDueAt)}` : ""}.</p>}
     {hasDifferences && canKey("shifts.view_reports") && <p className="text-sm">الفروق المسجلة موجودة في <Link className="underline" href={`/reports/shift/${shift.id}`} target="_blank">تقرير الشيفت</Link>.</p>}
     {hasDifferences && !canKey("shifts.view_reports") && <p className="text-sm text-muted-foreground">الفروق المسجلة متاحة للمالك في تقرير الشيفت.</p>}
@@ -522,6 +528,7 @@ function DoneStep({ flow, currency, outcome }: { flow: ClosedFlow; currency: str
     </details>
     <div className="flex flex-col gap-2 sm:flex-row sm:justify-center">
       {waiting && <Button className="h-12" onClick={() => void handOver()} data-testid="close-hand-device">تسليم الجهاز للموظف الجاي</Button>}
+      {branchNight && maySaveToBranch && handoverHref && <Link href={`${handoverHref}#inventory`} className={buttonVariants({ className: "h-12" })} data-testid="close-save-to-branch">حفظ في عهدة الفرع</Link>}
       <Link href="/pos" className={buttonVariants({ variant: "outline", className: "h-12" })}>رجوع للكاشير</Link>
     </div>
   </section>;
