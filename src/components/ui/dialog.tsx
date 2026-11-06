@@ -105,7 +105,7 @@ function DialogContent({
             <XIcon
             />
             <span className="cashier-dialog-back hidden">رجوع</span>
-            <span className="sr-only">Close</span>
+            <span className="sr-only">إغلاق</span>
           </DialogPrimitive.Close>
         )}
       </DialogPrimitive.Popup>

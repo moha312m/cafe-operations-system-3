@@ -285,7 +285,7 @@ export default function RecipeReviewPage() {
                 <TableHead>المنتج / الحجم</TableHead>
                 <TableHead>سعر البيع</TableHead>
                 <TableHead>الحالة</TableHead>
-                <TableHead>COGS</TableHead>
+                <TableHead>تكلفة الخامات</TableHead>
                 <TableHead>الربح المتوقع</TableHead>
                 <TableHead>المارجن</TableHead>
                 <TableHead className="min-w-64">السبب / مصدر الوصفة</TableHead>
