@@ -67,12 +67,14 @@ describe("HND-UX-005 screens", () => {
   });
 
   test("3. branch custody: one press signs each counted line, then converts with its own retry key", () => {
-    const panel = source("src/components/handovers/branch-signing-panel.tsx");
-    const signAt = panel.indexOf("/acknowledge`, { method: \"POST\"");
-    const convertAt = panel.indexOf("/to-branch-custody`, {");
+    const save = source("src/components/handovers/branch-custody-save.ts");
+    const signAt = save.indexOf("/acknowledge`, { method: \"POST\"");
+    const convertAt = save.indexOf("/to-branch-custody`, {");
     assert.ok(signAt > 0 && convertAt > signAt, "lines are signed through the existing per-line route before the conversion");
+    assert.match(save, /handoverIntents\.keyFor\(handoverId, "branch", intent\)/);
+    assert.match(save, /if \(!ids\.includes\(id\)\) done\+\+; else failed\.push/, "a lost answer is checked against the server before it counts as a failure");
+    const panel = source("src/components/handovers/branch-signing-panel.tsx");
     assert.match(panel, /const signed = pendingIds\.length === 0 \? true : await signAll\(\);\n\s*if \(signed\) await convert\(\);/, "a half-signed batch never converts");
-    assert.match(panel, /handoverIntents\.keyFor\(handoverId, "branch", intent\)/);
     assert.match(panel, /const omissionHalf = \(omissionReason\.trim\(\) === ""\) !== \(omissionNote\.trim\(\) === ""\);/, "the omission reason and note still travel as a pair");
     assert.match(panel, /data-testid="branch-custody-sign-all"[\s\S]*حفظ في عهدة الفرع/);
     const bar = source("src/components/handovers/handover-action-bar.tsx");
@@ -80,13 +82,14 @@ describe("HND-UX-005 screens", () => {
     assert.match(bar, /data-testid="handover-request-recount"/, "asking for a recount stays available");
   });
 
-  test("4. after a branch-custody night the Done screen leads to «حفظ في عهدة الفرع», never to handing the device over", () => {
+  test("4. after a branch-custody night the Done screen saves a manager's close to branch custody, never hands the device over", () => {
     const close = source("src/components/pos/shift-close-flow.tsx");
     assert.match(close, /const branchNight = !!submitted && handover\?\.target === "BRANCH_CUSTODY";/);
     assert.match(close, /const waiting = submitted && !branchNight;/);
     assert.match(close, /data-testid="close-hand-device"/);
-    assert.match(close, /\{branchNight && maySaveToBranch && handoverHref && <Link href=\{`\$\{handoverHref\}#inventory`\}/);
     assert.match(close, /const maySaveToBranch = canKey\("handover\.accept"\) && canKey\("handover\.exception"\);/);
+    assert.match(close, /\{branchNight && maySaveToBranch && handover && handoverHref && <AutoBranchSave /);
+    assert.match(close, /data-testid="close-branch-night"/, "without the keys the close says the manager finishes it");
   });
 
   test("5. opening verification: one waiting shift and its latest count are chosen without asking; verify still needs a CONFIRMED count", () => {

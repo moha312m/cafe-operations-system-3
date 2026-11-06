@@ -44,6 +44,14 @@ export class CountEntryQueue {
     return this.running.size === 0 && [...this.entries.values()].every(entry =>
       (entry.status === "saved" || (!requireComplete && entry.status === "empty")) && !entry.failedAttempt && !entry.conflict);
   }
+  /** Lines whose typed quantity is not saved yet (a conflict waits for its own review). */
+  unsaved(): string[] {
+    return [...this.entries].filter(([, entry]) => !entry.conflict && (entry.status === "dirty" || (entry.status === "failed" && !!entry.failedAttempt))).map(([id]) => id);
+  }
+  /** Saves every unsaved line one after another: the server runs one write per account at a time. */
+  async saveAll(): Promise<void> {
+    for (const id of this.unsaved()) await this.save(id);
+  }
   save(id: string): Promise<void> {
     const entry = this.entries.get(id);
     if (!entry) return Promise.resolve();

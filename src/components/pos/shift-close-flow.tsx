@@ -22,6 +22,7 @@ import { CashDenominationCalculator } from "@/components/pos/cash-denomination-c
 import { TouchNumberInput } from "@/components/pos/touch-number-input";
 import { CountLineRow, type CountLine } from "@/components/stock-counts/count-line-row";
 import { CountEntryQueue } from "@/components/stock-counts/count-entry-queue";
+import { convertedMessage, convertToBranchCustody, signPendingLines } from "@/components/handovers/branch-custody-save";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -239,7 +240,7 @@ function MoneyStep({ flow, currency, onCommitted }: {
             <p className="text-xs text-muted-foreground leading-relaxed">
               {branchCustody ? (
                 <span className="text-amber-800 dark:text-amber-300 font-medium block">
-                  ⚠️ مفعل: إغلاق نهائي للمبيت وعزل العهدة للفرع. يتطلب اعتماد مدير الفرع وتأكيد سطور الجرد بالزر الإلكتروني. (إذا كان هناك شيفت قادم، اترك الخيار غير محدد).
+                  ⚠️ مفعل: إغلاق نهائي للمبيت وعزل العهدة للفرع. {canKey("handover.accept") ? "بعد «إغلاق» سطور الجرد المعدودة هتتوقّع باسم الفرع باسمك والعهدة هتتحفظ في عهدة الفرع تلقائيًا." : "بعد «إغلاق» المدير يحفظها في عهدة الفرع من صفحة التسليم."} (إذا كان هناك شيفت قادم، اترك الخيار غير محدد).
                 </span>
               ) : (
                 <span className="block">
@@ -477,6 +478,35 @@ function MoneySummary({ shift, currency }: { shift: ClosedShift; currency: strin
 }
 
 // ── Done ──────────────────────────────────────────────────────────────────
+// A manager's own branch-custody close is saved to branch custody right here: the same per-line
+// signatures and conversion as «حفظ في عهدة الفرع» on the handover screen, run once on arrival. When
+// it cannot finish (a required item needs a manager's reason, or a line failed), what was signed stays
+// signed and the handover screen finishes it.
+function AutoBranchSave({ handoverId, href }: { handoverId: string; href: string }) {
+  const [state, setState] = useState<{ phase: "running" } | { phase: "saved"; signed: number; message: string } | { phase: "stopped"; message: string }>({ phase: "running" });
+  const started = useRef(false);
+  useEffect(() => {
+    if (started.current) return;
+    started.current = true;
+    void (async () => {
+      const signed = await signPendingLines(handoverId);
+      if (signed.failed.length) {
+        setState({ phase: "stopped", message: `اتوقّع ${signed.done} من ${signed.total} سطر، وفاضل ${signed.failed.length}: ${signed.failed.map((f) => f.name).join("، ")}.` });
+        return;
+      }
+      const res = await convertToBranchCustody(handoverId);
+      setState(res.ok ? { phase: "saved", signed: signed.done, message: convertedMessage(res) }
+        : { phase: "stopped", message: res.omissionRequired ? "فيه صنف مطلوب ماتعدّش — الحفظ محتاج سبب مدير ومبرر مكتوب." : res.message });
+    })();
+  }, [handoverId]);
+  if (state.phase === "running") return <p role="status" className="text-sm text-muted-foreground" data-testid="close-branch-saving">جارٍ الحفظ في عهدة الفرع باسمك…</p>;
+  if (state.phase === "saved") return <p role="status" className="text-sm" data-testid="close-branch-saved">✓ {state.message}{state.signed > 0 ? ` · اتوقّع ${state.signed} سطر جرد باسم الفرع باسمك` : ""}. شيفت الصبح بيجرد ويتحقق قبل البيع.</p>;
+  return <div role="alert" className="space-y-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 text-sm" data-testid="close-branch-stopped">
+    <p>الحفظ في عهدة الفرع ما خلصش: {state.message} اللي اتوقّع محفوظ.</p>
+    <Link href={`${href}#inventory`} className={buttonVariants({ className: "h-11" })} data-testid="close-save-to-branch">كمّل «حفظ في عهدة الفرع»</Link>
+  </div>;
+}
+
 function DoneStep({ flow, currency, outcome }: { flow: ClosedFlow; currency: string; outcome: { notDue?: { nextDueAt: string | null }; recordedDifferences?: number } | null }) {
   const { canKey } = useApp();
   const router = useRouter();
@@ -504,7 +534,8 @@ function DoneStep({ flow, currency, outcome }: { flow: ClosedFlow; currency: str
     <p className="text-4xl" aria-hidden>✓</p>
     <h1 className="text-xl font-bold">تم تسجيل تسليم شيفتك</h1>
     {waiting && <p className="text-sm text-muted-foreground">بانتظار استلام الموظف الجاي من حسابه.</p>}
-    {branchNight && <p className="text-sm text-muted-foreground" data-testid="close-branch-night">باقي خطوة واحدة: {maySaveToBranch ? "اضغط «حفظ في عهدة الفرع»" : "المدير يضغط «حفظ في عهدة الفرع» من صفحة التسليم"}. شيفت الصبح بيجرد ويتحقق قبل البيع.</p>}
+    {branchNight && maySaveToBranch && handover && handoverHref && <AutoBranchSave handoverId={handover.id} href={handoverHref} />}
+    {branchNight && !maySaveToBranch && <p className="text-sm text-muted-foreground" data-testid="close-branch-night">باقي خطوة واحدة: المدير يضغط «حفظ في عهدة الفرع» من صفحة التسليم. شيفت الصبح بيجرد ويتحقق قبل البيع.</p>}
     {notDue && <p className="text-sm" data-testid="materials-not-due">جرد الخامات غير مستحق حسب الجدول{nextDueAt ? ` · الجرد الجاي: ${dateTime(nextDueAt)}` : ""}.</p>}
     {hasDifferences && canKey("shifts.view_reports") && <p className="text-sm">الفروق المسجلة موجودة في <Link className="underline" href={`/reports/shift/${shift.id}`} target="_blank">تقرير الشيفت</Link>.</p>}
     {hasDifferences && !canKey("shifts.view_reports") && <p className="text-sm text-muted-foreground">الفروق المسجلة متاحة للمالك في تقرير الشيفت.</p>}
@@ -528,7 +559,6 @@ function DoneStep({ flow, currency, outcome }: { flow: ClosedFlow; currency: str
     </details>
     <div className="flex flex-col gap-2 sm:flex-row sm:justify-center">
       {waiting && <Button className="h-12" onClick={() => void handOver()} data-testid="close-hand-device">تسليم الجهاز للموظف الجاي</Button>}
-      {branchNight && maySaveToBranch && handoverHref && <Link href={`${handoverHref}#inventory`} className={buttonVariants({ className: "h-12" })} data-testid="close-save-to-branch">حفظ في عهدة الفرع</Link>}
       <Link href="/pos" className={buttonVariants({ variant: "outline", className: "h-12" })}>رجوع للكاشير</Link>
     </div>
   </section>;

@@ -2,12 +2,13 @@
 
 import Link from "next/link";
 import { mayExecuteExpense } from "@/lib/expense-rules";
-import { useCallback, useEffect, useState } from "react";
-import { api, money } from "@/lib/client";
+import { useCallback, useState } from "react";
+import { money } from "@/lib/client";
 import { t } from "@/lib/i18n";
 import { useApp } from "@/components/app-shell";
 import { ShiftControls, type Shift } from "@/components/pos/shift-controls";
 import { PageHeader, StatCard } from "@/components/cafe/ui";
+import { BranchScopeSelect } from "@/components/stock-counts/branch-scope-select";
 
 // Single source of truth: ShiftControls fetches the active shift once and
 // hands the full object up via onActiveChange. The page derives its stat
@@ -22,13 +23,12 @@ export default function CurrentShiftPage() {
   const [shift, setShift] = useState<Shift | null>(null);
   const [loaded, setLoaded] = useState(false);
 
-  // Only cafe owners may resolve a branch without an employee assignment.
-  useEffect(() => {
-    if (!canChooseBranch) return;
-    api<{ branches: { id: string }[] }>("/api/branches")
-      .then((r) => r.branches[0] && setBranchId(r.branches[0].id))
-      .catch(() => {});
-  }, [canChooseBranch]);
+  // Only cafe owners may pick a branch without an employee assignment; the picker starts on the first active one.
+  const selectBranch = useCallback((id: string) => {
+    setBranchId(id);
+    setShift(null);
+    setLoaded(false);
+  }, []);
 
   // Stable callback — never changes identity, so ShiftControls' internal
   // effect runs only when branchId changes (not on every render).
@@ -58,6 +58,7 @@ export default function CurrentShiftPage() {
   return (
     <div className="mx-auto max-w-5xl">
       <PageHeader title={t.shifts.current} subtitle={t.shifts.details} />
+      {canChooseBranch && <div className="mb-3" data-testid="current-shift-branch"><BranchScopeSelect value={selectedBranchId} onChange={selectBranch} /></div>}
       {shift && mayExecuteExpense(user.role, new Set(permKeys)) && canKey("expenses.view") && <Link href="/expenses" className="mb-3 inline-block rounded-lg border px-4 py-2">تسجيل مصروف من الدرج</Link>}
 
       {!canChooseBranch && !branchId ? (

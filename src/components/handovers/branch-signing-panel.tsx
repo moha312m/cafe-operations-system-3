@@ -3,35 +3,23 @@
 // «حفظ في عهدة الفرع» — one press that finishes a BRANCH_CUSTODY handover.
 //
 // Nobody arrives on this path, so a manager with the exception key signs each counted line in the
-// branch's name and then converts the handover to branch custody. Both acts are unchanged and stay
-// separate on the server: the signature is the existing per-line acknowledgement "signed for without
-// counting" (it keeps the counted quantities, is not an independent count, and carries the signing
-// user's name and time), and the conversion is the existing `/to-branch-custody` call with its own
-// retry key. The screen only runs them one after the other under a single confirmation.
-//
-// The signing batch is sequential and never trusts this screen's memory: before it starts, after a
-// failure, and after a lost response it reloads the authoritative acknowledgements, so a batch that
-// half-saved is shown as half-saved, nothing is converted, and the next press continues from what is
-// left. When the server asks for a manager's reason for an uncounted required item, the reason
-// fields appear and the press is repeated with them.
+// branch's name and then converts the handover to branch custody, both through `branch-custody-save`
+// (the same acts the close's Done screen runs for a manager's own close). When the server asks for a
+// manager's reason for an uncounted required item, the reason fields appear and the press is repeated
+// with them.
 import { useState } from "react";
 import { toast } from "sonner";
-import { api } from "@/lib/client";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ReasonCodeSelect } from "@/components/stock-counts/reason-code-select";
 import { ConfirmHandoverAction } from "./detail-frame";
-import { handoverIntents } from "./handover-intent";
 import { pendingSignatureLineIds } from "./handover-journey";
+import { convertedMessage, convertToBranchCustody, signPendingLines } from "./branch-custody-save";
 
 type Line = { id: string; disposition: string; inventoryItem: { name: string } };
-type Fresh = { count: { lines: Line[] } | null; workflow: { acknowledgements: { stockCountLineId: string }[] } };
 type Progress = { phase: "idle" | "running" | "stopped" | "done"; total: number; done: number; failed: { name: string; message: string }[] };
 
-const ALREADY_SIGNED = /متسجل استلامه قبل كده/;
-/** The server's refusal when a required item was not counted and no manager reason came with the conversion. */
-const OMISSION_REASON_REQUIRED = /لازم سبب مدير/;
 const EMPTY: Progress = { phase: "idle", total: 0, done: 0, failed: [] };
 
 export function BranchSigningPanel({ handoverId, lines, acknowledgements, signedAt, actorName, onChanged }: {
@@ -57,71 +45,24 @@ export function BranchSigningPanel({ handoverId, lines, acknowledgements, signed
   const omissionHalf = (omissionReason.trim() === "") !== (omissionNote.trim() === "");
   const omissionMissing = omissionAsked && (omissionReason.trim() === "" || omissionNote.trim() === "");
 
-  /** The authoritative list of what still needs a signature, read from the server. */
-  async function freshPending(): Promise<{ ids: string[]; names: Map<string, string> }> {
-    const { handover } = await api<{ handover: Fresh }>(`/api/handovers/${handoverId}`);
-    const fresh = handover.count?.lines ?? [];
-    return { ids: pendingSignatureLineIds(fresh, handover.workflow.acknowledgements), names: new Map(fresh.map((l) => [l.id, l.inventoryItem.name])) };
-  }
-
   /** Signs what is still unsigned; true only when nothing is left unsigned. */
   async function signAll(): Promise<boolean> {
     setProgress({ phase: "running", total: pendingIds.length, done: 0, failed: [] });
-    const failed: Progress["failed"] = [];
-    let done = 0, total = pendingIds.length;
-    try {
-      // Always start from what the server says is unsigned, not from what this screen last rendered.
-      let { ids, names } = await freshPending();
-      total = ids.length;
-      setProgress({ phase: "running", total, done: 0, failed: [] });
-      for (const id of ids) {
-        const label = names.get(id) ?? nameOf(id);
-        try {
-          await api(`/api/handovers/${handoverId}/acknowledge`, { method: "POST", body: { stockCountLineId: id } });
-          done++;
-        } catch (e) {
-          const message = e instanceof Error ? e.message : "تعذّر التوقيع";
-          if (ALREADY_SIGNED.test(message)) { done++; }
-          else {
-            // The answer may have been lost after the server saved it: ask the server before calling it a failure.
-            try {
-              ({ ids, names } = await freshPending());
-              if (!ids.includes(id)) done++; else failed.push({ name: label, message });
-            } catch { failed.push({ name: label, message: `${message} (تعذّر التأكد من حالة السطر)` }); }
-          }
-        }
-        setProgress({ phase: "running", total, done, failed: [...failed] });
-      }
-    } catch (e) {
-      failed.push({ name: "تحميل الحالة", message: e instanceof Error ? e.message : "تعذّر تحميل حالة التوقيعات" });
-    }
+    const { total, done, failed } = await signPendingLines(handoverId, (p) => setProgress({ phase: "running", ...p }));
     setProgress({ phase: failed.length ? "stopped" : "done", total, done, failed });
     if (failed.length) toast.warning(`اتوقّع ${done} من ${total} سطر. فاضل ${failed.length} محتاج متابعة — اللي اتوقّع محفوظ، والعهدة لسه ما اتحوّلتش.`);
     return failed.length === 0;
   }
 
   async function convert() {
-    const authorised = omissionReason.trim() !== "" && omissionNote.trim() !== "";
-    const intent = { omissionReasonCodeId: authorised ? omissionReason.trim() : undefined, omissionNote: authorised ? omissionNote.trim() : undefined };
     setConverting(true);
-    try {
-      const res = await api<{ alreadyAccepted?: boolean; redecidedShiftIds?: string[] }>(`/api/handovers/${handoverId}/to-branch-custody`, {
-        method: "POST",
-        body: { idempotencyKey: handoverIntents.keyFor(handoverId, "branch", intent), ...intent },
-      });
-      handoverIntents.done(handoverId, "branch");
-      const carried = res.redecidedShiftIds?.length ?? 0;
-      toast.success(res.alreadyAccepted ? "العهدة كانت اتحفظت في عهدة الفرع قبل كده — نفس النتيجة بدون تكرار"
-        : carried > 0 ? `اتحفظت العهدة في عهدة الفرع — ${carried} شيفت مستني انتقل للتحقق من العهدة الافتتاحية` : "اتحفظت العهدة في عهدة الفرع");
-    } catch (e) {
-      const message = e instanceof Error ? e.message : "تعذّر الحفظ في عهدة الفرع";
-      if (OMISSION_REASON_REQUIRED.test(message)) {
-        setOmissionAsked(true);
-        toast.warning("فيه صنف مطلوب ماتعدّش — اكتب سبب المدير والمبرر وبعدين اضغط الحفظ تاني.");
-      } else toast.error(message);
-    } finally {
-      setConverting(false);
-    }
+    const res = await convertToBranchCustody(handoverId, { reasonCodeId: omissionReason, note: omissionNote });
+    setConverting(false);
+    if (res.ok) toast.success(convertedMessage(res));
+    else if (res.omissionRequired) {
+      setOmissionAsked(true);
+      toast.warning("فيه صنف مطلوب ماتعدّش — اكتب سبب المدير والمبرر وبعدين اضغط الحفظ تاني.");
+    } else toast.error(res.message);
   }
 
   async function run() {

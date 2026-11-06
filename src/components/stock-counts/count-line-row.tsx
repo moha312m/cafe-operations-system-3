@@ -1,6 +1,6 @@
 "use client";
 
-import { type CountEntry, validCountQuantity } from "./count-entry-queue";
+import { type CountEntry } from "./count-entry-queue";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { TableCell, TableRow } from "@/components/ui/table";
@@ -59,9 +59,9 @@ export function CountLineRow({ line, sessionStatus, blind, handover = false, can
     aria-invalid={entry.status === "failed"}
     aria-label={`الكمية المعدودة — ${line.inventoryItem.name}`}
     onChange={(e) => onDraft(line.id, e.target.value)}
-    onBlur={() => { if (handover && entry.status !== "saved" && entry.status !== "empty") onSave(line.id); }}
+    onBlur={() => { if (entry.status !== "saved" && entry.status !== "empty") onSave(line.id); }}
     onKeyDown={(e) => {
-      if (handover && e.key === "Enter") {
+      if (e.key === "Enter") {
         e.preventDefault(); onSave(line.id);
         const inputs = Array.from(e.currentTarget.closest("table")?.querySelectorAll<HTMLInputElement>('input[inputmode="decimal"]') ?? []);
         inputs[inputs.indexOf(e.currentTarget) + 1]?.focus();
@@ -93,7 +93,6 @@ export function CountLineRow({ line, sessionStatus, blind, handover = false, can
     <TableCell><div className="flex flex-wrap items-center justify-end gap-2">
       {captureOpen && !terminal && can("stock_count.submit") && <>
         {quantityInput}
-        <Button size="sm" variant="outline" disabled={busy || entry.status === "saving" || !validCountQuantity(entry.value)} onClick={() => onSave(line.id)} data-testid="count-line-capture">تسجيل</Button>
         {savingStatus}
       </>}
       {disputed && can("stock_count.recount") && <Button size="sm" variant="outline" disabled={busy} onClick={() => onAct("recount", line)} data-testid="count-line-recount">إعادة عد</Button>}

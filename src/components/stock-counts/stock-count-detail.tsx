@@ -157,6 +157,18 @@ export function StockCountDetail({
     if (!inFlight.current) void queue.save(lineId);
   }
 
+  /** One press: save every typed quantity, then submit — only when every save landed. */
+  async function saveThenSubmit() {
+    if (inFlight.current) return;
+    await queue.saveAll();
+    if (!queue.canSubmit(!!isHandover)) {
+      const failed = queue.unsaved().length > 0 || !!detail?.lines.some((l) => queue.get(l.id)?.status === "failed");
+      toast.error(failed ? "فيه كميات ما اتحفظتش — راجع السطور المعلّمة «فشل الحفظ» وبعدين اضغط تاني." : "فيه أصناف لسه ماتعدّتش — اكتب الكمية لكل صنف (صفر لو خلصان) قبل الإنهاء.");
+      return;
+    }
+    if (isHandover) void submit(); else setConfirmation("submit");
+  }
+
   async function submit() {
     if (!detail) return;
     if (inFlight.current || !queue.canSubmit(detail.accountabilityContext === "HANDOVER")) return;
@@ -257,7 +269,9 @@ export function StockCountDetail({
   const needsReason = pending?.kind !== "recount";
   const isHandover = detail?.accountabilityContext === "HANDOVER";
   const compactCapture = isHandover && !!detail && ["DRAFT", "IN_PROGRESS"].includes(detail.status);
-  const captureBlocked = !queue.canSubmit(!!isHandover);
+  // Typed quantities that are not saved yet do not block the submit: it saves them first.
+  const unsaved = queue.unsaved().length;
+  const captureBlocked = unsaved === 0 && !queue.canSubmit(!!isHandover);
   const sortedLines = [...(detail?.lines ?? [])].sort((a, b) => {
     const priority = (line: CountLine) => line.countedQuantity === null ? 0 : line.varianceQuantity != null && Number(line.varianceQuantity) !== 0 ? 1 : 2;
     return compactCapture ? 0 : priority(a) - priority(b);
@@ -290,7 +304,7 @@ export function StockCountDetail({
                       size="sm"
                       variant="outline"
                       disabled={busy || captureBlocked}
-                      onClick={() => { if (queue.canSubmit(!!isHandover)) { if (isHandover) void submit(); else setConfirmation("submit"); } }}
+                      onClick={() => void saveThenSubmit()}
                       data-testid="count-submit"
                     >
                       {isHandover ? "إنهاء العد والتحقق" : "تسليم الجرد"}
@@ -311,6 +325,7 @@ export function StockCountDetail({
 
               {isHandover && detail.systemValidated && <p role="status" className={`rounded-lg border p-3 ${TONE_SURFACE.sage}`}>الكميات متطابقة — تحقّق النظام من هذا الإصدار دون اعتماد مدير.</p>}
               {isHandover && CONFIRMABLE.includes(detail.status) && <p role="status" className="rounded-lg border p-3">النواقص والفروق ظاهرة أولًا. يعتمد الفروق مسؤول بصلاحية تأكيد الجرد؛ التطابق داخل السماحية وحده لا يعفي الفرق من المراجعة.</p>}
+              {OPEN_FOR_CAPTURE.includes(detail.status) && canKey("stock_count.submit") && !compactCapture && <p className="text-xs text-muted-foreground" data-testid="count-autosave-hint">الكمية بتتحفظ لوحدها لما تضغط Enter أو تنتقل للخانة الجاية، و«تسليم الجرد» بيحفظ أي حاجة فاضلة قبل التسليم.</p>}
               {compactCapture && <p className="text-xs text-muted-foreground">أدخل الكمية ثم اضغط Enter أو انتقل للخانة التالية للحفظ. الفراغ يعني أن الصنف لم يُعدّ؛ أدخل صفرًا فقط إذا عدَدته وكانت كميته صفرًا.</p>}
               <div className="flex flex-wrap items-center gap-2 rounded-xl border bg-muted p-1" data-testid="count-filter-tabs">
                 <Button type="button" size="sm" variant={filterTab === "all" ? "default" : "outline"} onClick={() => setFilterTab("all")}>الكل ({detail.lines.length})</Button>
