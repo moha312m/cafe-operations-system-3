@@ -111,6 +111,17 @@ export async function lockBranchAllocator(tx: Prisma.TransactionClient, branchId
   if (rows.length !== 1) throw new ApiError(404, "الفرع مش موجود في نطاقك");
   remember(tx, "Branch", ids, ids, 1.5, "FOR NO KEY UPDATE");
 }
+/** Every branch of one cafe, in id order, at the same rank as the single-branch allocator lock: the currency
+ * change excludes concurrent shift opening and order creation (both take the allocator lock) on any of them. */
+export async function lockCafeBranches(tx: Prisma.TransactionClient, cafeId: string) {
+  const all = await tx.branch.findMany({ where: { cafeId }, select: { id: true }, orderBy: { id: "asc" } });
+  const ids = newLocks(tx, "Branch", all.map(branch => branch.id), 1.5);
+  if (!ids.length) return all.map(branch => branch.id);
+  const rows = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "Branch" WHERE "cafeId"=${cafeId} AND "id" = ANY(${ids}::text[]) ORDER BY "id" FOR NO KEY UPDATE`;
+  if (rows.length !== ids.length) throw new ApiError(409, "الفروع اتغيرت — جرّب تاني");
+  remember(tx, "Branch", ids, ids, 1.5, "FOR NO KEY UPDATE");
+  return all.map(branch => branch.id);
+}
 export async function requireOpenPostingShift(tx: Prisma.TransactionClient, shiftId: string, branchId?: string, cafeId?: string) {
   await lockShifts(tx, [shiftId]);
   return validateOpenPostingShift(tx, shiftId, branchId, cafeId);

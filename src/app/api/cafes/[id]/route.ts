@@ -2,6 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { db } from "@/lib/db";
 import { requirePermission, handleApiError, ApiError } from "@/lib/api";
+import { isSupportedCurrency } from "@/lib/currency";
+import { mapCurrencyDatabaseError } from "@/lib/branch-currency";
 import { audit } from "@/lib/audit";
 
 type Params = { params: Promise<{ id: string }> };
@@ -43,7 +45,23 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       throw new ApiError(403, "Only super admin can suspend a cafe");
     }
 
-    const cafe = await db.cafe.update({ where: { id }, data });
+    if (data.currency !== undefined) {
+      data.currency = data.currency.toUpperCase();
+      if (!isSupportedCurrency(data.currency)) throw new ApiError(400, "عملة غير مدعومة حالياً");
+      // The owner changes the currency from Settings (audited, idempotent). Platform staff may set it on a cafe
+      // that has no financial records yet; the database refuses it once there are any.
+      const current = await db.cafe.findUnique({ where: { id }, select: { currency: true } });
+      if (current && current.currency !== data.currency && session.role !== "SUPER_ADMIN") {
+        throw new ApiError(400, "غيّر العملة من الإعدادات");
+      }
+    }
+
+    let cafe;
+    try {
+      cafe = await db.cafe.update({ where: { id }, data });
+    } catch (error) {
+      mapCurrencyDatabaseError(error);
+    }
 
     await audit({
       cafeId: id,

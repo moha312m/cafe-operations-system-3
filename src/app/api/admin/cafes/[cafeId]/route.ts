@@ -3,6 +3,8 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { requirePermission, handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
+import { isSupportedCurrency } from "@/lib/currency";
+import { mapCurrencyDatabaseError } from "@/lib/branch-currency";
 import { getCafeSettings, toFeatureMap } from "@/lib/cafe-settings";
 import type { Prisma } from "@prisma/client";
 
@@ -242,7 +244,10 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     const update: Prisma.CafeUpdateInput = {};
 
     if (data.name !== undefined) update.name = data.name;
-    if (data.currency !== undefined) update.currency = data.currency;
+    if (data.currency !== undefined) {
+      if (!isSupportedCurrency(data.currency.toUpperCase())) throw new ApiError(400, "عملة غير مدعومة حالياً");
+      update.currency = data.currency.toUpperCase();
+    }
     if (data.taxRate !== undefined) update.taxRate = data.taxRate;
     if (data.planName !== undefined) update.planName = data.planName;
     if (data.subscriptionStatus !== undefined) update.subscriptionStatus = data.subscriptionStatus;
@@ -266,7 +271,13 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       }
     }
 
-    const cafe = await db.cafe.update({ where: { id: cafeId }, data: update });
+    let cafe;
+    try {
+      cafe = await db.cafe.update({ where: { id: cafeId }, data: update });
+    } catch (error) {
+      // The database refuses a currency change once the cafe has financial records.
+      mapCurrencyDatabaseError(error);
+    }
 
     if (suspendEvent) {
       await audit({

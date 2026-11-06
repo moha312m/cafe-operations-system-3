@@ -461,6 +461,9 @@ model Branch {
   address   String?
   phone     String?
   isActive  Boolean  @default(true)
+  /// ISO 4217, mirrors Cafe.currency (one currency per cafe in v1). The database copies it on insert,
+  /// refuses a different value, and locks it once the cafe has financial records (migration branch_currency).
+  currencyCode String @default("EGP")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

@@ -85,6 +85,7 @@ const LABELS: Record<string, string> = {
   BRANCH_CUSTODY_VERIFIED: "التحقق من العهدة الافتتاحية",
   CUSTODY_TRANSFERRED: "تحويل عهدة",
   BRANCH_OPENING_SETTINGS_CHANGED: "تغيير إعدادات كاش الليل واستلام الصباح",
+  BRANCH_CURRENCY_CHANGED: "تغيير عملة الفرع",
   // Stock counts and inventory
   ITEM_COUNTED: "تسجيل عدّ صنف",
   COUNT_OUTGOING_DECLARED: "إعلان جرد المُسلّم",

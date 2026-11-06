@@ -3,6 +3,7 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { requirePermission, handleApiError } from "@/lib/api";
 import { hashPassword } from "@/lib/auth";
+import { isSupportedCurrency } from "@/lib/currency";
 import { audit } from "@/lib/audit";
 
 // Super admin: list all cafes with counts.
@@ -25,7 +26,7 @@ const createCafeSchema = z.object({
     .string()
     .min(2)
     .regex(/^[a-z0-9-]+$/, "lowercase letters, numbers and dashes only"),
-  currency: z.string().length(3).default("USD"),
+  currency: z.string().length(3).transform(value => value.toUpperCase()).refine(isSupportedCurrency, "عملة غير مدعومة حالياً").default("USD"),
   taxRate: z.number().min(0).max(100).default(0),
   // Onboarding creates the first owner account and main branch together
   // so a new tenant is usable immediately.
