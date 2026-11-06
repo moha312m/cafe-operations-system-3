@@ -386,7 +386,7 @@ function DashboardInner() {
       {filterBar}
 
       {/* Refreshing dims (no layout jump) while the new period loads. */}
-      {data.reporting&&<details className="mb-4 rounded-lg border p-3"><summary>ساعات تقارير الفروع مطبّقة — عرض الفترات الفعلية</summary><p>البداية مشمولة والنهاية مستبعدة؛ فترات الإغلاق لا تدخل في الملخص. يمكن فحصها في تقرير خارج الساعات.</p>{data.reporting.windows.map((w,i)=><p key={i} dir="auto">{data.reporting?.branches.find(b=>b.id===w.branchId)?.name} · {w.startLocal} → {w.endLocal} · {w.timezone} · UTC {w.from} → {w.to}{w.warnings.map(warning=><span className="block" key={warning}>{warning}</span>)}</p>)}</details>}
+      {data.reporting&&<details className="mb-4 rounded-lg border p-3"><summary>ساعات تقارير الفروع مطبّقة — عرض الفترات الفعلية</summary><p>البداية مشمولة والنهاية مستبعدة؛ فترات الإغلاق لا تدخل في الملخص. يمكن فحصها في تقرير خارج الساعات.</p>{data.reporting.windows.map((w,i)=><p key={i} dir="auto">{data.reporting?.branches.find(b=>b.id===w.branchId)?.name} · {w.startLocal} → {w.endLocal}{w.warnings.map(warning=><span className="block" key={warning}>{warning}</span>)}</p>)}</details>}
       <div className={refreshing ? "pointer-events-none opacity-60 transition-opacity" : "transition-opacity"}>
       <OwnerDashboard isOwner={isOwner} data={data} formatMoney={fmt}>
 
@@ -414,7 +414,6 @@ function DashboardInner() {
 
       {/* Secondary KPI cards */}
       <div className="mt-3 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatCard label={d.completedOrders} value={data.completedOrders} icon="✅" accent="emerald" />
         <StatCard label={d.cancelledOrders} value={data.cancelledOrders} icon="🚫" accent={data.cancelledOrders > 0 ? "red" : "slate"} />
         <StatCard label={d.openShiftsLabel} value={data.openShifts} icon="🕒" accent="blue" href="/shifts" />
         <StatCard label={d.closedShiftsToday} value={data.closedShiftsToday} icon="🔒" accent="slate" href="/shifts" />
@@ -468,8 +467,6 @@ function DashboardInner() {
         <Insight label={d.bestCashier} value={data.bestCashier?.name ?? "—"} sub={data.bestCashier ? fmt(data.bestCashier.value) : undefined} />
         <Insight label="طلبات منيو QR" value={String(data.qrOrders)} />
         <Insight label="طلبات الكاشير" value={String(data.cashierOrders)} />
-        <Insight label={d.taxTotal} value={fmt(data.taxTotal)} />
-        <Insight label={d.serviceTotal} value={fmt(data.serviceTotal)} />
       </Panel>
 
       {/* Latest closed shift */}
