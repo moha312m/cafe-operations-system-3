@@ -43,11 +43,14 @@ html[data-cashier-touch="true"] .touch-number > input { width: 3rem; }
 .cashier-products { max-height: 55dvh; min-height: 180px; }
 .cashier-compact-tabs, .cashier-compact-checkout { display: none; }
 @media (min-width: 1100px) {
-  .cashier-workspace { grid-template-columns: minmax(0, 1fr) minmax(400px, 460px); align-items: start; }
-  .cashier-lead, .cashier-catalog { grid-column: 1; }
+  /* Placement uses named areas in both desktop blocks (this one and the later one near the end of the file), so
+     the products column, the order column and the shift strip cannot swap places whatever order the CSS loads in. */
+  .cashier-workspace { grid-template-columns: minmax(0, 1fr) minmax(400px, 460px); grid-template-areas: "lead lead" "catalog cart"; align-items: start; }
+  .cashier-lead { grid-area: lead; }
+  .cashier-catalog { grid-area: catalog; }
   .cashier-catalog, .cashier-cart { height: var(--cashier-workspace-height, calc(100dvh - 6rem)); min-height: 40rem; }
   .cashier-catalog { overflow: hidden; }
-  .cashier-cart { grid-column: 2; grid-row: 1 / span 2; position: sticky; top: 1rem; }
+  .cashier-cart { grid-area: cart; position: sticky; top: 1rem; }
   .cashier-products { max-height: none; min-height: 0; }
 }
 @media (max-width: 1099px) {
@@ -342,10 +345,10 @@ html[data-cashier-touch="true"] .touch-number > input { width: 3rem; }
 @media print { .workspace-content { padding: 0; } }
 
 @media (min-width:1100px) {
- .cashier-workspace { grid-template-columns:minmax(0,1fr) minmax(350px,400px); grid-template-rows:auto minmax(0,1fr); height:var(--cashier-workspace-height,calc(100dvh - 8rem)); min-height:360px; }
- .cashier-lead { grid-column:1 / -1; }
- .cashier-catalog { grid-row:2; grid-column:1; }
- .cashier-cart { grid-row:2; grid-column:2; }
+ .cashier-workspace { grid-template-columns:minmax(0,1fr) minmax(350px,400px); grid-template-rows:auto minmax(0,1fr); grid-template-areas:"lead lead" "catalog cart"; height:var(--cashier-workspace-height,calc(100dvh - 8rem)); min-height:360px; }
+ .cashier-lead { grid-area:lead; }
+ .cashier-catalog { grid-area:catalog; }
+ .cashier-cart { grid-area:cart; }
  .cashier-catalog,.cashier-cart { height:100%; min-height:0; }
  .cashier-products { grid-template-columns:repeat(auto-fill,minmax(165px,1fr)); }
 }
