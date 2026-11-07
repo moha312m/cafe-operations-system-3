@@ -7,6 +7,7 @@ import { resolveBranchHandoverConfig } from "@/lib/handover-config";
 import { decideMaterialsCount, readMaterialsSchedule } from "@/lib/materials-schedule";
 import { fullCountDue } from "@/lib/stock-count-policy";
 import { dispositionForShift, listEligibleRecipients } from "@/lib/cash-disposition";
+import { planRequiredItems } from "@/lib/handover-required-items";
 
 // GET /api/shifts/close-flow — where the requester's OWN close stands (HND-UX-004).
 //
@@ -54,6 +55,14 @@ export async function GET(request: NextRequest) {
       const branchCustodyFullCountDue = keys.has("handover.exception")
         ? (await fullCountDue({ cafeId: branch.cafeId, branchId, at: new Date(), target: "BRANCH_CUSTODY" }).catch(() => null))?.due ?? false
         : false;
+      const handoverEnabled = config.enabled && config.configError?.code !== "CYCLE_POLICY_UNSUPPORTED";
+      // The items the materials step will ask for, so screen 1 can say so. The same planner the close uses; a
+      // broken configuration previews nothing rather than failing the screen.
+      const dueItemsPreview = handoverEnabled && (preview?.due ?? true)
+        ? await db.$transaction((tx) => planRequiredItems(tx, { cafeId: branch.cafeId, branchId, at: new Date(), target: "SHIFT_TO_SHIFT" }))
+            .then((plan) => plan.items.map((item) => ({ id: item.inventoryItemId, name: item.itemNameSnapshot, unit: item.unitSnapshot })))
+            .catch(() => [])
+        : [];
       return NextResponse.json({
         stage: "MONEY",
         branch: { id: branch.id, name: branch.name },
@@ -69,8 +78,9 @@ export async function GET(request: NextRequest) {
             totalCardSales: visible.totalCardSales, totalWalletSales: visible.totalWalletSales,
           } : {}),
         },
-        handover: { enabled: config.enabled && config.configError?.code !== "CYCLE_POLICY_UNSUPPORTED" },
+        handover: { enabled: handoverEnabled },
         materials: { cadence: config.materials.cadence, duePreview: preview?.due ?? true, nextDueAt: preview?.nextDueAt ?? null, branchCustodyFullCountDue },
+        dueItemsPreview,
         recipients: await listEligibleRecipients(db, { cafeId: branch.cafeId, branchId, excludeUserId: session.id }),
       });
     }
@@ -105,11 +115,13 @@ export async function GET(request: NextRequest) {
       : "DONE";
     const { handoversOutgoing: _unused, ...shift } = last;
     void _unused;
-    const [cashDisposition, recipients] = await Promise.all([
+    const [cashDisposition, recipients, nightStorage] = await Promise.all([
       dispositionForShift(db, last.id),
       listEligibleRecipients(db, { cafeId: branch.cafeId, branchId, excludeUserId: session.id }),
+      db.cashStorage.findUnique({ where: { outgoingShiftId: last.id }, select: { id: true } }),
     ]);
-    return NextResponse.json({ stage, branch: { id: branch.id, name: branch.name }, shift, handover, cashDisposition, recipients });
+    // A night-storage declaration is this close's cash partition; every other close owes a disposition.
+    return NextResponse.json({ stage, branch: { id: branch.id, name: branch.name }, shift, handover, cashDisposition, recipients, nightCashStored: !!nightStorage });
   } catch (error) {
     return handleApiError(error);
   }

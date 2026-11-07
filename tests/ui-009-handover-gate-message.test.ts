@@ -55,7 +55,8 @@ describe("UI-009 handover gate message follows the real state", () => {
   test("a shift that is open but not ready is no longer described as needing to be opened", () => {
     const controls = source("src/components/pos/shift-controls.tsx");
     assert.match(controls, /🔒 \{pendingShift \? "الشيفت مفتوح لكن البيع مقفول لحين اكتمال استلام العهدة" : t\.shifts\.mustOpen\}/);
-    assert.match(controls, /\{!pendingShift && <Button size="sm" className="ms-auto" onClick=\{\(\) => setOpenDialog\(true\)\}>/, "the open-shift button rule is unchanged");
+    // Still drawn only when no shift is pending; it now opens through `startOpen`, which pre-fills the carried drawer.
+    assert.match(controls, /\{!pendingShift && <Button size="sm" className="ms-auto" onClick=\{startOpen\}/, "the open-shift button rule is unchanged");
   });
 
   test("an unknown shift number is never invented, and the list shows the count status in Arabic", () => {

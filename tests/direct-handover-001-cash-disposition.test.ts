@@ -774,7 +774,9 @@ describe("independent gates and unchanged paths", () => {
     const closed = await closeShiftWithSettlement({ shiftId: shift.id, actualCash: 100, actorId: fx.cashier.id, closedByManager: false, handoverTarget: "BRANCH_CUSTODY", grants: GRANTS_FULL });
     assert.ok(closed.handoverId);
     const dispo = await postDisposition(fx.cashier.email, shift.id, { deliveries: [], retainedAmount: 100 });
-    assert.equal(dispo.status, 409, "branch custody keeps the night storage declaration instead");
+    // A branch-custody night without night storage records where the drawer cash goes (the next opening);
+    // only a night-storage declaration replaces it. It still cannot be accepted directly.
+    assert.equal(dispo.status, 201, dispo.text);
     await incomingOpensShift();
     const direct = await summaryOf(incoming.email, closed.handoverId!);
     assert.equal(direct.body.can.acknowledge, false);

@@ -158,13 +158,16 @@ function SettingsWorkspace() {
   const requestedBranchId = params.get("branchId");
   const [branches, setBranches] = useState<Branch[]>([]);
   // The branch is DERIVED: a link may name one (`?branchId=`, used by the shift-close guidance so it lands on the branch it came from); an account
-  // pinned to a branch always stays on it; an owner's own pick wins until the link changes; otherwise the first branch, as before.
+  // pinned to a branch always stays on it; an owner's own pick wins until the link changes; otherwise the branch of the open shift (the
+  // owner's own, else the café's latest), and only then the first branch.
   const [picked, setPicked] = useState<{ forRequest: string | null; id: string } | null>(null);
+  const [openShiftBranchId, setOpenShiftBranchId] = useState<string | null>(null);
   const [s, setS] = useState<FinSettings | null>(null);
   const [busy, setBusy] = useState(false);
   const requestedKnown = !!requestedBranchId && branches.some((b) => b.id === requestedBranchId);
   const pickedNow = picked && picked.forRequest === requestedBranchId ? picked.id : null;
-  const branchId = user.branchId ?? pickedNow ?? (requestedKnown ? requestedBranchId : null) ?? branches[0]?.id ?? "";
+  const openShiftKnown = !!openShiftBranchId && branches.some((b) => b.id === openShiftBranchId);
+  const branchId = user.branchId ?? pickedNow ?? (requestedKnown ? requestedBranchId : null) ?? (openShiftKnown ? openShiftBranchId : null) ?? branches[0]?.id ?? "";
   // A requested branch this account cannot use is said out loud instead of silently landing on a different one.
   const branchNotice = requestedBranchId && (user.branchId ? requestedBranchId !== user.branchId : branches.length > 0 && !requestedKnown)
     ? "الفرع المطلوب غير متاح لهذا الحساب — اتفتحت إعدادات فرع تاني. راجع اسم الفرع قبل أي تغيير."
@@ -175,6 +178,13 @@ function SettingsWorkspace() {
       .then((r) => setBranches(r.branches))
       .catch((e) => toast.error(e instanceof Error ? e.message : "فشل التحميل"));
   }, []);
+  useEffect(() => {
+    if (user.branchId) return;
+    // Newest first; a missing permission or network failure just keeps the first-branch fallback.
+    api<{ shifts: { branchId: string; cashier?: { id: string } | null }[] }>("/api/shifts?status=OPEN")
+      .then((r) => setOpenShiftBranchId((r.shifts.find((s) => s.cashier?.id === user.id) ?? r.shifts[0])?.branchId ?? null))
+      .catch(() => setOpenShiftBranchId(null));
+  }, [user.branchId, user.id]);
 
   // Arrival at the handover-config panel for a `#handover-config` link: once the page has loaded, bring the panel into view and put focus on it,
   // once per branch. The cards above it fetch their own data and can still push it down, so it is kept in view while the layout settles (bounded,
@@ -349,7 +359,7 @@ function SettingsWorkspace() {
 
           {canKey("stock_count.configure") && (
             <section id="handover-config" tabIndex={-1} aria-label={t.handoverConfig.title} data-testid="handover-config-anchor" className="scroll-mt-4 outline-none focus-visible:ring-2 focus-visible:ring-ring">
-              <HandoverConfigPanel branchId={branchId} />
+              <HandoverConfigPanel branchId={branchId} branchName={branches.find((b) => b.id === branchId)?.name} />
             </section>
           )}
 

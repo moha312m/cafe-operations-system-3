@@ -80,6 +80,7 @@ import type { SessionUser } from "@/lib/auth";
 import type { HandoverTarget, OrderStatus, PaymentStatus, Prisma, ShiftStatus } from "@prisma/client";
 import { assertOpeningReceiptEvidence } from "@/lib/opening-readiness";
 import { recordNightCash, validateCashDisposition, type CashDisposition } from "@/lib/overnight-cash";
+import { recordRetainAllAtCloseInTransaction } from "@/lib/cash-disposition";
 import { ApiError } from "@/lib/api";
 import { auditInTransaction } from "@/lib/audit";
 import { openVarianceCase } from "@/lib/variance-case";
@@ -164,6 +165,12 @@ export type CloseHandoverGrants = {
 
 export type ShiftCloseArgs = {
   cashDisposition?: CashDisposition;
+  /**
+   * The closer chose «تُترك في الدرج كعهدة»: the whole counted drawer is recorded as this close's cash
+   * disposition, on every path (direct handover, branch custody, uncounted or not-due). Ignored when the
+   * night cash is declared as overnight storage, which is the drawer's own record.
+   */
+  retainAllCash?: boolean;
   shiftId: string;
   /** The physically counted drawer. */
   actualCash: number;
@@ -766,6 +773,15 @@ export async function closeShiftWithSettlement(
       }
     }
 
+    // The drawer's fate is recorded with the close itself, so the next opening never depends on a later screen.
+    let cashDispositionId: string | null = null;
+    if (args.retainAllCash && !args.cashDisposition) {
+      cashDispositionId = (await recordRetainAllAtCloseInTransaction(tx, {
+        cafeId: locked.cafeId, branchId: locked.branchId, shiftId: locked.id, handoverId,
+        actorId: args.actorId, countedCash: actualCash, expectedCash,
+      })).id;
+    }
+
     const uncountedCustodyClosedIds = handoverRequired ? [] : await finalizeUncountedCustodies(tx, {
       shiftId: locked.id, branchId: locked.branchId, cafeId: locked.cafeId, actualCash, at: closedAt,
     });
@@ -831,6 +847,7 @@ export async function closeShiftWithSettlement(
         handoverId,
         freezeId,
         requiredItemCount,
+        cashDispositionId,
         handoverConfigIssue: cycleIssue
           ? { code: cycleIssue.code, message: cycleIssue.message }
           : null,

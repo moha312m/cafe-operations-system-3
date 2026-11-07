@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { toast } from "sonner";
 import { api, money } from "@/lib/client";
 import { useApp } from "@/components/app-shell";
@@ -22,32 +23,18 @@ import {
   type VarianceStatus,
   type VarianceType,
 } from "./variance-labels";
+import { CONFIDENCE_LABEL, NO_REASON, formatVarianceRow, type VarianceRow } from "./variance-format";
+import { DifferenceCell, figure } from "./variance-list";
 
-type CaseDetail = {
-  id: string;
+type CaseDetail = VarianceRow & {
   type: VarianceType;
   status: VarianceStatus;
-  quantityVariance: string | null;
-  amountVariance: string | null;
-  financialImpact: string | null;
-  financialImpactAvailable: boolean;
   financialImpactUnavailableReason: string | null;
   confidence: "VERIFIED" | "PARTIAL" | "UNVERIFIABLE";
   assignedResponsibilityUserId: string | null;
   assignedResponsibility: {id:string;name:string}|null;
-  blocking: boolean;
-  openedAt: string;
   resolvedAt: string | null;
   resolutionNote: string | null;
-  stockCountLine: {
-    id: string;
-    disposition: string;
-    expectedQuantity: string | null;
-    countedQuantity: string | null;
-    varianceQuantity: string | null;
-    inventoryItem: { id: string; name: string; unit: string; category: string | null };
-  } | null;
-  shift: { id: string; shiftNumber: number; status: string } | null;
   openedBy: { id: string; name: string } | null;
   resolvedBy: { id: string; name: string } | null;
 };
@@ -116,10 +103,14 @@ export function VarianceDetail({
   }
 
   const moves = detail ? LEGAL_NEXT[detail.status] ?? [] : [];
+  const currency = cafe?.currency ?? "EGP";
+  const f = detail ? formatVarianceRow(detail) : null;
+  const shift = detail ? (detail.type === "CASH" ? detail.cashShift ?? detail.shift : detail.shift ?? detail.cashShift) ?? null : null;
+  const handover = detail?.acceptedHandover ?? null;
 
   return (
     <Dialog open={caseId !== null} onOpenChange={(o) => !o && !busy && onClose()}>
-      <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto">
+      <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>تفاصيل حالة الفرق</DialogTitle>
         </DialogHeader>
@@ -128,26 +119,48 @@ export function VarianceDetail({
 
         {!loading && detail && (
           <div className="space-y-4 text-sm">
+            {f && <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border bg-muted/30 p-3" data-testid="variance-context">
+              <span className="font-semibold">{f.branchName ?? "—"}</span>
+              {shift && <Link className="text-primary underline" href={`/reports/shift/${shift.id}`} target="_blank">شيفت #{shift.shiftNumber}</Link>}
+              {shift && <span>الكاشير: {shift.cashier.name}</span>}
+              {handover && <span>{handover.outgoingUser?.name ?? "—"} ← {handover.incomingUser?.name ?? (handover.target === "BRANCH_CUSTODY" ? "عهدة الفرع" : "—")}</span>}
+              <span className="text-muted-foreground">{new Date(f.date).toLocaleString("ar-EG", { dateStyle: "medium", timeStyle: "short" })}</span>
+            </div>}
+
+            {f && <div className="grid gap-2 sm:grid-cols-3" data-testid="variance-figures">
+              <div className="rounded-lg border bg-background p-2.5">
+                <div className="text-xs text-muted-foreground">المتوقع</div>
+                <div className="mt-0.5 font-bold tabular-nums">{figure(f, f.expected, currency)}</div>
+                {f.openingCash !== null && <div className="mt-0.5 text-xs text-muted-foreground">منها رصيد افتتاح الدرج {money(f.openingCash, currency)}</div>}
+              </div>
+              <div className="rounded-lg border bg-background p-2.5">
+                <div className="text-xs text-muted-foreground">الفعلي</div>
+                <div className="mt-0.5 font-bold tabular-nums">{figure(f, f.actual, currency)}</div>
+              </div>
+              <div className="rounded-lg border bg-background p-2.5">
+                <div className="text-xs text-muted-foreground">الفرق</div>
+                <div className="mt-0.5"><DifferenceCell f={f} currency={currency} /></div>
+              </div>
+            </div>}
+
+            {f && !f.isMoney && <p className="rounded-lg border bg-amber-500/5 p-2.5" data-testid="variance-stock-impact">
+              الأثر المالي التقديري: <strong className="tabular-nums">{f.costImpact !== null ? money(f.costImpact, currency) : `غير متاح${detail.financialImpactUnavailableReason ? ` (${detail.financialImpactUnavailableReason})` : ""}`}</strong>
+            </p>}
+
+            <div className="rounded-lg border p-2.5" data-testid="variance-reason">
+              <div className="text-xs text-muted-foreground">سبب الموظف</div>
+              <p className={f?.reason === NO_REASON ? "text-muted-foreground" : "font-medium"}>{f?.reason ?? NO_REASON}</p>
+            </div>
+
             <dl className="space-y-1.5 rounded-lg border bg-muted/30 p-3">
               {[
-                ["النوع", TYPE_LABEL[detail.type] ?? detail.type],
+                ["النوع", f?.typeLabel ?? TYPE_LABEL[detail.type] ?? detail.type],
                 ["الحالة", STATUS_LABEL[detail.status] ?? detail.status],
-                ["درجة الثقة", detail.confidence],
-                ["فرق الكمية", detail.quantityVariance ?? "—"],
-                [
-                  "الأثر المالي",
-                  detail.financialImpactAvailable && detail.financialImpact !== null
-                    ? money(detail.financialImpact, cafe?.currency ?? "EGP")
-                    : `غير متاح${
-                        detail.financialImpactUnavailableReason
-                          ? ` (${detail.financialImpactUnavailableReason})`
-                          : ""
-                      }`,
-                ],
-                ["الصنف", detail.stockCountLine?.inventoryItem.name ?? "—"],
-                ["الوردية", detail.shift ? `#${detail.shift.shiftNumber}` : "—"],
+                ["درجة الثقة", CONFIDENCE_LABEL[detail.confidence] ?? detail.confidence],
+                ["الموظف المسؤول", f?.employeeName ?? "غير محدد"],
                 ["فتحها", detail.openedBy?.name ?? "—"],
                 ["المسؤول المعتمد",detail.assignedResponsibility?.name??"لم تعتمد المسؤولية"],
+                ...(detail.resolvedBy ? [["قرّرها", detail.resolvedBy.name]] : []),
               ].map(([label, value]) => (
                 <div key={label} className="flex justify-between gap-3">
                   <dt className="text-muted-foreground">{label}</dt>
@@ -155,6 +168,10 @@ export function VarianceDetail({
                 </div>
               ))}
             </dl>
+
+            {detail.custodyPeriod?.participants && detail.custodyPeriod.participants.length > 0 && <p className="text-xs text-muted-foreground" data-testid="variance-custody">
+              العهدة: {detail.custodyPeriod.participants.map((p) => `${p.user.name} (${p.role === "PRIMARY" ? "مسؤول أساسي" : "مشارك"})`).join("، ")}
+            </p>}
 
             {detail.resolutionNote && (
               <p className="rounded-lg border bg-muted/20 p-3 text-muted-foreground">

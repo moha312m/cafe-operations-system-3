@@ -52,6 +52,8 @@ const closeSchema = z
     handoverTarget: z.enum(["SHIFT_TO_SHIFT", "BRANCH_CUSTODY"]).optional(),
     // Opt in to the simplified direct handover (closing cash disposition required before finishing).
     directHandover: z.boolean().optional(),
+    // «تُترك في الدرج كعهدة»: record the whole counted drawer as this close's cash disposition.
+    drawerDisposition: z.literal("RETAIN_ALL").optional(),
   })
   .strip();
 
@@ -127,6 +129,7 @@ export async function POST(request: NextRequest, { params }: Params) {
       },
       notes: data.notes,
       cashDisposition: data.cashDisposition,
+      retainAllCash: data.drawerDisposition === "RETAIN_ALL",
       actorId: session.id,
       actor: session,
       closedByManager: !isOwnShift,

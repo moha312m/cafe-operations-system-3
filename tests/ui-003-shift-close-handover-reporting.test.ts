@@ -70,7 +70,7 @@ describe("UI-003 the two-stage close is reported honestly", () => {
 
   test("a settled close with materials owed continues to the materials screen, not to a success message", () => {
     const code = read(FLOW);
-    assert.match(code, /"التالي: تسليم الخامات"/);
+    assert.match(code, /"التالي: جرد الخامات وإغلاق الشيفت"/);
     assert.match(code, /stage === "MATERIALS"/);
     assert.match(code, /data-testid="close-materials-step"/);
     // Done is only ever the server's answer.

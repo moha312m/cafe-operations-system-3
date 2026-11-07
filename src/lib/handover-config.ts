@@ -3,6 +3,7 @@ import { db } from "@/lib/db";
 import { ApiError } from "@/lib/api";
 import { auditInTransaction } from "@/lib/audit";
 import { getCafeSettings } from "@/lib/cafe-settings";
+import { savedPolicyOverride } from "@/lib/handover-enablement";
 
 export type HandoverConfigError =
   | { code: "CYCLE_POLICY_UNSUPPORTED"; message: string }
@@ -257,8 +258,15 @@ export async function updateBranchHandoverConfig(args: {
       configError: null,
     };
     const finalMode = args.patch.mode ?? before.mode;
-    const finalEnabled = args.patch.enabled ?? before.enabled;
     const finalSelected = ids ?? before.selectedItemIds;
+    const policyOverride = savedPolicyOverride({
+      enabled: args.patch.enabled,
+      currentlyEnabled: before.enabled,
+      finalMode,
+      finalSelectedCount: finalSelected.length,
+      materialsStated: materials !== undefined,
+    });
+    const finalEnabled = policyOverride === undefined ? before.enabled : policyOverride !== "NO_SHIFT_COUNT";
     if (policy === "CYCLE" && args.patch.enabled === true && args.patch.mode === undefined) fail("CYCLE_POLICY_UNSUPPORTED");
     if (finalEnabled && finalMode === "SELECTED" && finalSelected.length === 0) fail("SELECTED_WITH_NO_ITEMS");
     let scheduleOverride: PeriodicFullCountSchedule | null | undefined;
@@ -283,7 +291,7 @@ export async function updateBranchHandoverConfig(args: {
     const scoped = ids ? await tx.inventoryItem.findMany({ where: { id: { in: ids }, cafeId: args.cafeId, branchId: args.branchId, archivedAt: null, isActive: true }, select: { id: true } }) : [];
     if (ids && scoped.length !== ids.length) fail("VALIDATION", "a selected item is missing, archived, inactive, or outside this branch");
     const data: Prisma.BranchUpdateInput = {};
-    if (args.patch.enabled !== undefined) data.stockCountPolicyOverride = args.patch.enabled ? "HYBRID" : "NO_SHIFT_COUNT";
+    if (policyOverride !== undefined) data.stockCountPolicyOverride = policyOverride;
     if (args.patch.mode !== undefined) data.handoverCountTypeOverride = args.patch.mode === "FULL" ? "FULL" : "CRITICAL";
     if (scheduleOverride !== undefined) data.periodicFullCountScheduleOverride = scheduleOverride;
     if (weekdayOverride !== undefined) data.periodicFullCountWeekdayOverride = weekdayOverride;
@@ -306,7 +314,7 @@ export async function updateBranchHandoverConfig(args: {
     const auditedPeriodic = scheduleOverride === null
       ? { schedule: settings.periodicFullCountSchedule, weekday: settings.periodicFullCountWeekday }
       : { schedule: scheduleOverride === undefined ? before.periodic.schedule : scheduleOverride, weekday: weekdayOverride === undefined ? before.periodic.weekday : weekdayOverride };
-    await auditInTransaction(tx, { cafeId: args.cafeId, userId: args.actorId, action: "HANDOVER_CONFIG_UPDATED", entity: "Branch", entityId: args.branchId, details: { oldValue: before, newValue: { enabled: finalEnabled, mode: finalMode, selectedItemIds: finalSelected, periodic: auditedPeriodic, materials: materials ? { ...materials, since: materialsSince?.toISOString() ?? null } : before.materials }, overrides: { stockCountPolicyOverride: args.patch.enabled === undefined ? undefined : args.patch.enabled ? "HYBRID" : "NO_SHIFT_COUNT", handoverCountTypeOverride: args.patch.mode === undefined ? undefined : args.patch.mode === "FULL" ? "FULL" : "CRITICAL", periodicFullCountScheduleOverride: scheduleOverride, periodicFullCountWeekdayOverride: weekdayOverride } } });
+    await auditInTransaction(tx, { cafeId: args.cafeId, userId: args.actorId, action: "HANDOVER_CONFIG_UPDATED", entity: "Branch", entityId: args.branchId, details: { oldValue: before, newValue: { enabled: finalEnabled, mode: finalMode, selectedItemIds: finalSelected, periodic: auditedPeriodic, materials: materials ? { ...materials, since: materialsSince?.toISOString() ?? null } : before.materials }, overrides: { stockCountPolicyOverride: policyOverride, handoverCountTypeOverride: args.patch.mode === undefined ? undefined : args.patch.mode === "FULL" ? "FULL" : "CRITICAL", periodicFullCountScheduleOverride: scheduleOverride, periodicFullCountWeekdayOverride: weekdayOverride } } });
   });
   return resolveBranchHandoverConfig(args.cafeId, args.branchId);
 }

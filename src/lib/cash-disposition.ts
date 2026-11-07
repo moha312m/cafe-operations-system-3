@@ -145,7 +145,7 @@ export async function closingCashPosition(client: Prisma.TransactionClient | typ
 const DISPOSITION_INCLUDE = {
   declaredBy: { select: { id: true, name: true } },
   shift: { select: { shiftNumber: true, branchId: true } },
-  handover: { select: { id: true, status: true, incomingShift: { select: { id: true, shiftNumber: true, cashier: { select: { name: true } } } } } },
+  handover: { select: { id: true, status: true, target: true, incomingShift: { select: { id: true, shiftNumber: true, cashier: { select: { name: true } } } } } },
   deliveries: { include: { recipient: { select: { id: true, name: true, role: true } } } },
 } satisfies Prisma.ShiftCashDispositionInclude;
 
@@ -166,14 +166,16 @@ export function presentDisposition(row: DispositionRow, nextDrawerShift: NextDra
     : null;
   const receivedByShift = incomingFromHandover ?? nextDrawerShift;
   const retainedAmount = Number(row.retainedAmount);
+  // A branch-custody night has no receiver to accept the drawer: the next shift opening takes it.
+  const awaitsAcceptance = !!row.handoverId && row.handover?.target !== "BRANCH_CUSTODY";
   const retainedStatus = receivedByShift
     ? ("HANDED_TO_SHIFT" as const)
-    : row.handoverId
+    : awaitsAcceptance
       ? ("AWAITING_HANDOVER_ACCEPTANCE" as const)
       : ("IN_DRAWER_FOR_NEXT_SHIFT" as const);
   const retainedStatusLabel = receivedByShift
     ? `انتقلت لعهدة الشيفت #${receivedByShift.shiftNumber} (${receivedByShift.cashierName})`
-    : row.handoverId
+    : awaitsAcceptance
       ? "في الدرج كعهدة — بانتظار استلام الشيفت التالي"
       : "في الدرج كعهدة — بانتظار فتح الشيفت التالي";
   return {
@@ -200,7 +202,7 @@ export async function dispositionForShift(client: Prisma.TransactionClient | typ
   });
   if (!row) return null;
   let nextDrawerShift: NextDrawerShift = null;
-  if (!row.handoverId) {
+  if (!row.handoverId || row.handover?.target === "BRANCH_CUSTODY") {
     const next = await client.shift.findFirst({
       where: { branchId: row.shift.branchId, shiftNumber: { gt: row.shift.shiftNumber } },
       orderBy: { shiftNumber: "asc" },
@@ -261,8 +263,11 @@ export async function recordCashDispositionInTransaction(tx: Prisma.TransactionC
       return { disposition: existing, alreadyRecorded: true };
     }
     if (shift.status === "CLOSED" && Date.now() - shift.financiallyClosedAt.getTime() > RECENT_MS) throw new ApiError(409, "الشيفت اتقفل من فترة طويلة — مصير النقدية لازم يتحدد عند الإقفال");
-    if (handover && !["DRAFT", "REJECTED"].includes(handover.status)) throw new ApiError(409, "التسليم اتقدم خلاص — مصير النقدية متقفل");
-    if (handover && handover.target !== "SHIFT_TO_SHIFT") throw new ApiError(409, "مصير النقدية للتسليم المباشر (وردية لوردية). عهدة الفرع لها إقرار الخزنة الليلي");
+    // A direct handover's receiver accepts exactly the recorded disposition, so it locks once submitted. A
+    // branch-custody night has no receiver: what stays in the drawer is the next shift's opening, so it may be
+    // recorded until that shift starts trading (checked below). Night storage keeps its own declaration.
+    const branchNight = handover?.target === "BRANCH_CUSTODY";
+    if (handover && !branchNight && !["DRAFT", "REJECTED"].includes(handover.status)) throw new ApiError(409, "التسليم اتقدم خلاص — مصير النقدية متقفل");
     if (await tx.cashStorage.findUnique({ where: { outgoingShiftId: shift.id }, select: { id: true } })) throw new ApiError(409, "نقدية الشيفت ده مسجلة بالفعل كإقرار خزنة ليلي — مينفعش تتسجل مرتين");
 
     const seen = new Set<string>();
@@ -290,7 +295,7 @@ export async function recordCashDispositionInTransaction(tx: Prisma.TransactionC
       include: DISPOSITION_INCLUDE,
     });
     let nextDrawerShift: NextDrawerShift = null;
-    if (!handover) {
+    if (!handover || branchNight) {
       const nextShift = await tx.shift.findFirst({
         where: { cafeId: shift.cafeId, branchId: shift.branchId, shiftNumber: { gt: shift.shiftNumber } },
         orderBy: { shiftNumber: "asc" },
@@ -340,6 +345,41 @@ export async function recordCashDispositionInTransaction(tx: Prisma.TransactionC
     }
     return { disposition: presented, alreadyRecorded: false };
   }
+}
+
+/**
+ * The close's default disposition: every counted pound stays in the drawer as custody for the next shift.
+ * Written inside the close's own transaction, which already holds the shift lock and has just persisted the
+ * counted figure; nothing is delivered, so there is no recipient to check. The allocation and fingerprint are
+ * the ones the editor would produce for "retain all", so a later identical submission replays this row and a
+ * different one is refused, as for any recorded disposition.
+ */
+export async function recordRetainAllAtCloseInTransaction(tx: Prisma.TransactionClient, args: {
+  cafeId: string; branchId: string; shiftId: string; handoverId: string | null; actorId: string; countedCash: number; expectedCash: number;
+}): Promise<PresentedDisposition> {
+  const counted = money(args.countedCash).toFixed(2);
+  const allocation = planAllocation(counted, [], counted);
+  const fingerprint = allocationFingerprint(args.shiftId, allocation, null);
+  const expectedCash = money(args.expectedCash).toNumber();
+  const created = await tx.shiftCashDisposition.create({
+    data: {
+      cafeId: args.cafeId, branchId: args.branchId, shiftId: args.shiftId, handoverId: args.handoverId,
+      countedCash: allocation.counted, expectedCash, cashDifference: money(decimal(allocation.counted).minus(expectedCash)).toNumber(),
+      deliveredAmount: 0, retainedAmount: allocation.retained, note: null, fingerprint, idempotencyKey: `close-retain-all:${args.shiftId}`,
+      declaredById: args.actorId,
+    },
+    include: DISPOSITION_INCLUDE,
+  });
+  const presented = presentDisposition(created);
+  await auditInTransaction(tx, {
+    cafeId: args.cafeId, userId: args.actorId, action: CASH_DISPOSITION_RECORDED_AUDIT_ACTION, entity: "ShiftCashDisposition", entityId: created.id,
+    details: {
+      branchId: args.branchId, shiftId: args.shiftId, handoverId: args.handoverId, countedCash: allocation.counted, expectedCash,
+      cashDifference: presented.cashDifference, deliveredAmount: 0, retainedAmount: allocation.retained, deliveries: [],
+      source: "CLOSE_RETAIN_ALL", fingerprint,
+    },
+  });
+  return presented;
 }
 
 // ───────────────────────── recipient confirmation ─────────────────────────

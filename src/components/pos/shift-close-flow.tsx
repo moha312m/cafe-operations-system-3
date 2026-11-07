@@ -30,6 +30,7 @@ import { Table, TableBody, TableHead, TableHeader, TableRow } from "@/components
 import { materialsDecisionLabel } from "@/lib/materials-labels";
 import { parseAmount } from "@/lib/close-amount";
 import { UNIT_LABEL } from "@/lib/inventory";
+import { materialsNextLine } from "@/lib/handover-enablement";
 import { CashDispositionEditor, type DispositionEditorController, type DispositionView, type EligibleRecipient } from "@/components/pos/cash-disposition-editor";
 
 type MoneyShift = {
@@ -47,9 +48,12 @@ type ClosedShift = {
 type FlowHandover = { id: string; status: string; target?: string | null; directHandover?: boolean; stockCountSessionId: string | null; requiredItemCount: number | null; outgoingNote: string | null; submittedAt: string | null };
 type Flow =
   | { stage: "NONE"; branch: { id: string; name: string } }
-  | { stage: "MONEY"; branch: { id: string; name: string }; shift: MoneyShift; handover: { enabled: boolean }; materials: { cadence: string; duePreview: boolean; nextDueAt: string | null; branchCustodyFullCountDue?: boolean }; recipients?: EligibleRecipient[] }
+  | { stage: "MONEY"; branch: { id: string; name: string }; shift: MoneyShift; handover: { enabled: boolean }; materials: { cadence: string; duePreview: boolean; nextDueAt: string | null; branchCustodyFullCountDue?: boolean }; dueItemsPreview?: DueItem[]; recipients?: EligibleRecipient[] }
   | ClosedFlow;
-type ClosedFlow = { stage: "MATERIALS" | "DONE"; branch: { id: string; name: string }; shift: ClosedShift; handover: FlowHandover | null; cashDisposition?: DispositionView | null; recipients?: EligibleRecipient[] };
+type ClosedFlow = { stage: "MATERIALS" | "DONE"; branch: { id: string; name: string }; shift: ClosedShift; handover: FlowHandover | null; cashDisposition?: DispositionView | null; recipients?: EligibleRecipient[]; nightCashStored?: boolean };
+type DueItem = { id: string; name: string; unit: string };
+type DrawerChoice = "RETAIN_ALL" | "SPLIT";
+
 
 const dateTime = (iso: string | null) => iso ? new Date(iso).toLocaleString("ar-EG", { weekday: "long", hour: "2-digit", minute: "2-digit", day: "numeric", month: "short" }) : "";
 
@@ -129,6 +133,9 @@ function MoneyStep({ flow, currency, onCommitted }: {
   const [leftInDrawer, setLeftInDrawer] = useState(restored?.leftInDrawer ?? "");
   const [toTreasury, setToTreasury] = useState(restored?.toTreasury ?? "");
   const [overnight, setOvernight] = useState(false);
+  // Every close records where the drawer cash goes. «تُترك في الدرج كعهدة» is recorded with the close itself;
+  // a split to the owner/manager is declared on the next screen. Overnight storage has its own form below.
+  const [drawerChoice, setDrawerChoice] = useState<DrawerChoice>("RETAIN_ALL");
   const [openOrders, setOpenOrders] = useState<{ total: number; refs: string[]; carry: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<{ message: string; blockers: string[] } | null>(null);
@@ -173,7 +180,7 @@ function MoneyStep({ flow, currency, onCommitted }: {
           ...(walletValue !== null ? { actualWalletAmount: walletValue } : {}),
           ...(note.trim() ? { notes: note.trim() } : {}),
           ...(flow.handover.enabled ? { handoverTarget: branchCustody ? "BRANCH_CUSTODY" : "SHIFT_TO_SHIFT", directHandover: !branchCustody } : {}),
-          ...(needsDisposition ? { cashDisposition: { leftInDrawer: Number(leftInDrawer), toTreasury: Number(toTreasury) } } : {}),
+          ...(needsDisposition ? { cashDisposition: { leftInDrawer: Number(leftInDrawer), toTreasury: Number(toTreasury) } } : drawerChoice === "RETAIN_ALL" ? { drawerDisposition: "RETAIN_ALL" } : {}),
         },
       });
       clearCloseDraft(storage(), scope);
@@ -258,6 +265,14 @@ function MoneyStep({ flow, currency, onCommitted }: {
         )}
       </div>
     )}
+    {!needsDisposition && <fieldset className="space-y-2 rounded-xl border p-3 text-sm" data-testid="close-drawer-choice">
+      <legend className="px-1 font-semibold">مصير النقدية اللي في الدرج</legend>
+      <label className="flex items-start gap-2"><input type="radio" name="drawer-choice" className="mt-1" checked={drawerChoice === "RETAIN_ALL"} onChange={() => setDrawerChoice("RETAIN_ALL")} />
+        <span><span className="block font-medium">تُترك في الدرج كعهدة (عهدة الفرع)</span><span className="block text-xs text-muted-foreground">كل المعدود يفضل في الدرج ويبقى رصيد افتتاح الشيفت الجاي.</span></span></label>
+      <label className="flex items-start gap-2"><input type="radio" name="drawer-choice" className="mt-1" checked={drawerChoice === "SPLIT"} onChange={() => setDrawerChoice("SPLIT")} />
+        <span><span className="block font-medium">تسليم جزء للمالك أو المدير</span><span className="block text-xs text-muted-foreground">تحدد المبالغ والمستلم في الخطوة الجاية، قبل ما تخلص.</span></span></label>
+    </fieldset>}
+    {materialsNext && <p className="rounded-lg border border-primary/30 bg-primary/5 p-2 text-sm font-medium" data-testid="materials-next-hint">{materialsNextLine(flow.dueItemsPreview ?? [])}</p>}
     {!materialsNext && flow.handover.enabled && <p className="rounded-lg bg-muted/50 p-2 text-sm" data-testid="materials-not-due-hint">جرد الخامات غير مستحق حسب الجدول{flow.materials.nextDueAt ? ` · الجرد الجاي: ${dateTime(flow.materials.nextDueAt)}` : ""}.</p>}
     {failure && <div role="alert" className="space-y-1 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive" data-testid="close-money-error">
       <p>{failure.message}</p>
@@ -266,7 +281,7 @@ function MoneyStep({ flow, currency, onCommitted }: {
     </div>}
     <div className="sticky bottom-0 -mx-4 border-t bg-card/95 px-4 pt-3 pb-1 backdrop-blur sm:-mx-5 sm:px-5">
       <Button className="h-12 w-full text-base" disabled={busy || !ready} onClick={() => void commit()} data-testid="close-money-submit">
-        {busy ? "جارٍ التسجيل…" : materialsNext ? "التالي: تسليم الخامات" : "إنهاء الشيفت"}
+        {busy ? "جارٍ التسجيل…" : materialsNext ? "التالي: جرد الخامات وإغلاق الشيفت" : "إنهاء الشيفت"}
       </Button>
     </div>
   </section>;
@@ -291,7 +306,8 @@ function MaterialsStep({ flow, handover, currency, onFinished, onStale }: {
   const [, redraw] = useState(0);
   const inFlight = useRef(false);
   const noteKey = `hnd-ux-004-note:${user.id}:${handover.id}`;
-  const needsDirectDisposition = handover.target !== "BRANCH_CUSTODY";
+  // Owed on every target — a branch-custody night included — unless the night cash was declared as storage.
+  const needsDirectDisposition = !flow.nightCashStored;
 
   useEffect(() => { try { const saved = window.sessionStorage.getItem(noteKey); if (saved !== null) setNote(saved); } catch { /* storage unavailable */ } }, [noteKey]);
   useEffect(() => { try { if (note) window.sessionStorage.setItem(noteKey, note); else window.sessionStorage.removeItem(noteKey); } catch { /* storage unavailable */ } }, [note, noteKey]);
@@ -524,6 +540,10 @@ function DoneStep({ flow, currency, outcome }: { flow: ClosedFlow; currency: str
   const moneyDifference = shift.cashDifference != null && Number(shift.cashDifference) !== 0
     || shift.tenderReconciliations.some((t) => t.varianceAmount != null && Number(t.varianceAmount) !== 0);
   const hasDifferences = (outcome?.recordedDifferences ?? 0) > 0 || moneyDifference;
+  // Every close ends with the drawer's fate recorded; night storage is its own record.
+  const [recorded, setRecorded] = useState<DispositionView | null>(flow.cashDisposition ?? null);
+  const dispositionOwed = shift.actualCashAmount !== null && !flow.nightCashStored;
+  const dispositionMissing = dispositionOwed && !recorded;
   async function handOver() {
     await fetch("/api/auth/logout", { method: "POST" });
     const next = handoverHref ?? "/pos";
@@ -539,7 +559,8 @@ function DoneStep({ flow, currency, outcome }: { flow: ClosedFlow; currency: str
     {notDue && <p className="text-sm" data-testid="materials-not-due">جرد الخامات غير مستحق حسب الجدول{nextDueAt ? ` · الجرد الجاي: ${dateTime(nextDueAt)}` : ""}.</p>}
     {hasDifferences && canKey("shifts.view_reports") && <p className="text-sm">الفروق المسجلة موجودة في <Link className="underline" href={`/reports/shift/${shift.id}`} target="_blank">تقرير الشيفت</Link>.</p>}
     {hasDifferences && !canKey("shifts.view_reports") && <p className="text-sm text-muted-foreground">الفروق المسجلة متاحة للمالك في تقرير الشيفت.</p>}
-    {shift.actualCashAmount !== null && (!handover || handover.target !== "BRANCH_CUSTODY") && (
+    {dispositionMissing && <p role="alert" className="rounded-lg border border-amber-500/50 bg-amber-500/10 p-3 text-sm font-medium" data-testid="close-disposition-missing">باقي خطوة: حدد مصير النقدية واضغط حفظ — الافتراضي إنها تُترك في الدرج كعهدة للشيفت الجاي.</p>}
+    {dispositionOwed && (
       <div className="text-start">
         <CashDispositionEditor
           shiftId={shift.id}
@@ -550,6 +571,7 @@ function DoneStep({ flow, currency, outcome }: { flow: ClosedFlow; currency: str
           recipients={flow.recipients ?? []}
           initialDisposition={flow.cashDisposition ?? null}
           showSaveButton
+          onRecorded={setRecorded}
         />
       </div>
     )}
@@ -558,7 +580,7 @@ function DoneStep({ flow, currency, outcome }: { flow: ClosedFlow; currency: str
       <MoneySummary shift={shift} currency={currency} />
     </details>
     <div className="flex flex-col gap-2 sm:flex-row sm:justify-center">
-      {waiting && <Button className="h-12" onClick={() => void handOver()} data-testid="close-hand-device">تسليم الجهاز للموظف الجاي</Button>}
+      {waiting && <Button className="h-12" disabled={dispositionMissing} onClick={() => void handOver()} data-testid="close-hand-device">تسليم الجهاز للموظف الجاي</Button>}
       <Link href="/pos" className={buttonVariants({ variant: "outline", className: "h-12" })}>رجوع للكاشير</Link>
     </div>
   </section>;

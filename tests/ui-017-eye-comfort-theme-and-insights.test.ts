@@ -117,13 +117,14 @@ describe("UI-017 modules use the tones, and no screen hard-codes a hex", () => {
     assert.doesNotMatch(calc, /expectedCash|expectedDrawer|variance/i);
   });
 
-  test("variances: four counters over the loaded cases, open ones marked clay, closed ones sage", () => {
+  test("variances: four counters from the server summary, open ones marked clay, closed ones sage", () => {
     const list = source("src/components/variances/variance-list.tsx");
     assert.match(list, /data-testid="variance-summary"/);
     for (const tone of ["tide", "clay", "caramel", "sage"]) assert.match(list, new RegExp(`tone: "${tone}"`));
     assert.match(list, /c\.status === "OPEN" \? `\$\{TONE_SIDE\.clay\}/);
     assert.doesNotMatch(list, /amountVariance[^;\n]*reduce|financialImpact[^;\n]*reduce/, "no money total over cases that may be unvalued");
     const page = source("src/app/(app)/variances/page.tsx");
-    assert.match(page, /\{!loading && <VarianceSummary cases=\{cases\} \/>\}/);
+    // The money totals come from the server over every matching case (valued stock only, unvalued counted apart).
+    assert.match(page, /<VarianceSummary summary=\{loading \? null : summary\}/);
   });
 });

@@ -5,7 +5,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { api } from "@/lib/client";
+import { api, money } from "@/lib/client";
+import type { OpeningCarryforward } from "@/lib/opening-carryforward";
 import { PendingCloseBanner } from "@/components/pos/close-guidance-panel";
 import { t } from "@/lib/i18n";
 import { useApp } from "@/components/app-shell";
@@ -95,6 +96,8 @@ export function ShiftControls({
   // HND-UX-004: money already committed, materials still owed. Read from the
   // server, never from this tab, so it survives a refresh or another device.
   const [closeStage, setCloseStage] = useState<"MATERIALS" | null>(null);
+  // What the drawer opens with when there is no shift yet (server-derived; the open applies it again).
+  const [carryforward, setCarryforward] = useState<OpeningCarryforward | null>(null);
 
   const setActive = useCallback(
     (s: Shift | null) => {
@@ -110,12 +113,13 @@ export function ShiftControls({
     const controller=new AbortController();controllerRef.current=controller;
     setLoading(true);setReadError("");
     try {
-      const { shift, pendingShift } = await api<{ shift: Shift | null; pendingShift: Shift | null }>(
+      const { shift, pendingShift, carryforward: carried } = await api<{ shift: Shift | null; pendingShift: Shift | null; carryforward?: OpeningCarryforward | null }>(
         `/api/shifts/active?branchId=${branchId}`,{signal:controller.signal,readTimeoutMs:20_000}
       );
       if(controller.signal.aborted)return;
       setActive(shift);
       setPendingShift(pendingShift);
+      setCarryforward(carried ?? null);
       if (!shift) {
         api<{ stage: string }>(`/api/shifts/close-flow?branchId=${encodeURIComponent(branchId)}`,{signal:controller.signal,readTimeoutMs:20_000})
           .then((r) => {if(!controller.signal.aborted)setCloseStage(r.stage === "MATERIALS" ? "MATERIALS" : null)})
@@ -188,6 +192,13 @@ export function ShiftControls({
   }
 
   const closeHref = `/close-shift?branchId=${encodeURIComponent(branchId)}`;
+  const carried = !shift && !pendingShift ? carryforward : null;
+  const pendingDirect = carried?.source === "PENDING_HANDOVER" ? carried : null;
+  const startOpen = () => {
+    // Pre-filled with the drawer custody being taken over; the server applies the same figure at the open.
+    if (carried?.expectedOpeningCash != null && openingCash === "") setOpeningCash(carried.expectedOpeningCash);
+    setOpenDialog(true);
+  };
   return (
     <>
       {shift ? (
@@ -215,11 +226,20 @@ export function ShiftControls({
           <span className="text-sm font-medium text-muted-foreground">
             🔒 {pendingShift ? "الشيفت مفتوح لكن البيع مقفول لحين اكتمال استلام العهدة" : t.shifts.mustOpen}
           </span>
-          {!pendingShift && <Button size="sm" className="ms-auto" onClick={() => setOpenDialog(true)}>
-            {t.shifts.open}
+          {!pendingShift && <Button size="sm" className="ms-auto" onClick={startOpen} data-testid="shift-open-entry">
+            {pendingDirect ? "افتح الشيفت واستلم العهدة" : t.shifts.open}
           </Button>}
         </div>
       )}
+
+      {pendingDirect && <section role="alert" className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-500/50 bg-amber-500/10 p-3 text-sm" data-testid="carryforward-pending-handover">
+        <p className="font-medium">فيه تسليم مباشر منتظر استلامك{pendingDirect.previousShiftNumber ? ` من الشيفت #${pendingDirect.previousShiftNumber}` : ""}{pendingDirect.previousCashierName ? ` (الكاشير: ${pendingDirect.previousCashierName})` : ""}{pendingDirect.expectedOpeningCash != null ? ` · عهدة الدرج ${money(pendingDirect.expectedOpeningCash, currency)}` : ""}. افتح الشيفت واستلم العهدة قبل البيع — مينفعش تبدأ من غيره.</p>
+        {pendingDirect.pendingDirectHandoverId && <Link className={buttonVariants({ size: "sm", variant: "outline", className: "ms-auto" })} href={`/handovers?branchId=${encodeURIComponent(branchId)}&handoverId=${encodeURIComponent(pendingDirect.pendingDirectHandoverId)}`}>عرض التسليم</Link>}
+      </section>}
+      {carried?.source === "CASH_DISPOSITION" && carried.expectedOpeningCash != null && <section className="space-y-1 rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-3 text-sm" data-testid="carryforward-card">
+        <p className="font-medium">عهدة الدرج المرحّلة من الشيفت السابق (#{carried.previousShiftNumber} - الكاشير: {carried.previousCashierName}): <span className="tabular-nums">{money(carried.expectedOpeningCash, currency)}</span></p>
+        <p className="text-xs text-muted-foreground">عند إغلاق شيفتك المطلوب في الدرج = رصيد الافتتاح ده + صافي المبيعات النقدية (بعد المرتجعات والمصروفات من الدرج).</p>
+      </section>}
 
       {!shift && closeStage === "MATERIALS" && <section className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm" data-testid="close-resume-materials">
         <p className="font-medium">الفلوس اتسجلت — فاضل تسليم الخامات.</p>
@@ -243,7 +263,9 @@ export function ShiftControls({
           </DialogHeader>
           <div className="space-y-2">
             <Label>{t.shifts.openingCash}</Label>
-            <p className="text-xs text-muted-foreground">لو فيه كاش متروك من شيفت الليل، رصيد الافتتاح هيتثبت بعد عدّه وتأكيد استلامه.</p>
+            {carried?.source === "CASH_DISPOSITION" && carried.expectedOpeningCash != null
+              ? <p className="text-xs text-muted-foreground" data-testid="opening-cash-carried">عهدة الدرج المرحّلة من الشيفت #{carried.previousShiftNumber}: {money(carried.expectedOpeningCash, currency)} — هي رصيد افتتاحك.</p>
+              : <p className="text-xs text-muted-foreground">لو فيه كاش متروك من شيفت الليل، رصيد الافتتاح هيتثبت بعد عدّه وتأكيد استلامه.</p>}
             <TouchNumberInput
               type="number"
               min="0"

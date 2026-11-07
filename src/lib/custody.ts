@@ -27,6 +27,7 @@ import { db } from "@/lib/db";
 import { claimOpeningCash } from "@/lib/overnight-cash";
 import { ApiError } from "@/lib/api";
 import { auditInTransaction } from "@/lib/audit";
+import { recomputeShiftTotals } from "@/lib/shifts";
 
 type Participant = { userId: string; role: CustodyRole };
 
@@ -172,6 +173,67 @@ export async function branchIsMidHandover(
 }
 
 /**
+ * Carry the previous shift's retained drawer cash («تُترك في الدرج كعهدة») into a newly opened shift.
+ *
+ * Applies on every custody path a shift can open into — fresh custody, a branch-custody morning, and joining
+ * a still-open employee custody — whatever handover the disposition was recorded under. It never applies
+ * twice: not when an overnight-storage receipt was claimed (that receipt is the opening), not when the
+ * previous shift is still open or settling, and not when a handover already moved the amount to another
+ * shift. The opening is written on the shift and, when given, on its CASH custody period, and the expected
+ * drawer is recomputed from it (opening + cash sales − refunds − payouts + returns).
+ */
+async function carryRetainedDrawerCash(
+  tx: Prisma.TransactionClient,
+  args: { cafeId: string; branchId: string; shiftId: string; userId: string },
+  cashCustodyPeriodId: string | null,
+): Promise<number | null> {
+  const previousShift = await tx.shift.findFirst({
+    where: { cafeId: args.cafeId, branchId: args.branchId, id: { not: args.shiftId } },
+    orderBy: [{ shiftNumber: "desc" }],
+    select: {
+      id: true, status: true,
+      cashDisposition: {
+        select: {
+          id: true, handoverId: true, retainedAmount: true, countedCash: true, deliveredAmount: true,
+          handover: { select: { target: true, incomingShiftId: true } },
+          deliveries: { where: { status: "DECLARED" }, select: { id: true, amount: true, recipientId: true } },
+        },
+      },
+    },
+  });
+  const disposition = previousShift?.status === "CLOSED" ? previousShift.cashDisposition : null;
+  if (!previousShift || !disposition) return null;
+  // A direct acceptance already opened another shift with it.
+  const consumedBy = disposition.handover?.incomingShiftId ?? null;
+  if (consumedBy && consumedBy !== args.shiftId) return null;
+  const retained = Number(disposition.retainedAmount);
+  await tx.shift.update({ where: { id: args.shiftId }, data: { openingCashAmount: retained } });
+  if (cashCustodyPeriodId) {
+    await tx.custodyPeriod.update({ where: { id: cashCustodyPeriodId }, data: { openingCashAmount: retained } });
+  }
+  await recomputeShiftTotals(args.shiftId, tx);
+  await auditInTransaction(tx, {
+    cafeId: args.cafeId,
+    userId: args.userId,
+    action: "HANDOVER_DIRECT_CASH_OPENING",
+    entity: "ShiftCashDisposition",
+    entityId: disposition.id,
+    details: {
+      outgoingShiftId: previousShift.id,
+      incomingShiftId: args.shiftId,
+      retainedDrawerCash: retained,
+      countedCash: Number(disposition.countedCash),
+      deliveredAmount: Number(disposition.deliveredAmount),
+      pendingDeliveries: disposition.deliveries.map((d) => ({ id: d.id, amount: Number(d.amount), recipientId: d.recipientId })),
+      handoverTarget: disposition.handover?.target ?? null,
+      acknowledgement: "NO_HANDOVER_DRAWER_CARRYFORWARD",
+      independentVerification: false,
+    },
+  });
+  return retained;
+}
+
+/**
  * Establish the custody a newly-opened shift may use. This deliberately
  * records a gate rather than trying to invent a handover acceptance.
  */
@@ -252,49 +314,11 @@ export async function ensureCustodyForShift(
       result.cashCustodyPeriodId = opened.custodyPeriodId;
       result.opened.push("CASH");
     }
+    // The branch-custody morning: the drawer the night left behind is this shift's opening.
+    if (!claimedCash.receiptId) await carryRetainedDrawerCash(tx, args, result.cashCustodyPeriodId);
     result.withheld.push("STOCK");
     result.gate = "AWAITING_OPENING_VERIFICATION";
   } else if (!cash && !stock) {
-    let openingCashAmount = args.openingCashAmount;
-    if (!claimedCash.receiptId) {
-      const previousShift = await tx.shift.findFirst({
-        where: { cafeId: args.cafeId, branchId: args.branchId, id: { not: args.shiftId } },
-        orderBy: [{ shiftNumber: "desc" }],
-        select: {
-          id: true, status: true,
-          cashDisposition: {
-            select: {
-              id: true, handoverId: true, retainedAmount: true, countedCash: true, deliveredAmount: true,
-              deliveries: { where: { status: "DECLARED" }, select: { id: true, amount: true, recipientId: true } },
-            },
-          },
-        },
-      });
-      if (previousShift?.status === "CLOSED" && previousShift.cashDisposition && previousShift.cashDisposition.handoverId === null) {
-        openingCashAmount = Number(previousShift.cashDisposition.retainedAmount);
-        await tx.shift.update({
-          where: { id: args.shiftId },
-          data: { openingCashAmount, expectedCashAmount: openingCashAmount },
-        });
-        await auditInTransaction(tx, {
-          cafeId: args.cafeId,
-          userId: args.userId,
-          action: "HANDOVER_DIRECT_CASH_OPENING",
-          entity: "ShiftCashDisposition",
-          entityId: previousShift.cashDisposition.id,
-          details: {
-            outgoingShiftId: previousShift.id,
-            incomingShiftId: args.shiftId,
-            retainedDrawerCash: openingCashAmount,
-            countedCash: Number(previousShift.cashDisposition.countedCash),
-            deliveredAmount: Number(previousShift.cashDisposition.deliveredAmount),
-            pendingDeliveries: previousShift.cashDisposition.deliveries.map((d) => ({ id: d.id, amount: Number(d.amount), recipientId: d.recipientId })),
-            acknowledgement: "NO_HANDOVER_DRAWER_CARRYFORWARD",
-            independentVerification: false,
-          },
-        });
-      }
-    }
     const openedCash = await openCustodyPeriod(tx, {
       cafeId: args.cafeId,
       branchId: args.branchId,
@@ -303,8 +327,9 @@ export async function ensureCustodyForShift(
       shiftId: args.shiftId,
       holderType: "USER",
       openedById: args.userId,
-      openingCashAmount,
+      openingCashAmount: args.openingCashAmount,
     });
+    if (!claimedCash.receiptId) await carryRetainedDrawerCash(tx, args, openedCash.custodyPeriodId);
     const openedStock = await openCustodyPeriod(tx, {
       cafeId: args.cafeId,
       branchId: args.branchId,
@@ -320,49 +345,7 @@ export async function ensureCustodyForShift(
     result.opened.push("CASH", "STOCK");
     result.operational = true;
   } else if (cash?.holderType === "USER" && stock?.holderType === "USER") {
-    if (!claimedCash.receiptId) {
-      const previousShift = await tx.shift.findFirst({
-        where: { cafeId: args.cafeId, branchId: args.branchId, id: { not: args.shiftId } },
-        orderBy: [{ shiftNumber: "desc" }],
-        select: {
-          id: true, status: true,
-          cashDisposition: {
-            select: {
-              id: true, handoverId: true, retainedAmount: true, countedCash: true, deliveredAmount: true,
-              deliveries: { where: { status: "DECLARED" }, select: { id: true, amount: true, recipientId: true } },
-            },
-          },
-        },
-      });
-      if (previousShift?.status === "CLOSED" && previousShift.cashDisposition && previousShift.cashDisposition.handoverId === null) {
-        const retained = Number(previousShift.cashDisposition.retainedAmount);
-        await tx.shift.update({
-          where: { id: args.shiftId },
-          data: { openingCashAmount: retained, expectedCashAmount: retained },
-        });
-        await tx.custodyPeriod.update({
-          where: { id: cash.id },
-          data: { openingCashAmount: retained },
-        });
-        await auditInTransaction(tx, {
-          cafeId: args.cafeId,
-          userId: args.userId,
-          action: "HANDOVER_DIRECT_CASH_OPENING",
-          entity: "ShiftCashDisposition",
-          entityId: previousShift.cashDisposition.id,
-          details: {
-            outgoingShiftId: previousShift.id,
-            incomingShiftId: args.shiftId,
-            retainedDrawerCash: retained,
-            countedCash: Number(previousShift.cashDisposition.countedCash),
-            deliveredAmount: Number(previousShift.cashDisposition.deliveredAmount),
-            pendingDeliveries: previousShift.cashDisposition.deliveries.map((d) => ({ id: d.id, amount: Number(d.amount), recipientId: d.recipientId })),
-            acknowledgement: "NO_HANDOVER_DRAWER_CARRYFORWARD",
-            independentVerification: false,
-          },
-        });
-      }
-    }
+    if (!claimedCash.receiptId) await carryRetainedDrawerCash(tx, args, cash.id);
     for (const [scope, period] of [["CASH", cash], ["STOCK", stock]] as const) {
       if (!period.participants.some((p) => p.userId === args.userId)) {
         await tx.custodyParticipant.create({

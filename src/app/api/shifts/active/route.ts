@@ -4,6 +4,7 @@ import { requirePermission, resolveBranchId, handleApiError } from "@/lib/api";
 import { getActiveShift, redactBlindCount } from "@/lib/shifts";
 import { resolvePermissions } from "@/lib/perms/effective";
 import { pendingHandover as selectPendingHandover } from "@/components/handovers/workflow-state";
+import { openingCarryforward } from "@/lib/opening-carryforward";
 
 // GET /api/shifts/active — the current cashier's open shift (or null).
 // Drives the POS shift gate & top bar.
@@ -39,9 +40,12 @@ export async function GET(request: NextRequest) {
           take: 2,
         }) : [];
     const pendingHandover = selectPendingHandover(candidates, branchId);
+    // No shift of theirs here yet: what the drawer will open with, so the open dialog can say so.
+    const branch = !shift && !pendingShift ? await db.branch.findUnique({ where: { id: branchId }, select: { cafeId: true } }) : null;
+    const carryforward = branch ? await openingCarryforward(db, { cafeId: branch.cafeId, branchId, canSeeBlindAmounts: canViewReports }) : null;
     // SHIFT-003: this is always the requester's own shift, so the
     // reconciliation target is withheld while it is open.
-    return NextResponse.json({ shift: shift ? redactBlindCount(shift, canViewReports) : null, pendingShift: pendingShift ? { ...redactBlindCount(pendingShift, canViewReports), pendingHandover } : null });
+    return NextResponse.json({ shift: shift ? redactBlindCount(shift, canViewReports) : null, pendingShift: pendingShift ? { ...redactBlindCount(pendingShift, canViewReports), pendingHandover } : null, carryforward });
   } catch (error) {
     return handleApiError(error);
   }

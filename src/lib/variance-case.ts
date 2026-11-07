@@ -580,14 +580,69 @@ const CASE_CORE = {
   createdAt: true,
 } satisfies Prisma.VarianceCaseSelect;
 
-/** A row on the board: enough to triage, no more. */
+/** The shift a case belongs to, with the drawer figures and who ran it. */
+const CASE_SHIFT_SELECT = {
+  id: true,
+  shiftNumber: true,
+  status: true,
+  openedAt: true,
+  closedAt: true,
+  financiallyClosedAt: true,
+  openingCashAmount: true,
+  expectedCashAmount: true,
+  actualCashAmount: true,
+  cashDifference: true,
+  cashReasonNote: true,
+  cashier: { select: { id: true, name: true } },
+} satisfies Prisma.ShiftSelect;
+
+/**
+ * Who and what a case is about, for the board and the detail alike: the
+ * branch, the shift and its cashier, the custody and its participants, the
+ * handover that surfaced it, and the source evidence with its own reason.
+ * Every relation name here is the schema's own (`VarianceCase`).
+ */
+const CASE_CONTEXT = {
+  branch: { select: { id: true, name: true } },
+  shift: { select: CASE_SHIFT_SELECT },
+  cashShift: { select: CASE_SHIFT_SELECT },
+  custodyPeriod: {
+    select: {
+      id: true, scope: true, status: true, holderType: true, startedAt: true, endedAt: true,
+      responsibleShift: { select: { id: true, shiftNumber: true, cashier: { select: { id: true, name: true } } } },
+      participants: { select: { role: true, joinedAt: true, leftAt: true, user: { select: { id: true, name: true } } }, orderBy: { joinedAt: "asc" } },
+    },
+  },
+  acceptedHandover: {
+    select: { id: true, target: true, outgoingUser: { select: { id: true, name: true } }, incomingUser: { select: { id: true, name: true } } },
+  },
+  tenderReconciliation: {
+    select: { id: true, method: true, status: true, expectedAmount: true, actualAmount: true, varianceAmount: true, reasonNote: true },
+  },
+  openingException: {
+    select: {
+      id: true, kind: true, proposedAmount: true, actualAmount: true, varianceAmount: true, note: true,
+      reasonCodeId: true, reasonCode: { select: { id: true, code: true, label: true } },
+    },
+  },
+  assignedResponsibility: { select: { id: true, name: true } },
+  resolvedBy: { select: { id: true, name: true } },
+} satisfies Prisma.VarianceCaseSelect;
+
+/** A row on the board: enough to triage — who, where, expected, actual, why. */
 export const VARIANCE_CASE_LIST_SELECT = {
   ...CASE_CORE,
-  custodyPeriod: { select: { id: true, scope: true, status: true } },
+  ...CASE_CONTEXT,
   stockCountLine: {
     select: {
       id: true,
       inventoryItemId: true,
+      unit: true,
+      expectedQuantity: true,
+      countedQuantity: true,
+      effectiveCountedQuantity: true,
+      varianceQuantity: true,
+      reasonNote: true,
       inventoryItem: { select: { id: true, name: true, unit: true } },
     },
   },
@@ -596,15 +651,7 @@ export const VARIANCE_CASE_LIST_SELECT = {
 /** One case, with what caused it resolved through its relations. */
 export const VARIANCE_CASE_DETAIL_SELECT = {
   ...CASE_CORE,
-  custodyPeriod: {
-    select: { id: true, scope: true, status: true, startedAt: true, endedAt: true },
-  },
-  stockCountLine: { select: CASE_STOCK_LINE_SELECT },
-  shift: { select: { id: true, shiftNumber: true, status: true, openedAt: true } },
-  tenderReconciliation: {
-    select: { id: true, method: true, status: true, varianceAmount: true },
-  },
-  openingException: { select: { id: true, kind: true, note: true } },
+  ...CASE_CONTEXT,
+  stockCountLine: { select: { ...CASE_STOCK_LINE_SELECT, reasonNote: true } },
   openedBy: { select: { id: true, name: true } },
-  resolvedBy: { select: { id: true, name: true } },
 } satisfies Prisma.VarianceCaseSelect;
