@@ -86,6 +86,8 @@ export type ApiOptions = {
   method?: string;
   body?: unknown;
   idempotencyKey?: string;
+  /** Extra request headers, kept out of the body so they never reach a retry key or fingerprint. */
+  headers?: Record<string, string>;
   /** Opt-in cancellation/deadline for GETs only. Financial writes ignore both. */
   signal?: AbortSignal;
   readTimeoutMs?: number;
@@ -136,7 +138,7 @@ async function sendApi<T>(
   const res = await fetch(path, {
     method,
     ...(signal ? { signal } : {}),
-    headers: { ...(body ? { "Content-Type": "application/json" } : {}), ...(key ? { "Idempotency-Key": key } : {}) },
+    headers: { ...options.headers, ...(body ? { "Content-Type": "application/json" } : {}), ...(key ? { "Idempotency-Key": key } : {}) },
     body,
   });
   if(signal?.aborted)throw new DOMException("تم إلغاء القراءة السابقة","AbortError");

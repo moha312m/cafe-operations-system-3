@@ -17,6 +17,7 @@ export function OrderCart({
   headingId,
   headingRef,
   discountControls,
+  discountExtra,
   cart,
   currency,
   orderType,
@@ -58,6 +59,8 @@ export function OrderCart({
   headingId?: string;
   headingRef?: Ref<HTMLHeadingElement>;
   discountControls?:ReactNode;
+  /** Shown under the invoice discount, e.g. the owner override code field. */
+  discountExtra?: ReactNode;
   cart: CartLine[];
   currency: string;
   orderType: OrderType;
@@ -163,6 +166,7 @@ export function OrderCart({
           subtotal={subtotal}
           discountInput={discountInput}
           discountError={discountError}
+          discountExtra={discountExtra}
           discountAmount={discountAmount}
           loyaltyPoints={redeem.points}
           loyaltyDiscount={redeem.discount}

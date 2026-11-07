@@ -37,6 +37,8 @@ const LABELS: Record<string, string> = {
   OWNER_ACTION_EXPIRED: "انتهاء صلاحية طلب موافقة",
   OWNER_ACTION_STALE: "طلب موافقة لم يعد صالحًا",
   OWNER_PASSCODE_FAILED: "رمز مالك خاطئ",
+  OWNER_OVERRIDE_USED: "خصم بتخويل المالك",
+  OWNER_OVERRIDE_FAILED: "كود تخويل مالك خاطئ",
   OWNER_ACTION_SETTINGS_CHANGED: "تغيير إعدادات موافقات المالك",
   // QR menu
   QR_ORDER_SUBMITTED: "طلب جديد من منيو QR",
