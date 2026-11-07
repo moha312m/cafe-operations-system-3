@@ -290,7 +290,9 @@ async function resolveCountScopeWithClient(
   });
 
   return {
-    inventoryItemIds: items.map((i) => i.id),
+    inventoryItemIds: criticalOnly && items.length === 0
+      ? (await client.inventoryItem.findMany({ where: { cafeId: args.cafeId, branchId: args.branchId, archivedAt: null, isActive: true }, select: { id: true }, orderBy: { name: "asc" } })).map((i) => i.id)
+      : items.map((i) => i.id),
     derivation: criticalOnly ? "CRITICAL_ONLY" : "ALL_ELIGIBLE",
   };
 }

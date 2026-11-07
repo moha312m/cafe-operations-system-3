@@ -472,7 +472,7 @@ export async function closeShiftWithSettlement(
       config.enabled && config.configError?.code === "CYCLE_POLICY_UNSUPPORTED"
         ? config.configError
         : null;
-    const handoverEnabled = config.enabled && cycleIssue === null;
+    const handoverEnabled = config.enabled && config.configError === null;
 
     await assertOpeningReceiptEvidence(tx, locked.id);
 

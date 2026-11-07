@@ -111,13 +111,16 @@ async function readHandoverConfig(
     ? { value: settings.periodicFullCountWeekday, source: "CAFE" as const }
     : { value: branch.periodicFullCountWeekdayOverride, source: "BRANCH" as const };
   const mode = handoverCountType.value === "FULL" ? "FULL" : "SELECTED";
-  const selectedItemIds = mode === "SELECTED"
+  const criticalItemIds = mode === "SELECTED"
     ? (await client.inventoryItem.findMany({
       where: { cafeId, branchId, archivedAt: null, isActive: true, isCritical: true },
       select: { id: true },
       orderBy: { name: "asc" },
     })).map((item) => item.id)
     : [];
+  const selectedItemIds = mode === "SELECTED" && criticalItemIds.length === 0
+    ? (await client.inventoryItem.findMany({ where: { cafeId, branchId, archivedAt: null, isActive: true }, select: { id: true }, orderBy: { name: "asc" } })).map((item) => item.id)
+    : criticalItemIds;
   const errors = configErrors({
     policy: policy.value,
     mode,

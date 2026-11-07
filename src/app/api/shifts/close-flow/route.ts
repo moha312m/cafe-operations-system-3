@@ -55,7 +55,7 @@ export async function GET(request: NextRequest) {
       const branchCustodyFullCountDue = keys.has("handover.exception")
         ? (await fullCountDue({ cafeId: branch.cafeId, branchId, at: new Date(), target: "BRANCH_CUSTODY" }).catch(() => null))?.due ?? false
         : false;
-      const handoverEnabled = config.enabled && config.configError?.code !== "CYCLE_POLICY_UNSUPPORTED";
+      const handoverEnabled = config.enabled && config.configError === null;
       // The items the materials step will ask for, so screen 1 can say so. The same planner the close uses; a
       // broken configuration previews nothing rather than failing the screen.
       const dueItemsPreview = handoverEnabled && (preview?.due ?? true)

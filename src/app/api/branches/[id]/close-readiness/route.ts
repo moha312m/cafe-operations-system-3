@@ -28,7 +28,7 @@ export async function GET(request: NextRequest, { params }: Params) {
     const readiness = await db.$transaction(async (tx) => {
       await tx.$executeRawUnsafe("SET TRANSACTION READ ONLY");
       const config = await resolveBranchHandoverConfigReadOnly(tx, cafeId, id);
-      const blockers = config.enabled ? await handoverStartBlockers(tx, { cafeId, branchId: id }) : [];
+      const blockers = config.enabled && config.configError === null ? await handoverStartBlockers(tx, { cafeId, branchId: id }) : [];
       const settings = await tx.cafeSettings.findUnique({ where: { cafeId }, select: { carryOpenOrdersOnHandover: true } });
       const requiredItems = config.enabled && config.mode === "SELECTED"
         ? await tx.inventoryItem.findMany({
