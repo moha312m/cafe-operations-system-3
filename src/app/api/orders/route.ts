@@ -15,6 +15,7 @@ import {
   ApiError,
 } from "@/lib/api";
 import { audit, auditInTransaction } from "@/lib/audit";
+import { checkOwnerOverrideCode, isDiscountManager, overrideCodeFrom, overrideRefusal, recordOwnerOverrideInTransaction, type OwnerOverrideCheck, type OwnerOverrideReason } from "@/lib/owner-override";
 import { orderPage } from "@/lib/order-pagination";
 import { unitPriceExact as computeUnitPrice } from "@/lib/pricing";
 import { recomputeShiftTotals } from "@/lib/shifts";
@@ -139,14 +140,27 @@ export async function POST(request: NextRequest) {
     const branchId = resolveBranchId(session, data.branchId);
 
     // Re-check before idempotency replay, using the current effective keys.
-    if (data.discountAmount > 0 || (data.invoiceDiscount&&Number(data.invoiceDiscount.value)>0) || data.items.some(i=>Number(i.discount.value)>0)) {
+    // A valid owner override code (header, never the body) stands in for a
+    // missing discount key or an exceeded discount limit; without one, or with
+    // a wrong one, the refusals below are unchanged.
+    const overrideCode = overrideCodeFrom(request);
+    let ownerOverride: OwnerOverrideCheck = { status: "NONE" };
+    const overrideReasons: OwnerOverrideReason[] = [];
+    const hasDiscount = data.discountAmount > 0 || (data.invoiceDiscount&&Number(data.invoiceDiscount.value)>0) || data.items.some(i=>Number(i.discount.value)>0);
+    if (hasDiscount) {
       try { await requireKey("pos.apply_discount"); }
       catch (error) {
-        if (error instanceof ApiError && error.status === 403) {
+        if (!(error instanceof ApiError && error.status === 403)) throw error;
+        ownerOverride = await checkOwnerOverrideCode(session, { branchId, code: overrideCode });
+        if (ownerOverride.status !== "VALID") {
           await audit({ cafeId, userId: session.id, action: "ORDER_DISCOUNT_REFUSED", entity: "Order",
             details: { branchId, permissionKey: "pos.apply_discount" } });
+          throw overrideRefusal(ownerOverride, error);
         }
-        throw error;
+        overrideReasons.push("DISCOUNT_PERMISSION");
+      }
+      if (ownerOverride.status === "NONE" && overrideCode && !isDiscountManager(session.role)) {
+        ownerOverride = await checkOwnerOverrideCode(session, { branchId, code: overrideCode });
       }
     }
     if (data.loyaltyPointsToRedeem > 0) await requireKey("loyalty.redeem_points");
@@ -261,7 +275,7 @@ export async function POST(request: NextRequest) {
       for(const [index,row] of itemRows.entries()){row.lineTotal=money(priced.lines[index].lineTotal);row.itemDiscountAmount=priced.lines[index].itemDiscount;row.invoiceDiscountShare=priced.lines[index].invoiceShare;}
       if(effectiveDiscount.gt(0)&&!['CAFE_OWNER','BRANCH_MANAGER'].includes(session.role)){
         const limit=await tx.salesDiscountLimit.findUnique({where:{userId:session.id}});
-        if(effectiveDiscount.gt(limit?.maxAmount??0)||(!subtotal.isZero()&&effectiveDiscount.times(100).div(subtotal).gt(limit?.maxPercent??0)))throw new ApiError(403,'الخصم يتجاوز حدك؛ احفظ الطلب بدون خصم وبانتظار التحصيل ثم اطلب اعتماد المدير من المبيعات');
+        if(effectiveDiscount.gt(limit?.maxAmount??0)||(!subtotal.isZero()&&effectiveDiscount.times(100).div(subtotal).gt(limit?.maxPercent??0))){if(ownerOverride.status!=='VALID')throw overrideRefusal(ownerOverride,new ApiError(403,'الخصم يتجاوز حدك؛ احفظ الطلب بدون خصم وبانتظار التحصيل ثم اطلب اعتماد المدير من المبيعات'));overrideReasons.push('DISCOUNT_LIMIT');}
       }
 
       // ── Can the branch actually make this? ──
@@ -515,6 +529,9 @@ export async function POST(request: NextRequest) {
       if (effectiveDiscount.gt(0)) {
         await auditInTransaction(tx, { cafeId, userId: session.id, action: "ORDER_DISCOUNT_APPLIED", entity: "Order", entityId: order.id,
           details: { branchId, manualDiscount: effectiveDiscount.toString(), subtotal: subtotal.toString(),invoiceDiscount,itemDiscounts:itemRows.map(r=>({productId:r.productId,type:r.itemDiscountType,value:r.itemDiscountValue,amount:r.itemDiscountAmount})) } });
+      }
+      if (overrideReasons.length && ownerOverride.status === "VALID") {
+        await recordOwnerOverrideInTransaction(tx, session, ownerOverride.grant, { orderId: order.id, operation: "ORDER_CREATE", reasons: overrideReasons, discountAmount: effectiveDiscount, subtotal });
       }
       if (shift) await recomputeShiftTotals(shift.id, tx);
 

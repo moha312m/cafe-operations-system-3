@@ -5,12 +5,12 @@ import { auditInTransaction } from "@/lib/audit";
 import { db } from "@/lib/db";
 import { fingerprint, targetFor } from "@/lib/owner-action-approvals";
 
-const PASSCODE_PATTERN = /^\d{6,12}$/;
-const LOCK_WINDOW_MS = 15 * 60 * 1000;
-const MAX_FAILURES = 5;
+export const OWNER_PASSCODE_PATTERN = /^\d{6,12}$/;
+export const OWNER_PASSCODE_LOCK_WINDOW_MS = 15 * 60 * 1000;
+export const OWNER_PASSCODE_MAX_FAILURES = 5;
 
 export function validateOwnerPasscode(passcode: string) {
-  if (!PASSCODE_PATTERN.test(passcode)) {
+  if (!OWNER_PASSCODE_PATTERN.test(passcode)) {
     throw new ApiError(400, "Passcode must contain 6 to 12 digits");
   }
 }
@@ -112,9 +112,9 @@ export async function authorizeOwnerActionByPasscode(args: {
 
     const now = new Date();
     const failures = await tx.ownerPasscodeAttempt.count({
-      where: { cafeId: request.cafeId, ownerId: request.ownerId, requesterId: actor.id, success: false, createdAt: { gt: new Date(now.getTime() - LOCK_WINDOW_MS) } },
+      where: { cafeId: request.cafeId, ownerId: request.ownerId, requesterId: actor.id, success: false, createdAt: { gt: new Date(now.getTime() - OWNER_PASSCODE_LOCK_WINDOW_MS) } },
     });
-    if (failures >= MAX_FAILURES) return "LOCKED";
+    if (failures >= OWNER_PASSCODE_MAX_FAILURES) return "LOCKED";
     const valid = credential.ownerId === request.ownerId && await bcrypt.compare(args.passcode, credential.passcodeHash);
     if (!valid) {
       await tx.ownerPasscodeAttempt.create({ data: { cafeId: request.cafeId, ownerId: request.ownerId, passcodeId: credential.id, requesterId: actor.id, requestId: request.id, success: false } });

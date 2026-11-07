@@ -33,6 +33,8 @@ import {
 import { CategoryTabs } from "@/components/pos/category-tabs";
 import { ProductGrid } from "@/components/pos/product-grid";
 import { OrderCart } from "@/components/pos/order-cart";
+import { OwnerOverrideField } from "@/components/approvals/owner-override-field";
+import { ownerOverrideErrorMessage, ownerOverrideHeaders } from "@/lib/owner-override-client";
 import { ShiftControls } from "@/components/pos/shift-controls";
 import { CollectPaymentPanel } from "@/components/pos/collect-payment-panel";
 import { PaymentReceiptPreview } from "@/components/receipts/payment-receipt-preview";
@@ -100,6 +102,9 @@ function PosPageInner() {
   const { cafe, user, can, canKey, permKeys } = useApp();
   const canDiscount = canKey("pos.apply_discount");
   const canCreateOrder = canKey("pos.create_order");
+  // Without the discount key a cashier may still enter a discount; the server
+  // accepts it only with a valid owner override code.
+  const discountEnabled = canDiscount || canCreateOrder;
   const currency = cafe?.currency ?? "USD";
   const taxRate = cafe?.taxRate ?? 0;
 
@@ -164,7 +169,7 @@ function PosPageInner() {
   const [discountInput, setDiscountInput] = useState("");
   const [invoiceDiscountType,setInvoiceDiscountType]=useState<'NONE'|'PERCENT'|'FIXED'>('FIXED');
   let manualDiscount=0,discountError:string|null=null,invoiceDiscountError:string|null=null;
-  if(canDiscount&&cart.length){const amendmentLines=cart.map(l=>({id:l.key,unitPrice:String(l.unitPrice),addOnTotal:'0',quantity:l.quantity,discount:l.discount??{type:'NONE',value:'0'}}));try{manualDiscount=Number(priceAmendment(amendmentLines,{type:invoiceDiscountType,value:discountInput||'0'}).discountAmount);}catch(e){discountError=e instanceof Error?e.message:'خصم غير صالح';}
+  if(discountEnabled&&cart.length){const amendmentLines=cart.map(l=>({id:l.key,unitPrice:String(l.unitPrice),addOnTotal:'0',quantity:l.quantity,discount:l.discount??{type:'NONE',value:'0'}}));try{manualDiscount=Number(priceAmendment(amendmentLines,{type:invoiceDiscountType,value:discountInput||'0'}).discountAmount);}catch(e){discountError=e instanceof Error?e.message:'خصم غير صالح';}
     // The same message is thrown for line and invoice discounts. Mark the invoice field when it is invalid on its own (line discounts neutralized)
     // or when the combination fails while the line discounts alone are valid; leave it unmarked only when a line discount is the sole cause.
     if(discountError){
@@ -174,6 +179,8 @@ function PosPageInner() {
       try{priceAmendment(amendmentLines,{type:'NONE',value:'0'});}catch{lineOnlyError=true;}
       invoiceDiscountError=invoiceOnlyError??(lineOnlyError?null:discountError);
     }}
+  const [overrideCode, setOverrideCode] = useState("");
+  const overrideOffered = manualDiscount > 0 && (!canDiscount || !["CAFE_OWNER", "BRANCH_MANAGER"].includes(user.role));
   const [method, setMethod] = useState<PaymentMethod>("CASH");
   const [mixed, setMixed] = useState<{ CASH: string; CARD: string; WALLET: string }>(
     EMPTY_MIXED
@@ -500,6 +507,7 @@ function PosPageInner() {
     submissionInFlight.current = true;
     setSubmitError(null);
     setSubmitting(true);
+    const overrideHeaders = ownerOverrideHeaders(overrideOffered ? overrideCode : "");
     try {
       // Payment collection is resolved server-side (order + payment created
       // atomically) based on the collection mode.
@@ -519,6 +527,7 @@ function PosPageInner() {
 
       const { order } = await api<{ order: PlacedOrder }>("/api/orders", {
         method: "POST",
+        headers: overrideHeaders,
         body: {
           branchId: branchId || undefined,
           type: orderType,
@@ -529,12 +538,12 @@ function PosPageInner() {
           // Manual discount only — the server recomputes the loyalty
           // discount from the redeemed points.
           discountAmount: 0,
-          invoiceDiscount: {type:canDiscount?invoiceDiscountType:'NONE',value:canDiscount?(discountInput||'0'):'0'},
+          invoiceDiscount: {type:discountEnabled?invoiceDiscountType:'NONE',value:discountEnabled?(discountInput||'0'):'0'},
           loyaltyPointsToRedeem: redeem.points || undefined,
           collectionMode,
           ...paymentBody,
           items: cart.map((l) => ({
-            discount:canDiscount?(l.discount??{type:'NONE',value:'0'}):{type:'NONE',value:'0'},
+            discount:discountEnabled?(l.discount??{type:'NONE',value:'0'}):{type:'NONE',value:'0'},
             productId: l.product.id,
             variantId: l.variant?.id ?? null,
             quantity: l.quantity,
@@ -576,10 +585,12 @@ function PosPageInner() {
         setReceiptPaymentId(order.payments[0].id);
       }
     } catch (e) {
-      const message = e instanceof Error ? e.message : "فشل تسجيل الطلب";
+      const message = ownerOverrideErrorMessage(e, !!overrideHeaders, "فشل تسجيل الطلب");
       setSubmitError(message);
       toast.error(message);
     } finally {
+      // The code is single-use on this screen: never kept for the next order.
+      setOverrideCode("");
       submissionInFlight.current = false;
       setSubmitting(false);
     }
@@ -720,7 +731,7 @@ function PosPageInner() {
         id={orderId}
         headingId={`${orderId}-heading`}
         headingRef={orderHeadingRef}
-        discountControls={canDiscount&&cart.length>0?<details className="space-y-2 rounded border p-2 text-sm"><summary>خصومات الأصناف والفاتورة</summary>{cart.map(l=><div key={l.key} className="flex flex-wrap items-center gap-1"><span>{l.product.name}</span><TouchSelect aria-label={'نوع خصم '+l.product.name} value={l.discount?.type??'NONE'} className="rounded border bg-background p-1" onValueChange={touchValue => setCart(rows=>rows.map(r=>r.key===l.key?{...r,discount:{type:touchValue as 'NONE'|'PERCENT'|'FIXED',value:'0'}}:r))}><option value="NONE">بدون خصم</option><option value="PERCENT">%</option><option value="FIXED">{currencySymbol(currency)}</option></TouchSelect><TouchNumberInput aria-label={'قيمة خصم '+l.product.name} type="number" min="0" step="0.01" className="w-20 rounded border bg-background p-1" disabled={!l.discount||l.discount.type==='NONE'} value={l.discount?.value??'0'} onValueChange={touchValue => setCart(rows=>rows.map(r=>r.key===l.key?{...r,discount:{type:r.discount!.type,value:touchValue}}:r))}/></div>)}<label className="block">نوع خصم الفاتورة <TouchSelect aria-label="نوع خصم الفاتورة قبل التأكيد" className="rounded border bg-background p-1" value={invoiceDiscountType} onValueChange={touchValue => {setInvoiceDiscountType(touchValue as typeof invoiceDiscountType);setDiscountInput('');}}><option value="FIXED">مبلغ</option><option value="PERCENT">نسبة %</option><option value="NONE">بدون خصم</option></TouchSelect></label><p>تُحسب خصومات الأصناف أولًا. ما يتجاوز حدك يحتاج اعتماد المدير عبر طلب تعديل بالمبيعات.</p></details>:null}
+        discountControls={discountEnabled&&cart.length>0?<details className="space-y-2 rounded border p-2 text-sm"><summary>خصومات الأصناف والفاتورة</summary>{cart.map(l=><div key={l.key} className="flex flex-wrap items-center gap-1"><span>{l.product.name}</span><TouchSelect aria-label={'نوع خصم '+l.product.name} value={l.discount?.type??'NONE'} className="rounded border bg-background p-1" onValueChange={touchValue => setCart(rows=>rows.map(r=>r.key===l.key?{...r,discount:{type:touchValue as 'NONE'|'PERCENT'|'FIXED',value:'0'}}:r))}><option value="NONE">بدون خصم</option><option value="PERCENT">%</option><option value="FIXED">{currencySymbol(currency)}</option></TouchSelect><TouchNumberInput aria-label={'قيمة خصم '+l.product.name} type="number" min="0" step="0.01" className="w-20 rounded border bg-background p-1" disabled={!l.discount||l.discount.type==='NONE'} value={l.discount?.value??'0'} onValueChange={touchValue => setCart(rows=>rows.map(r=>r.key===l.key?{...r,discount:{type:r.discount!.type,value:touchValue}}:r))}/></div>)}<label className="block">نوع خصم الفاتورة <TouchSelect aria-label="نوع خصم الفاتورة قبل التأكيد" className="rounded border bg-background p-1" value={invoiceDiscountType} onValueChange={touchValue => {setInvoiceDiscountType(touchValue as typeof invoiceDiscountType);setDiscountInput('');}}><option value="FIXED">مبلغ</option><option value="PERCENT">نسبة %</option><option value="NONE">بدون خصم</option></TouchSelect></label><p>تُحسب خصومات الأصناف أولًا. ما يتجاوز حدك يحتاج كود تخويل المالك، أو اعتماد المدير عبر طلب تعديل بالمبيعات.</p></details>:null}
         cart={cart}
         currency={currency}
         orderType={orderType}
@@ -739,7 +750,8 @@ function PosPageInner() {
         redeem={redeem}
         onRedeemChange={setRedeem}
         subtotal={subtotal}
-        discountInput={canDiscount ? discountInput : ""}
+        discountInput={discountEnabled ? discountInput : ""}
+        discountExtra={overrideOffered ? <OwnerOverrideField value={overrideCode} onChange={setOverrideCode} /> : null}
         discountError={invoiceDiscountError}
         discountAmount={discountAmount}
         serviceCharge={serviceCharge}

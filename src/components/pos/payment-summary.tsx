@@ -1,5 +1,5 @@
 "use client";
-import { useId } from "react";
+import { useId, type ReactNode } from "react";
 import { TouchNumberInput } from "@/components/pos/touch-number-input";
 
 import { money } from "@/lib/client";
@@ -36,6 +36,7 @@ export function PaymentSummary({
   currency,
   subtotal,
   discountInput,
+  discountExtra,
   discountError = null,
   discountAmount,
   loyaltyPoints = 0,
@@ -62,6 +63,7 @@ export function PaymentSummary({
   currency: string;
   subtotal: number;
   discountInput: string;
+  discountExtra?: ReactNode;
   /** Set only when the invoice discount itself is the cause of the error; line-level errors leave it null. */
   discountError?: string | null;
   discountAmount: number;
@@ -87,7 +89,8 @@ export function PaymentSummary({
 }) {
   const validationId = useId();
   const { canKey } = useApp();
-  const canDiscount = canKey("pos.apply_discount");
+  // Without the discount key the server still accepts a discount with an owner override code.
+  const canDiscount = canKey("pos.apply_discount") || canKey("pos.create_order");
   const discountInvalid = canDiscount && !!discountError;
   const mixedSum =
     (Number(mixed.CASH) || 0) + (Number(mixed.CARD) || 0) + (Number(mixed.WALLET) || 0);
@@ -216,6 +219,7 @@ export function PaymentSummary({
             <span className="tabular-nums">−{money(discountAmount, currency)}</span>
           </div>
         )}
+        {discountExtra}
         {loyaltyDiscount > 0 && (
           <div className="flex items-center justify-between text-caramel-ink">
             <span>⭐ خصم النقاط ({loyaltyPoints} نقطة)</span>

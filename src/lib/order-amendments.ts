@@ -21,6 +21,8 @@ import {lockItemForUpdate,applyStockMutation} from '@/lib/ledger';
 import {allowsKnownShortage} from '@/lib/inventory-policy';
 import {assertOpeningReceiptEvidence} from '@/lib/opening-readiness';
 import {lockRecipeAmendmentProducts} from '@/lib/amendment-product-modes';
+import {db} from '@/lib/db';
+import {checkOwnerOverrideCode,overrideRefusal,recordOwnerOverrideInTransaction,type OwnerOverrideCheck,type OwnerOverrideReason} from '@/lib/owner-override';
 
 const discount=z.object({type:z.enum(['NONE','PERCENT','FIXED']),value:z.string().regex(/^\d+(\.\d{1,2})?$/)}).strict();
 export const amendmentSchema=z.object({
@@ -33,7 +35,7 @@ export type AmendmentInput=z.infer<typeof amendmentSchema>;
 const include={items:{include:{addOns:true},orderBy:{id:'asc' as const}},payments:{orderBy:{id:'asc' as const}},createdBy:{select:{id:true,name:true}},branch:{select:{id:true,name:true}}} satisfies Prisma.OrderInclude;
 type SavedOrder=Prisma.OrderGetPayload<{include:typeof include}>;
 type Line={id:string;productId:string|null;variantId:string|null;productName:string;variantName:string|null;unitPrice:string;addOnTotal:string;quantity:number;discount:{type:string;value:string};notes:string|null;addOns:{addOnId:string|null;addOnName:string;price:string}[];lineTotal?:string;gross?:string;itemDiscount?:string;invoiceShare?:string};
-export type Proposed={requiredPermissions?:string[];lines:Line[];subtotal:string;discountAmount:string;itemDiscountAmount:string;invoiceDiscountAmount:string;invoiceDiscount:{type:string;value:string};total:string;taxAmount:string;serviceChargeAmount:string;removed:string[];quantityRemoved:{id:string;quantity:number;prepared:boolean}[];positiveLines:Line[];stockPlan:{inventoryItemId:string;required:number;name:string}[];wastePlan:{inventoryItemId:string;required:number;name:string}[];settlement:ReturnType<typeof settlementRequired>};
+export type Proposed={requiredPermissions?:string[];lines:Line[];subtotal:string;discountAmount:string;itemDiscountAmount:string;invoiceDiscountAmount:string;invoiceDiscount:{type:string;value:string};total:string;taxAmount:string;serviceChargeAmount:string;removed:string[];quantityRemoved:{id:string;quantity:number;prepared:boolean}[];positiveLines:Line[];stockPlan:{inventoryItemId:string;required:number;name:string}[];wastePlan:{inventoryItemId:string;required:number;name:string}[];settlement:ReturnType<typeof settlementRequired>;ownerOverride?:{ownerId:string;reasons:OwnerOverrideReason[]}};
 export const json=(value:unknown)=>JSON.parse(JSON.stringify(value,(_key,item)=>typeof item==='bigint'?item.toString():item)) as Prisma.InputJsonValue;
 export const stateHash=(order:SavedOrder)=>createHash('sha256').update(JSON.stringify({revision:order.revision,status:order.status,approvalStatus:order.approvalStatus,total:order.total,discount:order.discountAmount,paid:order.paidAmount,remaining:order.remainingAmount,paymentStatus:order.paymentStatus,stock:order.stockDeductedAt,session:order.tableSessionId,items:order.items,payments:order.payments})).digest('hex');
 export async function salesAuthority(actor:SessionUser,key:string){
@@ -45,7 +47,7 @@ function originalLine(item:SavedOrder['items'][number]):Line{return {id:item.id,
 export function savedInvoiceDiscount(order:SavedOrder){return {type:order.invoiceDiscountType??(decimal(order.discountAmount).gt(0)?'FIXED':'NONE'),value:(order.invoiceDiscountValue??order.discountAmount).toFixed(2)};}
 export function receiptSnapshot(order:SavedOrder){return json({...order,items:order.items.filter(i=>!i.voidedAt),invoiceDiscount:savedInvoiceDiscount(order)});}
 const FINISHED_AMENDMENT_REFUSED='تعديل كمية منتج جاهز أو إضافته غير متاح في مراجعة الفاتورة؛ استخدم الإلغاء/المرتجع الحالي أو سجّل فاتورة جديدة';
-async function proposal(tx:Prisma.TransactionClient,order:SavedOrder,input:AmendmentInput,keys:Set<string>):Promise<Proposed>{
+async function proposal(tx:Prisma.TransactionClient,order:SavedOrder,input:AmendmentInput,keys:Set<string>,override:OwnerOverrideCheck={status:'NONE'}):Promise<Proposed>{
  if((order.taxAmount.gt(0)&&order.taxRateSnapshot===null)||(order.serviceChargeAmount.gt(0)&&order.serviceRateSnapshot===null))throw new ApiError(409,'الفاتورة التاريخية لا تحتوي لقطة كافية لقواعد الضريبة أو الخدمة؛ استخدم مسار الإلغاء/المرتجع');
  if(order.revision!==input.baseRevision)throw new ApiError(409,'الطلب اتعدل — حدّث الصفحة');
  if(['CANCELLED','REJECTED','PENDING_WAITER_APPROVAL'].includes(order.status)||order.paymentStatus==='REFUNDED')throw new ApiError(409,'استخدم مسار الموافقة أو الإلغاء الحالي لهذه الحالة');
@@ -83,8 +85,10 @@ async function proposal(tx:Prisma.TransactionClient,order:SavedOrder,input:Amend
   }
  }
  const oldDiscount=savedInvoiceDiscount(order), changedDiscount=JSON.stringify(oldDiscount)!==JSON.stringify(input.invoiceDiscount)||input.items.some(r=>{const i=existing.find(i=>i.id===r.id);return i?i.itemDiscountType!==r.discount.type||!i.itemDiscountValue.eq(r.discount.value):r.discount.type!=='NONE';});
- if(changedDiscount&&!keys.has('pos.apply_discount'))throw new ApiError(403,'ليس لديك صلاحية الخصم');
- if(changedDiscount)requiredPermissions.add('pos.apply_discount');
+ // A valid owner override stands in for the missing discount key on this proposal only; it is stored with it.
+ const overrideReasons:OwnerOverrideReason[]=[];
+ if(changedDiscount&&!keys.has('pos.apply_discount')){if(override.status!=='VALID')throw overrideRefusal(override,new ApiError(403,'ليس لديك صلاحية الخصم'));overrideReasons.push('DISCOUNT_PERMISSION');}
+ else if(changedDiscount)requiredPermissions.add('pos.apply_discount');
  const priced=priceAmendment(lines,input.invoiceDiscount,{taxRate:order.taxRateSnapshot?.toString()??'0',serviceRate:order.serviceRateSnapshot?.toString()??'0',fixedService:!order.serviceRateSnapshot||order.serviceRateSnapshot.isZero()?order.serviceChargeAmount.toString():'0'});
  const positiveLines=lines.flatMap(l=>{const old=existing.find(i=>i.id===l.id);const delta=l.quantity-(old?.quantity??0);return delta>0?[{...l,quantity:delta}]:[];});
  const quantityRemoved=existing.flatMap(i=>{const after=lines.find(l=>l.id===i.id)?.quantity??0;return after<i.quantity?[{id:i.id,quantity:i.quantity-after,prepared:i.kitchenStatus!=='NEW'||!!order.stockDeductedAt}]:[];});
@@ -94,7 +98,12 @@ async function proposal(tx:Prisma.TransactionClient,order:SavedOrder,input:Amend
  const wasteLines=order.stockDeductedAt||order.status==='SERVED'?[]:quantityRemoved.filter(r=>r.prepared).map(r=>({...originalLine(existing.find(i=>i.id===r.id)!),quantity:r.quantity}));
  const waste=await checkCartAvailability({cafeId:order.cafeId,branchId:order.branchId,mode:order.inventoryEnforcementMode,lines:wasteLines.filter(l=>l.productId).map(l=>({productId:l.productId!,label:l.productName,variantId:l.variantId,addOnIds:l.addOns.map(a=>a.addOnId).filter((a):a is string=>!!a),quantity:l.quantity}))},tx);
  if(!waste.ok)throw new ApiError(409,waste.message??"تعذر تسجيل هالك الأصناف المحضرة");
- return {...priced,requiredPermissions:[...requiredPermissions],wastePlan:waste.knownConsumption.map(d=>({inventoryItemId:d.inventoryItemId,required:d.required,name:d.name})),lines:priced.lines.map(l=>({...lines.find(x=>x.id===l.id)!,...l,unitPrice:String(l.unitPrice),addOnTotal:String(l.addOnTotal),discount:{type:l.discount.type,value:String(l.discount.value)}})),invoiceDiscount:input.invoiceDiscount,removed:quantityRemoved.filter(x=>!lines.some(l=>l.id===x.id)).map(x=>x.id),quantityRemoved,positiveLines,stockPlan:availability.knownConsumption.map(d=>({inventoryItemId:d.inventoryItemId,required:d.required,name:d.name})),settlement:settlementRequired(order.total,collectedAmountExact(order.payments),priced.total)};
+ return {...priced,requiredPermissions:[...requiredPermissions],wastePlan:waste.knownConsumption.map(d=>({inventoryItemId:d.inventoryItemId,required:d.required,name:d.name})),lines:priced.lines.map(l=>({...lines.find(x=>x.id===l.id)!,...l,unitPrice:String(l.unitPrice),addOnTotal:String(l.addOnTotal),discount:{type:l.discount.type,value:String(l.discount.value)}})),invoiceDiscount:input.invoiceDiscount,removed:quantityRemoved.filter(x=>!lines.some(l=>l.id===x.id)).map(x=>x.id),quantityRemoved,positiveLines,stockPlan:availability.knownConsumption.map(d=>({inventoryItemId:d.inventoryItemId,required:d.required,name:d.name})),settlement:settlementRequired(order.total,collectedAmountExact(order.payments),priced.total),...(overrideReasons.length&&override.status==='VALID'?{ownerOverride:{ownerId:override.grant.ownerId,reasons:overrideReasons}}:{})};
+}
+async function amendmentOverride(actor:SessionUser,orderId:string,code:string|undefined,needed:boolean):Promise<OwnerOverrideCheck>{
+ if(!code||!needed)return {status:'NONE'};
+ const order=await db.order.findFirst({where:{id:orderId,...resolveReadScope(actor)},select:{branchId:true}});
+ return order?checkOwnerOverrideCode(actor,{branchId:order.branchId,code}):{status:'NONE'};
 }
 
 async function trace(tx:Prisma.TransactionClient,actor:SessionUser,order:SavedOrder,action:string,reason:string,details:unknown,amendment?:OrderAmendment,shiftId?:string){
@@ -106,23 +115,28 @@ async function originalShift(tx:Prisma.TransactionClient,order:SavedOrder){
  if(id)return tx.shift.findUnique({where:{id}});
  return order.createdById?tx.shift.findFirst({where:{cafeId:order.cafeId,branchId:order.branchId,cashierId:order.createdById,openedAt:{lte:order.createdAt},OR:[{closedAt:null},{closedAt:{gte:order.createdAt}}]},orderBy:{openedAt:'desc'}}):null;
 }
-export async function previewAmendment(actor:SessionUser,orderId:string,raw:unknown){
+export async function previewAmendment(actor:SessionUser,orderId:string,raw:unknown,overrideCode?:string){
  const keys=await salesAuthority(actor,'sales.edit');const input=amendmentSchema.parse(raw);
- return protectedTransaction(async tx=>{const order=await readOrder(tx,orderId,actor);const proposed=await proposal(tx,order,input,keys);return {before:receiptSnapshot(order),proposed};},resolveReadScope(actor));
+ const override=await amendmentOverride(actor,orderId,overrideCode,!keys.has('pos.apply_discount'));
+ return protectedTransaction(async tx=>{const order=await readOrder(tx,orderId,actor);const proposed=await proposal(tx,order,input,keys,override);return {before:receiptSnapshot(order),proposed};},resolveReadScope(actor));
 }
-export async function stageAmendment(actor:SessionUser,orderId:string,raw:unknown,requestKey:string){
+export async function stageAmendment(actor:SessionUser,orderId:string,raw:unknown,requestKey:string,overrideCode?:string){
  const keys=await salesAuthority(actor,'sales.edit');const input=amendmentSchema.parse(raw);if(requestKey.length<16||requestKey.length>64)throw new ApiError(400,'مفتاح طلب غير صالح');
  const requestHash=fingerprint({orderId,input});
+ const override=await amendmentOverride(actor,orderId,overrideCode,!keys.has('pos.apply_discount')||!isManager(actor));
  return protectedTransaction(async tx=>{
   const previous=await tx.orderAmendment.findFirst({where:{requesterId:actor.id,requestKey,...resolveReadScope(actor)}});
   if(previous){if(previous.requestHash!==requestHash)throw new ApiError(409,'المفتاح مستخدم لتعديل مختلف');return previous;}
   await lockOrders(tx,[orderId]);await lockOrderPayments(tx,[orderId]);
-  const order=await readOrder(tx,orderId,actor),proposed=await proposal(tx,order,input,keys),shift=await originalShift(tx,order);
+  const order=await readOrder(tx,orderId,actor),proposed=await proposal(tx,order,input,keys,override),shift=await originalShift(tx,order);
   const limits=await tx.salesDiscountLimit.findUnique({where:{userId:actor.id}});
   const discountPercent=decimal(proposed.subtotal).isZero()?decimal(0):decimal(proposed.discountAmount).times(100).div(proposed.subtotal);
   const exceeds=decimal(proposed.discountAmount).gt(limits?.maxAmount??0)||discountPercent.gt(limits?.maxPercent??0);
   const closed=shift?shift.status!=='OPEN':true;
-  const approvalRequired=closed||(!isManager(actor)&&exceeds);
+  // The owner override replaces the manager approval for the discount limit only; a closed shift still needs it.
+  const limitOverride=!isManager(actor)&&exceeds&&override.status==='VALID';
+  if(limitOverride&&override.status==='VALID')proposed.ownerOverride={ownerId:override.grant.ownerId,reasons:[...(proposed.ownerOverride?.reasons??[]),'DISCOUNT_LIMIT']};
+  const approvalRequired=closed||(!isManager(actor)&&exceeds&&!limitOverride);
   const ownerApprovalRequired=proposed.settlement.direction==='REFUND'||proposed.quantityRemoved.length>0;
   if(ownerApprovalRequired&&!keys.has('orders.request_owner_action'))throw new ApiError(403,'صلاحية طلب موافقة المالك مطلوبة للمرتجع أو إزالة الأصناف');
   const amendment=await tx.orderAmendment.create({data:{cafeId:order.cafeId,branchId:order.branchId,orderId,requesterId:actor.id,requestKey,requestHash,baseRevision:order.revision,fingerprint:stateHash(order),before:receiptSnapshot(order),proposed:json(proposed),reason:input.reason,approvalRequired,ownerApprovalRequired,originalShiftId:shift?.id,originalShiftClosed:closed,status:approvalRequired||ownerApprovalRequired?'PENDING_APPROVAL':'READY'}});
@@ -136,6 +150,7 @@ export async function stageAmendment(actor:SessionUser,orderId:string,raw:unknow
    const voiding=proposed.quantityRemoved.length?await requestOwnerAction({actor,action:'AMEND_ORDER_VOID',amendmentId:amendment.id,reason:input.reason,idempotencyKey:requestKey.slice(0,56)+'-void'},tx):null;
    await tx.orderAmendment.update({where:{id:amendment.id},data:{ownerRequestId:refund?.requestId,ownerVoidRequestId:voiding?.requestId,approvalSettingsVersion:settings!.version}});
   }
+  if(proposed.ownerOverride&&override.status==='VALID')await recordOwnerOverrideInTransaction(tx,actor,override.grant,{orderId,amendmentId:amendment.id,operation:'ORDER_AMENDMENT',reasons:proposed.ownerOverride.reasons,discountAmount:proposed.discountAmount,subtotal:proposed.subtotal});
   await trace(tx,actor,order,'AMENDMENT_STAGED',input.reason,{before:receiptSnapshot(order),after:proposed,approvalRequired,ownerApprovalRequired},amendment);
   return tx.orderAmendment.findUniqueOrThrow({where:{id:amendment.id}});
  },resolveReadScope(actor));
@@ -169,7 +184,7 @@ async function currentProposalAuthority(tx:Prisma.TransactionClient,a:OrderAmend
  for(const key of p.requiredPermissions??[])if(!keys.has(key))throw new ApiError(403,'صلاحية التعديل لم تعد متاحة: '+key);
  const limit=await tx.salesDiscountLimit.findUnique({where:{userId:a.requesterId}});
  const percent=decimal(p.subtotal).isZero()?decimal(0):decimal(p.discountAmount).times(100).div(p.subtotal);
- if(!isManager(actor)&&!a.approverId&&(decimal(p.discountAmount).gt(limit?.maxAmount??0)||percent.gt(limit?.maxPercent??0)))throw new ApiError(409,'حد الخصم الحالي يحتاج موافقة المدير');
+ if(!isManager(actor)&&!a.approverId&&!p.ownerOverride?.reasons.includes('DISCOUNT_LIMIT')&&(decimal(p.discountAmount).gt(limit?.maxAmount??0)||percent.gt(limit?.maxPercent??0)))throw new ApiError(409,'حد الخصم الحالي يحتاج موافقة المدير');
 }
 async function financialContext(tx:Prisma.TransactionClient,a:OrderAmendment,actor:SessionUser,allowReserved=false,recovery?:{shiftId:string;cashierId:string}){
  const shift=await tx.shift.findFirst({where:{branchId:a.branchId,cafeId:a.cafeId,cashierId:recovery?.cashierId??actor.id,status:'OPEN',...(recovery?{id:recovery.shiftId}:{})},orderBy:{openedAt:'desc'}});
