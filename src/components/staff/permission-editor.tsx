@@ -99,7 +99,7 @@ export function PermissionEditor({
 
   return (
     <Dialog open onOpenChange={(o) => !o && !busy && onClose()}>
-      <DialogContent dir="rtl" className="max-h-[90dvh] w-full sm:max-w-3xl overflow-y-auto">
+      <DialogContent dir="rtl" className="max-h-[90dvh] w-full max-w-3xl sm:max-w-3xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>صلاحيات مخصصة — {userName}</DialogTitle>
         </DialogHeader>
@@ -139,8 +139,8 @@ export function PermissionEditor({
                         const b = badge(k.key);
                         return (
                           <button key={k.key} onClick={() => cycle(k.key)}
-                            className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-2 text-start text-sm hover:bg-accent transition-colors">
-                            <span className="flex items-center gap-1.5">
+                            className="flex items-center justify-between gap-3 min-w-0 rounded-lg border border-border bg-background px-3 py-2 text-start text-sm hover:bg-accent transition-colors">
+                            <span className="flex items-center gap-1.5 min-w-0 break-normal">
                               {k.label}
                               {k.sensitive && <span className="rounded bg-red-500/10 px-1 py-0.5 text-[10px] text-red-600 dark:text-red-400">حساسة</span>}
                             </span>
