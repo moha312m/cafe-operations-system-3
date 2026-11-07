@@ -48,7 +48,7 @@ type ClosedShift = {
 type FlowHandover = { id: string; status: string; target?: string | null; directHandover?: boolean; stockCountSessionId: string | null; requiredItemCount: number | null; outgoingNote: string | null; submittedAt: string | null };
 type Flow =
   | { stage: "NONE"; branch: { id: string; name: string } }
-  | { stage: "MONEY"; branch: { id: string; name: string }; shift: MoneyShift; handover: { enabled: boolean }; materials: { cadence: string; duePreview: boolean; nextDueAt: string | null; branchCustodyFullCountDue?: boolean }; dueItemsPreview?: DueItem[]; recipients?: EligibleRecipient[] }
+  | { stage: "MONEY"; branch: { id: string; name: string }; shift: MoneyShift; handover: { enabled: boolean }; materials: { cadence: string; duePreview: boolean; nextDueAt: string | null; branchCustodyFullCountDue?: boolean }; dueItemsPreview?: DueItem[]; branchCustodyItemsPreview?: DueItem[]; recipients?: EligibleRecipient[] }
   | ClosedFlow;
 type ClosedFlow = { stage: "MATERIALS" | "DONE"; branch: { id: string; name: string }; shift: ClosedShift; handover: FlowHandover | null; cashDisposition?: DispositionView | null; recipients?: EligibleRecipient[]; nightCashStored?: boolean };
 type DueItem = { id: string; name: string; unit: string };
@@ -272,7 +272,7 @@ function MoneyStep({ flow, currency, onCommitted }: {
       <label className="flex items-start gap-2"><input type="radio" name="drawer-choice" className="mt-1" checked={drawerChoice === "SPLIT"} onChange={() => setDrawerChoice("SPLIT")} />
         <span><span className="block font-medium">تسليم جزء للمالك أو المدير</span><span className="block text-xs text-muted-foreground">تحدد المبالغ والمستلم في الخطوة الجاية، قبل ما تخلص.</span></span></label>
     </fieldset>}
-    {materialsNext && <p className="rounded-lg border border-primary/30 bg-primary/5 p-2 text-sm font-medium" data-testid="materials-next-hint">{materialsNextLine(flow.dueItemsPreview ?? [])}</p>}
+    {materialsNext && <p className="rounded-lg border border-primary/30 bg-primary/5 p-2 text-sm font-medium" data-testid="materials-next-hint">{branchCustody && flow.materials.branchCustodyFullCountDue ? `📋 جرد كلي لنهاية اليوم (${(flow.branchCustodyItemsPreview ?? flow.dueItemsPreview ?? []).length} خامة) — ${materialsNextLine(flow.branchCustodyItemsPreview ?? flow.dueItemsPreview ?? [])}` : materialsNextLine(flow.dueItemsPreview ?? [])}</p>}
     {!materialsNext && flow.handover.enabled && <p className="rounded-lg bg-muted/50 p-2 text-sm" data-testid="materials-not-due-hint">جرد الخامات غير مستحق حسب الجدول{flow.materials.nextDueAt ? ` · الجرد الجاي: ${dateTime(flow.materials.nextDueAt)}` : ""}.</p>}
     {failure && <div role="alert" className="space-y-1 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive" data-testid="close-money-error">
       <p>{failure.message}</p>

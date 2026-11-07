@@ -49,6 +49,7 @@ type InvItem = {
   supplierName: string | null;
   expiryDate: string | null;
   isActive: boolean;
+  isCritical?: boolean;
   branchId: string;
   branch: { id: string; name: string };
   status: "ok" | "low" | "out";
@@ -80,6 +81,7 @@ type ItemForm = {
   costPerUnit: string;
   supplierName: string;
   expiryDate: string;
+  isCritical: boolean;
 };
 
 const emptyForm = (branchId = ""): ItemForm => ({
@@ -93,6 +95,7 @@ const emptyForm = (branchId = ""): ItemForm => ({
   costPerUnit: "0",
   supplierName: "",
   expiryDate: "",
+  isCritical: false,
 });
 
 // ─────────────────────────── Page ───────────────────────────
@@ -116,6 +119,7 @@ export default function InventoryPage() {
   const [branchFilter, setBranchFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [shiftCountFilter, setShiftCountFilter] = useState<"all" | "every_shift" | "eod_only">("all");
 
   // Dialogs
   const [itemForm, setItemForm] = useState<ItemForm | null>(null);
@@ -187,9 +191,10 @@ export default function InventoryPage() {
       (i) =>
         (categoryFilter === "all" || i.category === categoryFilter) &&
         (statusFilter === "all" || i.status === statusFilter) &&
+        (shiftCountFilter === "all" || (shiftCountFilter === "every_shift" ? !!i.isCritical : !i.isCritical)) &&
         (term === "" || i.name.toLowerCase().includes(term))
     );
-  }, [items, search, categoryFilter, statusFilter]);
+  }, [items, search, categoryFilter, statusFilter, shiftCountFilter]);
 
   // ── Save item (add/edit) ──
   async function saveItem() {
@@ -203,6 +208,7 @@ export default function InventoryPage() {
       costPerUnit: Number(itemForm.costPerUnit) || 0,
       supplierName: itemForm.supplierName || undefined,
       expiryDate: itemForm.expiryDate || undefined,
+      isCritical: itemForm.isCritical,
       ...(itemForm.id ? {} : { currentStock: Number(itemForm.currentStock) || 0 }),
     };
     const ok = await run(
@@ -403,6 +409,57 @@ export default function InventoryPage() {
         </Select>
       </div>
 
+      {/* Shift & End-of-Day Count Quick Banner */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary/25 bg-primary/5 px-4 py-3 text-sm">
+        <div className="space-y-0.5">
+          <p className="font-semibold text-foreground">
+            📋 نظام جرد الشيفتات ونهاية اليوم: <span className="text-primary">{items.filter((x) => x.isCritical).length} خامة</span> تُجرد في كل شيفت · و<span className="text-primary">{items.length} خامة (المخزون بالكامل)</span> تُجرد جرداً كلياً في آخر شيفت باليوم
+          </p>
+          <p className="text-xs text-muted-foreground">
+            اضغط على زر «🔄 كل شيفت» أو «🌙 آخر اليوم فقط» أمام أي خامة في الجدول لتحديد الأصناف التي تُجرد كل شيفت.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex rounded-lg border bg-background p-0.5 text-xs">
+            <button type="button" onClick={() => setShiftCountFilter("all")} className={cn("rounded-md px-2.5 py-1 font-medium transition-colors", shiftCountFilter === "all" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}>الكل ({items.length})</button>
+            <button type="button" onClick={() => setShiftCountFilter("every_shift")} className={cn("rounded-md px-2.5 py-1 font-medium transition-colors", shiftCountFilter === "every_shift" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}>🔄 كل شيفت ({items.filter((x) => x.isCritical).length})</button>
+            <button type="button" onClick={() => setShiftCountFilter("eod_only")} className={cn("rounded-md px-2.5 py-1 font-medium transition-colors", shiftCountFilter === "eod_only" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground")}>🌙 آخر اليوم فقط ({items.filter((x) => !x.isCritical).length})</button>
+          </div>
+          {canManage && (
+            <Button
+              size="sm"
+              disabled={busy}
+              onClick={() => {
+                const targetBranchId = user.branchId ?? (branchFilter !== "all" ? branchFilter : branches[0]?.id ?? items[0]?.branchId);
+                if (!targetBranchId) return;
+                const selectedIds = items.filter((x) => x.branchId === targetBranchId && x.isCritical).map((x) => x.id);
+                if (selectedIds.length === 0) {
+                  toast.error("حدّد خامة واحدة على الأقل كـ «كل شيفت» من الجدول أولاً");
+                  return;
+                }
+                void run(
+                  () =>
+                    api(`/api/branches/${targetBranchId}/handover-config`, {
+                      method: "PATCH",
+                      body: {
+                        enabled: true,
+                        mode: "SELECTED",
+                        selectedItemIds: selectedIds,
+                        schedule: "DAILY_LAST_HANDOVER",
+                        weekday: null,
+                        materials: { cadence: "EVERY_SHIFT", weekday: null, cutoff: null },
+                      },
+                    }),
+                  `تم حفظ وتفعيل جرد (${selectedIds.length} خامة) كل شيفت + جرد كلي للمخزون في آخر شيفت باليوم`
+                );
+              }}
+            >
+              ⚡ حفظ وتفعيل: المحدد كل شيفت + كلي آخر اليوم
+            </Button>
+          )}
+        </div>
+      </div>
+
       {/* Items table */}
       <Table>
         <TableHeader>
@@ -416,6 +473,7 @@ export default function InventoryPage() {
             <TableHead>تكلفة الوحدة</TableHead>
             <TableHead>القيمة التقريبية</TableHead>
             <TableHead>الحالة</TableHead>
+            <TableHead>نوع الجرد</TableHead>
             <TableHead />
           </TableRow>
         </TableHeader>
@@ -449,6 +507,26 @@ export default function InventoryPage() {
                   {STOCK_STATUS_LABEL[i.status]}
                 </span>
               </TableCell>
+              <TableCell>
+                <button
+                  type="button"
+                  disabled={busy || !canManage}
+                  onClick={() =>
+                    void run(
+                      () => api(`/api/inventory/${i.id}`, { method: "PATCH", body: { isCritical: !i.isCritical } }),
+                      !i.isCritical ? `تم تحديد «${i.name}» للجرد في كل شيفت` : `تم تحويل «${i.name}» لجرد آخر اليوم فقط`
+                    )
+                  }
+                  className={cn(
+                    "whitespace-nowrap rounded-full border px-2.5 py-0.5 text-xs font-medium transition-colors",
+                    i.isCritical
+                      ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-800 hover:bg-emerald-500/25 dark:text-emerald-300"
+                      : "border-border bg-muted/40 text-muted-foreground hover:bg-muted"
+                  )}
+                >
+                  {i.isCritical ? "🔄 كل شيفت" : "🌙 آخر اليوم فقط"}
+                </button>
+              </TableCell>
               <TableCell className="text-end [&>button]:ms-1">
                 <Button
                   size="sm"
@@ -480,6 +558,7 @@ export default function InventoryPage() {
                       costPerUnit: String(i.costPerUnit),
                       supplierName: i.supplierName ?? "",
                       expiryDate: i.expiryDate ? i.expiryDate.slice(0, 10) : "",
+                      isCritical: !!i.isCritical,
                     })
                   }
                 >
@@ -586,6 +665,20 @@ export default function InventoryPage() {
                   <Input type="date" dir="ltr" value={itemForm.expiryDate} onChange={(e) => setItemForm({ ...itemForm, expiryDate: e.target.value })} />
                 </div>
               </div>
+              <label className="flex items-start gap-2.5 rounded-lg border border-border bg-muted/20 p-3 text-sm cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-4 w-4 rounded border-gray-300"
+                  checked={itemForm.isCritical}
+                  onChange={(e) => setItemForm({ ...itemForm, isCritical: e.target.checked })}
+                />
+                <div className="space-y-0.5">
+                  <span className="font-medium block">🔄 جرد هذه الخامة في كل شيفت</span>
+                  <span className="text-xs text-muted-foreground block">
+                    عند التحديد تُجرد الخامة عند نهاية كل شيفت، أما غير المحدد فيُجرد في الجرد الكلي آخر اليوم فقط.
+                  </span>
+                </div>
+              </label>
               {itemForm.id && (
                 <p className="text-xs text-muted-foreground">
                   الكمية بتتعدّل من زرار «حركة مخزون» عشان يتسجل كل تغيير.

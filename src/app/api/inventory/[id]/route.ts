@@ -21,6 +21,7 @@ const updateSchema = z.object({
   supplierName: z.string().nullable().optional(),
   expiryDate: z.string().nullable().optional(),
   isActive: z.boolean().optional(),
+  isCritical: z.boolean().optional(),
   archived: z.boolean().optional(),
 });
 
@@ -44,6 +45,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       update.expiryDate = data.expiryDate ? new Date(data.expiryDate) : null;
     }
     if (data.isActive !== undefined) update.isActive = data.isActive;
+    if (data.isCritical !== undefined) update.isCritical = data.isCritical;
     if (data.archived === true) {
       update.archivedAt = new Date();
       update.isActive = false;

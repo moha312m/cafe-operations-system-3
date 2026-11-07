@@ -81,6 +81,11 @@ export async function GET(request: NextRequest) {
         handover: { enabled: handoverEnabled },
         materials: { cadence: config.materials.cadence, duePreview: preview?.due ?? true, nextDueAt: preview?.nextDueAt ?? null, branchCustodyFullCountDue },
         dueItemsPreview,
+        branchCustodyItemsPreview: handoverEnabled && branchCustodyFullCountDue
+          ? await db.$transaction((tx) => planRequiredItems(tx, { cafeId: branch.cafeId, branchId, at: new Date(), target: "BRANCH_CUSTODY" }))
+              .then((plan) => plan.items.map((item) => ({ id: item.inventoryItemId, name: item.itemNameSnapshot, unit: item.unitSnapshot })))
+              .catch(() => dueItemsPreview)
+          : dueItemsPreview,
         recipients: await listEligibleRecipients(db, { cafeId: branch.cafeId, branchId, excludeUserId: session.id }),
       });
     }

@@ -25,6 +25,7 @@ const itemSelect = {
   supplierName: true,
   expiryDate: true,
   isActive: true,
+  isCritical: true,
   archivedAt: true,
   updatedAt: true,
   branchId: true,
@@ -108,6 +109,7 @@ const createSchema = z.object({
   costPerUnit: z.number({ message: "تكلفة الوحدة يجب أن تكون رقم" }).min(0),
   supplierName: z.string().optional(),
   expiryDate: z.string().optional(),
+  isCritical: z.boolean().optional(),
   cafeId: z.string().optional(), // super admin only
 });
 
@@ -147,6 +149,7 @@ export async function POST(request: NextRequest) {
           costPerUnit: data.costPerUnit,
           supplierName: data.supplierName || null,
           expiryDate: data.expiryDate ? new Date(data.expiryDate) : null,
+          isCritical: data.isCritical ?? false,
         },
         select: { id: true },
       });
