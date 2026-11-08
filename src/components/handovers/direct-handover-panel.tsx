@@ -8,6 +8,7 @@ import { TouchNumberInput } from "@/components/pos/touch-number-input";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { cn } from "@/lib/utils";
 import type { DirectSummary } from "@/lib/handover-direct";
 
@@ -269,35 +270,81 @@ export function DirectHandoverPanel({
       )}
 
       {/* 2. Counted stock items */}
-      <div className="space-y-2 rounded-xl border bg-muted/15 p-3">
+      <div className="space-y-3 rounded-xl border bg-muted/15 p-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h4 className="font-semibold">كميات الخامات المسجلة من المُسلّم ({summary.stock.lines.length})</h4>
-          {summary.discrepancies.stockLines > 0 && (
-            <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-900">
-              {summary.discrepancies.stockLines} صنف بفرق مسجل عند الإغلاق
-            </span>
-          )}
+          <div>
+            <h4 className="font-semibold text-sm">جرد وفروقات الخامات المسجلة من المُسلّم ({summary.stock.lines.length} صنف)</h4>
+            <p className="text-xs text-muted-foreground mt-0.5">مقارنة الكميات الفعلية المعدودة بالرصيد المتوقع بالسيستم وتحديد أي عجز أو زيادة.</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {summary.discrepancies.stockLines > 0 ? (
+              <span className="rounded-full bg-rose-500/15 px-2.5 py-1 text-xs font-bold text-rose-800 dark:text-rose-300">
+                ⚠️ {summary.discrepancies.stockLines} صنف بفرق (عجز / زيادة)
+              </span>
+            ) : (
+              <span className="rounded-full bg-emerald-500/15 px-2.5 py-1 text-xs font-bold text-emerald-800 dark:text-emerald-300">
+                ✓ جميع الأصناف مطابقة
+              </span>
+            )}
+          </div>
         </div>
+
         {!summary.stock.disclosed ? (
           <p className="text-xs text-muted-foreground">تظهر كميات الخامات بمجرد تقديم المُسلّم للعهدة.</p>
         ) : summary.stock.lines.length === 0 ? (
           <p className="text-xs text-muted-foreground">لا توجد أصناف معدودة في هذا التسليم.</p>
         ) : (
-          <div className="flex flex-wrap gap-1.5" data-testid="direct-summary-stock-lines">
-            {summary.stock.lines.map((l) => (
-              <span
-                key={l.id}
-                className={cn(
-                  "inline-flex items-center gap-1 rounded-lg border bg-background px-2.5 py-1 text-xs tabular-nums",
-                  l.recordedDifference && "border-amber-500/50 bg-amber-500/5",
-                )}
-              >
-                <span className="font-medium">{l.name}:</span>
-                <strong>{l.quantity ?? "—"}</strong>
-                <span className="text-muted-foreground">{unitLabel(l.unit)}</span>
-                {l.recordedDifference && <span className="text-[11px] text-amber-800">(فرق مسجل)</span>}
-              </span>
-            ))}
+          <div className="overflow-x-auto rounded-lg border bg-background" data-testid="direct-summary-stock-lines">
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-muted/40">
+                  <TableHead className="text-start font-semibold">الصنف</TableHead>
+                  <TableHead className="text-start font-semibold">الوحدة</TableHead>
+                  <TableHead className="text-start font-semibold">المتوقع بالسيستم</TableHead>
+                  <TableHead className="text-start font-semibold">الفعلي المعدود</TableHead>
+                  <TableHead className="text-start font-semibold">الفرق (عجز / زيادة)</TableHead>
+                  <TableHead className="text-end font-semibold">الحالة</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {summary.stock.lines.map((l) => {
+                  const hasDiff = l.varianceQuantity != null && Number(l.varianceQuantity) !== 0;
+                  const isShortage = l.varianceQuantity != null && Number(l.varianceQuantity) < 0;
+                  return (
+                    <TableRow key={l.id} className={cn(hasDiff && "bg-amber-500/5")}>
+                      <TableCell className="font-medium">{l.name}</TableCell>
+                      <TableCell className="text-muted-foreground">{unitLabel(l.unit)}</TableCell>
+                      <TableCell className="tabular-nums font-mono text-muted-foreground">
+                        {l.expectedQuantity != null ? l.expectedQuantity : "—"}
+                      </TableCell>
+                      <TableCell className="tabular-nums font-mono font-bold">
+                        {l.quantity != null ? l.quantity : "لم يُعدّ"}
+                      </TableCell>
+                      <TableCell className="tabular-nums font-mono">
+                        {hasDiff ? (
+                          <span className={cn("inline-flex items-center gap-1 font-bold", isShortage ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400")}>
+                            {isShortage ? ('عجز (' + l.varianceQuantity + ')') : ('زيادة (+' + l.varianceQuantity + ')')}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">مطابق (0)</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="text-end">
+                        {hasDiff ? (
+                          <span className={cn("inline-flex rounded-full px-2 py-0.5 text-[11px] font-bold", isShortage ? "bg-rose-500/15 text-rose-800 dark:text-rose-300" : "bg-emerald-500/15 text-emerald-800 dark:text-emerald-300")}>
+                            {isShortage ? "عجز مسجل" : "زيادة مسجلة"}
+                          </span>
+                        ) : (
+                          <span className="inline-flex rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                            مطابق
+                          </span>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
           </div>
         )}
       </div>

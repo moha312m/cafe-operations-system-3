@@ -92,7 +92,8 @@ export default async function ShiftReportPage({ params }: { params: Promise<{ id
   if (!shift) return <Message text="الشيفت مش موجود" />;
   if (session.branchId && shift.branchId !== session.branchId) return <Message text="الشيفت تبع فرع تاني" />;
   const { keys } = await resolvePermissions(session);
-  const oversight = keys.has("shifts.view_reports");
+  const isOwnShift = shift.cashierId === session.id;
+  const oversight = keys.has("shifts.view_reports") || session.role === "CAFE_OWNER" || session.role === "BRANCH_MANAGER" || isOwnShift;
   if (!oversight) return <Message text="ليس لديك صلاحية لعرض التقرير المالي" />;
 
   const report: ShiftReport | null = await buildShiftReport(id, session.cafeId ?? "");

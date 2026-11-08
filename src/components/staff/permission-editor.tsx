@@ -99,7 +99,7 @@ export function PermissionEditor({
 
   return (
     <Dialog open onOpenChange={(o) => !o && !busy && onClose()}>
-      <DialogContent dir="rtl" className="max-h-[90dvh] w-full max-w-3xl sm:max-w-3xl overflow-y-auto">
+      <DialogContent dir="rtl" className="max-h-[90dvh] w-full max-w-4xl sm:max-w-4xl md:max-w-4xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>صلاحيات مخصصة — {userName}</DialogTitle>
         </DialogHeader>
@@ -134,15 +134,15 @@ export function PermissionEditor({
                     <p className="mb-2 flex items-center gap-2 text-sm font-semibold">
                       <span>{mod.icon}</span>{mod.label}
                     </p>
-                    <div className="grid gap-2 sm:grid-cols-2">
+                    <div className="grid gap-2.5 grid-cols-1 md:grid-cols-2">
                       {keys.map((k) => {
                         const b = badge(k.key);
                         return (
                           <button key={k.key} onClick={() => cycle(k.key)}
-                            className="flex items-center justify-between gap-3 min-w-0 rounded-lg border border-border bg-background px-3 py-2 text-start text-sm hover:bg-accent transition-colors">
-                            <span className="flex items-center gap-1.5 min-w-0 break-normal">
-                              {k.label}
-                              {k.sensitive && <span className="rounded bg-red-500/10 px-1 py-0.5 text-[10px] text-red-600 dark:text-red-400">حساسة</span>}
+                            type="button" className="flex items-center justify-between gap-3 min-w-0 rounded-lg border border-border bg-background px-3.5 py-2.5 text-start text-sm hover:bg-accent transition-colors [overflow-wrap:normal]">
+                            <span className="flex items-center gap-1.5 min-w-0 [overflow-wrap:normal] break-words">
+                              <span className="font-medium text-foreground">{k.label}</span>
+                              {k.sensitive && <span className="shrink-0 rounded bg-red-500/10 px-1 py-0.5 text-[10px] text-red-600 dark:text-red-400">حساسة</span>}
                             </span>
                             <span className={`shrink-0 whitespace-nowrap rounded-full px-2.5 py-0.5 text-[11px] font-medium ${b.cls}`}>{b.label}</span>
                           </button>

@@ -309,7 +309,55 @@ export async function loadHandoverAccountability(args: ReportArgs): Promise<Acco
   }, { isolationLevel: "RepeatableRead", timeout: 60000 });
 
   // ── Ingredient lines (R2/R3/R10) ──
-  const ingredients: IngredientLine[] = cases.map((c) => stockLine(c, canSeeCost));
+  const caseLineIds = new Set(cases.map((c) => c.stockCountLine?.id).filter(Boolean));
+  const pendingLines = await db.stockCountLine.findMany({
+    where: {
+      session: {
+        cafeId: args.cafeId,
+        ...(args.branchId ? { branchId: args.branchId } : {}),
+        status: { in: ["CONFIRMED", "LOCKED"] },
+        OR: [
+          { confirmedAt: window },
+          { shift: { openedAt: window } }
+        ]
+      },
+      varianceQuantity: { not: 0 }
+    },
+    select: {
+      id: true, unit: true, expectedQuantity: true, countedQuantity: true, effectiveCountedQuantity: true, varianceQuantity: true,
+      costImpact: true, costImpactAvailable: true, confidence: true, countedAt: true,
+      inventoryItem: { select: { id: true, name: true } },
+      session: {
+        select: {
+          id: true, confirmedAt: true,
+          shift: { select: { shiftNumber: true, cashier: { select: PERSON } } },
+          handover: { select: { id: true, outgoingUser: { select: PERSON } } },
+          branch: { select: { id: true, name: true } }
+        }
+      }
+    }
+  });
+
+  const ingredients: IngredientLine[] = [
+    ...cases.map((c) => stockLine(c, canSeeCost)),
+    ...pendingLines.filter((l) => !caseLineIds.has(l.id)).map((l) => {
+      const shift = l.session.shift;
+      const handover = l.session.handover;
+      const cashier = shift ? person(shift.cashier) : handover ? person(handover.outgoingUser) : null;
+      const at = (l.countedAt ?? l.session.confirmedAt ?? now).toISOString();
+      const diff = num(l.varianceQuantity);
+      const priced = l.costImpactAvailable && l.costImpact !== null && diff !== null;
+      const val = priced && canSeeCost ? out(decimal(l.costImpact!).abs().times(diff!.isNegative() ? -1 : 1)) : null;
+      return {
+        id: "pending-count:" + l.id, at, businessDate: dateStrInTz(new Date(at), REPORT_TZ), branch: l.session.branch,
+        item: l.inventoryItem, unit: l.unit,
+        expected: qty(l.expectedQuantity), counted: qty(l.effectiveCountedQuantity ?? l.countedQuantity), difference: qty(l.varianceQuantity),
+        unitCost: null, costBasis: null, priced, value: val, financialImpact: l.costImpactAvailable && l.costImpact !== null ? out(decimal(l.costImpact)) : null,
+        confidence: l.confidence, attribution: cashier ? "PERSON" as const : "SHARED" as const, basis: "CUSTODY" as const,
+        employee: cashier, participants: cashier ? [cashier] : [], shifts: shift ? [shift.shiftNumber] : [], handoverId: handover?.id ?? null,
+      };
+    })
+  ];
   const linesByHandover = new Map<string, IngredientLine[]>();
   for (const line of ingredients) if (line.handoverId) linesByHandover.set(line.handoverId, [...(linesByHandover.get(line.handoverId) ?? []), line]);
 

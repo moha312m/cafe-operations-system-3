@@ -14,7 +14,7 @@ export async function GET(_request: NextRequest, { params }: Params) {
     const { id } = await params;
     const scope = resolveReadScope(session);
     const { keys } = await resolvePermissions(session);
-    if (!keys.has("shifts.view_reports")) throw new ApiError(403, "Not allowed");
+    if (!keys.has("shifts.view_reports") && session.role !== "CAFE_OWNER" && session.role !== "BRANCH_MANAGER") throw new ApiError(403, "Not allowed");
     const shift = await db.shift.findFirst({
       where: { id, ...scope },
       select: { cafeId: true, branchId: true, cashierId: true },

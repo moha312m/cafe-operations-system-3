@@ -63,7 +63,7 @@ export type DirectSummary = {
   handoverId: string; status: string; target: string | null; branchName: string; currency: string; timezone: string;
   outgoing: { name: string; shiftNumber: number; submittedAt: string | null };
   reviewVersion: string;
-  stock: { disclosed: boolean; lines: { id: string; name: string; unit: string; quantity: number | null; recordedDifference: boolean }[]; notCounted: number; systemValidated: boolean };
+  stock: { disclosed: boolean; lines: { id: string; name: string; unit: string; quantity: number | null; expectedQuantity?: number | null; varianceQuantity?: number | null; costImpact?: number | null; costImpactAvailable?: boolean; recordedDifference: boolean }[]; notCounted: number; systemValidated: boolean };
   cash: {
     dispositionRecorded: boolean; retained: number | null; delivered: number | null;
     counted: number | null; expected: number | null; difference: number | null;
@@ -153,7 +153,7 @@ export async function directHandoverSummary(args: { handoverId: string; viewerId
   const session = h.stockCountSessionId
     ? await db.stockCountSession.findUnique({
         where: { id: h.stockCountSessionId },
-        select: { confirmedById: true, lines: { orderBy: { inventoryItem: { name: "asc" } }, select: { id: true, unit: true, disposition: true, countedQuantity: true, effectiveCountedQuantity: true, inventoryItem: { select: { name: true } } } } },
+        select: { confirmedById: true, lines: { orderBy: { inventoryItem: { name: "asc" } }, select: { id: true, unit: true, disposition: true, countedQuantity: true, effectiveCountedQuantity: true, expectedQuantity: true, varianceQuantity: true, costImpact: true, costImpactAvailable: true, inventoryItem: { select: { name: true } } } } },
       })
     : null;
   const disclosed = directTarget && canSeeStock && (OPEN_FOR_REVIEW.includes(status) || status === "COMPLETED");
@@ -176,7 +176,7 @@ export async function directHandoverSummary(args: { handoverId: string; viewerId
     reviewVersion,
     stock: {
       disclosed,
-      lines: disclosed ? lines.map((l) => ({ id: l.id, name: l.inventoryItem.name, unit: l.unit, quantity: Number(l.effectiveCountedQuantity ?? l.countedQuantity), recordedDifference: l.disposition === "VARIANCE_RECORDED" })) : [],
+      lines: disclosed ? lines.map((l) => ({ id: l.id, name: l.inventoryItem.name, unit: l.unit, quantity: Number(l.effectiveCountedQuantity ?? l.countedQuantity), expectedQuantity: l.expectedQuantity !== null ? Number(l.expectedQuantity) : null, varianceQuantity: l.varianceQuantity !== null ? Number(l.varianceQuantity) : null, costImpact: l.costImpactAvailable && l.costImpact !== null ? Number(l.costImpact) : null, costImpactAvailable: l.costImpactAvailable, recordedDifference: l.disposition === "VARIANCE_RECORDED" || (l.varianceQuantity !== null && Number(l.varianceQuantity) !== 0) })) : [],
       notCounted: (session?.lines.length ?? 0) - lines.length,
       systemValidated: session?.confirmedById === null && !!session,
     },
@@ -188,7 +188,7 @@ export async function directHandoverSummary(args: { handoverId: string; viewerId
       deliveries: disposition?.deliveries ?? [],
     },
     discrepancies: {
-      stockLines: lines.filter((l) => l.disposition === "VARIANCE_RECORDED").length,
+      stockLines: lines.filter((l) => l.disposition === "VARIANCE_RECORDED" || (l.varianceQuantity !== null && Number(l.varianceQuantity) !== 0)).length,
       cashDifference: canFinance && h.outgoingShift.cashDifference !== null ? Number(h.outgoingShift.cashDifference) : null,
       tenders: canFinance ? h.outgoingShift.tenderReconciliations.filter((t) => t.varianceAmount !== null && Number(t.varianceAmount) !== 0).map((t) => ({ method: t.method, variance: Number(t.varianceAmount), reason: t.reasonNote })) : [],
       openIssues: h.issues.filter((i) => i.status === "OPEN").length,

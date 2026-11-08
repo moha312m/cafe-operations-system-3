@@ -241,14 +241,14 @@ export function HandoverDetail({
   const money = view?.overview.money ?? null;
   const cashPending = readinessFocus?.requirements.find((r) => r.id === "cash-receipt");
   const lineCounted = lines.length - excludedLines.length;
-  const discrepancyLines = view?.acknowledged ? lines.filter((l) => l.varianceQuantity != null && Number(l.varianceQuantity) !== 0).length : null;
+  const discrepancyLines = lines.filter((l) => l.varianceQuantity != null && Number(l.varianceQuantity) !== 0).length;
   const tenderDifferences = money?.payments.filter((p) => p.variance != null && Math.abs(Number(p.variance)) > 0.005).length ?? 0;
   const cashDifference = money?.closingDifference != null && Math.abs(Number(money.closingDifference)) > 0.005;
   const carried = view?.overview.operations ?? null;
 
   const filterCounts = {
     action: lines.filter((l) => (l.disposition !== "PENDING" && !ackByLine.has(l.id)) || ackByLine.get(l.id)?.decision === "DISPUTED").length,
-    discrepancy: lines.filter((l) => ackByLine.get(l.id)?.decision === "DISPUTED" || (view?.acknowledged && l.varianceQuantity != null && Number(l.varianceQuantity) !== 0)).length,
+    discrepancy: lines.filter((l) => ackByLine.get(l.id)?.decision === "DISPUTED" || (l.varianceQuantity != null && Number(l.varianceQuantity) !== 0)).length,
     excluded: excludedLines.length, all: lines.length,
   };
   // Until the viewer picks one: lines needing action when there are any, otherwise every line (never an empty table by default).
@@ -258,7 +258,7 @@ export function HandoverDetail({
     .filter(({ line, ack }) => {
       if (search.trim() && !line.inventoryItem.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())) return false;
       const needsAction = (line.disposition !== "PENDING" && !ack) || ack?.decision === "DISPUTED";
-      const discrepancy = ack?.decision === "DISPUTED" || (view?.acknowledged && line.varianceQuantity != null && Number(line.varianceQuantity) !== 0) || (!!ack && ack.varianceQuantity != null && Number(ack.varianceQuantity) !== 0);
+      const discrepancy = ack?.decision === "DISPUTED" || (line.varianceQuantity != null && Number(line.varianceQuantity) !== 0) || (!!ack && ack.varianceQuantity != null && Number(ack.varianceQuantity) !== 0);
       return lineFilter === "all" ? true : lineFilter === "action" ? needsAction : lineFilter === "discrepancy" ? !!discrepancy : line.disposition === "PENDING";
     })
     .sort((a, b) => reviewPriority(a.line) - reviewPriority(b.line));
@@ -449,7 +449,8 @@ export function HandoverDetail({
                                   </TableCell>
                                   <TableCell className="text-muted-foreground max-sm:block max-sm:pb-0">{unitLabel(line.unit)}</TableCell>
                                   {(() => {
-                                    const row = receivingRowDisplay(line, view.workflow.acknowledgements.find(ack => ack.stockCountLineId === line.id), view.acknowledged);
+                                    const isDisclosed = Boolean(view.acknowledged || view.outgoingUserId === user.id || canKey("shifts.view_reports") || canKey("handover.manage") || canKey("handover.submit"));
+                                    const row = receivingRowDisplay(line, view.workflow.acknowledgements.find(ack => ack.stockCountLineId === line.id), isDisclosed);
                                     return <>
                                       <TableCell className="min-w-32 whitespace-normal tabular-nums max-sm:block">
                                         {line.disposition === "PENDING" ? <span className="text-muted-foreground">غير معدود — خارج التوقيع</span> : <>

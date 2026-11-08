@@ -107,6 +107,85 @@ export async function loadEmployeeVariances(args:{cafeId:string;branchId?:string
       item:null,unit:null,reason:'تسليم سابق: افتتاح المستلم مختلف عن مبلغ المسلم، بدون تسجيل عد نقدي معتمد',
       shift:{id:h.outgoingShift.id,number:h.outgoingShift.shiftNumber,openedAt:h.outgoingShift.openedAt.toISOString()},branch:h.branch,handoverId:h.id});
   }
+  // Include uncommitted/pending stock count variances from confirmed sessions
+  const caseLineIds = new Set(cases.map(c => c.stockCountLine?.id).filter(Boolean));
+  const pendingLines = await db.stockCountLine.findMany({
+    where: {
+      session: {
+        cafeId: args.cafeId,
+        ...(args.branchId ? { branchId: args.branchId } : {}),
+        status: { in: ['CONFIRMED', 'LOCKED'] },
+        ...(args.handoverId ? { handoverId: args.handoverId } : {
+          OR: [
+            { confirmedAt: { gte: args.from, lte: args.to } },
+            { shift: { openedAt: { gte: args.from, lte: args.to } } }
+          ]
+        })
+      },
+      varianceQuantity: { not: 0 }
+    },
+    select: {
+      id: true,
+      unit: true,
+      expectedQuantity: true,
+      countedQuantity: true,
+      effectiveCountedQuantity: true,
+      varianceQuantity: true,
+      costImpact: true,
+      costImpactAvailable: true,
+      confidence: true,
+      reasonNote: true,
+      countedAt: true,
+      inventoryItem: { select: PERSON },
+      session: {
+        select: {
+          id: true,
+          confirmedAt: true,
+          shift: { select: SHIFT },
+          handover: { select: { id: true, outgoingUser: { select: PERSON }, incomingUser: { select: PERSON } } },
+          branch: { select: { id: true, name: true } }
+        }
+      }
+    }
+  });
+
+  for (const line of pendingLines) {
+    if (caseLineIds.has(line.id)) continue;
+    const shift = line.session.shift;
+    const handover = line.session.handover;
+    const employee = shift?.cashier ?? handover?.outgoingUser ?? null;
+    const related = [employee, handover?.incomingUser].filter(Boolean) as VarianceEmployee[];
+    const signed = num(line.varianceQuantity);
+    const impact = line.costImpactAvailable ? num(line.costImpact) : null;
+    rows.push({
+      id: 'pending-count:' + line.id,
+      category: 'STOCK',
+      type: 'STOCK',
+      status: 'OPEN',
+      openedAt: (line.countedAt ?? line.session.confirmedAt ?? new Date()).toISOString(),
+      custodian: employee,
+      outgoingEmployee: handover?.outgoingUser ?? shift?.cashier ?? null,
+      incomingEmployee: handover?.incomingUser ?? null,
+      employee,
+      relatedEmployees: related,
+      assignedResponsibility: null,
+      responsibility: 'CUSTODY',
+      confidence: line.confidence,
+      attribution: 'VERIFIED_SHIFT',
+      expected: num(line.expectedQuantity),
+      actual: num(line.effectiveCountedQuantity ?? line.countedQuantity),
+      variance: signed,
+      amountVariance: impact,
+      financialImpact: impact,
+      item: line.inventoryItem,
+      unit: line.unit,
+      reason: line.reasonNote ?? 'جرد مسجل عند إغلاق الشيفت بانتظار استلام الوردية التالية',
+      shift: shift ? { id: shift.id, number: shift.shiftNumber, openedAt: shift.openedAt.toISOString() } : null,
+      branch: line.session.branch,
+      handoverId: handover?.id ?? null
+    });
+  }
+
   rows.sort((a,b)=>b.openedAt.localeCompare(a.openedAt)||a.id.localeCompare(b.id));
   return summarizeEmployeeVariances(rows,args.employeeId);
 }
