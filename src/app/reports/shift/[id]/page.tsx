@@ -58,7 +58,7 @@ function Row({ label, value, strong, color }: { label: string; value: string; st
   return (
     <div style={{ display: "flex", justifyContent: "space-between", gap: 12, padding: "4px 0", fontWeight: strong ? 700 : 400, color }}>
       <span>{label}</span>
-      <span dir="ltr">{value}</span>
+      <span dir="ltr" style={{ fontVariantNumeric: "tabular-nums" }}>{value}</span>
     </div>
   );
 }
@@ -74,8 +74,16 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 // Printable, READ-ONLY shift close report. Restricted to this cafe,
 // this branch for branch-pinned staff, and `shifts.view_reports` permission.
-export default async function ShiftReportPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function ShiftReportPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams?: Promise<{ format?: string }>;
+}) {
   const { id } = await params;
+  const sp = searchParams ? await searchParams : undefined;
+  const thermal = sp?.format === "thermal";
   // The full guard, not the bare cookie: a deactivated, revoked or moved
   // account must lose its shift cash reports with the rest of its access.
   let session;
@@ -108,25 +116,61 @@ export default async function ShiftReportPage({ params }: { params: Promise<{ id
 
   const c = report.cafe.currency;
   const diff = report.cash.difference;
-  const diffColor = diff === null || diff === 0 ? undefined : report.cash.withinTolerance === false ? "#b91c1c" : "#a16207";
+  const diffColor = thermal
+    ? undefined
+    : diff === null || diff === 0
+      ? undefined
+      : report.cash.withinTolerance === false
+        ? "#b91c1c"
+        : "#a16207";
+  const eq = report.totals.equation;
+  const totalProdQty = report.productsSold.reduce((s, r) => s + r.quantity, 0);
+  const totalProdAmt = Math.round(report.productsSold.reduce((s, r) => s + r.total, 0) * 100) / 100;
+  const totalCatQty = report.productsByCategory.reduce((s, r) => s + r.quantity, 0);
+  const totalCatAmt = Math.round(report.productsByCategory.reduce((s, r) => s + r.total, 0) * 100) / 100;
+  const tCell = {
+    padding: thermal ? "2px 4px" : "4px 6px",
+    borderBottom: "1px solid #e4e4e7",
+    textAlign: "start" as const,
+    fontVariantNumeric: "tabular-nums" as const,
+  };
 
   return (
     <main dir="rtl" style={{ background: "#f4f4f5", minHeight: "100dvh", padding: "16px 8px", fontFamily: "var(--font-cairo), sans-serif" }}>
       <style>{`
+        ${thermal ? "@page { size: 80mm auto; margin: 0; }" : ""}
         @media print {
-          body { margin: 0; background: #fff !important; }
+          body { margin: 0; background: #fff !important; color: #000 !important; }
           main { background: #fff !important; padding: 0 !important; }
           .no-print { display: none !important; }
-          .report { box-shadow: none !important; border: 0 !important; max-width: 100% !important; }
+          .report {
+            box-shadow: none !important;
+            border: 0 !important;
+            max-width: ${thermal ? "80mm" : "100%"} !important;
+            width: ${thermal ? "80mm" : "auto"} !important;
+            padding: ${thermal ? "4mm 3mm" : "20px"} !important;
+            color: #000 !important;
+          }
+          .report * { color: #000 !important; }
         }
       `}</style>
-      <ShiftReportActions shiftId={report.shiftId} canSend={!!whatsapp?.enabled} />
+      <ShiftReportActions shiftId={report.shiftId} canSend={!!whatsapp?.enabled} thermal={thermal} />
       <article
         className="report"
-        style={{ maxWidth: 520, margin: "0 auto", background: "#fff", borderRadius: 12, border: "1px solid #e4e4e7", padding: 20, fontSize: 13 }}
+        data-format={thermal ? "thermal-80mm" : "a4"}
+        style={{
+          maxWidth: thermal ? "80mm" : 520,
+          margin: "0 auto",
+          background: "#fff",
+          borderRadius: thermal ? 4 : 12,
+          border: "1px solid #e4e4e7",
+          padding: thermal ? "12px 10px" : 20,
+          fontSize: thermal ? 11.5 : 13,
+          color: "#111",
+        }}
       >
         <header style={{ textAlign: "center", marginBottom: 8 }}>
-          <h1 style={{ fontSize: 18, fontWeight: 800, margin: 0 }}>تقرير قفل شيفت #{report.shiftNumber}</h1>
+          <h1 style={{ fontSize: thermal ? 15 : 18, fontWeight: 800, margin: 0 }}>تقرير قفل شيفت #{report.shiftNumber}</h1>
           <p style={{ margin: "4px 0 0", color: "#52525b" }}>{report.cafe.name} — {report.branch.name}</p>
         </header>
 
@@ -209,6 +253,83 @@ export default async function ShiftReportPage({ params }: { params: Promise<{ id
           <Row label="مرتجعات" value={fmt(report.sales.refunds, c)} />
           <Row label="خصومات" value={fmt(report.sales.discounts, c)} />
           <Row label="عدد الأوردرات" value={String(report.sales.orderCount)} />
+          <div style={{ marginTop: 6, padding: "6px 8px", background: "#f4f4f5", borderRadius: 6, fontSize: 12, fontWeight: 600 }} data-testid="shift-report-equation">
+            الإجمالي النقدي = {fmt(eq.opening, c)} (افتتاحي) + {fmt(eq.sale, c)} (مبيعات) − {fmt(eq.refund, c)} (مرتجع) − {fmt(eq.expense, c)} (مصروف) = {fmt(eq.total, c)}
+          </div>
+        </Section>
+
+        <Section title="📋 تفاصيل الأصناف المباعة">
+          {report.productsSold.length === 0 ? (
+            <p style={{ margin: 0, color: "#52525b" }}>لا توجد أصناف مباعة</p>
+          ) : (
+            <div style={{ overflowX: "auto" }} data-testid="shift-report-products">
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: thermal ? 11 : 12 }}>
+                <thead>
+                  <tr style={{ color: "#52525b" }}>
+                    <th style={tCell}>#</th>
+                    <th style={tCell}>SKU</th>
+                    <th style={tCell}>الصنف</th>
+                    <th style={tCell}>الكمية</th>
+                    <th style={tCell}>الإجمالي</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {report.productsSold.map((item, idx) => (
+                    <tr key={`${item.sku ?? ""}:${item.productName}:${item.variantName ?? ""}:${idx}`}>
+                      <td style={tCell}>{idx + 1}</td>
+                      <td style={tCell} dir="ltr">{item.sku ?? "—"}</td>
+                      <td style={tCell}>{item.productName}{item.variantName ? ` (${item.variantName})` : ""}</td>
+                      <td style={tCell} dir="ltr">{item.quantity}</td>
+                      <td style={tCell} dir="ltr">{fmt(item.total, c)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr style={{ fontWeight: 700 }}>
+                    <td style={tCell} colSpan={3}>الإجمالي الكلي</td>
+                    <td style={tCell} dir="ltr">{totalProdQty}</td>
+                    <td style={tCell} dir="ltr">{fmt(totalProdAmt, c)}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )}
+        </Section>
+
+        <Section title="🏷️ المبيعات حسب التصنيف">
+          {report.productsByCategory.length === 0 ? (
+            <p style={{ margin: 0, color: "#52525b" }}>لا توجد تصنيفات مباعة</p>
+          ) : (
+            <div style={{ overflowX: "auto" }} data-testid="shift-report-categories">
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: thermal ? 11 : 12 }}>
+                <thead>
+                  <tr style={{ color: "#52525b" }}>
+                    <th style={tCell}>#</th>
+                    <th style={tCell}>التصنيف</th>
+                    <th style={tCell}>الكمية</th>
+                    <th style={tCell}>الإجمالي</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {report.productsByCategory.map((cat, idx) => (
+                    <tr key={`${cat.categoryName}:${idx}`}>
+                      <td style={tCell}>{idx + 1}</td>
+                      <td style={tCell}>{cat.categoryName}</td>
+                      <td style={tCell} dir="ltr">{cat.quantity}</td>
+                      <td style={tCell} dir="ltr">{fmt(cat.total, c)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr style={{ fontWeight: 700 }}>
+                    <td style={tCell} colSpan={2}>الإجمالي الكلي</td>
+                    <td style={tCell} dir="ltr">{totalCatQty}</td>
+                    <td style={tCell} dir="ltr">{fmt(totalCatAmt, c)}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )}
         </Section>
 
         <Section title="📥 أوردرات اترحّلت للشيفت اللي بعده">

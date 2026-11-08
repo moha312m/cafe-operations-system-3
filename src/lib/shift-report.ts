@@ -1,11 +1,44 @@
+import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { DEFAULT_TZ, zonedBusinessDayStart } from "@/lib/date-range";
 import { dispositionForShift, type PresentedDisposition } from "@/lib/cash-disposition";
+import { decimal, money as round2, sumMoney } from "@/lib/money";
+import {
+  normalizePaymentEvidence,
+  productRows,
+  recognitionShift,
+  type MoneyLeg,
+  type ReportLine,
+  type SaleEvent,
+} from "@/lib/sales-report-math";
 
 // The shift close report: what the drawer held against what it should have,
 // what was sold, and what was handed on to the next shift. Built only from
 // committed rows, after the money is settled (CLOSED or AWAITING_HANDOVER),
 // so the printed page and the WhatsApp message say the same thing.
+
+export type ShiftPaymentBreakdownRow = {
+  method: "CASH" | "CARD" | "WALLET";
+  sell: number;
+  sellCount: number;
+  refund: number;
+  expense: number;
+};
+
+export type ShiftProductSoldRow = {
+  sku: string | null;
+  productName: string;
+  variantName: string | null;
+  categoryName: string | null;
+  quantity: number;
+  total: number;
+};
+
+export type ShiftCategorySoldRow = {
+  categoryName: string;
+  quantity: number;
+  total: number;
+};
 
 export type ShiftReport = {
   shiftId: string;
@@ -33,6 +66,23 @@ export type ShiftReport = {
     total: number; cash: number; card: number; wallet: number;
     refunds: number; discounts: number; orderCount: number;
   };
+  paymentBreakdown: ShiftPaymentBreakdownRow[];
+  totals: {
+    totalSales: number;
+    totalRefund: number;
+    totalPayment: number;
+    creditSales: number;
+    totalExpense: number;
+    equation: {
+      opening: number;
+      sale: number;
+      refund: number;
+      expense: number;
+      total: number;
+    };
+  };
+  productsSold: ShiftProductSoldRow[];
+  productsByCategory: ShiftCategorySoldRow[];
   tenders: Array<{ method: string; expected: number; actual: number | null; variance: number | null; reasonNote: string | null }>;
   carried: {
     count: number;
@@ -66,10 +116,38 @@ export type ShiftReport = {
 };
 
 const num = (v: { toString(): string } | null | undefined) => (v === null || v === undefined ? null : Number(v.toString()));
+const fixed2 = (v: Prisma.Decimal | string | number) => round2(v).toFixed(2);
 const SETTLED = ["CLOSED", "AWAITING_HANDOVER"];
 
-/** null when the shift is not this café's, or its money is not settled yet. */
-export async function buildShiftReport(shiftId: string, cafeId: string): Promise<ShiftReport | null> {
+type SnapshotLine = {
+  id?: string;
+  productId?: string | null;
+  variantId?: string | null;
+  stockProductIdSnapshot?: string | null;
+  stockVariantIdSnapshot?: string | null;
+  productName: string;
+  variantName?: string | null;
+  quantity: number;
+  lineTotal: string;
+  invoiceDiscountShare?: string;
+  itemDiscountAmount?: string;
+  voidedAt?: string | null;
+};
+type Snapshot = {
+  status?: string;
+  total: string;
+  taxAmount: string;
+  serviceChargeAmount: string;
+  items: SnapshotLine[];
+};
+const asSnapshot = (s: unknown) => s as Snapshot;
+
+/** null when the shift is not this café's, or its money is not settled yet (unless allowOpen is set). */
+export async function buildShiftReport(
+  shiftId: string,
+  cafeId: string,
+  opts?: { allowOpen?: boolean },
+): Promise<ShiftReport | null> {
   const shift = await db.shift.findFirst({
     where: { id: shiftId, cafeId },
     include: {
@@ -87,9 +165,9 @@ export async function buildShiftReport(shiftId: string, cafeId: string): Promise
       },
     },
   });
-  if (!shift || !SETTLED.includes(shift.status)) return null;
+  if (!shift || (!opts?.allowOpen && !SETTLED.includes(shift.status))) return null;
 
-  const [handover, cashDisposition] = await Promise.all([
+  const [handover, cashDisposition, rawPayments, orders, revisions] = await Promise.all([
     db.handoverSession.findFirst({
       where: { outgoingShiftId: shift.id },
       orderBy: { createdAt: "desc" },
@@ -111,6 +189,40 @@ export async function buildShiftReport(shiftId: string, cafeId: string): Promise
       },
     }),
     dispositionForShift(db, shift.id),
+    db.payment.findMany({
+      where: {
+        cafeId,
+        shiftId: shift.id,
+        OR: [{ status: "PAID" }, { type: "COLLECTION", status: "REFUNDED" }],
+      },
+      include: {
+        order: { select: { branchId: true, tableSessionId: true } },
+        receivedBy: { select: { name: true } },
+      },
+    }),
+    db.order.findMany({
+      where: {
+        cafeId,
+        branchId: shift.branchId,
+        status: "SERVED",
+        OR: [{ saleShiftId: shift.id }, { servedShiftId: shift.id }],
+      },
+      include: {
+        items: { where: { voidedAt: null } },
+        revisions: { orderBy: { number: "asc" } },
+        payments: { where: { type: "REFUND", status: "PAID", amendmentId: { not: null } } },
+      },
+    }),
+    db.orderRevision.findMany({
+      where: {
+        branchId: shift.branchId,
+        postingShiftId: shift.id,
+        order: { cafeId, branchId: shift.branchId },
+      },
+      include: {
+        order: { select: { createdById: true, servedById: true, saleShiftId: true, servedShiftId: true, tableSessionId: true } },
+      },
+    }),
   ]);
 
   const carriedOrders = shift.carriedOrders.map((o) => ({
@@ -119,6 +231,196 @@ export async function buildShiftReport(shiftId: string, cafeId: string): Promise
     paymentStatus: o.paymentStatusAtHandover,
     remaining: Number(o.remainingAtHandover.toString()),
   }));
+  const unpaidTotal = Math.round(carriedOrders.reduce((s, o) => s + o.remaining, 0) * 100) / 100;
+
+  // Payment breakdown per method (CASH, CARD, WALLET)
+  const legs: MoneyLeg[] = rawPayments.flatMap((p) =>
+    normalizePaymentEvidence({
+      status: p.status,
+      id: p.id,
+      orderId: p.orderId,
+      at: p.paidAt.toISOString(),
+      branchId: p.order.branchId,
+      actorId: p.receivedById,
+      actor: p.receivedBy.name,
+      shiftId: p.shiftId,
+      method: p.method,
+      type: p.type,
+      amount: fixed2(p.amount),
+      sessionId: p.tableSessionId ?? p.order.tableSessionId,
+    }),
+  );
+
+  const cashExpense = Number(
+    round2(
+      decimal(shift.totalExpensePayouts)
+        .plus(shift.totalCashPayouts)
+        .minus(shift.totalExpenseReturns),
+    ).toFixed(2),
+  );
+
+  const methods = ["CASH", "CARD", "WALLET"] as const;
+  const paymentBreakdown: ShiftPaymentBreakdownRow[] = methods.map((method) => {
+    if (legs.length > 0) {
+      const sellLegs = legs.filter((l) => l.method === method && l.type === "COLLECTION");
+      const refundLegs = legs.filter((l) => l.method === method && l.type === "REFUND");
+      return {
+        method,
+        sell: Number(round2(sumMoney(sellLegs.map((l) => l.amount))).toFixed(2)),
+        sellCount: sellLegs.length,
+        refund: Number(round2(sumMoney(refundLegs.map((l) => l.amount))).toFixed(2)),
+        expense: method === "CASH" ? cashExpense : 0,
+      };
+    }
+    const fallbackSell =
+      method === "CASH"
+        ? num(shift.totalCashSales)!
+        : method === "CARD"
+          ? num(shift.totalCardSales)!
+          : num(shift.totalWalletSales)!;
+    const fallbackRefund = method === "CASH" ? num(shift.totalRefunds)! : 0;
+    return {
+      method,
+      sell: Number(round2(decimal(fallbackSell).plus(fallbackRefund)).toFixed(2)),
+      sellCount: fallbackSell > 0 && method === "CASH" ? shift.orderCount : 0,
+      refund: fallbackRefund,
+      expense: method === "CASH" ? cashExpense : 0,
+    };
+  });
+
+  const totalSales = Number(round2(sumMoney(paymentBreakdown.map((b) => fixed2(b.sell)))).toFixed(2));
+  const totalRefund = Number(round2(sumMoney(paymentBreakdown.map((b) => fixed2(b.refund)))).toFixed(2));
+  const totalPayment = Number(round2(decimal(totalSales).minus(totalRefund)).toFixed(2));
+  const opening = num(shift.openingCashAmount)!;
+  const cashBreakdown = paymentBreakdown.find((b) => b.method === "CASH")!;
+  const equationTotal = Number(
+    round2(
+      decimal(opening)
+        .plus(cashBreakdown.sell)
+        .minus(cashBreakdown.refund)
+        .minus(cashExpense),
+    ).toFixed(2),
+  );
+
+  // Products sold & Categories sold (using canonical sales-report-math aggregation)
+  const productIds = new Set<string>();
+  for (const o of orders) {
+    for (const l of o.items) if (l.productId) productIds.add(l.productId);
+    for (const r of o.revisions) {
+      for (const l of [...(asSnapshot(r.before).items ?? []), ...(asSnapshot(r.after).items ?? [])]) {
+        if (l.productId) productIds.add(l.productId);
+      }
+    }
+  }
+  for (const r of revisions) {
+    for (const l of [...(asSnapshot(r.before).items ?? []), ...(asSnapshot(r.after).items ?? [])]) {
+      if (l.productId) productIds.add(l.productId);
+    }
+  }
+  const catalog = productIds.size
+    ? await db.product.findMany({
+        where: { cafeId, id: { in: [...productIds] } },
+        select: { id: true, sku: true, categoryId: true, category: { select: { name: true } } },
+      })
+    : [];
+  const productsMap = new Map(catalog.map((p) => [p.id, p]));
+
+  function buildLines(s: Snapshot, prefix: string, direction = 1): ReportLine[] {
+    return (s.items ?? [])
+      .filter((l) => !l.voidedAt)
+      .map((l, index) => {
+        const productId = l.productId ?? l.stockProductIdSnapshot ?? null;
+        const p = productId ? productsMap.get(productId) : undefined;
+        const net = decimal(l.lineTotal).minus(l.invoiceDiscountShare ?? 0);
+        const discount = decimal(l.itemDiscountAmount ?? 0).plus(l.invoiceDiscountShare ?? 0);
+        return {
+          id: l.id ?? `${prefix}:${index}`,
+          productId,
+          variantId: l.variantId ?? l.stockVariantIdSnapshot ?? null,
+          name: l.productName,
+          variant: l.variantName ?? null,
+          sku: p?.sku ?? null,
+          skuSource: p ? "current" : "unmapped",
+          categoryId: p?.categoryId ?? null,
+          category: p?.category.name ?? null,
+          quantity: l.quantity * direction,
+          gross: fixed2(decimal(l.lineTotal).plus(l.itemDiscountAmount ?? 0).times(direction)),
+          discount: fixed2(discount.times(direction)),
+          net: fixed2(net.times(direction)),
+        };
+      });
+  }
+
+  const events: SaleEvent[] = orders.map((o) => {
+    const first = o.revisions.find((r) => asSnapshot(r.before).status === "SERVED");
+    const s = first ? asSnapshot(first.before) : asSnapshot(o);
+    const preIds = new Set(o.revisions.filter((r) => asSnapshot(r.before).status !== "SERVED").map((r) => r.amendmentId));
+    const preRefunds = fixed2(
+      sumMoney(o.payments.filter((p) => p.amendmentId && preIds.has(p.amendmentId)).map((p) => fixed2(p.amount))),
+    );
+    return {
+      id: `sale:${o.id}`,
+      orderId: o.id,
+      at: o.createdAt.toISOString(),
+      branchId: o.branchId,
+      creatorId: o.createdById,
+      serverId: o.servedById,
+      saleShiftId: o.saleShiftId,
+      servedShiftId: o.servedShiftId,
+      postingShiftId: null,
+      sessionId: o.tableSessionId,
+      revenue: fixed2(decimal(s.total).plus(preRefunds)),
+      tax: fixed2(s.taxAmount),
+      service: fixed2(s.serviceChargeAmount),
+      lines: buildLines(s, o.id),
+    };
+  });
+
+  for (const r of revisions) {
+    const before = asSnapshot(r.before);
+    const after = asSnapshot(r.after);
+    events.push({
+      id: `revision:${r.id}`,
+      orderId: r.orderId,
+      at: r.createdAt.toISOString(),
+      branchId: r.branchId,
+      creatorId: r.order.createdById,
+      serverId: r.order.servedById,
+      saleShiftId: r.order.saleShiftId,
+      servedShiftId: r.order.servedShiftId,
+      postingShiftId: r.postingShiftId,
+      sessionId: r.order.tableSessionId,
+      revenue: fixed2(r.recognizedDelta),
+      tax: before.status === "SERVED" ? fixed2(decimal(after.taxAmount).minus(before.taxAmount)) : "0.00",
+      service: before.status === "SERVED" ? fixed2(decimal(after.serviceChargeAmount).minus(before.serviceChargeAmount)) : "0.00",
+      lines: before.status === "SERVED" ? [...buildLines(before, r.id, -1), ...buildLines(after, r.id)] : [],
+    });
+  }
+
+  const shiftEvents = events.filter((e) => recognitionShift(e) === shift.id);
+  const prodRows = productRows(shiftEvents, "product");
+  const catRows = productRows(shiftEvents, "category");
+
+  const productsSold: ShiftProductSoldRow[] = prodRows
+    .map((r) => ({
+      sku: r.cells.sku ?? null,
+      productName: r.cells.name ?? "",
+      variantName: r.cells.variant ?? null,
+      categoryName: r.cells.category ?? null,
+      quantity: Number(r.cells.quantity ?? 0),
+      total: Number(r.cells.net ?? 0),
+    }))
+    .filter((r) => r.quantity !== 0 || r.total !== 0)
+    .sort((a, b) => b.total - a.total || a.productName.localeCompare(b.productName, "ar"));
+
+  const productsByCategory: ShiftCategorySoldRow[] = catRows
+    .map((r) => ({
+      categoryName: r.cells.name ?? "تصنيف غير مرتبط",
+      quantity: Number(r.cells.quantity ?? 0),
+      total: Number(r.cells.net ?? 0),
+    }))
+    .filter((r) => r.quantity !== 0 || r.total !== 0)
+    .sort((a, b) => b.total - a.total || a.categoryName.localeCompare(b.categoryName, "ar"));
 
   return {
     shiftId: shift.id,
@@ -131,7 +433,7 @@ export async function buildShiftReport(shiftId: string, cafeId: string): Promise
     openedAt: shift.openedAt.toISOString(),
     closedAt: (shift.financiallyClosedAt ?? shift.closedAt)?.toISOString() ?? null,
     cash: {
-      opening: num(shift.openingCashAmount)!,
+      opening,
       expected: num(shift.expectedCashAmount)!,
       actual: num(shift.actualCashAmount),
       difference: num(shift.cashDifference),
@@ -151,6 +453,23 @@ export async function buildShiftReport(shiftId: string, cafeId: string): Promise
       discounts: num(shift.totalDiscounts)!,
       orderCount: shift.orderCount,
     },
+    paymentBreakdown,
+    totals: {
+      totalSales,
+      totalRefund,
+      totalPayment,
+      creditSales: unpaidTotal,
+      totalExpense: cashExpense,
+      equation: {
+        opening,
+        sale: cashBreakdown.sell,
+        refund: cashBreakdown.refund,
+        expense: cashExpense,
+        total: equationTotal,
+      },
+    },
+    productsSold,
+    productsByCategory,
     tenders: shift.tenderReconciliations.map((t) => ({
       method: t.method,
       expected: num(t.expectedAmount)!,
@@ -160,7 +479,7 @@ export async function buildShiftReport(shiftId: string, cafeId: string): Promise
     })),
     carried: {
       count: carriedOrders.length,
-      unpaidTotal: Math.round(carriedOrders.reduce((s, o) => s + o.remaining, 0) * 100) / 100,
+      unpaidTotal,
       orders: carriedOrders,
     },
     cashDisposition,

@@ -3,9 +3,17 @@
 import { useState } from "react";
 
 // Screen-only actions for the shift report page (hidden in print via
-// .no-print): print, and — for oversight with WhatsApp enabled — send it to
-// the café's WhatsApp recipient now.
-export function ShiftReportActions({ shiftId, canSend }: { shiftId: string; canSend: boolean }) {
+// .no-print): print, toggle 80mm thermal receipt mode, and — for oversight
+// with WhatsApp enabled — send it to the café's WhatsApp recipient now.
+export function ShiftReportActions({
+  shiftId,
+  canSend,
+  thermal = false,
+}: {
+  shiftId: string;
+  canSend: boolean;
+  thermal?: boolean;
+}) {
   const [state, setState] = useState<{ busy: boolean; note: string | null; ok: boolean }>({ busy: false, note: null, ok: false });
 
   async function send() {
@@ -22,7 +30,7 @@ export function ShiftReportActions({ shiftId, canSend }: { shiftId: string; canS
   }
 
   const btn = {
-    border: 0, borderRadius: 10, padding: "10px 22px", fontSize: 14, fontWeight: 600, cursor: "pointer",
+    border: 0, borderRadius: 10, padding: "10px 22px", fontSize: 14, fontWeight: 600, cursor: "pointer", textDecoration: "none", display: "inline-flex", alignItems: "center",
   } as const;
 
   return (
@@ -30,6 +38,12 @@ export function ShiftReportActions({ shiftId, canSend }: { shiftId: string; canS
       <button onClick={() => window.print()} style={{ ...btn, background: "#111", color: "#fff" }}>
         🖨️ طباعة التقرير
       </button>
+      <a
+        href={thermal ? `/reports/shift/${shiftId}` : `/reports/shift/${shiftId}?format=thermal`}
+        style={{ ...btn, background: "#fff", color: "#111", border: "1px solid #111" }}
+      >
+        {thermal ? "📄 عرض A4" : "🧾 طباعة حرارية 80mm"}
+      </a>
       {canSend && (
         <button
           data-testid="send-shift-report-whatsapp"
