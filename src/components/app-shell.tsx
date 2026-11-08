@@ -170,7 +170,8 @@ export function AppShell({
   };
 
   const catalog=visibleReportCatalog({keys:keySet,features:features??{},role:user.role,branchId:user.branchId});
-  const reportNav:NavItem[]=catalog.map(report=>({href:report.href,label:report.title,icon:'',permission:'reports:read',group:'reports',allKeys:report.keys,reportGroup:report.group,reportId:report.id}));
+  const SIDEBAR_REPORT_IDS = new Set(["shift-sales", "product-sales"]);
+  const reportNav:NavItem[]=catalog.filter(r => SIDEBAR_REPORT_IDS.has(r.id)).map(report=>({href:report.href,label:report.title,icon:'',permission:'reports:read',group:'reports',allKeys:report.keys,reportGroup:report.group,reportId:report.id}));
   const navItems = [...NAV,...reportNav].filter(
     (item) =>
       // An explicit `key` (new granular gate) wins; else fall back to the

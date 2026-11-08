@@ -1,80 +1,59 @@
 # NEXT CUP — توجيهات استكمال الجلسات وخريطة الطريق الكاملة
-تاريخ التحديث: 2026-11-04 (Africa/Cairo)
+تاريخ التحديث: 2026-11-07 (Africa/Cairo)
 
 ---
 
-## 1. نص الإرسال المباشر لـ Argon (الجلسة الحالية / القادمة)
+## 1. أين نحن الآن على خريطة الطريق (الوضع الحالي بعد دمج `e80b7f4`)
 
-```text
-Continue the NEXT CUP direct-handover final closeout.
+تم بنجاح استكمال وإغلاق ودمج **الخطوات الأساسية الخمس (1 إلى 5)** بالإضافة إلى **تعديلات تجربة المستخدم وقرارات المالك ودعم عملة الكافيه/الفرع** في المجلد الرئيسي للمشروع (`C:\Dev\cafe-operations-system-3`) وتشغيلها على قاعدة البيانات الحقيقية (`5433` على المنفذ `http://localhost:3110`):
 
-First read the complete project context and updated roadmap:
-C:/Dev/cafe-operations-system-3/docs/research/2026-11-02-erp-experience/ARGON-PROJECT-HANDOFF-20261104.md
-
-Then execute this bounded continuation prompt:
-C:/Dev/cafe-operations-system-3/docs/research/2026-11-02-erp-experience/prompts/05-direct-handover-final-closeout-argon.md
-
-Implementation worktree:
-C:/Users/Acer/.codex/worktrees/nextcup-workspace-redesign/cafe-operations-system-3
-
-Expected branch:
-codex/nextcup-workspace-redesign-20261102
-
-Verify current source and existing evidence first. Complete the preview,
-report verification and closeout requirements in the prompt.
-The roadmap provides context; do not start its other stages automatically.
-```
-
----
-
-## 2. روابط ومسارات الملفات الرسمية المعتمدة
-
-- **برومبت الاستكمال:**
-  [`prompts/05-direct-handover-final-closeout-argon.md`](file:///C:/Dev/cafe-operations-system-3/docs/research/2026-11-02-erp-experience/prompts/05-direct-handover-final-closeout-argon.md)
-- **تسليم المشروع وسياق العمل لـ Argon:**
-  [`ARGON-PROJECT-HANDOFF-20261104.md`](file:///C:/Dev/cafe-operations-system-3/docs/research/2026-11-02-erp-experience/ARGON-PROJECT-HANDOFF-20261104.md)
-- **خريطة الطريق المحدّثة (بالعربية):**
-  [`PLAN.ar.md`](file:///C:/Dev/cafe-operations-system-3/docs/research/2026-11-02-erp-experience/PLAN.ar.md)
-- **خطة الهوية والتوسع التشغيلي (المراحل 10–12):**
-  [`REDESIGN-CRM-TEAM-ROADMAP-20261104.md`](file:///C:/Dev/cafe-operations-system-3/docs/research/2026-11-02-erp-experience/REDESIGN-CRM-TEAM-ROADMAP-20261104.md)
-- **تفاصيل دورة التسليم والاستلام المبسط (الخطوة 5):**
-  [`STEP-5-HANDOVER-WORKFLOW.md`](file:///C:/Dev/cafe-operations-system-3/docs/research/2026-11-02-erp-experience/STEP-5-HANDOVER-WORKFLOW.md)
-- **تصميم وتغطية المحاسبة 4B.2:**
-  [`STEP-4B2-DESIGN.md`](file:///C:/Dev/cafe-operations-system-3/docs/research/2026-11-02-erp-experience/STEP-4B2-DESIGN.md)
+### ✅ ما تم إنجازه ودمجه في النسخة الرئيسية (`HEAD: e80b7f4` — 99 Migration):
+1. **الخطوة 1 و 1B:** الهوية الموحدة، إدارة طاولات الكافيه، وتصميم مساحات العمل التشغيلية.
+2. **الخطوة 2 (2A–2C):** تدرج المبيعات والفواتير والتقارير الستة (المشتريات والمبيعات، مبيعات الأصناف ومساهمة SKU، التحصيلات، الورديات، الموظفين، والطاولات) مع تصدير مقروء.
+3. **الخطوة 3:** دورة استيراد وتصدير الوصفات الجماعية (قالب Excel بـ 12 خانة مكونات ومراجعة الفروق).
+4. **الخطوة 4A و 4B.1–4B.2:** مصروفات التشغيل المصنفة، دليل الحسابات، إدارة الحسابات الرئيسية/الفرعية، ربط التصنيفات المحمي، وتصدير XLSX/CSV.
+5. **الخطوة 5 (التسليم والاستلام المباشر وتقارير المساءلة):**
+   - التسليم المباشر وتوزيع النقدية (`17fa76f`) مع استثناء التأكيد نيابةً عن المستلم وحراسة الفترة المحاسبية.
+   - تقرير مساءلة التسليم (`6adff7c`) لفروق النقدية والخامات لكل موظف مع التصدير وخط Plex Arabic.
+   - تبسيط شاشات التسليم (`c3f825f` و `c73bc73`): بطاقة خطوة تالية واحدة، تحويل تلقائي لعهدة الفرع عند إغلاق المدير، ومعالج الصباح، دون حفظ عدّ لكل سطر على حدة.
+6. **تعريب وتنظيف الشاشات وسجل التدقيق (`13ae986` إلى `d7ebc7a`):**
+   - إزالة الروابط المكررة والنصوص الإنجليزية ورموز المعرفات الخام (Raw IDs) من المبيعات، لوحة التحكم، التتبع، سجل التدقيق، المالية، ومركز التقارير.
+   - تحديث اختبارات الأساس (`PERM-001` بـ 127 صلاحية شاملة الخزينة، و `UI-007` للقائمة الجانبية الجديدة).
+7. **إدارة عملة الكافيه والفروع (`d454543` إلى `e80b7f4`):**
+   - بطاقة عملة الفرع في الإعدادات مع القفل وسبب التغيير والسجل التاريخي.
+   - تعميم عملة الكافيه على الإيصالات، التصدير، الشاشات، إجماليات المنصة، مصروفات الدرج، والخزينة (`C9`).
+8. **الدمج الحي والنسخة الاحتياطية (`2026-11-07`):**
+   - نسخة احتياطية باردة لـ `5433` في `C:\Dev\_nextcup_backups\2026-11-07_pre_workspace_redesign_merge_cold_pgdata`، ومرجع Git في `refs/backup/root-before-workspace-redesign-20261107`.
+   - تقديم فرع `codex/integration-all-approved-20261101` إلى `e80b7f4` (30 التزامًا، 527 ملفًا) وتطبيق الـ 8 migrations الجديدة ليصل الإجمالي إلى **99 migration** على قاعدة `5433` مع الحفاظ الكامل على بيانات المالك وتشغيل `http://localhost:3110`.
 
 ---
 
-## 3. بيئة العمل وفروع Git
+## 2. المحطة التالية مباشرة على خريطة الطريق
 
-- **Worktree التنفيذي:**
-  `C:/Users/Acer/.codex/worktrees/nextcup-workspace-redesign/cafe-operations-system-3`
-- **فرع العمل:**
-  `codex/nextcup-workspace-redesign-20261102`
-- **حالة الالتزامات (Commits):**
-  - إغلاق المحاسبة 4B.2 وتصدير الحسابات محفوظ في `bbbed42`.
-  - إصلاح عرض النافذة محفوظ في `203cc48`.
-  - دورة التسليم السابقة وتقاريرها محفوظة في `3ea7c9b`.
-  - تعديلات التسليم المباشر وتوزيع النقدية لا تزال محلية (غير ملتزمة) مع 3 migrations غير متتبعة (`20261106090000_direct_handover_cash_disposition`, `20261106100000_handover_issue`, `20261106110000_handover_direct_flag`).
+بعد معاينة المالك للنسخة الحية على `http://localhost:3110`، ننتقل حسب الترتيب المعتمد في الخريطة إلى:
 
----
-
-## 4. المهام المتبقية قبل إغلاق دفعة التسليم المبسط (Step 5 Direct Handover)
-
-1. **تحديد حارس معاينة 3113 الفعلي:** مسار `scripts/preview-server-3113.mjs` المذكور بالتقرير لم يوجد في المكان المتوقع، ويجب اكتشاف آلية الحراسة والتشغيل الفعلية.
-2. **مطابقة أدلة الاختبارات والمتصفح مع المصدر والبناء النهائي:** مطابقة 34 اختبارًا و291 فحصًا وسجلات البناء.
-3. **مراجعة فواصل صفحات تقرير PDF والتحقق من فتح ملف XLSX في برنامج جداول.**
-4. **توفير بيئة معاينة حية نهائية للمالك للحصول على القبول البصري.**
+### 🎯 المرحلة القادمة: **المرحلة 10A — نماذج التصميم البصري الموحد (Visual Design Prototypes)**
+وفق المرجع [`REDESIGN-CRM-TEAM-ROADMAP-20261104.md`](file:///C:/Dev/cafe-operations-system-3/docs/research/2026-11-02-erp-experience/REDESIGN-CRM-TEAM-ROADMAP-20261104.md):
+- إعداد 4 شاشات نموذجية ببيانات تجريبية واقعية للموافقة البصرية قبل التعميم:
+  1. **الكاشير (POS)**
+  2. **قائمة المصروفات المضغوطة (Compact Expenses)**
+  3. **لوحة المالك الرئيسية (Owner Overview)**
+  4. **قائمة وتفاصيل المهام (Task List / Detail)**
+- تشمل مقاسات سطح المكتب، `1024px` مع القائمة الجانبية، والهاتف `375–390px`، بالألوان المعتمدة (القائمة الداكنة `#151918`، والأسطح الفاتحة `#F6F7F4` / `#FFFFFF`، واللون الأساسي الأخضر `#27695B`).
 
 ---
 
-## 5. تسلسل المراحل القادمة في المشروع
+## 3. جدول المراحل المتبقية حتى إتمام المشروع
 
-| الترتيب | المرحلة | النطاق والمطلوب |
-|---|---|---|
-| **الحالي** | **إغلاق الخطوة 5** | إغلاق التحقق من التسليم المبسط، معاينة 3113، وقبول المالك |
-| **التالي** | **المرحلة 10A** | نماذج التصميم البصري الجديدة (مستوحاة من النماذج الـ 5) للموافقة |
-| **لاحقاً** | **المرحلة 10B–10C** | بناء وتطبيق مكونات التصميم الموحدة تدريجياً |
-| **لاحقاً** | **المرحلة 11A–11C** | إدارة الفروع ومهام الموظفين واعتماد الإنجاز |
-| **لاحقاً** | **المرحلة 12A–12C** | نظام إدارة علاقات العملاء (CRM)، سجل العميل، والشكاوى والمتابعات |
-| **محفوظة** | **المراحل 6–9** | QR الذاتي (6)، النسخ الاحتياطي لجهاز المالك (7)، تشغيل LAN والمزامنة (8)، والتسعير من التكلفة (9) |
-| **مفتوحة** | **المحاسبة 4B.3–4B.5**| بانتظار قرارات D6 و D7/D8 واعتماد المحاسب القانوني |
+| الترتيب | المرحلة | النطاق والحالة | المرجع / البرومبت |
+|---|---|---|---|
+| **1 (القادم)** | **10A** | نماذج التصميم البصري الموحد للموافقة (4 شاشات مرجعية) | [`REDESIGN-CRM-TEAM-ROADMAP-20261104.md` §4](file:///C:/Dev/cafe-operations-system-3/docs/research/2026-11-02-erp-experience/REDESIGN-CRM-TEAM-ROADMAP-20261104.md) |
+| **2** | **10B–10C** | بناء المكونات المشتركة (Tokens, Cards, Rows, Drawers, Filters) وتعميمها تدريجيًا | [`REDESIGN-CRM-TEAM-ROADMAP-20261104.md` §4](file:///C:/Dev/cafe-operations-system-3/docs/research/2026-11-02-erp-experience/REDESIGN-CRM-TEAM-ROADMAP-20261104.md) |
+| **3** | **11A–11C** | إدارة الفروع، مسؤوليات الموظفين، قوائم التحقق المتكررة، وإثبات واعتماد الإنجاز | [`REDESIGN-CRM-TEAM-ROADMAP-20261104.md` §5](file:///C:/Dev/cafe-operations-system-3/docs/research/2026-11-02-erp-experience/REDESIGN-CRM-TEAM-ROADMAP-20261104.md) |
+| **4** | **12A–12C** | نظام CRM المرتبط بالعمليات: ملف العميل، الزيارات، الشكاوى، ومهام المتابعة | [`REDESIGN-CRM-TEAM-ROADMAP-20261104.md` §6](file:///C:/Dev/cafe-operations-system-3/docs/research/2026-11-02-erp-experience/REDESIGN-CRM-TEAM-ROADMAP-20261104.md) |
+| **5 (مجدولة)** | **الإضافة 7** | النسخ الاحتياطي اليدوي والتلقائي على جهاز المالك أثناء فتح الـ ERP | [`prompts/07-owner-device-backups.md`](file:///C:/Dev/cafe-operations-system-3/docs/research/2026-11-02-erp-experience/prompts/07-owner-device-backups.md) |
+| **6 (مجدولة)** | **إضافة 7B (جديدة)** | زر تصفير المبيعات وآثارها (المخزون والورديات) حسب التاريخ أو تصفير الكل بحراسة كود المالك | [`prompts/13-sales-reset-and-inventory-restoration.md`](file:///C:/Dev/cafe-operations-system-3/docs/research/2026-11-02-erp-experience/prompts/13-sales-reset-and-inventory-restoration.md) |
+| **7 (مجدولة)** | **الإضافة 8 (8A–8D)** | التشغيل المشترك عبر شبكة المكان (LAN) للكاشير والمطبخ وQR والمزامنة مع السحابة | [`prompts/08-offline-working-and-sync.md`](file:///C:/Dev/cafe-operations-system-3/docs/research/2026-11-02-erp-experience/prompts/08-offline-working-and-sync.md) |
+| **8 (مجدولة)** | **الإضافة 9 (9A–9C)** | التسعير الاختياري من التكلفة المباشرة أو الوصفة بمعامل قابل للتعديل | [`prompts/09-optional-cost-based-pricing.md`](file:///C:/Dev/cafe-operations-system-3/docs/research/2026-11-02-erp-experience/prompts/09-optional-cost-based-pricing.md) |
+| **9 (مجدولة)** | **الإضافة 6** | الاستلام الذاتي وتنبيه جاهزية طلبات QR للعميل | [`prompts/06-self-service-qr-ready-alerts.md`](file:///C:/Dev/cafe-operations-system-3/docs/research/2026-11-02-erp-experience/prompts/06-self-service-qr-ready-alerts.md) |
+| **بانتظار قرار مالي** | **4B.3–4B.5** | قيود ترحيل المصروفات والمرتجعات، القوائم المالية حسب الفرع، وتسوية النقد والبنك (مرتبطة بقرارات المحاسب و D6/D7/D8) | [`STEP-4B2-DESIGN.md` §16–17](file:///C:/Dev/cafe-operations-system-3/docs/research/2026-11-02-erp-experience/STEP-4B2-DESIGN.md) |

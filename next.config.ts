@@ -10,8 +10,14 @@ const nextConfig: NextConfig = {
     ignoreBuildErrors: true,
     ...(integrationVerification ? { tsconfigPath: "tsconfig.integration.json" } : {}),
   },
-  eslint: {
-    ignoreDuringBuilds: true,
+  async redirects() {
+    return [
+      {
+        source: "/shifts",
+        destination: "/reports/shift-sales",
+        permanent: false,
+      },
+    ];
   },
 };
 
