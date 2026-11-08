@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { api, money as formatMoney } from "@/lib/client";
+import { useApp } from "@/components/app-shell";
 import { UNIT_LABEL } from "@/lib/inventory";
 import { TouchNumberInput } from "@/components/pos/touch-number-input";
 import { Button } from "@/components/ui/button";
@@ -42,7 +43,25 @@ export function DirectHandoverPanel({
   const [resolveIssueId, setResolveIssueId] = useState<string | null>(null);
   const [resolveNote, setResolveNote] = useState("");
 
+  const { user, canKey } = useApp();
   const acceptKeyRef = useRef<string>("");
+
+  async function handleManagerApprove() {
+    setBusy(true);
+    try {
+      const res = await api<{ message?: string }>(`/api/handovers/${handoverId}/approve`, {
+        method: "POST",
+        body: {},
+      });
+      toast.success(res.message || "تم اعتماد الجرد وتحديث أرصدة المخزون بنجاح!");
+      await load();
+      await onAccepted?.();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "تعذّر اعتماد الجرد");
+    } finally {
+      setBusy(false);
+    }
+  }
   const issueKeyRef = useRef<string>("");
 
   const load = useCallback(async () => {
@@ -388,6 +407,17 @@ export function DirectHandoverPanel({
             data-testid="direct-handover-accept"
           >
             {busy ? "جارٍ فتح الوردية واستلام العهدة…" : "فتح ورديتي واستلام العهدة"}
+          </Button>
+        )}
+
+        {!summary.acknowledgement && (user.role === "CAFE_OWNER" || user.role === "BRANCH_MANAGER" || canKey("handover.exception") || canKey("handover.manage")) && (
+          <Button
+            type="button"
+            className="h-12 font-bold bg-amber-600 hover:bg-amber-700 text-white"
+            disabled={busy}
+            onClick={() => void handleManagerApprove()}
+          >
+            {busy ? "جارٍ الاعتماد…" : "اعتماد الجرد كمدير/مالك وتحديث المخزون"}
           </Button>
         )}
 

@@ -5,6 +5,7 @@ import { buildShiftMaterialsReport, buildShiftReport, type ShiftMaterialsReport,
 import { UNIT_LABEL } from "@/lib/inventory";
 import { CADENCE_LABEL, materialsDecisionLabel } from "@/lib/materials-labels";
 import { ShiftReportActions } from "@/components/reports/shift-report-actions";
+import { ShiftReportApproveButton } from "@/components/reports/shift-report-approve-button";
 
 export const dynamic = "force-dynamic";
 
@@ -187,6 +188,16 @@ export default async function ShiftReportPage({ params }: { params: Promise<{ id
           </Section>
         )}
 
+        {oversight && materials.handover && (
+          <ShiftReportApproveButton
+            handoverId={materials.handover.id}
+            shiftId={report.shiftId}
+            shiftNumber={report.shiftNumber}
+            status={materials.handover.status}
+            hasStockSession={!!materials.handover.stockCountSessionId}
+            lineCount={materials.lines.length}
+          />
+        )}
         <MaterialsSection materials={materials} />
 
         <Section title="🧾 المبيعات">

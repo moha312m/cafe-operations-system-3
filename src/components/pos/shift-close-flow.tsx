@@ -524,7 +524,9 @@ function AutoBranchSave({ handoverId, href }: { handoverId: string; href: string
 }
 
 function DoneStep({ flow, currency, outcome }: { flow: ClosedFlow; currency: string; outcome: { notDue?: { nextDueAt: string | null }; recordedDifferences?: number } | null }) {
-  const { canKey } = useApp();
+  const { canKey, user } = useApp();
+  const [approving, setApproving] = useState(false);
+  const [approved, setApproved] = useState(false);
   const router = useRouter();
   const shift = flow.shift;
   const handover = flow.handover;
@@ -579,7 +581,35 @@ function DoneStep({ flow, currency, outcome }: { flow: ClosedFlow; currency: str
       <summary className="cursor-pointer text-muted-foreground">تفاصيل تسليم الفلوس</summary>
       <MoneySummary shift={shift} currency={currency} />
     </details>
-    <div className="flex flex-col gap-2 sm:flex-row sm:justify-center">
+    {handover && !approved && (user.role === "CAFE_OWNER" || user.role === "BRANCH_MANAGER" || canKey("handover.exception") || canKey("handover.manage")) && (
+        <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-start space-y-2">
+          <p className="text-sm font-bold text-amber-900 dark:text-amber-200">بصفتك مالك / مدير:</p>
+          <p className="text-xs text-muted-foreground">يمكنك اعتماد الجرد وتحديث أرصدة المخزون بالسيستم فوراً، أو مراجعته لاحقاً من تقرير الشيفت.</p>
+          <Button
+            size="sm"
+            className="bg-amber-600 hover:bg-amber-700 text-white font-bold"
+            disabled={approving}
+            onClick={async () => {
+              setApproving(true);
+              try {
+                const res = await api<{ message?: string }>(`/api/handovers/${handover.id}/approve`, { method: "POST", body: {} });
+                toast.success(res.message || "تم اعتماد الجرد وتحديث المخزون بنجاح!");
+                setApproved(true);
+              } catch (e) {
+                toast.error(e instanceof Error ? e.message : "تعذّر الاعتماد");
+              } finally {
+                setApproving(false);
+              }
+            }}
+          >
+            {approving ? "جارٍ الاعتماد وتحديث المخزون…" : "اعتماد الجرد وتحديث أرصدة المخزون الآن"}
+          </Button>
+        </div>
+      )}
+      {approved && (
+        <p className="text-sm font-bold text-emerald-600">✓ تم اعتماد الجرد وتحديث أرصدة المخزون بالسيستم بنجاح</p>
+      )}
+      <div className="flex flex-col gap-2 sm:flex-row sm:justify-center">
       {waiting && <Button className="h-12" disabled={dispositionMissing} onClick={() => void handOver()} data-testid="close-hand-device">تسليم الجهاز للموظف الجاي</Button>}
       <Link href="/pos" className={buttonVariants({ variant: "outline", className: "h-12" })}>رجوع للكاشير</Link>
     </div>
