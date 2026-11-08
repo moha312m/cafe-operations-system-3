@@ -87,6 +87,35 @@ function SalesWorkspaceInner(){const money=useMoney();
  async function showReceipt(revision:number){if(!detail)return;await run(async()=>{setReceipt(await api('/api/sales/'+detail.order.id+'/receipt',{method:'POST',body:{revision,reprint:revision<detail.order.revision,logPrint:false}}));});}
  return <div className="workspace-page space-y-5" dir="rtl">
   <PageHeader title={filters.source==='CASHIER_POS'?'سجل فواتير الكاشير':filters.returns?'مرتجعات المبيعات':'كل المبيعات'} subtitle="راجع الفواتير والتحصيل، ثم افتح الفاتورة للإيصال والإجراءات المسموحة."><div className="flex flex-wrap items-center gap-3">{canKey('audit.view')&&<Link href="/tracing" className="text-sm text-muted-foreground underline">التتبّع</Link>}{can('orders:create')&&<Link href="/pos" className="inline-flex min-h-11 items-center gap-2 rounded-lg bg-primary px-4 font-semibold text-primary-foreground"><ReceiptText className="size-4" aria-hidden="true"/>بيع جديد</Link>}</div></PageHeader>
+   <div className="flex flex-wrap items-center gap-2 border-b border-border/60 pb-3" role="tablist" aria-label="أقسام سجل المبيعات">
+    <button
+      type="button"
+      role="tab"
+      aria-selected={!filters.source && !filters.returns}
+      onClick={() => setFilters(prev => { const n = { ...prev }; delete n.source; delete n.returns; return n; })}
+      className={cn("px-4 py-2 rounded-lg text-sm font-semibold transition min-h-10", !filters.source && !filters.returns ? "bg-primary text-primary-foreground shadow-sm" : "bg-muted/70 hover:bg-muted text-muted-foreground hover:text-foreground")}
+    >
+      جميع المبيعات
+    </button>
+    <button
+      type="button"
+      role="tab"
+      aria-selected={filters.source === 'CASHIER_POS'}
+      onClick={() => setFilters(prev => { const n = { ...prev, source: 'CASHIER_POS' }; delete n.returns; return n; })}
+      className={cn("px-4 py-2 rounded-lg text-sm font-semibold transition min-h-10", filters.source === 'CASHIER_POS' ? "bg-primary text-primary-foreground shadow-sm" : "bg-muted/70 hover:bg-muted text-muted-foreground hover:text-foreground")}
+    >
+      فواتير الكاشير
+    </button>
+    <button
+      type="button"
+      role="tab"
+      aria-selected={filters.returns === '1'}
+      onClick={() => setFilters(prev => { const n = { ...prev, returns: '1' }; delete n.source; return n; })}
+      className={cn("px-4 py-2 rounded-lg text-sm font-semibold transition min-h-10", filters.returns === '1' ? "bg-primary text-primary-foreground shadow-sm" : "bg-muted/70 hover:bg-muted text-muted-foreground hover:text-foreground")}
+    >
+      مرتجعات المبيعات
+    </button>
+   </div>
   <section aria-label="نطاق وفلاتر سجل المبيعات" className="sales-filterbar workspace-surface space-y-4 p-4 sm:p-5">
    <ReportingControls filters={filters} onChange={f=>{setFilters(f);}} metadata={hasCurrent?list.reporting:undefined} onSaved={()=>void load()}>
     <label className="flex min-w-40 flex-1 flex-col gap-1 text-sm">الفرع<TouchSelect className={inputClass+' w-full'} aria-label="الفرع" value={filters.branchId??''} onValueChange={v=>updateFilter('branchId',v)}><option value="">الفروع المسموحة</option>{list.branches.map(b=><option key={b.id} value={b.id}>{b.name}</option>)}</TouchSelect></label>

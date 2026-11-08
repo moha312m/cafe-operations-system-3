@@ -10,8 +10,6 @@ export const SALES_REPORT_CATALOG:{id:SalesReportKind;title:string;description:s
  {id:'tables',title:'تقرير الطاولات',description:'جلسات مستقلة وأحداث الفترة والمتبقي الحالي دون مضاعفة.',keys:[...common,'tables.view'],features:['enableTables']},
 ];
 export const SALES_WORKSPACE_LINKS=[
- {href:'/sales',label:'كل المبيعات',key:'sales.view'},
- {href:'/sales?source=CASHIER_POS',label:'فواتير الكاشير',key:'sales.view'},
- {href:'/pos',label:'الكاشير',key:'pos.view'},
- {href:'/sales?returns=1',label:'مرتجعات المبيعات',key:'sales.view'},
+ {href:'/pos',label:'الكاشير (نقطة البيع)',key:'pos.view'},
+ {href:'/sales',label:'سجل المبيعات والفواتير',key:'sales.view'},
 ];
