@@ -189,7 +189,7 @@ export function ExpenseWorkspace() {
       <div className="flex flex-wrap items-center gap-3">
         {manage && <button className={primary + " min-h-12 px-6 text-base font-bold"} onClick={openExpense}>{uncertain ? "استعادة نتيجة المصروف المعلق" : "+ إضافة مصروف"}</button>}
         {canManageCategories && <button className={button + " min-h-12 px-5 text-base"} onClick={() => { setCategoryError(""); setCategoriesOpen(true); }}>إدارة تصنيفات المصروفات</button>}
-        <Link href="/finance" className="inline-flex min-h-11 items-center text-base font-medium text-primary underline">مساحة الماليات ←</Link>
+        <Link href="/accounting/pnl" className="inline-flex min-h-11 items-center text-base font-medium text-primary underline">الأرباح والخسائر والمحاسبة ←</Link>
       </div>
     </PageHeader>
     <p className="max-w-3xl text-base leading-relaxed text-muted-foreground">مصروف تشغيلي مدفوع فورًا من درجك الحالي بعملة الكافيه. المشتريات وسداد الموردين والسلف والأجور والأصول ومسحوبات المالك لها مسارات منفصلة.</p>

@@ -9,12 +9,13 @@ import { usePathname } from "next/navigation";
 import { useApp } from "@/components/app-shell";
 
 const TABS = [
-  { href: "/accounting", label: "نظرة عامة" },
+  { href: "/accounting/pnl", label: "الأرباح والخسائر (P&L)" },
   { href: "/accounting/trial-balance", label: "ميزان المراجعة" },
-  { href: "/accounting/statements", label: "القوائم المالية" },
-  { href: "/accounting/chart", label: "دليل الحسابات" },
   { href: "/accounting/ledger", label: "دفتر الأستاذ" },
-  { href: "/accounting/journal", label: "القيود" },
+  { href: "/accounting/journal", label: "دفتر القيود" },
+  { href: "/accounting/chart", label: "دليل الحسابات" },
+  { href: "/accounting/statements", label: "الميزانية العمومية" },
+  { href: "/accounting/status", label: "حالة النظام" },
 ];
 
 export function AccountingShell({ children }: { children: React.ReactNode }) {

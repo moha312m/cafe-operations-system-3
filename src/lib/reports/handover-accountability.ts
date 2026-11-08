@@ -247,7 +247,7 @@ const STOCK_CASE = {
   shift: { select: { shiftNumber: true, cashier: { select: PERSON } } },
   assignedResponsibility: { select: PERSON },
   custodyPeriod: { select: CUSTODY },
-  stockCountLine: { select: { unit: true, expectedQuantity: true, countedQuantity: true, effectiveCountedQuantity: true, unitCostSnapshot: true, inventoryItem: { select: { id: true, name: true } } } },
+  stockCountLine: { select: { id: true, unit: true, expectedQuantity: true, countedQuantity: true, effectiveCountedQuantity: true, unitCostSnapshot: true, inventoryItem: { select: { id: true, name: true } } } },
   acceptedHandover: { select: { id: true, outgoingUser: { select: PERSON }, outgoingShift: { select: { shiftNumber: true } } } },
   varianceSpan: { select: { custodyLinks: { select: { custodyPeriod: { select: CUSTODY } } } } },
 } satisfies Prisma.VarianceCaseSelect;

@@ -85,7 +85,7 @@ const NAV_ICONS: Record<string, React.ElementType> = {
  "/branches":Building2,"/staff":Users,"/inventory":Package,"/purchases":ShoppingCart,"/suppliers":Truck,
  "/customers":CreditCard,"/stock-counts":ClipboardCheck,"/variances":Scale,"/handovers":Handshake,
  "/report-center":FileChartColumn,"/reports":FileChartColumn,"/expenses":Wallet,"/treasury":Landmark,
- "/finance":Wallet,"/accounting":BookText,"/shifts":Calculator,"/settings":Settings,
+ "/finance":Wallet,"/accounting/pnl":ChartNoAxesCombined,"/accounting":BookText,"/shifts":Calculator,"/settings":Settings,
  "/roles-permissions":ShieldCheck,"/audit":History,
 };
 /** Report links share one catalog, so they pick an icon by report id, then by group, instead of the generic book. */
@@ -98,10 +98,7 @@ const REPORT_ICONS: Record<string, React.ElementType> = {
 const REPORT_GROUP_ICONS: Record<string, React.ElementType> = {sales:ChartNoAxesCombined,inventory:Package,purchasing:ShoppingCart,finance:Wallet,customers:CreditCard,system:ShieldCheck};
 const NAV: NavItem[] = [
   ...SALES_WORKSPACE_LINKS.map(item=>({...item,icon:"",permission:"orders:read" as const,group:"sales" as const})),
-  { href: "/finance", label: "مساحة الماليات", icon: "💼", permission: "cost:read", group: "finance", anyKey: ["accounting.view", "expenses.view", "treasury.view"] },
   { href: "/report-center", label: "مركز التقارير", icon: "📊", permission: "reports:read", group: "reports" },
-  { href: "/tables/setup", label: "إدارة الترابيزات", icon: "🪑", permission: "orders:create", group: "daily", key: "tables.manage", feature: f => f.enableTables },
-  { href: "/treasury", label: "الحسابات والتحويلات", icon: "🏦", permission: "cost:read", group: "finance", key: "treasury.view", ownerOnly: true },
   { href: "/dashboard", label: t.nav.dashboard, icon: "📊", permission: "dashboard:read" },
   { href: "/current-shift", label: t.nav.currentShift, icon: "🧑‍💼", permission: "shifts:operate", group: "daily", feature: (f) => f.shiftManagementEnabled },
   { href: "/kitchen", label: t.nav.kitchen, icon: "☕", permission: "orders:update-status", group: "daily", feature: (f) => f.kitchenScreenEnabled },
@@ -130,7 +127,7 @@ const NAV: NavItem[] = [
   { href: "/variances", label: "الفروقات", icon: "⚖️", permission: "shifts:read", group: "stock", key: "variance.view", feature: (f) => f.shiftManagementEnabled },
   { href: "/handovers", label: "التسليم والاستلام", icon: "🤝", permission: "shifts:operate", group: "stock", key: "handover.view", feature: (f) => f.shiftManagementEnabled },
   { href: "/expenses", label: "مصروفات التشغيل", icon: "💸", permission: "cost:read", group: "finance", key: "expenses.view" },
-  { href: "/accounting", label: "المحاسبة (تجريبي)", icon: "📒", permission: "cost:read", group: "finance", key: "accounting.view" },
+  { href: "/accounting", label: "الأرباح والخسائر والمحاسبة", icon: "📊", permission: "cost:read", group: "finance", key: "accounting.view" },
   { href: "/settings", label: "الإعدادات", icon: "⚙️", permission: "branches:manage", group: "admin" },
   { href: "/roles-permissions", label: "الأدوار والصلاحيات", icon: "🛡️", permission: "users:manage", group: "admin", key: "users.manage_permissions" },
 ];

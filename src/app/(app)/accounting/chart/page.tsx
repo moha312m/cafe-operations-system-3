@@ -52,7 +52,7 @@ function LedgerLink({ r }: { r: ChartRow }) {
 }
 
 export default function ChartOfAccountsPage() {
-  const [accountDialog, setAccountDialog] = useState<{ mode: "group" | "sub" | "edit"; account: ChartRow | null } | null>(null);
+  const [accountDialog, setAccountDialog] = useState<{ mode: "create" | "group" | "sub" | "edit"; account: ChartRow | null } | null>(null);
   const [exportScope, setExportScope] = useState<"full" | "filtered">("full");
   const [includeMapping, setIncludeMapping] = useState(false);
   const [exporting, setExporting] = useState("");
@@ -104,8 +104,7 @@ export default function ChartOfAccountsPage() {
           <Label htmlFor="coa-search">بحث بالكود أو الاسم</Label>
           <Input id="coa-search" type="search" className="w-72 max-w-full" placeholder="مثال: 1110 أو نقدية" value={input} onChange={(e) => setInput(e.target.value)} maxLength={60} />
         </div>
-        {ready?.canSetup && <Button onClick={() => setAccountDialog({ mode: "group", account: null })}>إضافة حساب رئيسي (مجموعة)</Button>}
-        {ready?.canSetup && <Button variant="outline" onClick={() => setAccountDialog({ mode: "sub", account: null })}>إضافة حساب فرعي</Button>}
+        {ready?.canSetup && <Button onClick={() => setAccountDialog({ mode: "create", account: null })}>+ إضافة حساب</Button>}
       </div>
       {ready?.canExport && (
         <section className="flex flex-wrap items-end gap-3 rounded-lg border p-3" aria-label="تصدير الدليل" data-testid="chart-export">
