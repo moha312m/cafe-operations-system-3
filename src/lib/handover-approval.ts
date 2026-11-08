@@ -6,6 +6,8 @@ import { releaseInventoryFreeze } from "@/lib/inventory-freeze";
 import { applyDeferredDeductions } from "@/lib/deferred-deduction";
 import { buildStockBoundary, persistStockBoundary } from "@/lib/handover-boundary";
 import { openHandoverVarianceCases } from "@/lib/stock-variance-attribution";
+import { settleRequiredItems } from "@/lib/handover-required-items";
+import { ensureCustodyForShift } from "@/lib/custody";
 
 export type ApproveHandoverArgs = {
   handoverId: string;
@@ -19,9 +21,11 @@ export async function approveHandoverAsManager(args: ApproveHandoverArgs) {
   // 1. Check user authority
   const manager = await db.user.findUnique({
     where: { id: args.managerId },
-    select: { id: true, name: true, role: true, cafeId: true, branchId: true },
+    select: { id: true, name: true, role: true, cafeId: true, branchId: true, isActive: true, archivedAt: true },
   });
-  if (!manager) throw new ApiError(404, "المستخدم غير موجود");
+  if (!manager || !manager.isActive || manager.archivedAt) {
+    throw new ApiError(403, "حساب المستخدم غير نشط");
+  }
   if (manager.role !== "SUPER_ADMIN" && manager.cafeId !== args.cafeId) {
     throw new ApiError(403, "ليس لديك صلاحية على هذا الكافيه");
   }
@@ -29,67 +33,101 @@ export async function approveHandoverAsManager(args: ApproveHandoverArgs) {
     throw new ApiError(403, "ليس لديك صلاحية على هذا الفرع");
   }
 
-  // 2. Load handover session
-  const handover = await db.handoverSession.findUnique({
-    where: { id: args.handoverId },
-    include: {
-      outgoingShift: true,
-      stockCountSession: {
-        include: {
-          lines: true,
-        },
-      },
-    },
-  });
-  if (!handover || handover.cafeId !== args.cafeId) {
-    throw new ApiError(404, "التسليم غير موجود");
-  }
-  if (args.viewerBranchId && handover.branchId !== args.viewerBranchId) {
-    throw new ApiError(403, "التسليم يتبع فرعاً آخر");
-  }
-
-  if (handover.status === "COMPLETED") {
-    return {
-      alreadyApproved: true,
-      handoverId: handover.id,
-      itemsRebased: 0,
-      message: "تم اعتماد هذا التسليم مسبقاً",
-    };
-  }
-
-  const acceptedSessionId = handover.stockCountSessionId;
-
-  // 3. Execute inside a transaction
+  // 2. Execute inside a transaction with row lock on HandoverSession
   return await db.$transaction(
     async (tx) => {
+      const lockedRows = await tx.$queryRaw<{ id: string }[]>`
+        SELECT "id" FROM "HandoverSession" WHERE "id" = ${args.handoverId} FOR UPDATE
+      `;
+      if (lockedRows.length === 0) {
+        throw new ApiError(404, "التسليم غير موجود");
+      }
+
+      const handover = await tx.handoverSession.findUnique({
+        where: { id: args.handoverId },
+        include: {
+          outgoingShift: true,
+          stockCountSession: {
+            include: {
+              lines: true,
+            },
+          },
+        },
+      });
+      if (!handover || handover.cafeId !== args.cafeId) {
+        throw new ApiError(404, "التسليم غير موجود");
+      }
+      if (args.viewerBranchId && handover.branchId !== args.viewerBranchId) {
+        throw new ApiError(403, "التسليم يتبع فرعاً آخر");
+      }
+
+      if (handover.status === "COMPLETED") {
+        return {
+          alreadyApproved: true,
+          handoverId: handover.id,
+          itemsRebased: 0,
+          message: "تم اعتماد هذا التسليم وتحديث المخزون مسبقاً",
+        };
+      }
+
+      const acceptedSessionId = handover.stockCountSessionId;
       let itemsRebased = 0;
       let rebaseLines: { inventoryItemId: string; stockBefore: number; stockAfter: number }[] = [];
 
       if (acceptedSessionId) {
-        // Ensure session is in a valid state
+        await tx.$queryRaw`
+          SELECT "id" FROM "StockCountSession" WHERE "id" = ${acceptedSessionId} FOR UPDATE
+        `;
+
         const countSession = await tx.stockCountSession.findUnique({
           where: { id: acceptedSessionId },
           select: {
             id: true,
             status: true,
-            lines: { select: { id: true, disposition: true, countedQuantity: true } },
+            lines: {
+              select: {
+                id: true,
+                disposition: true,
+                countedQuantity: true,
+                effectiveCountedQuantity: true,
+                varianceQuantity: true,
+              },
+            },
           },
         });
 
         if (countSession) {
-          // If lines are not terminal, mark COUNTED/OUTSIDE_TOLERANCE lines as VARIANCE_RECORDED so rebase acts on them
-          const nonTerminal = countSession.lines.filter(
-            (l) =>
-              l.countedQuantity !== null &&
-              !["WITHIN_TOLERANCE", "RESOLVED_WITHIN_TOLERANCE", "VARIANCE_CONFIRMED", "VARIANCE_RECORDED"].includes(
-                l.disposition
-              )
+          const countedLines = countSession.lines.filter(
+            (l) => l.countedQuantity !== null || l.effectiveCountedQuantity !== null
           );
-          if (nonTerminal.length > 0) {
-            await tx.stockCountLine.updateMany({
-              where: { id: { in: nonTerminal.map((l) => l.id) } },
-              data: { disposition: "VARIANCE_RECORDED" },
-            });
+          if (countSession.lines.length > 0 && countedLines.length === 0) {
+            throw new ApiError(409, "لم يتم إدخال كميات الجرد بعد — يجب عدّ الأصناف أولاً قبل الاعتماد");
+          }
+
+          // Ensure all counted lines have a terminal disposition and effectiveCountedQuantity
+          for (const line of countedLines) {
+            const isTerm = [
+              "WITHIN_TOLERANCE",
+              "RESOLVED_WITHIN_TOLERANCE",
+              "VARIANCE_CONFIRMED",
+              "VARIANCE_RECORDED",
+            ].includes(line.disposition);
+            const needsEffective = line.effectiveCountedQuantity === null && line.countedQuantity !== null;
+
+            if (!isTerm || needsEffective) {
+              const nextDisp = isTerm
+                ? line.disposition
+                : line.varianceQuantity !== null && Number(line.varianceQuantity) === 0
+                  ? "WITHIN_TOLERANCE"
+                  : "VARIANCE_RECORDED";
+              await tx.stockCountLine.update({
+                where: { id: line.id },
+                data: {
+                  disposition: nextDisp,
+                  ...(needsEffective ? { effectiveCountedQuantity: line.countedQuantity } : {}),
+                },
+              });
+            }
           }
 
           if (countSession.status !== "CONFIRMED" && countSession.status !== "LOCKED") {
@@ -99,21 +137,34 @@ export async function approveHandoverAsManager(args: ApproveHandoverArgs) {
             });
           }
 
-          // Run rebase!
-          const rebase = await rebaseFromCountInTransaction(tx, {
-            sessionId: acceptedSessionId,
-            actorId: args.managerId,
-            idempotencyKey: `${handover.id}:manager-approve:${args.managerId}`,
-            freezeToken: handover.id,
-          });
-          itemsRebased = rebase.itemsRebased;
-          rebaseLines = rebase.lines.map((l) => ({
-            inventoryItemId: l.inventoryItemId,
-            stockBefore: l.stockBefore,
-            stockAfter: l.stockAfter,
-          }));
+          // Settle required items if configured
+          try {
+            await settleRequiredItems(tx, {
+              handoverId: handover.id,
+              acceptedSessionId,
+              omissionNote: args.note || "اعتماد المدير / المالك",
+            });
+          } catch (e) {
+            console.warn("settleRequiredItems note:", e);
+          }
 
-          // Stock boundary
+          // Run rebase!
+          if (countSession.status !== "LOCKED") {
+            const rebase = await rebaseFromCountInTransaction(tx, {
+              sessionId: acceptedSessionId,
+              actorId: args.managerId,
+              idempotencyKey: `${handover.id}:manager-approve`,
+              freezeToken: handover.id,
+            });
+            itemsRebased = rebase.itemsRebased;
+            rebaseLines = rebase.lines.map((l) => ({
+              inventoryItemId: l.inventoryItemId,
+              stockBefore: l.stockBefore,
+              stockAfter: l.stockAfter,
+            }));
+          }
+
+          // Stock boundary & Variance cases
           try {
             const boundary = await buildStockBoundary(tx, {
               cafeId: handover.cafeId,
@@ -131,7 +182,6 @@ export async function approveHandoverAsManager(args: ApproveHandoverArgs) {
             });
             const boundaryByItemId = new Map(boundaryRows.map((r) => [r.inventoryItemId, r.id]));
 
-            // Variance cases
             await openHandoverVarianceCases(tx, {
               cafeId: handover.cafeId,
               branchId: handover.branchId,
@@ -145,18 +195,84 @@ export async function approveHandoverAsManager(args: ApproveHandoverArgs) {
             console.warn("Boundary/variance case creation note:", e);
           }
 
-          // Lock count session
-          await lockCountSession(tx, {
-            sessionId: acceptedSessionId,
-            handoverId: handover.id,
-            actorId: args.managerId,
-          });
+          // Lock count session if not already locked
+          if (countSession.status !== "LOCKED") {
+            await lockCountSession(tx, {
+              sessionId: acceptedSessionId,
+              handoverId: handover.id,
+              actorId: args.managerId,
+            });
+          }
         }
       }
 
+      // 3. Release any inventory freeze & apply deferred deductions while outgoing stock custody is still open
+      const freeze = await tx.inventoryFreeze.findUnique({
+        where: { handoverId: handover.id },
+        select: { id: true, releasedAt: true, branchId: true },
+      });
+      if (freeze && !freeze.releasedAt) {
+        try {
+          await releaseInventoryFreeze(tx, { handoverId: handover.id, actorId: args.managerId });
+          await applyDeferredDeductions(tx, { handoverId: handover.id, actorId: args.managerId });
+        } catch (err) {
+          console.warn("Inventory freeze release warning:", err);
+        }
+      }
+
+      // Capture timestamp after variance cases so span timestamps are never after acceptedAt
       const acceptedAt = new Date();
 
-      // 4. Update handover session to COMPLETED
+      // 4. Finalize outgoing shift if still AWAITING_HANDOVER
+      if (handover.outgoingShiftId) {
+        await tx.shift.updateMany({
+          where: { id: handover.outgoingShiftId, status: "AWAITING_HANDOVER" },
+          data: {
+            status: "CLOSED",
+            stockClosedAt: acceptedAt,
+            closedAt: acceptedAt,
+            closedById: args.managerId,
+          },
+        });
+      }
+
+      // 5. Retire/close outgoing CASH and STOCK CustodyPeriods if no other shift is active on them
+      const shiftCustodies = handover.outgoingShiftId
+        ? await tx.shiftCustody.findMany({
+            where: { shiftId: handover.outgoingShiftId },
+            select: { custodyPeriodId: true },
+          })
+        : [];
+      const periodIds = new Set<string>(shiftCustodies.map((sc) => sc.custodyPeriodId));
+      if (handover.outgoingCashCustodyId) periodIds.add(handover.outgoingCashCustodyId);
+      if (handover.outgoingStockCustodyId) periodIds.add(handover.outgoingStockCustodyId);
+
+      for (const periodId of periodIds) {
+        const period = await tx.custodyPeriod.findUnique({ where: { id: periodId } });
+        if (!period || period.status !== "OPEN") continue;
+        const activeOtherShifts = await tx.shiftCustody.count({
+          where: {
+            custodyPeriodId: period.id,
+            ...(handover.outgoingShiftId ? { shiftId: { not: handover.outgoingShiftId } } : {}),
+            shift: { status: { in: ["OPEN", "AWAITING_HANDOVER"] } },
+          },
+        });
+        if (activeOtherShifts > 0) continue;
+        await tx.custodyPeriod.update({
+          where: { id: period.id },
+          data: {
+            status: "CLOSED",
+            endedAt: acceptedAt,
+            acceptedById: args.managerId,
+            acceptedAt,
+            ...(period.scope === "CASH" && handover.outgoingShift?.actualCashAmount != null
+              ? { closingCashAmount: handover.outgoingShift.actualCashAmount }
+              : {}),
+          },
+        });
+      }
+
+      // 6. Update handover session to COMPLETED
       await tx.handoverSession.update({
         where: { id: handover.id },
         data: {
@@ -174,44 +290,47 @@ export async function approveHandoverAsManager(args: ApproveHandoverArgs) {
         },
       });
 
-      // 5. Finalize outgoing shift if waiting
-      if (handover.outgoingShiftId) {
-        await tx.shift.updateMany({
-          where: { id: handover.outgoingShiftId, status: "AWAITING_HANDOVER" },
-          data: {
-            status: "CLOSED",
-            closedById: args.managerId,
-            financiallyClosedAt: acceptedAt,
-          },
-        });
-      }
-
-      // 6. Release any inventory freeze
-      const freeze = await tx.inventoryFreeze.findUnique({
-        where: { handoverId: handover.id },
-        select: { id: true, releasedAt: true, branchId: true },
+      // 7. Unblock any incoming shift in this branch that was waiting on AWAITING_CUSTODY_TRANSFER
+      const waitingShifts = await tx.shift.findMany({
+        where: {
+          cafeId: handover.cafeId,
+          branchId: handover.branchId,
+          status: "OPEN",
+          custodyGateReason: "AWAITING_CUSTODY_TRANSFER",
+        },
+        orderBy: { shiftNumber: "asc" },
+        select: { id: true, cashierId: true, openingCashAmount: true },
       });
-      if (freeze && !freeze.releasedAt) {
+      for (const ws of waitingShifts) {
         try {
-          await releaseInventoryFreeze(tx, { handoverId: handover.id, actorId: args.managerId });
-          await applyDeferredDeductions(tx, { handoverId: handover.id, actorId: args.managerId });
+          await ensureCustodyForShift(tx, {
+            cafeId: handover.cafeId,
+            branchId: handover.branchId,
+            shiftId: ws.id,
+            userId: ws.cashierId,
+            openingCashAmount: Number(ws.openingCashAmount),
+          });
         } catch (err) {
-          console.warn("Inventory freeze release warning:", err);
+          console.warn("Waiting shift custody bootstrap note:", err);
         }
       }
 
-      // 7. Record audit log
+      // 8. Record audit log
       await tx.auditLog.create({
         data: {
           cafeId: handover.cafeId,
-          branchId: handover.branchId,
           userId: args.managerId,
           entity: "HandoverSession",
           entityId: handover.id,
           action: "HANDOVER_MANAGER_APPROVED",
-          note: args.note
-            ? `اعتماد المدير: ${args.note}`
-            : `تم اعتماد الجرد وتحديث أرصدة المخزون (${itemsRebased} صنف)`,
+          details: {
+            branchId: handover.branchId,
+            handoverId: handover.id,
+            outgoingShiftId: handover.outgoingShiftId,
+            acceptedSessionId,
+            itemsRebased,
+            note: args.note ?? null,
+          },
         },
       });
 

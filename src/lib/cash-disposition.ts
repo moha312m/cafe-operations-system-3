@@ -167,7 +167,7 @@ export function presentDisposition(row: DispositionRow, nextDrawerShift: NextDra
   const receivedByShift = incomingFromHandover ?? nextDrawerShift;
   const retainedAmount = Number(row.retainedAmount);
   // A branch-custody night has no receiver to accept the drawer: the next shift opening takes it.
-  const awaitsAcceptance = !!row.handoverId && row.handover?.target !== "BRANCH_CUSTODY";
+  const awaitsAcceptance = !!row.handoverId && row.handover?.target !== "BRANCH_CUSTODY" && row.handover?.status !== "COMPLETED";
   const retainedStatus = receivedByShift
     ? ("HANDED_TO_SHIFT" as const)
     : awaitsAcceptance
@@ -202,7 +202,7 @@ export async function dispositionForShift(client: Prisma.TransactionClient | typ
   });
   if (!row) return null;
   let nextDrawerShift: NextDrawerShift = null;
-  if (!row.handoverId || row.handover?.target === "BRANCH_CUSTODY") {
+  if (!row.handoverId || row.handover?.target === "BRANCH_CUSTODY" || (row.handover?.status === "COMPLETED" && !row.handover.incomingShift)) {
     const next = await client.shift.findFirst({
       where: { branchId: row.shift.branchId, shiftNumber: { gt: row.shift.shiftNumber } },
       orderBy: { shiftNumber: "asc" },

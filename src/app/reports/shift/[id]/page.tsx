@@ -194,8 +194,9 @@ export default async function ShiftReportPage({ params }: { params: Promise<{ id
             shiftId={report.shiftId}
             shiftNumber={report.shiftNumber}
             status={materials.handover.status}
-            hasStockSession={!!materials.handover.stockCountSessionId}
+            hasStockSession={materials.handover.countStatus !== null || materials.lines.length > 0}
             lineCount={materials.lines.length}
+            countedLineCount={materials.lines.filter((l) => l.counted !== null).length}
           />
         )}
         <MaterialsSection materials={materials} />
