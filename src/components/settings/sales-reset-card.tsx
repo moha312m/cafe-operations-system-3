@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { toast } from "sonner";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -55,6 +55,19 @@ interface ResetPreview {
 }
 
 export function SalesResetCard({ branches = [] }: { branches?: BranchOption[] }) {
+  const [branchList, setBranchList] = useState<BranchOption[]>(branches);
+  useEffect(() => {
+    if (branches && branches.length > 0) {
+      setBranchList(branches);
+    } else {
+      fetch("/api/branches")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          if (d?.branches) setBranchList(d.branches);
+        })
+        .catch(() => {});
+    }
+  }, [branches]);
   const [branchId, setBranchId] = useState<string>("ALL");
   const [resetMode, setResetMode] = useState<"ALL" | "PERIOD">("PERIOD");
   const [from, setFrom] = useState<string>("");
@@ -192,7 +205,7 @@ export function SalesResetCard({ branches = [] }: { branches?: BranchOption[] })
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="ALL">كل الفروع (تطهير شامل)</SelectItem>
-                  {branches.map((b) => (
+                  {branchList.map((b) => (
                     <SelectItem key={b.id} value={b.id}>
                       {b.name}
                     </SelectItem>

@@ -13,7 +13,7 @@ import {Button} from '@/components/ui/button';
 import {nativeFieldClassName} from '@/components/ui/input';
 import {cn} from '@/lib/utils';
 import {PageHeader} from '@/components/cafe/ui';
-import {Search, SlidersHorizontal, ReceiptText, RefreshCw, X} from 'lucide-react';
+import {Search, SlidersHorizontal, ReceiptText, RefreshCw, X, RotateCcw} from 'lucide-react';
 import {Dialog,DialogContent,DialogTitle} from '@/components/ui/dialog';
 import type {AmendmentInput,Proposed} from '@/lib/order-amendments';
 import {ReportingControls,type ReportingMetadata} from './reporting-controls';
@@ -86,7 +86,7 @@ function SalesWorkspaceInner(){const money=useMoney();
  async function action(id:string,body:object){await api('/api/sales/amendments/'+id,{method:'POST',body:body});if(detail)await reloadDetail(detail.order.id);await load();}
  async function showReceipt(revision:number){if(!detail)return;await run(async()=>{setReceipt(await api('/api/sales/'+detail.order.id+'/receipt',{method:'POST',body:{revision,reprint:revision<detail.order.revision,logPrint:false}}));});}
  return <div className="workspace-page space-y-5" dir="rtl">
-  <PageHeader title={filters.source==='CASHIER_POS'?'سجل فواتير الكاشير':filters.returns?'مرتجعات المبيعات':'كل المبيعات'} subtitle="راجع الفواتير والتحصيل، ثم افتح الفاتورة للإيصال والإجراءات المسموحة."><div className="flex flex-wrap items-center gap-3">{canKey('audit.view')&&<Link href="/tracing" className="text-sm text-muted-foreground underline">التتبّع</Link>}{can('orders:create')&&<Link href="/pos" className="inline-flex min-h-11 items-center gap-2 rounded-lg bg-primary px-4 font-semibold text-primary-foreground"><ReceiptText className="size-4" aria-hidden="true"/>بيع جديد</Link>}</div></PageHeader>
+  <PageHeader title={filters.source==='CASHIER_POS'?'سجل فواتير الكاشير':filters.returns?'مرتجعات المبيعات':'كل المبيعات'} subtitle="راجع الفواتير والتحصيل، ثم افتح الفاتورة للإيصال والإجراءات المسموحة."><div className="flex flex-wrap items-center gap-3">{canKey('audit.view')&&<Link href="/tracing" className="text-sm text-muted-foreground underline">التتبّع</Link>}{can('orders:create')&&<Link href="/pos" className="inline-flex min-h-11 items-center gap-2 rounded-lg bg-primary px-4 font-semibold text-primary-foreground"><ReceiptText className="size-4" aria-hidden="true"/>بيع جديد</Link>}{user.role==='CAFE_OWNER'&&<Link href="/settings/sales-reset" className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/10 px-4 font-semibold text-destructive hover:bg-destructive/20 transition"><RotateCcw className="size-4" aria-hidden="true"/>تصفير المبيعات التجريبية</Link>}</div></PageHeader>
    <div className="flex flex-wrap items-center gap-2 border-b border-border/60 pb-3" role="tablist" aria-label="أقسام سجل المبيعات">
     <button
       type="button"

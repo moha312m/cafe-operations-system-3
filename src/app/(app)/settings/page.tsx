@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { toast } from "sonner";
@@ -260,6 +262,23 @@ function SettingsWorkspace() {
 
   return (
     <div className="mx-auto max-w-2xl space-y-4">
+      {user.role === "CAFE_OWNER" && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-destructive/40 bg-destructive/5 p-4 shadow-sm">
+          <div className="space-y-0.5">
+            <h2 className="text-sm font-bold text-destructive flex items-center gap-1.5">
+              <span aria-hidden="true">🛡️</span> أداة تصفير المبيعات واسترجاع المخزون (Sales Reset)
+            </h2>
+            <p className="text-xs text-muted-foreground">لتطهير مبيعات وفواتير التجارب والتدريب قبل الافتتاح الرسمي مع استرجاع رصيد الخامات المستهلكة.</p>
+          </div>
+          <Link
+            href="/settings/sales-reset"
+            className="inline-flex min-h-9 items-center gap-1 rounded-lg bg-destructive px-3.5 py-1.5 text-xs font-bold text-destructive-foreground hover:bg-destructive/90 transition shadow-sm"
+          >
+            فتح أداة التصفير ←
+          </Link>
+        </div>
+      )}
+
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold">{t.finance.settingsTitle}</h1>
         {/* Owner picks a branch; managers are pinned to theirs. */}
