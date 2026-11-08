@@ -108,9 +108,9 @@ export default function VariancesPage() {
 
   return (
     <main className="space-y-4 p-4 sm:p-6">
-      <header className="flex flex-wrap items-center gap-3">
+      <header className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-lg font-semibold">الفروقات</h1>
-        <Link className="text-primary underline" href="/reports/employee-variances">تقرير فروق الموظفين</Link>
+        <Link className="text-sm font-medium text-primary hover:underline" href="/reports/employee-variances">تقرير فروق الموظفين ←</Link>
       </header>
 
       <VarianceSummary summary={loading ? null : summary} currency={cafe?.currency ?? "EGP"} />
