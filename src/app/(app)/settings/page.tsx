@@ -20,6 +20,7 @@ import { HandoverPolicyCard } from "@/components/settings/handover-policy-card";
 import { WhatsAppCard } from "@/components/settings/whatsapp-card";
 import { OwnerActionSettingsCard } from "@/components/settings/owner-action-settings-card";
 import { BackupCard } from "@/components/settings/backup-card";
+import { SalesResetCard } from "@/components/settings/sales-reset-card";
 import { HandoverConfigPanel } from "@/components/settings/handover-config-panel";
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -367,6 +368,7 @@ function SettingsWorkspace() {
           <LoyaltySettingsCard />
           {user.role === "CAFE_OWNER" && canKey("settings.edit") && <OwnerActionSettingsCard />}
           {user.role === "CAFE_OWNER" && <BackupCard />}
+          {user.role === "CAFE_OWNER" && <SalesResetCard branches={branches} />}
         </>
       )}
     </div>
