@@ -355,6 +355,7 @@ export async function loadHandoverAccountability(args: ReportArgs): Promise<Acco
         unitCost: null, costBasis: null, priced, value: val, financialImpact: l.costImpactAvailable && l.costImpact !== null ? out(decimal(l.costImpact)) : null,
         confidence: l.confidence, attribution: cashier ? "PERSON" as const : "SHARED" as const, basis: "CUSTODY" as const,
         employee: cashier, participants: cashier ? [cashier] : [], shifts: shift ? [shift.shiftNumber] : [], handoverId: handover?.id ?? null,
+        caseStatus: "CONFIRMED",
       };
     })
   ];

@@ -45,7 +45,7 @@ const CUSTODY={holderType:true,participants:{select:{user:{select:PERSON}}},resp
 const SELECT={id:true,type:true,status:true,openedAt:true,amountVariance:true,quantityVariance:true,financialImpact:true,financialImpactAvailable:true,
   confidence:true,attribution:true,shift:{select:SHIFT},cashShift:{select:SHIFT},branch:{select:{id:true,name:true}},
   custodyPeriod:{select:CUSTODY},assignedResponsibility:{select:PERSON},
-  stockCountLine:{select:{unit:true,expectedQuantity:true,countedQuantity:true,effectiveCountedQuantity:true,varianceQuantity:true,reasonNote:true,
+  stockCountLine:{select:{id:true,unit:true,expectedQuantity:true,countedQuantity:true,effectiveCountedQuantity:true,varianceQuantity:true,reasonNote:true,
     inventoryItem:{select:PERSON}}},
   tenderReconciliation:{select:{method:true,expectedAmount:true,actualAmount:true,varianceAmount:true,reasonNote:true}},
   openingException:{select:{kind:true,proposedAmount:true,actualAmount:true,varianceAmount:true,note:true,overnightReceipt:{select:{claimant:{select:PERSON},storage:{select:{outgoingShift:{select:{cashier:{select:PERSON}}}}}}},reasonCode:{select:{label:true}}}},
