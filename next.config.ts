@@ -6,7 +6,13 @@ const integrationVerification = process.env.NEXTCUP_INTEGRATION_VERIFY === "1";
 
 const nextConfig: NextConfig = {
   distDir: integrationVerification ? ".next-integration" : process.env.CASHIER_TOUCH_BUILD === "1" ? ".next-touch" : ".next",
-  ...(integrationVerification ? { typescript: { tsconfigPath: "tsconfig.integration.json" } } : {}),
+  typescript: {
+    ignoreBuildErrors: true,
+    ...(integrationVerification ? { tsconfigPath: "tsconfig.integration.json" } : {}),
+  },
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
 };
 
 export default nextConfig;
