@@ -181,6 +181,17 @@ export function RegisterDetailsContent({
                   {diff === null ? "—" : `${diff > 0 ? "+" : ""}${fmtMoney(diff, sym)}`}
                 </dd>
               </div>
+              {diff !== null && diff !== 0 && (
+                <div className={`mt-2 p-2.5 rounded-lg border text-xs font-semibold flex items-center justify-between ${diff < 0 ? "border-destructive/30 bg-destructive/10 text-destructive" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"}`}>
+                  <span>{diff < 0 ? "⚠️ عجز نقدية بالدرج عن المتوقع" : "زيادة نقدية بالدرج عن المتوقع"}</span>
+                  <span className="font-bold tabular-nums" dir="ltr">{diff > 0 ? `+${fmtMoney(diff, sym)}` : fmtMoney(diff, sym)}</span>
+                </div>
+              )}
+              {diff === 0 && (
+                <div className="mt-2 p-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-xs font-semibold text-emerald-700 dark:text-emerald-300">
+                  ✅ النقدية متطابقة تماماً مع المبيعات والمصروفات المسجلة
+                </div>
+              )}
             </>
           )}
         </dl>
@@ -195,8 +206,11 @@ export function RegisterDetailsContent({
       </section>
 
       {/* 3. Details of products sold */}
-      <section className="space-y-2">
-        <h4 className="font-semibold">تفاصيل الأصناف المباعة (Details of products sold)</h4>
+      <details className="group space-y-2 rounded-xl border bg-card p-3" open>
+        <summary className="cursor-pointer font-semibold select-none flex items-center justify-between">
+          <span>تفاصيل الأصناف المباعة (Details of products sold)</span>
+          <span className="text-xs text-muted-foreground font-normal">({report.productsSold.length} صنف · {totalProdQty} قطعة)</span>
+        </summary>
         {report.productsSold.length === 0 ? (
           <p className="rounded-xl border p-3 text-xs text-muted-foreground">لا توجد أصناف مباعة في هذه الوردية.</p>
         ) : (
@@ -243,11 +257,14 @@ export function RegisterDetailsContent({
             </table>
           </div>
         )}
-      </section>
+      </details>
 
       {/* 4. Details of products sold by Category */}
-      <section className="space-y-2">
-        <h4 className="font-semibold">المبيعات حسب التصنيف (Details of products sold by Category)</h4>
+      <details className="group space-y-2 rounded-xl border bg-card p-3" open>
+        <summary className="cursor-pointer font-semibold select-none flex items-center justify-between">
+          <span>المبيعات حسب التصنيف (Details of products sold by Category)</span>
+          <span className="text-xs text-muted-foreground font-normal">({report.productsByCategory.length} تصنيف)</span>
+        </summary>
         {report.productsByCategory.length === 0 ? (
           <p className="rounded-xl border p-3 text-xs text-muted-foreground">لا توجد تصنيفات مباعة في هذه الوردية.</p>
         ) : (
@@ -287,7 +304,7 @@ export function RegisterDetailsContent({
             </table>
           </div>
         )}
-      </section>
+      </details>
 
       {/* Actions */}
       <div className="flex flex-wrap items-center gap-2 border-t pt-3">

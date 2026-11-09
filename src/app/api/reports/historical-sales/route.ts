@@ -26,7 +26,7 @@ export async function GET(request: NextRequest) {
       db.historicalSaleLine.aggregate({ where, _min: { saleDate: true }, _max: { saleDate: true } }),
     ]);
     return NextResponse.json({
-      year, source: "Product Sell Report - Next Cup.csv", granularity: "sale_line",
+      year, source: "استيراد ملفات المبيعات السابقة", granularity: "sale_line",
       separateFromLivePOS: true,
       totals: { lines: totals._count, revenue: Number(totals._sum.total ?? 0),
         discount: Number(totals._sum.discount ?? 0),
@@ -37,6 +37,32 @@ export async function GET(request: NextRequest) {
         lines: row._count, quantity: Number(row._sum.quantity ?? 0), revenue: Number(row._sum.total ?? 0) })),
       methods: methods.map(row => ({ method: row.paymentMethod || "غير محدد",
         lines: row._count, revenue: Number(row._sum.total ?? 0) })),
+    });
+  } catch (error) {
+    return handleApiError(error);
+  }
+}
+
+export async function DELETE(request: NextRequest) {
+  try {
+    const session = await requireAllKeys("reports.view", "finance.view_revenue");
+    if (session.role !== "CAFE_OWNER" && session.role !== "SUPER_ADMIN") {
+      throw new ApiError(403, "حذف المبيعات المستوردة متاح لمالك الكافيه فقط");
+    }
+    const cafeId = resolveCafeId(session, request.nextUrl.searchParams.get("cafeId"));
+    const yearText = request.nextUrl.searchParams.get("year");
+    const where: { cafeId: string; saleMonth?: { gte: string; lte: string } } = { cafeId };
+    if (yearText) {
+      if (!/^20\d{2}$/.test(yearText)) throw new ApiError(400, "سنة غير صالحة");
+      const year = Number(yearText);
+      where.saleMonth = { gte: `${year}-01`, lte: `${year}-12` };
+    }
+
+    const deleted = await db.historicalSaleLine.deleteMany({ where });
+
+    return NextResponse.json({
+      success: true,
+      deletedCount: deleted.count,
     });
   } catch (error) {
     return handleApiError(error);

@@ -23,6 +23,33 @@ const PRESETS=[['اليوم',0],['أمس',1],['آخر 7 أيام',6]] as const;
 const CHIP_LABELS:Record<string,string>={q:'بحث',branchId:'الفرع',categoryId:'التصنيف',dayMode:'نوع الفترة',view:'العرض',shiftId:'الوردية',basis:'أساس الإسناد',actorId:'الموظف',sessionId:'جلسة الطاولة',method:'وسيلة التحصيل'};
 const CHIP_DEFAULTS:Record<string,string>={dayMode:'calendar',view:'product',basis:'creator'};
 const CHIP_VALUES:Record<string,string>={'dayMode:business':'أيام العمل','view:lines':'بنود الفواتير','view:date':'تاريخ القاهرة','view:category':'التصنيف','view:brand':'العلامة','view:cost':'التكلفة','basis:collector':'المحصّل','basis:server':'مقدم الطلب'};
+function isInternalDiagnosticKey(key: string): boolean {
+ if (['branchId', 'cashierId', 'saleShiftId', 'orderId', 'sessionId', 'actorId', 'creatorId', 'serverId'].includes(key)) return true;
+ if (key.endsWith('Id') || key.endsWith('ID')) return true;
+ if (/bridge|sources|basis|fingerprint/i.test(key)) return true;
+ return false;
+}
+
+function sanitizeReportValue(val: unknown): string {
+ if (val === null || val === undefined || val === '') return 'غير متاح';
+ const str = String(val);
+ if ((str.startsWith('[') && str.endsWith(']')) || (str.startsWith('{') && str.endsWith('}'))) return '';
+ if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(str)) {
+  try {
+   return new Intl.DateTimeFormat('ar-EG-u-nu-latn', {
+    timeZone: 'Africa/Cairo',
+    dateStyle: 'medium',
+    timeStyle: 'short',
+   }).format(new Date(str));
+  } catch {
+   return str;
+  }
+ }
+ if (str === 'OPEN') return 'مفتوحة الآن';
+ if (str === 'CLOSED') return 'مغلقة';
+ return str;
+}
+
 export function SalesReportWorkspace({kind}:{kind:SalesReportKind}){
  const {user,permKeys,canKey}=useApp();
  const identity=[user.id,user.cafeId,user.branchId,user.role,...permKeys].join(':');
@@ -89,12 +116,26 @@ function ReportInner({kind,identity}:{kind:SalesReportKind;identity:string}){
    <section className="workspace-surface space-y-4 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-lg font-semibold">{data.total} نتيجة مطابقة</h2><div className="flex flex-wrap items-center gap-2"><label className="flex items-center gap-1.5 text-xs text-muted-foreground">عرض<select className={cn(nativeFieldClassName,'min-h-9 py-1 text-xs')} value={params.get('pageSize')??'30'} onChange={e=>change('pageSize',e.target.value)} aria-label="عدد الصفوف في الصفحة">{[15,25,30,50,60,100].map(v=><option key={v} value={v}>{v}</option>)}</select></label><Button type="button" size="sm" variant="outline" className="md:min-h-9 md:py-1" onClick={refresh}>تحديث</Button><details><summary className="cursor-pointer text-sm">اختيار الأعمدة</summary><div className="grid gap-2 p-3 sm:grid-cols-2">{data.columns.map(c=><label key={c.key} className="flex min-h-10 items-center gap-2 text-sm"><input type="checkbox" checked={!hidden.includes(c.key)} onChange={e=>{const next=e.target.checked?hidden.filter(k=>k!==c.key):[...hidden,c.key];setHidden(next);try{localStorage.setItem(preferenceKey,JSON.stringify(next));}catch{/* optional preference */}}}/>{c.label}</label>)}</div></details></div></div>
     <ReportOutputActions snapshot={data.outputSnapshot} disabled={loading||!!error} endpoint={'/api/reports/'+kind+'/output'} scopeLabel="الصفحة المعروضة"/>
     {canKey('reports.export')&&<div className="space-y-2 border-t pt-3"><Button variant="outline" disabled={loading||!!error||preparing} onClick={()=>void prepareAll()}>{preparing?'جارٍ تجهيز اللقطة…':'تجهيز كل النتائج المفلترة — حد 5000 لكل مصدر'}</Button>{outputError&&<p role="alert">{outputError}</p>}{full&&<><p className="text-sm text-muted-foreground">كل {full.total} نتيجة · لقطة مستقلة {full.generatedAt}</p><ReportOutputActions snapshot={full.outputSnapshot} disabled={loading||!!error} endpoint={'/api/reports/'+kind+'/output'} scopeLabel="كل النتائج المفلترة"/></>}</div>}
-    {data.rows.length?<SalesReportRows kind={kind} canCloseShift={canCloseShift} columns={columns} rows={data.rows} onRegisterDetails={kind==='shift-sales'?row=>{returnFocus.current=document.activeElement instanceof HTMLElement?document.activeElement:null;setRegisterShiftId(row.id);}:undefined} onDetail={row=>{returnFocus.current=document.activeElement instanceof HTMLElement?document.activeElement:null;setDetail(row);}}/>:!loading&&!error&&<div role="status" className="workspace-state py-10 text-center">{['brand','cost'].includes(params.get('view')??'')?'هذا العرض غير متاح؛ راجع تغطية البيانات أعلاه.':'لا توجد نتائج مطابقة. جرّب فترة أو فلاتر أخرى.'}</div>}
+    {data.rows.length?<SalesReportRows kind={kind} canCloseShift={canCloseShift} columns={columns} rows={data.rows} onRegisterDetails={kind==='shift-sales'?row=>{returnFocus.current=document.activeElement instanceof HTMLElement?document.activeElement:null;setRegisterShiftId(row.id);}:undefined} onDetail={row=>{returnFocus.current=document.activeElement instanceof HTMLElement?document.activeElement:null;if(kind==='shift-sales'){setRegisterShiftId(row.id);}else{setDetail(row);}}}/>:!loading&&!error&&<div role="status" className="workspace-state py-10 text-center">{['brand','cost'].includes(params.get('view')??'')?'هذا العرض غير متاح؛ راجع تغطية البيانات أعلاه.':'لا توجد نتائج مطابقة. جرّب فترة أو فلاتر أخرى.'}</div>}
     <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-3"><p className="text-sm">صفحة {data.page} / {Math.max(1,data.pages)} · {data.rows.length} من {data.total}</p><div className="flex gap-2"><Button variant="outline" disabled={loading||data.page<=1} onClick={()=>change('page',String(data.page-1))}>السابق</Button><Button variant="outline" disabled={loading||data.page>=data.pages} onClick={()=>change('page',String(data.page+1))}>التالي</Button></div></div>
    </section>
   </>}
   <RegisterDetailsDialog shiftId={registerShiftId} open={!!registerShiftId} onOpenChange={open=>{if(!open)setRegisterShiftId(null);}} canClose={canCloseShift} finalFocus={returnFocus}/>
-  <Dialog open={!!detail} onOpenChange={open=>{if(!open)setDetail(null);}}><DialogContent finalFocus={returnFocus} className="max-h-[90dvh] overflow-y-auto sm:max-w-3xl" dir="rtl"><DialogTitle>تفاصيل السجل</DialogTitle>{detail&&<div className="space-y-4"><dl className="grid min-w-0 gap-3 sm:grid-cols-2">{[...(data?.columns.map(c=>[c.label,detail.cells[c.key]])??[]),...Object.entries(detail.details??{})].map(([label,value])=><div key={label} className="min-w-0"><dt className="text-sm text-muted-foreground">{label}</dt><dd className="break-all tabular-nums"><bdi>{value??'غير متاح'}</bdi></dd></div>)}</dl><div className="flex flex-col gap-2">{detail.href&&<Link className="min-h-11 text-primary underline" href={detail.href}>فتح المصدر الأصلي</Link>}{detail.links?.map((link,index)=><Link key={index} className="min-h-11 break-all text-sm text-primary underline" href={link.href}>{link.label}</Link>)}</div><Button variant="outline" onClick={()=>setDetail(null)}>إغلاق التفاصيل</Button></div>}</DialogContent></Dialog>
+  <Dialog open={!!detail} onOpenChange={open=>{if(!open)setDetail(null);}}>
+   <DialogContent finalFocus={returnFocus} className="max-h-[90dvh] overflow-y-auto sm:max-w-2xl" dir="rtl">
+    <DialogTitle>تفاصيل السجل</DialogTitle>
+    {detail&&<div className="space-y-4">
+     <dl className="grid min-w-0 gap-3 sm:grid-cols-2 rounded-xl border bg-card p-4">
+      {[...(data?.columns.map(c=>[c.label,c.key,detail.cells[c.key]])??[]),...Object.entries(detail.details??{}).filter(([k])=>!isInternalDiagnosticKey(k)).map(([k,v])=>[k,k,v])].filter(([label,key,val])=>{if(isInternalDiagnosticKey(key as string))return false;if(val===null||val===undefined||val==='')return false;if(val==='0.00'&&['الخدمة','الضريبة','الاستردادات','سداد المورد','رد مصروفات'].includes(label as string))return false;return true;}).map(([label,,value])=><div key={label as string} className="min-w-0"><dt className="text-xs text-muted-foreground">{label as string}</dt><dd className="break-all font-medium tabular-nums"><bdi>{sanitizeReportValue(value)}</bdi></dd></div>)}
+     </dl>
+     <div className="flex flex-col gap-2">
+      {detail.href&&<Link className="min-h-11 text-primary underline" href={detail.href}>فتح المصدر الأصلي</Link>}
+      {detail.links?.map((link,index)=><Link key={index} className="min-h-11 break-all text-sm text-primary underline" href={link.href}>{link.label}</Link>)}
+     </div>
+     <Button variant="outline" onClick={()=>setDetail(null)}>إغلاق التفاصيل</Button>
+    </div>}
+   </DialogContent>
+  </Dialog>
  </div>;
 }
 

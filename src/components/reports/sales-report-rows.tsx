@@ -47,8 +47,8 @@ export function SalesReportRows({
       }).slice(0,6).map(c=><div key={c.key} className="min-w-0"><dt className="text-sm text-muted-foreground">{c.label}</dt><dd className="break-words font-medium tabular-nums">{renderCell(row,c.key,kind)}</dd></div>)}
      </dl>
      <div className="flex flex-wrap gap-2">
-      {onRegisterDetails&&<button type="button" className="min-h-11 flex-1 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground" onClick={()=>onRegisterDetails(row)}>عرض السجل</button>}
-      <button type="button" className="min-h-11 flex-1 rounded-lg border px-4 text-sm font-medium" onClick={()=>onDetail(row)}>تفاصيل</button>
+      {onRegisterDetails ? <button type="button" className="min-h-11 flex-1 rounded-lg bg-primary px-4 text-sm font-medium text-primary-foreground" onClick={()=>onRegisterDetails(row)}>عرض السجل</button> : <button type="button" className="min-h-11 flex-1 rounded-lg border px-4 text-sm font-medium" onClick={()=>onDetail(row)}>تفاصيل</button>}
+
       {isOpenShift&&canCloseShift&&branchId&&<Link href={`/close-shift?branchId=${encodeURIComponent(branchId)}`} className="inline-flex min-h-11 items-center justify-center rounded-lg border border-destructive/40 bg-destructive/10 px-4 text-sm font-semibold text-destructive">إغلاق</Link>}
      </div>
     </article>;
@@ -71,8 +71,8 @@ export function SalesReportRows({
         {columns.map(c=><td key={c.key} className="p-3 tabular-nums">{renderCell(row,c.key,kind)}</td>)}
         <td className="p-3">
          <div className="flex items-center gap-1.5">
-          {onRegisterDetails&&<button type="button" className="min-h-9 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:opacity-90" onClick={()=>onRegisterDetails(row)}>عرض السجل</button>}
-          <button type="button" className="min-h-11 rounded-lg border px-4 font-medium" onClick={()=>onDetail(row)}>تفاصيل</button>
+          {onRegisterDetails ? <button type="button" className="min-h-9 rounded-lg bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground hover:opacity-90" onClick={()=>onRegisterDetails(row)}>عرض السجل</button> : <button type="button" className="min-h-11 rounded-lg border px-4 font-medium" onClick={()=>onDetail(row)}>تفاصيل</button>}
+
           {isOpenShift&&canCloseShift&&branchId&&<Link href={`/close-shift?branchId=${encodeURIComponent(branchId)}`} className="inline-flex min-h-9 items-center rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-1.5 text-xs font-semibold text-destructive hover:bg-destructive/20">إغلاق</Link>}
          </div>
         </td>
