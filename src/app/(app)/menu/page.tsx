@@ -398,15 +398,15 @@ export default function MenuPage() {
         <TabsContent value="products">
           <div className="flex flex-col gap-4 lg:flex-row">
             {/* ── Categories side panel ── */}
-            <aside className="w-full shrink-0 space-y-1 lg:w-52">
-              <p className="px-1 pb-1 text-xs font-semibold text-muted-foreground">
+            <aside className="flex w-full shrink-0 gap-1.5 overflow-x-auto pb-2 lg:w-52 lg:flex-col lg:space-y-1 lg:overflow-visible lg:pb-0">
+              <p className="hidden px-1 pb-1 text-xs font-semibold text-muted-foreground lg:block">
                 أقسام المنيو
               </p>
               <button
                 type="button"
                 onClick={() => setCategoryFilter("all")}
                 className={cn(
-                  "flex w-full items-center justify-between rounded-md px-3 py-2 text-sm font-medium transition-colors hover:bg-accent",
+                  "flex shrink-0 items-center justify-between gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors hover:bg-accent lg:w-full",
                   categoryFilter === "all" && "bg-accent"
                 )}
               >
@@ -419,7 +419,7 @@ export default function MenuPage() {
                   type="button"
                   onClick={() => setCategoryFilter(c.id)}
                   className={cn(
-                    "flex w-full items-center justify-between rounded-md px-3 py-2 text-sm font-medium transition-colors hover:bg-accent",
+                    "flex shrink-0 items-center justify-between gap-2 rounded-md px-3 py-2 text-sm font-medium transition-colors hover:bg-accent lg:w-full",
                     categoryFilter === c.id && "bg-accent",
                     !c.isActive && "opacity-50"
                   )}
@@ -435,7 +435,7 @@ export default function MenuPage() {
               <div className="flex flex-wrap items-center gap-2">
                 <Input
                   placeholder="ابحث عن منتج..."
-                  className="w-56"
+                  className="w-full sm:w-56"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                 />
@@ -443,7 +443,7 @@ export default function MenuPage() {
                   value={availabilityFilter}
                   onValueChange={(v) => setAvailabilityFilter((v ?? "all") as AvailabilityFilter)}
                 >
-                  <SelectTrigger className="w-44">
+                  <SelectTrigger className="w-full sm:w-44">
                     <SelectValue>
                       {availabilityFilter === "all"
                         ? "كل المنتجات"
@@ -462,7 +462,7 @@ export default function MenuPage() {
                   value={visibilityFilter}
                   onValueChange={(v) => setVisibilityFilter((v ?? "all") as VisibilityFilter)}
                 >
-                  <SelectTrigger className="w-48">
+                  <SelectTrigger className="w-full sm:w-48">
                     <SelectValue>
                       {visibilityFilter === "all"
                         ? "منيو العميل: الكل"
@@ -477,7 +477,7 @@ export default function MenuPage() {
                     <SelectItem value="hidden">مخفية من منيو العميل</SelectItem>
                   </SelectContent>
                 </Select>
-                <div className="ms-auto flex gap-2">
+                <div className="flex w-full flex-wrap items-center gap-2 xl:ms-auto xl:w-auto">
                   <label className="flex items-center gap-2 text-sm">
                     <input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} />
                     عرض الأصناف المؤرشفة
@@ -748,7 +748,7 @@ export default function MenuPage() {
         {/* ════════════════════ الإضافات ════════════════════ */}
         <TabsContent value="addons" className="space-y-3">
           <form
-            className="flex max-w-md gap-2"
+            className="flex max-w-md flex-wrap gap-2 sm:flex-nowrap"
             onSubmit={(e) => {
               e.preventDefault();
               if (!canPrices) return;
@@ -843,7 +843,7 @@ export default function MenuPage() {
           </DialogHeader>
           {productForm && (
             <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="space-y-2">
                   <Label>اسم المنتج</Label>
                   <Input
@@ -878,9 +878,9 @@ export default function MenuPage() {
               </div>
 
               {/* Pricing */}
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <div className="space-y-2">
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-wrap items-center justify-between gap-1">
                     <Label>سعر البيع ({currencySymbol(currency)})</Label>
                     {showCost && productForm.variants.length === 0 && (
                       <button
@@ -1012,7 +1012,7 @@ export default function MenuPage() {
 
               {/* Variants — absolute prices */}
               <fieldset disabled={!canPrices} className="space-y-2">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <Label>الأحجام (كل حجم بسعره النهائي)</Label>
                   <Button
                     size="sm"
@@ -1031,8 +1031,9 @@ export default function MenuPage() {
                   </Button>
                 </div>
                 {productForm.variants.map((v, i) => (
-                  <div key={i} className="flex items-center gap-2">
+                  <div key={i} className="flex flex-wrap items-center gap-2">
                     <Input
+                      className="min-w-36 flex-1"
                       placeholder="اسم الحجم (صغير/وسط/كبير)"
                       value={v.name}
                       onChange={(e) => {
@@ -1150,7 +1151,7 @@ export default function MenuPage() {
               {/* Branch pricing */}
               <fieldset disabled={!canPrices} className="space-y-2">
                 <Label>التسعير حسب الفرع</Label>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <Button
                     size="sm"
                     variant={!productForm.branchPricing ? "default" : "outline"}
@@ -1173,7 +1174,7 @@ export default function MenuPage() {
                 {productForm.branchPricing && (
                   <div className="space-y-2 rounded-md border p-3">
                     {branches.map((b) => (
-                      <div key={b.id} className="flex items-center gap-2">
+                      <div key={b.id} className="flex flex-wrap items-center gap-2">
                         <span className="w-40 truncate text-sm">سعر {b.name}</span>
                         <Input
                           type="number"

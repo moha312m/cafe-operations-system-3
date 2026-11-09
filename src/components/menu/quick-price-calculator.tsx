@@ -153,15 +153,21 @@ export function QuickPriceCalculator({
           </div>
 
           {/* Rounding Mode */}
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <div className="space-y-1">
               <Label className="text-xs">وضع التقريب:</Label>
               <Select
                 value={roundingMode}
                 onValueChange={(v) => setRoundingMode((v ?? "NONE") as RoundingMode)}
               >
-                <SelectTrigger className="h-8">
-                  <SelectValue />
+                <SelectTrigger className="h-8 w-full">
+                  <SelectValue>
+                    {roundingMode === "NONE"
+                      ? "بدون تقريب (قرشين)"
+                      : roundingMode === "NEAREST"
+                        ? "لأقرب خطوة (NEAREST)"
+                        : "سقف لأعلى (UP)"}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="NONE">بدون تقريب (قرشين)</SelectItem>
@@ -178,8 +184,8 @@ export function QuickPriceCalculator({
                   value={String(roundingStep)}
                   onValueChange={(v) => setRoundingStep(Number(v) || 5)}
                 >
-                  <SelectTrigger className="h-8">
-                    <SelectValue />
+                  <SelectTrigger className="h-8 w-full">
+                    <SelectValue>{`${roundingStep} ${currency}`}</SelectValue>
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="1">1 {currency}</SelectItem>
@@ -215,7 +221,7 @@ export function QuickPriceCalculator({
                 </span>
               </div>
 
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-1">
                 <span className="text-xs text-muted-foreground">نسبة الهامش:</span>
                 <Badge className={cn("text-xs font-medium", TIER_STYLE[result.tier])} variant="outline">
                   {result.margin.toFixed(1)}٪ — {TIER_LABEL[result.tier]}

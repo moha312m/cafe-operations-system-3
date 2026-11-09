@@ -183,7 +183,7 @@ export function RecipeEditor({
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <Label>مكونات المنتج</Label>
         <Button size="sm" variant="outline" onClick={addRow}>
           إضافة خامة للوصفة
@@ -314,7 +314,7 @@ export function RecipeEditor({
         </div>
         <div>
           <p className="text-xs text-muted-foreground">هامش الربح</p>
-          <p className="flex items-center gap-1 font-bold tabular-nums">
+          <p className="flex flex-wrap items-center gap-1 font-bold tabular-nums">
             {hasRows && profit ? `${profit.margin}٪` : "—"}
             {hasRows && profit && (
               <Badge className={TIER_STYLE[profit.tier]}>{PROFIT_LABEL[profit.tier]}</Badge>

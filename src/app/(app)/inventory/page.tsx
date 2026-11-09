@@ -356,7 +356,7 @@ export default function InventoryPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold">المخزون</h1>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           {canManage && canPickBranch && branches.length > 1 && (
             <Button variant="outline" onClick={() => { setTItemId(""); setTToBranch(""); setTransferOpen(true); }}>
               🔁 تحويل بين الفروع
@@ -683,7 +683,7 @@ export default function InventoryPage() {
           </DialogHeader>
           {itemForm && (
             <div className="space-y-3">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="space-y-1.5">
                   <Label>اسم الخامة</Label>
                   <Input value={itemForm.name} onChange={(e) => setItemForm({ ...itemForm, name: e.target.value })} />
@@ -693,7 +693,7 @@ export default function InventoryPage() {
                   <Input value={itemForm.category} onChange={(e) => setItemForm({ ...itemForm, category: e.target.value })} />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 {canPickBranch && !itemForm.id && (
                   <div className="space-y-1.5">
                     <Label>الفرع</Label>
@@ -725,7 +725,7 @@ export default function InventoryPage() {
                   </Select>
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 {!itemForm.id && (
                   <div className="space-y-1.5">
                     <Label>الكمية الحالية</Label>
@@ -741,7 +741,7 @@ export default function InventoryPage() {
                   <Input type="number" dir="ltr" value={itemForm.costPerUnit} onChange={(e) => setItemForm({ ...itemForm, costPerUnit: e.target.value })} />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="space-y-1.5">
                   <Label>المورد (اختياري)</Label>
                   <Input value={itemForm.supplierName} onChange={(e) => setItemForm({ ...itemForm, supplierName: e.target.value })} />
@@ -855,12 +855,13 @@ export default function InventoryPage() {
                     {/* Selling Price and Quick Price Calculator */}
                     <div className="space-y-1.5">
                       <Label className="text-xs font-semibold">سعر البيع المقترح ({currency})</Label>
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <Input
                           type="number"
                           dir="ltr"
                           step="0.5"
                           placeholder="0.00"
+                          className="min-w-32 flex-1"
                           value={itemForm.sellingPrice}
                           onChange={(e) =>
                             setItemForm({ ...itemForm, sellingPrice: e.target.value })
@@ -896,7 +897,7 @@ export default function InventoryPage() {
               {/* ── Linked Menu Recipes Section ── */}
               {itemForm.id && (
                 <div className="rounded-lg border border-border bg-muted/15 p-3 space-y-2">
-                  <div className="flex items-center justify-between">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     <span className="text-xs font-semibold text-muted-foreground">
                       الأصناف والوصفات المرتبطة بهذه الخامة (Linked Menu Recipes)
                     </span>
@@ -912,7 +913,7 @@ export default function InventoryPage() {
                       {linkedRecipes.map((r) => (
                         <div
                           key={r.id + (r.recipeId ?? "")}
-                          className="flex items-center justify-between rounded-md border bg-card p-2 text-xs"
+                          className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-card p-2 text-xs"
                         >
                           <div className="space-y-0.5">
                             <div className="flex items-center gap-1.5">

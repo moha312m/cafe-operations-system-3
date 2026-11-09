@@ -99,7 +99,7 @@ export function PermissionEditor({
 
   return (
     <Dialog open onOpenChange={(o) => !o && !busy && onClose()}>
-      <DialogContent dir="rtl" className="max-h-[90dvh] w-full max-w-4xl sm:max-w-4xl md:max-w-4xl overflow-y-auto">
+      <DialogContent dir="rtl" className="max-h-[90dvh] max-w-4xl overflow-y-auto">
         <DialogHeader>
           <DialogTitle>صلاحيات مخصصة — {userName}</DialogTitle>
         </DialogHeader>

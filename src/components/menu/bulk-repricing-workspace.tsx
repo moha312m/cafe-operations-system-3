@@ -290,7 +290,10 @@ export function BulkRepricingWorkspace({
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="max-h-[92vh] max-w-5xl overflow-hidden flex flex-col p-6">
+        <DialogContent
+          scrollable={false}
+          className="max-h-[92dvh] max-w-5xl overflow-hidden flex flex-col p-4 sm:p-6 pt-10"
+        >
           <DialogHeader className="shrink-0">
             <div className="flex items-center justify-between">
               <div>
@@ -304,137 +307,152 @@ export function BulkRepricingWorkspace({
             </div>
           </DialogHeader>
 
-          {/* Controls Bar */}
-          <div className="shrink-0 my-3 rounded-lg border bg-muted/20 p-3 space-y-3">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              {/* Reference Branch */}
-              <div className="space-y-1">
-                <Label className="text-xs font-medium">الفرع المرجعي للتكلفة:</Label>
-                <Select value={referenceBranchId} onValueChange={(v) => setReferenceBranchId(v ?? "all")}>
-                  <SelectTrigger className="h-8">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">كل الفروع (المركز الرئيسي)</SelectItem>
-                    {branches.map((b) => (
-                      <SelectItem key={b.id} value={b.id}>
-                        {b.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+          <div className="min-h-0 flex-1 flex flex-col overflow-y-auto lg:overflow-hidden">
+            {/* Controls Bar */}
+            <div className="shrink-0 my-3 rounded-lg border bg-muted/20 p-3 space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                {/* Reference Branch */}
+                <div className="space-y-1">
+                  <Label className="text-xs font-medium">الفرع المرجعي للتكلفة:</Label>
+                  <Select value={referenceBranchId} onValueChange={(v) => setReferenceBranchId(v ?? "all")}>
+                    <SelectTrigger className="h-8 w-full">
+                      <SelectValue>
+                        {referenceBranchId === "all"
+                          ? "كل الفروع (المركز الرئيسي)"
+                          : branches.find((b) => b.id === referenceBranchId)?.name ?? "كل الفروع (المركز الرئيسي)"}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">كل الفروع (المركز الرئيسي)</SelectItem>
+                      {branches.map((b) => (
+                        <SelectItem key={b.id} value={b.id}>
+                          {b.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
 
-              {/* Category Filter */}
-              <div className="space-y-1">
-                <Label className="text-xs font-medium">القسم المستهدف:</Label>
-                <Select value={selectedCategoryId} onValueChange={(v) => setSelectedCategoryId(v ?? "all")}>
-                  <SelectTrigger className="h-8">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">كل الأقسام</SelectItem>
-                    {categories.map((c) => (
-                      <SelectItem key={c.id} value={c.id}>
-                        {c.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
+                {/* Category Filter */}
+                <div className="space-y-1">
+                  <Label className="text-xs font-medium">القسم المستهدف:</Label>
+                  <Select value={selectedCategoryId} onValueChange={(v) => setSelectedCategoryId(v ?? "all")}>
+                    <SelectTrigger className="h-8 w-full">
+                      <SelectValue>
+                        {selectedCategoryId === "all"
+                          ? "كل الأقسام"
+                          : categories.find((c) => c.id === selectedCategoryId)?.name ?? "كل الأقسام"}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">كل الأقسام</SelectItem>
+                      {categories.map((c) => (
+                        <SelectItem key={c.id} value={c.id}>
+                          {c.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
 
-              {/* Rounding Mode */}
-              <div className="space-y-1">
-                <Label className="text-xs font-medium">وضع التقريب:</Label>
-                <Select value={roundingMode} onValueChange={(v) => setRoundingMode((v ?? "NONE") as RoundingMode)}>
-                  <SelectTrigger className="h-8">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="NONE">بدون تقريب (قرشين)</SelectItem>
-                    <SelectItem value="NEAREST">لأقرب خطوة (NEAREST)</SelectItem>
-                    <SelectItem value="UP">سقف لأعلى (UP)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+                {/* Rounding Mode */}
+                <div className="space-y-1">
+                  <Label className="text-xs font-medium">وضع التقريب:</Label>
+                  <Select value={roundingMode} onValueChange={(v) => setRoundingMode((v ?? "NONE") as RoundingMode)}>
+                    <SelectTrigger className="h-8 w-full">
+                      <SelectValue>
+                        {roundingMode === "NONE"
+                          ? "بدون تقريب (قرشين)"
+                          : roundingMode === "NEAREST"
+                            ? "لأقرب خطوة (NEAREST)"
+                            : "سقف لأعلى (UP)"}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="NONE">بدون تقريب (قرشين)</SelectItem>
+                      <SelectItem value="NEAREST">لأقرب خطوة (NEAREST)</SelectItem>
+                      <SelectItem value="UP">سقف لأعلى (UP)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
 
-              {/* Rounding Step */}
-              <div className="space-y-1">
-                <Label className="text-xs font-medium">خطوة التقريب:</Label>
-                <Select
-                  disabled={roundingMode === "NONE"}
-                  value={String(roundingStep)}
-                  onValueChange={(v) => setRoundingStep(Number(v) || 5)}
-                >
-                  <SelectTrigger className="h-8">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="1">1 {currency}</SelectItem>
-                    <SelectItem value="5">5 {currency}</SelectItem>
-                    <SelectItem value="10">10 {currency}</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            {/* Multiplier Presets and Custom */}
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-border/50">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-medium text-muted-foreground">معامل الاستثمار:</span>
-                {[2.0, 2.5, 3.0, 3.5].map((m) => (
-                  <Button
-                    key={m}
-                    size="sm"
-                    variant={multiplier === m ? "default" : "outline"}
-                    className="h-7 text-xs px-2.5"
-                    onClick={() => setMultiplier(m)}
+                {/* Rounding Step */}
+                <div className="space-y-1">
+                  <Label className="text-xs font-medium">خطوة التقريب:</Label>
+                  <Select
+                    disabled={roundingMode === "NONE"}
+                    value={String(roundingStep)}
+                    onValueChange={(v) => setRoundingStep(Number(v) || 5)}
                   >
-                    ×{m.toFixed(1)}
-                  </Button>
-                ))}
-                <div className="flex items-center gap-1.5 ms-2">
-                  <span className="text-xs text-muted-foreground">مخصص:</span>
-                  <Input
-                    type="number"
-                    step="0.1"
-                    min="0.1"
-                    max="100"
-                    className="h-7 w-20 text-xs tabular-nums"
-                    value={multiplier}
-                    onChange={(e) => setMultiplier(Number(e.target.value) || 0)}
-                  />
+                    <SelectTrigger className="h-8 w-full">
+                      <SelectValue>{`${roundingStep} ${currency}`}</SelectValue>
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="1">1 {currency}</SelectItem>
+                      <SelectItem value="5">5 {currency}</SelectItem>
+                      <SelectItem value="10">10 {currency}</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
-                {rows.filter((r) => r.isManualOverride).length > 0 && (
+              {/* Multiplier Presets and Custom */}
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-border/50">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="shrink-0 whitespace-nowrap text-xs font-medium text-muted-foreground">معامل الاستثمار:</span>
+                  {[2.0, 2.5, 3.0, 3.5].map((m) => (
+                    <Button
+                      key={m}
+                      size="sm"
+                      variant={multiplier === m ? "default" : "outline"}
+                      className="h-7 text-xs px-2.5"
+                      onClick={() => setMultiplier(m)}
+                    >
+                      ×{m.toFixed(1)}
+                    </Button>
+                  ))}
+                  <div className="flex items-center gap-1.5 sm:ms-2">
+                    <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">مخصص:</span>
+                    <Input
+                      type="number"
+                      step="0.1"
+                      min="0.1"
+                      max="100"
+                      className="h-7 w-20 text-xs tabular-nums"
+                      value={multiplier}
+                      onChange={(e) => setMultiplier(Number(e.target.value) || 0)}
+                    />
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  {rows.filter((r) => r.isManualOverride).length > 0 && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-xs text-amber-600 border-amber-500/30 hover:bg-amber-500/10"
+                      onClick={resetAllManualOverrides}
+                    >
+                      ↺ استعادة المقترح للتعديلات اليدوية ({rows.filter((r) => r.isManualOverride).length})
+                    </Button>
+                  )}
                   <Button
                     size="sm"
-                    variant="outline"
-                    className="h-7 text-xs text-amber-600 border-amber-500/30 hover:bg-amber-500/10"
-                    onClick={resetAllManualOverrides}
+                    variant="secondary"
+                    disabled={loading}
+                    className="h-7 text-xs"
+                    onClick={fetchPreview}
                   >
-                    ↺ استعادة المقترح للتعديلات اليدوية ({rows.filter((r) => r.isManualOverride).length})
+                    {loading ? "جاري التحديث..." : "🔄 إعادة حساب المعاينة"}
                   </Button>
-                )}
-                <Button
-                  size="sm"
-                  variant="secondary"
-                  disabled={loading}
-                  className="h-7 text-xs"
-                  onClick={fetchPreview}
-                >
-                  {loading ? "جاري التحديث..." : "🔄 إعادة حساب المعاينة"}
-                </Button>
+                </div>
               </div>
             </div>
-          </div>
 
-          {/* Table Container */}
-          <div className="min-h-0 flex-1 overflow-y-auto rounded-md border">
-            <Table>
-              <TableHeader className="sticky top-0 bg-background z-10 shadow-xs">
+            {/* Table Container */}
+            <div className="min-h-[18rem] lg:min-h-0 flex-1 overflow-auto rounded-md border [&_[data-slot=table-container]]:overflow-visible">
+              <Table className="[&_th]:px-2.5 [&_th]:py-2 [&_td]:px-2.5 [&_td]:py-2">
+                <TableHeader className="sticky top-0 bg-background z-10 shadow-xs">
                 <TableRow>
                   <TableHead className="w-10 text-center">
                     <input
@@ -599,10 +617,11 @@ export function BulkRepricingWorkspace({
               </TableBody>
             </Table>
           </div>
+          </div>
 
           {/* Footer Bar */}
-          <DialogFooter className="shrink-0 mt-3 flex items-center justify-between gap-3 sm:justify-between border-t pt-3">
-            <div className="flex items-center gap-3 text-xs text-muted-foreground">
+          <DialogFooter className="shrink-0 mx-0 mb-0 mt-3 flex flex-col gap-3 rounded-lg border p-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
               <span>إجمالي الأصناف: <strong>{rows.length}</strong></span>
               <span>•</span>
               <span>المؤهلة للتسعير: <strong>{eligibleCount}</strong></span>
@@ -610,7 +629,7 @@ export function BulkRepricingWorkspace({
               <span>المحددة للتطبيق: <strong className="text-primary">{selectedCount}</strong></span>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
                 إغلاق
               </Button>

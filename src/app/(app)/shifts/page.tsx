@@ -208,13 +208,17 @@ export default function ShiftReportsPage() {
       <div className="flex flex-wrap items-center gap-2">
         <Input
           type="date"
-          className="w-44"
+          className="w-full sm:w-44"
           value={date}
           onChange={(e) => setDate(e.target.value)}
         />
         <Select value={status} onValueChange={(v) => setStatus(v ?? "ALL")}>
-          <SelectTrigger className="w-36">
-            <SelectValue />
+          <SelectTrigger className="w-full sm:w-36">
+            <SelectValue>
+              {status === "ALL"
+                ? "كل الحالات"
+                : t.shiftStatus[status as keyof typeof t.shiftStatus] ?? status}
+            </SelectValue>
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="ALL">كل الحالات</SelectItem>
@@ -224,8 +228,12 @@ export default function ShiftReportsPage() {
         </Select>
         {!user.branchId && branches.length > 0 && (
           <Select value={branchId} onValueChange={(v) => setBranchId(v ?? "ALL")}>
-            <SelectTrigger className="w-44">
-              <SelectValue placeholder={t.shifts.branch} />
+            <SelectTrigger className="w-full sm:w-44">
+              <SelectValue placeholder={t.shifts.branch}>
+                {branchId === "ALL"
+                  ? "كل الفروع"
+                  : branches.find((b) => b.id === branchId)?.name ?? "كل الفروع"}
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="ALL">كل الفروع</SelectItem>
@@ -340,7 +348,7 @@ export default function ShiftReportsPage() {
                 </a>
               )}
               <div className="space-y-4 text-sm">
-                <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 rounded-lg border bg-muted/30 p-3">
+                <dl className="grid grid-cols-1 gap-x-4 gap-y-1.5 rounded-lg border bg-muted/30 p-3 sm:grid-cols-2">
                   {[
                     [t.shifts.openingCash, money(detail.shift.openingCashAmount, currency)],
                     [t.shifts.cashSales, money(detail.shift.totalCashSales, currency)],
@@ -365,7 +373,7 @@ export default function ShiftReportsPage() {
                       <dd className="tabular-nums">{value}</dd>
                     </div>
                   ))}
-                  <div className="col-span-2 flex justify-between border-t pt-1.5 font-semibold">
+                  <div className="flex justify-between border-t pt-1.5 font-semibold sm:col-span-2">
                     <dt>{t.shifts.difference}</dt>
                     <dd>{diffBadge(detail.shift.cashDifference)}</dd>
                   </div>

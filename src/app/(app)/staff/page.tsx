@@ -503,7 +503,7 @@ export default function StaffPage() {
               <Label>الاسم</Label>
               <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>البريد الإلكتروني</Label>
                 <Input
@@ -522,7 +522,7 @@ export default function StaffPage() {
                 />
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>كلمة المرور</Label>
                 <Input
@@ -548,11 +548,11 @@ export default function StaffPage() {
             {form.confirm.length > 0 && form.confirm !== form.password && (
               <p className="text-xs text-destructive">تأكيد كلمة المرور غير مطابق</p>
             )}
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>الدور</Label>
                 <Select value={form.role} onValueChange={(v) => setForm({ ...form, role: v as Role })}>
-                  <SelectTrigger>
+                  <SelectTrigger className="w-full">
                     <SelectValue>{ROLE_LABELS[form.role]}</SelectValue>
                   </SelectTrigger>
                   <SelectContent>
@@ -571,7 +571,7 @@ export default function StaffPage() {
                     value={form.branchId}
                     onValueChange={(v) => setForm({ ...form, branchId: v ?? "" })}
                   >
-                    <SelectTrigger>
+                    <SelectTrigger className="w-full">
                       <SelectValue placeholder="اختار">
                         {branches.find((b) => b.id === form.branchId)?.name}
                       </SelectValue>
@@ -641,14 +641,14 @@ export default function StaffPage() {
                 onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })}
               />
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>الدور</Label>
                 <Select
                   value={editForm.role}
                   onValueChange={(v) => setEditForm({ ...editForm, role: v as Role })}
                 >
-                  <SelectTrigger>
+                  <SelectTrigger className="w-full">
                     <SelectValue>{ROLE_LABELS[editForm.role]}</SelectValue>
                   </SelectTrigger>
                   <SelectContent>
@@ -667,7 +667,7 @@ export default function StaffPage() {
                     value={editForm.branchId}
                     onValueChange={(v) => setEditForm({ ...editForm, branchId: v ?? "" })}
                   >
-                    <SelectTrigger>
+                    <SelectTrigger className="w-full">
                       <SelectValue placeholder="اختار">
                         {branches.find((b) => b.id === editForm.branchId)?.name}
                       </SelectValue>
@@ -716,7 +716,7 @@ export default function StaffPage() {
           <div className="space-y-2">
             <Label htmlFor="temporary-branch">الفرع المؤقت</Label>
             <Select value={temporaryForm.branchId} onValueChange={(value) => setTemporaryForm({ ...temporaryForm, branchId: value ?? "" })}>
-              <SelectTrigger id="temporary-branch"><SelectValue>{branches.find((b) => b.id === temporaryForm.branchId)?.name}</SelectValue></SelectTrigger>
+              <SelectTrigger id="temporary-branch" className="w-full"><SelectValue>{branches.find((b) => b.id === temporaryForm.branchId)?.name}</SelectValue></SelectTrigger>
               <SelectContent>
                 {branches.filter((b) => b.id !== temporaryTarget?.branchId && b.isActive !== false).map((b) => <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>)}
               </SelectContent>

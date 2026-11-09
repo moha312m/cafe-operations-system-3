@@ -160,7 +160,7 @@ export function MenuImportDialog({
         {/* ── Step: upload ── */}
         {step === "upload" && (
           <div className="space-y-4">
-            <div className="flex items-center justify-between rounded-md border p-3">
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3">
               <div>
                 <p className="text-sm font-medium">مش عندك ملف جاهز؟</p>
                 <p className="text-xs text-muted-foreground">
@@ -223,7 +223,7 @@ export function MenuImportDialog({
               </p>
             )}
 
-            <div className="flex justify-between gap-2">
+            <div className="flex flex-wrap justify-between gap-2">
               <Button variant="outline" onClick={reset}>
                 رجوع لرفع ملف تاني
               </Button>

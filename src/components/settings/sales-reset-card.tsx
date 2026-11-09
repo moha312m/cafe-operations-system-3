@@ -200,8 +200,12 @@ export function SalesResetCard({ branches = [] }: { branches?: BranchOption[] })
                 الفرع المستهدف
               </Label>
               <Select value={branchId} onValueChange={setBranchId}>
-                <SelectTrigger className="h-9 bg-background">
-                  <SelectValue placeholder="اختر الفرع" />
+                <SelectTrigger className="h-9 w-full bg-background">
+                  <SelectValue placeholder="اختر الفرع">
+                    {branchId === "ALL"
+                      ? "كل الفروع (تطهير شامل)"
+                      : branchList.find((b) => b.id === branchId)?.name ?? "اختر الفرع"}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="ALL">كل الفروع (تطهير شامل)</SelectItem>

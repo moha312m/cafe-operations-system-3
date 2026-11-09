@@ -595,7 +595,7 @@ export default function PurchasesPage() {
             ) : (
               <div className="space-y-1.5">
                 <Label id={`${uid}-paymode`}>الدفع</Label>
-                <div role="group" aria-labelledby={`${uid}-paymode`} className="flex gap-2">
+                <div role="group" aria-labelledby={`${uid}-paymode`} className="flex flex-wrap gap-2">
                   {([["UNPAID", "غير مدفوعة"], ["PARTIAL", "مدفوعة جزئيًا"], ["PAID", "مدفوعة بالكامل"]] as const).map(([m, lbl]) => (
                     <button key={m} type="button" aria-pressed={cPayMode === m} onClick={() => setCPayMode(m)}
                       className={`flex-1 rounded-lg border px-2 py-2 text-xs font-medium ${cPayMode === m ? "border-foreground bg-foreground text-background" : "border-border"}`}>{lbl}</button>
@@ -696,7 +696,7 @@ export default function PurchasesPage() {
                 <div className="space-y-1 rounded-xl border p-3 text-sm">
                   <p className="font-semibold">المدفوعات</p>
                   {detail.payments.map((p) => (
-                    <div key={p.id} className="flex items-center justify-between">
+                    <div key={p.id} className="flex flex-wrap items-center justify-between gap-2">
                       <span>{PURCHASE_METHOD_LABEL[p.method]}{p.fundingSource ? ` · ${FUNDING_LABEL[p.fundingSource]}` : ""}{p.createdBy ? ` · ${p.createdBy}` : ""}{p.note ? ` — ${p.note}` : ""}</span>
                       <span className="tabular-nums">{fmt(p.amount)} <span className="text-xs text-muted-foreground">{formatTime(p.paidAt)}</span></span>
                     </div>

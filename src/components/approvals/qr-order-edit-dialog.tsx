@@ -329,7 +329,7 @@ export function QrOrderEditDialog({
             </div>
 
             {/* Table + order notes */}
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-1">
                 <Label className="text-xs">رقم الترابيزة</Label>
                 <Input dir="ltr" value={tableNumber} onChange={(e) => setTableNumber(e.target.value)} />
