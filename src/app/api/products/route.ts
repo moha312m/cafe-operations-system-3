@@ -47,12 +47,31 @@ export async function GET(request: NextRequest) {
 
     // A product row is not a sellable configuration when it has sizes. Do
     // not collapse different size recipes into one invented product margin;
-    // the per-size report is the honest place for those figures.
+    // but enrich each variant individually with its own cost, profit, and margin.
     const enriched = await Promise.all(products.map(async (p) => {
       if (p.variants.length > 0) {
+        const enrichedVariants = await Promise.all(p.variants.map(async (v) => {
+          const vFinancials = await configurationFinancials({
+            productId: p.id,
+            variantId: v.id,
+            sellingPrice: Number(v.price),
+            branchId: session.branchId,
+          });
+          return {
+            ...v,
+            hasRecipe: vFinancials.costStatus === "AVAILABLE",
+            ...vFinancials,
+          };
+        }));
         return {
-          ...p, hasRecipe: false, costStatus: "MULTIPLE_CONFIGURATIONS" as const,
-          cost: null, profit: null, margin: null, tier: null,
+          ...p,
+          variants: enrichedVariants,
+          hasRecipe: false,
+          costStatus: "MULTIPLE_CONFIGURATIONS" as const,
+          cost: null,
+          profit: null,
+          margin: null,
+          tier: null,
         };
       }
       const financials = await configurationFinancials({

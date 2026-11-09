@@ -38,6 +38,8 @@ import {
 } from "@/components/ui/table";
 import { MenuImportDialog } from "@/components/menu-import/menu-import-dialog";
 import { RecipeEditor } from "@/components/menu/recipe-editor";
+import { QuickPriceCalculator } from "@/components/menu/quick-price-calculator";
+import { BulkRepricingWorkspace } from "@/components/menu/bulk-repricing-workspace";
 
 // ─────────────────────────── Types ───────────────────────────
 
@@ -70,7 +72,18 @@ type Product = {
   isAvailable: boolean;
   sortOrder: number;
   category: { id: string; name: string };
-  variants: { id: string; name: string; price: string; isActive: boolean }[];
+  variants: {
+    id: string;
+    name: string;
+    price: string;
+    isActive: boolean;
+    cost?: number | null;
+    profit?: number | null;
+    margin?: number | null;
+    tier?: "high" | "medium" | "low" | "loss" | "no-recipe" | null;
+    costStatus?: string;
+    hasRecipe?: boolean;
+  }[];
   addOns: { addOn: AddOn }[];
   branchPrices: { branchId: string; price: string }[];
   // Attached only when the caller has cost:read.
@@ -167,6 +180,22 @@ export default function MenuPage() {
 
   // استيراد المنيو من Excel
   const [importOpen, setImportOpen] = useState(false);
+
+  // إعادة تسعير المنيو حسب التكلفة وحاسبة الأسعار السريعة
+  const [bulkRepriceOpen, setBulkRepriceOpen] = useState(false);
+  const [quickCalc, setQuickCalc] = useState<{
+    open: boolean;
+    title: string;
+    cost: number | null;
+    currentPrice: string;
+    onApply: (price: number) => void;
+  }>({
+    open: false,
+    title: "",
+    cost: null,
+    currentPrice: "",
+    onApply: () => {},
+  });
 
   const load = useCallback(async () => {
     try {
@@ -453,6 +482,11 @@ export default function MenuPage() {
                     <input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} />
                     عرض الأصناف المؤرشفة
                   </label>
+                  {showCost && (
+                    <Button variant="outline" disabled={!canPrices} onClick={() => setBulkRepriceOpen(true)}>
+                      ⚡ إعادة تسعير المنيو حسب التكلفة
+                    </Button>
+                  )}
                   <Button variant="outline" disabled={!canPrices} onClick={() => setImportOpen(true)}>
                     📄 استيراد المنيو من Excel
                   </Button>
@@ -846,7 +880,30 @@ export default function MenuPage() {
               {/* Pricing */}
               <div className="grid grid-cols-3 gap-3">
                 <div className="space-y-2">
-                  <Label>سعر البيع ({currencySymbol(currency)})</Label>
+                  <div className="flex items-center justify-between">
+                    <Label>سعر البيع ({currencySymbol(currency)})</Label>
+                    {showCost && productForm.variants.length === 0 && (
+                      <button
+                        type="button"
+                        className="text-xs text-primary hover:underline flex items-center gap-1 font-medium"
+                        onClick={() => {
+                          const existing = products.find((p) => p.id === productForm.id);
+                          const cost = existing?.cost ?? (productForm.costPrice ? Number(productForm.costPrice) : null);
+                          setQuickCalc({
+                            open: true,
+                            title: productForm.name || "المنتج الأساسي",
+                            cost,
+                            currentPrice: productForm.basePrice,
+                            onApply: (suggested) => {
+                              setProductForm((prev) => (prev ? { ...prev, basePrice: String(suggested) } : null));
+                            },
+                          });
+                        }}
+                      >
+                        ⚡ احسب من التكلفة
+                      </button>
+                    )}
+                  </div>
                   <Input
                     type="number"
                     step="0.5"
@@ -984,20 +1041,51 @@ export default function MenuPage() {
                         setProductForm({ ...productForm, variants });
                       }}
                     />
-                    <Input
-                      type="number"
-                      step="0.5"
-                      min="0"
-                      dir="ltr"
-                      className="w-28"
-                      placeholder="سعر الحجم"
-                      value={v.price}
-                      onChange={(e) => {
-                        const variants = [...productForm.variants];
-                        variants[i] = { ...v, price: e.target.value };
-                        setProductForm({ ...productForm, variants });
-                      }}
-                    />
+                    <div className="flex items-center gap-1">
+                      <Input
+                        type="number"
+                        step="0.5"
+                        min="0"
+                        dir="ltr"
+                        className="w-24"
+                        placeholder="سعر الحجم"
+                        value={v.price}
+                        onChange={(e) => {
+                          const variants = [...productForm.variants];
+                          variants[i] = { ...v, price: e.target.value };
+                          setProductForm({ ...productForm, variants });
+                        }}
+                      />
+                      {showCost && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          className="h-8 px-2 text-xs text-primary"
+                          title="احسب من التكلفة ⚡"
+                          onClick={() => {
+                            const existingProd = products.find((p) => p.id === productForm.id);
+                            const existingVariant = existingProd?.variants?.find(
+                              (ev) => (v.id && ev.id === v.id) || ev.name === v.name
+                            );
+                            const variantCost = existingVariant?.cost ?? null;
+                            setQuickCalc({
+                              open: true,
+                              title: `${productForm.name || "منتج"} (${v.name || "حجم"})`,
+                              cost: variantCost,
+                              currentPrice: v.price,
+                              onApply: (suggested) => {
+                                const variants = [...productForm.variants];
+                                variants[i] = { ...v, price: String(suggested) };
+                                setProductForm({ ...productForm, variants });
+                              },
+                            });
+                          }}
+                        >
+                          ⚡
+                        </Button>
+                      )}
+                    </div>
                     <label className="flex shrink-0 cursor-pointer items-center gap-1 text-xs">
                       <input
                         type="checkbox"
@@ -1229,6 +1317,27 @@ export default function MenuPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* ════════════════ Quick Price Calculator ════════════════ */}
+      <QuickPriceCalculator
+        open={quickCalc.open}
+        onOpenChange={(o) => setQuickCalc((prev) => ({ ...prev, open: o }))}
+        title={quickCalc.title}
+        cost={quickCalc.cost}
+        currentPrice={quickCalc.currentPrice}
+        currency={currency}
+        onApply={quickCalc.onApply}
+      />
+
+      {/* ════════════════ Bulk Repricing Workspace ════════════════ */}
+      <BulkRepricingWorkspace
+        open={bulkRepriceOpen}
+        onOpenChange={setBulkRepriceOpen}
+        branches={branches}
+        categories={categories}
+        currency={currency}
+        onApplied={load}
+      />
     </div>
   );
 }
