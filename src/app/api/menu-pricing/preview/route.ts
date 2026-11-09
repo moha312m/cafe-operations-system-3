@@ -13,10 +13,12 @@ import {
   suggestPrice,
   isValidMultiplier,
   isValidRoundingStep,
-  generatePreviewFingerprint,
-  type PreviewFingerprintItem,
   type RoundingMode,
 } from "@/lib/menu-pricing";
+import {
+  generatePreviewFingerprint,
+  type PreviewFingerprintItem,
+} from "@/lib/menu-pricing-fingerprint";
 
 const previewSchema = z.object({
   cafeId: z.string().optional(),

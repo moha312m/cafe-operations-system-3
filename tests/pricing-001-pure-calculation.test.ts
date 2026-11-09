@@ -7,10 +7,12 @@ import {
   suggestPrice,
   isValidMultiplier,
   isValidRoundingStep,
+} from "@/lib/menu-pricing";
+import {
   generatePreviewFingerprint,
   verifyPreviewFingerprint,
   type PreviewFingerprintPayload,
-} from "@/lib/menu-pricing";
+} from "@/lib/menu-pricing-fingerprint";
 
 describe("Pricing Engine - calculateRawPrice", () => {
   test("calculates raw price from unit cost and multiplier", () => {
