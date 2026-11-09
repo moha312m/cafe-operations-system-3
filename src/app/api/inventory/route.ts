@@ -12,6 +12,7 @@ import { audit } from "@/lib/audit";
 import { round2 } from "@/lib/inventory";
 import { applyStockMutation } from "@/lib/ledger";
 import { withStockAlerts } from "@/lib/low-stock";
+import { syncDirectSale } from "@/lib/inventory-pricing-linkage";
 import type { Prisma } from "@prisma/client";
 
 const itemSelect = {
@@ -30,6 +31,15 @@ const itemSelect = {
   updatedAt: true,
   branchId: true,
   branch: { select: { id: true, name: true } },
+  stockBindings: { select: { id: true, productId: true } },
+  recipeItems: {
+    where: {
+      recipe: {
+        verifiedFingerprint: { not: null },
+      },
+    },
+    select: { id: true, recipe: { select: { verifiedFingerprint: true } } },
+  },
 } as const;
 
 // Branch scoping: managers/inventory staff pinned to a branch only ever
@@ -50,7 +60,14 @@ export async function GET(request: NextRequest) {
     const params = request.nextUrl.searchParams;
     const cafeId = resolveCafeId(session, params.get("cafeId"));
     const branchId = scopeBranch(session, params.get("branchId"));
-    const hasFinishedHistory = await db.orderItem.count({ where: { stockModeSnapshot: "FINISHED_GOOD", stockAcceptedAt: { not: null }, order: { cafeId, ...(branchId ? { branchId } : {}) } } }) > 0;
+    const hasFinishedHistory =
+      (await db.orderItem.count({
+        where: {
+          stockModeSnapshot: "FINISHED_GOOD",
+          stockAcceptedAt: { not: null },
+          order: { cafeId, ...(branchId ? { branchId } : {}) },
+        },
+      })) > 0;
     if (!hasFinishedHistory) await requireFeature(session, "inventoryEnabled");
 
     const where: Prisma.InventoryItemWhereInput = {
@@ -74,6 +91,14 @@ export async function GET(request: NextRequest) {
     const withStatus = (await withStockAlerts(cafeId, items)).map((i) => ({
       ...i,
       stockValue: round2(Number(i.currentStock) * Number(i.costPerUnit)),
+      isSoldDirectly:
+        Boolean(i.stockBindings && i.stockBindings.length > 0) ||
+        Boolean(
+          i.recipeItems &&
+            i.recipeItems.some(
+              (ri) => ri.recipe?.verifiedFingerprint === `DIRECT_ITEM_${i.id}`
+            )
+        ),
     }));
     const filtered = status
       ? withStatus.filter((i) => i.status === status)
@@ -111,6 +136,11 @@ const createSchema = z.object({
   expiryDate: z.string().optional(),
   isCritical: z.boolean().optional(),
   cafeId: z.string().optional(), // super admin only
+  // Finished Good / Menu Auto-Pricing Linkage
+  isSoldDirectly: z.boolean().optional(),
+  sellingPrice: z.number().min(0).optional(),
+  portionSize: z.number().positive().optional(),
+  menuCategoryId: z.string().optional(),
 });
 
 export async function POST(request: NextRequest) {
@@ -125,17 +155,12 @@ export async function POST(request: NextRequest) {
     if (session.branchId && data.branchId !== session.branchId) {
       throw new ApiError(403, "ليس لديك صلاحية على فرع تاني");
     }
-    const branch = await db.branch.findFirst({ where: { id: branchId, cafeId } });
+    const branch = await db.branch.findFirst({
+      where: { id: branchId, cafeId },
+    });
     if (!branch) throw new ApiError(400, "الفرع مش موجود في الكافيه");
 
-    // One transaction for the item and its opening ledger row. This used to
-    // be two unrelated writes with no transaction at all, so a failure
-    // between them left an item whose balance no ledger row accounted for —
-    // a phantom shortage waiting for the first physical count to find.
-    //
-    // The item is created at zero and the opening balance is applied through
-    // the guarded writer, so the very first movement is numbered like every
-    // other one rather than arriving as an unexplained starting figure.
+    // One transaction for the item, its opening ledger row, and direct menu product linkage.
     const item = await db.$transaction(async (tx) => {
       const created = await tx.inventoryItem.create({
         data: {
@@ -168,6 +193,22 @@ export async function POST(request: NextRequest) {
         });
       }
 
+      if (data.isSoldDirectly) {
+        await syncDirectSale(tx, {
+          inventoryItemId: created.id,
+          cafeId,
+          branchId,
+          name: data.name,
+          unit: data.unit,
+          costPerUnit: data.costPerUnit,
+          isSoldDirectly: true,
+          sellingPrice: data.sellingPrice,
+          portionSize: data.portionSize,
+          menuCategoryId: data.menuCategoryId,
+          categoryName: data.category,
+        });
+      }
+
       return tx.inventoryItem.findUniqueOrThrow({
         where: { id: created.id },
         select: itemSelect,
@@ -180,10 +221,18 @@ export async function POST(request: NextRequest) {
       action: "INVENTORY_ITEM_CREATED",
       entity: "InventoryItem",
       entityId: item.id,
-      details: { name: item.name, branchId, currentStock: data.currentStock },
+      details: {
+        name: item.name,
+        branchId,
+        currentStock: data.currentStock,
+        isSoldDirectly: data.isSoldDirectly,
+      },
     });
 
-    return NextResponse.json({ item }, { status: 201 });
+    return NextResponse.json(
+      { item: { ...item, isSoldDirectly: !!data.isSoldDirectly } },
+      { status: 201 }
+    );
   } catch (error) {
     return handleApiError(error);
   }

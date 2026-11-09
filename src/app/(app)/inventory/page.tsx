@@ -35,6 +35,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { UNIT_LABEL, STOCK_STATUS_LABEL, TXN_LABEL } from "@/lib/inventory";
+import { QuickPriceCalculator } from "@/components/menu/quick-price-calculator";
 
 // ─────────────────────────── Types ───────────────────────────
 
@@ -61,6 +62,16 @@ type ReturnOptions = { linked: boolean; lines: ReturnLine[] };
 type Summary = { totalItems: number; lowCount: number; outCount: number; totalValue: number };
 type Branch = { id: string; name: string };
 
+export type LinkedRecipe = {
+  id: string;
+  recipeId?: string;
+  name: string;
+  category: string;
+  quantity: number;
+  unit: string;
+  sellingPrice: number;
+};
+
 const UNITS = Object.keys(UNIT_LABEL) as (keyof typeof UNIT_LABEL)[];
 const MOVEMENT_TYPES = ["PURCHASE", "USAGE", "WASTE", "ADJUSTMENT", "RETURN"] as const;
 
@@ -82,6 +93,10 @@ type ItemForm = {
   supplierName: string;
   expiryDate: string;
   isCritical: boolean;
+  isSoldDirectly: boolean;
+  portionSize: string;
+  sellingPrice: string;
+  menuCategoryId: string;
 };
 
 const emptyForm = (branchId = ""): ItemForm => ({
@@ -96,6 +111,10 @@ const emptyForm = (branchId = ""): ItemForm => ({
   supplierName: "",
   expiryDate: "",
   isCritical: false,
+  isSoldDirectly: false,
+  portionSize: "1",
+  sellingPrice: "",
+  menuCategoryId: "",
 });
 
 // ─────────────────────────── Page ───────────────────────────
@@ -136,6 +155,9 @@ export default function InventoryPage() {
   const [tToBranch, setTToBranch] = useState("");
   const [tQty, setTQty] = useState("");
   const [tNote, setTNote] = useState("");
+  const [menuCategories, setMenuCategories] = useState<{ id: string; name: string }[]>([]);
+  const [linkedRecipes, setLinkedRecipes] = useState<LinkedRecipe[]>([]);
+  const [quickCalcOpen, setQuickCalcOpen] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -156,6 +178,12 @@ export default function InventoryPage() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    api<{ categories: { id: string; name: string }[] }>("/api/categories")
+      .then((c) => setMenuCategories(c.categories))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!user.branchId) {
@@ -199,6 +227,22 @@ export default function InventoryPage() {
   // ── Save item (add/edit) ──
   async function saveItem() {
     if (!itemForm) return;
+
+    if (itemForm.isSoldDirectly) {
+      const price = Number(itemForm.sellingPrice);
+      if (itemForm.sellingPrice === "" || isNaN(price) || price < 0) {
+        toast.error("يجب تحديد سعر بيع صالح للمنتج");
+        return;
+      }
+      if (itemForm.unit === "GRAM" || itemForm.unit === "ML") {
+        const portion = Number(itemForm.portionSize);
+        if (itemForm.portionSize === "" || isNaN(portion) || portion <= 0) {
+          toast.error("يجب تحديد حجم الحصة المباعة إذا كانت وحدة القياس بالجرام أو المليلتر");
+          return;
+        }
+      }
+    }
+
     const body = {
       name: itemForm.name,
       category: itemForm.category || undefined,
@@ -210,6 +254,13 @@ export default function InventoryPage() {
       expiryDate: itemForm.expiryDate || undefined,
       isCritical: itemForm.isCritical,
       ...(itemForm.id ? {} : { currentStock: Number(itemForm.currentStock) || 0 }),
+      isSoldDirectly: itemForm.isSoldDirectly,
+      sellingPrice: itemForm.isSoldDirectly ? Number(itemForm.sellingPrice) : undefined,
+      portionSize:
+        itemForm.isSoldDirectly && (itemForm.unit === "GRAM" || itemForm.unit === "ML")
+          ? Number(itemForm.portionSize)
+          : undefined,
+      menuCategoryId: itemForm.isSoldDirectly && itemForm.menuCategoryId ? itemForm.menuCategoryId : undefined,
     };
     const ok = await run(
       () =>
@@ -313,9 +364,10 @@ export default function InventoryPage() {
           )}
           <Button
             disabled={!canManage}
-            onClick={() =>
-              setItemForm(emptyForm(user.branchId ?? branches[0]?.id ?? ""))
-            }
+            onClick={() => {
+              setLinkedRecipes([]);
+              setItemForm(emptyForm(user.branchId ?? branches[0]?.id ?? ""));
+            }}
           >
             إضافة خامة
           </Button>
@@ -546,7 +598,7 @@ export default function InventoryPage() {
                   size="sm"
                   variant="outline"
                   disabled={!canManage}
-                  onClick={() =>
+                  onClick={async () => {
                     setItemForm({
                       id: i.id,
                       name: i.name,
@@ -559,8 +611,42 @@ export default function InventoryPage() {
                       supplierName: i.supplierName ?? "",
                       expiryDate: i.expiryDate ? i.expiryDate.slice(0, 10) : "",
                       isCritical: !!i.isCritical,
-                    })
-                  }
+                      isSoldDirectly: !!i.isSoldDirectly,
+                      portionSize: i.unit === "GRAM" || i.unit === "ML" ? "80" : "1",
+                      sellingPrice: "",
+                      menuCategoryId: "",
+                    });
+                    setLinkedRecipes([]);
+                    try {
+                      const res = await api<{
+                        isSoldDirectly: boolean;
+                        sellingPrice: number | null;
+                        portionSize: number | null;
+                        menuCategoryId: string | null;
+                        linkedRecipes: LinkedRecipe[];
+                      }>(`/api/inventory/${i.id}`);
+                      setItemForm((prev) =>
+                        prev && prev.id === i.id
+                          ? {
+                              ...prev,
+                              isSoldDirectly: res.isSoldDirectly ?? false,
+                              sellingPrice:
+                                res.sellingPrice !== null && res.sellingPrice !== undefined
+                                  ? String(res.sellingPrice)
+                                  : "",
+                              portionSize:
+                                res.portionSize !== null && res.portionSize !== undefined
+                                  ? String(res.portionSize)
+                                  : prev.portionSize,
+                              menuCategoryId: res.menuCategoryId ?? "",
+                            }
+                          : prev
+                      );
+                      setLinkedRecipes(res.linkedRecipes ?? []);
+                    } catch {
+                      // Silently retain initial row state
+                    }
+                  }}
                 >
                   تعديل
                 </Button>
@@ -679,6 +765,191 @@ export default function InventoryPage() {
                   </span>
                 </div>
               </label>
+              {/* ── Finished Good / Menu Linkage Toggle ── */}
+              <div className="rounded-lg border border-border bg-card p-3 space-y-3">
+                <label className="flex items-start gap-2.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 h-4 w-4 rounded border-gray-300 accent-primary"
+                    checked={itemForm.isSoldDirectly}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setItemForm({
+                        ...itemForm,
+                        isSoldDirectly: checked,
+                        portionSize:
+                          itemForm.unit === "GRAM" || itemForm.unit === "ML"
+                            ? itemForm.portionSize || "80"
+                            : "1",
+                      });
+                    }}
+                  />
+                  <div className="space-y-0.5">
+                    <span className="font-medium text-sm block">
+                      هذا الصنف يُباع كمنتج مباشر في المنيو (بضاعة جاهزة / Finished Good)
+                    </span>
+                    <span className="text-xs text-muted-foreground block">
+                      ربط تلقائي بالمنيو ونظام الكاشير (POS) للبيع المباشر والخصم الفوري من المخزون.
+                    </span>
+                  </div>
+                </label>
+
+                {itemForm.isSoldDirectly && (
+                  <div className="space-y-3 pt-2 border-t">
+                    {/* Portion Size for GRAM / ML */}
+                    {(itemForm.unit === "GRAM" || itemForm.unit === "ML") && (
+                      <div className="space-y-1.5">
+                        <Label className="text-xs font-semibold">
+                          حجم الحصة المباعة في الطلب ({UNIT_LABEL[itemForm.unit]})
+                        </Label>
+                        <div className="flex items-center gap-2">
+                          <Input
+                            type="number"
+                            dir="ltr"
+                            placeholder="مثال: 80"
+                            value={itemForm.portionSize}
+                            onChange={(e) =>
+                              setItemForm({ ...itemForm, portionSize: e.target.value })
+                            }
+                            className="w-32"
+                          />
+                          <span className="text-xs text-muted-foreground">
+                            {itemForm.unit === "GRAM"
+                              ? "جرام (مثلاً بولة آيس كريم 80 جم)"
+                              : "مل (حجم الحصة)"}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Menu Category Selection */}
+                    <div className="space-y-1.5">
+                      <Label className="text-xs font-semibold">تصنيف المنيو</Label>
+                      {menuCategories.length > 0 ? (
+                        <Select
+                          value={itemForm.menuCategoryId}
+                          onValueChange={(v) =>
+                            setItemForm({ ...itemForm, menuCategoryId: v ?? "" })
+                          }
+                        >
+                          <SelectTrigger className="w-full">
+                            <SelectValue placeholder="اختر تصنيف المنيو">
+                              {menuCategories.find((c) => c.id === itemForm.menuCategoryId)?.name}
+                            </SelectValue>
+                          </SelectTrigger>
+                          <SelectContent>
+                            {menuCategories.map((c) => (
+                              <SelectItem key={c.id} value={c.id}>
+                                {c.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">
+                          سيتم تعيين التصنيف تلقائياً باسم تصنيف الخامة أو «عام».
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Selling Price and Quick Price Calculator */}
+                    <div className="space-y-1.5">
+                      <Label className="text-xs font-semibold">سعر البيع المقترح ({currency})</Label>
+                      <div className="flex items-center gap-2">
+                        <Input
+                          type="number"
+                          dir="ltr"
+                          step="0.5"
+                          placeholder="0.00"
+                          value={itemForm.sellingPrice}
+                          onChange={(e) =>
+                            setItemForm({ ...itemForm, sellingPrice: e.target.value })
+                          }
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="whitespace-nowrap gap-1 border-primary/30 text-primary hover:bg-primary/5"
+                          onClick={() => setQuickCalcOpen(true)}
+                        >
+                          ⚡ احسب من التكلفة
+                        </Button>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        التكلفة المحسوبة للحصة:{" "}
+                        <span className="font-semibold tabular-nums text-foreground">
+                          {money(
+                            (Number(itemForm.costPerUnit) || 0) *
+                              (itemForm.unit === "GRAM" || itemForm.unit === "ML"
+                                ? Number(itemForm.portionSize) || 1
+                                : 1),
+                            currency
+                          )}
+                        </span>
+                      </p>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* ── Linked Menu Recipes Section ── */}
+              {itemForm.id && (
+                <div className="rounded-lg border border-border bg-muted/15 p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-muted-foreground">
+                      الأصناف والوصفات المرتبطة بهذه الخامة (Linked Menu Recipes)
+                    </span>
+                    {linkedRecipes.length > 0 && (
+                      <Badge variant="secondary" className="text-xs">
+                        {linkedRecipes.length} صنف
+                      </Badge>
+                    )}
+                  </div>
+
+                  {linkedRecipes.length > 0 ? (
+                    <div className="space-y-2 max-h-48 overflow-y-auto">
+                      {linkedRecipes.map((r) => (
+                        <div
+                          key={r.id + (r.recipeId ?? "")}
+                          className="flex items-center justify-between rounded-md border bg-card p-2 text-xs"
+                        >
+                          <div className="space-y-0.5">
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-semibold text-foreground">{r.name}</span>
+                              {r.category && (
+                                <Badge variant="outline" className="text-[10px] px-1 py-0">
+                                  {r.category}
+                                </Badge>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-muted-foreground">
+                              يستهلك {r.quantity}{" "}
+                              {UNIT_LABEL[r.unit as keyof typeof UNIT_LABEL] ?? r.unit} — سعر البيع:{" "}
+                              <span className="tabular-nums font-medium text-foreground">
+                                {money(r.sellingPrice, currency)}
+                              </span>
+                            </p>
+                          </div>
+                          <a
+                            href="/menu"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-primary hover:underline font-medium text-xs whitespace-nowrap px-2 py-1 rounded hover:bg-primary/5"
+                          >
+                            تسعير في المنيو ↗
+                          </a>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground">
+                      لا توجد وصفات منيو معتمدة تستهلك هذه الخامة حالياً.
+                    </p>
+                  )}
+                </div>
+              )}
+
               {itemForm.id && (
                 <p className="text-xs text-muted-foreground">
                   الكمية بتتعدّل من زرار «حركة مخزون» عشان يتسجل كل تغيير.
@@ -693,6 +964,26 @@ export default function InventoryPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* ── Quick Price Calculator Dialog ── */}
+      {itemForm && (
+        <QuickPriceCalculator
+          open={quickCalcOpen}
+          onOpenChange={setQuickCalcOpen}
+          title={`تسعير: ${itemForm.name || "خامة جديدة"}`}
+          cost={
+            (Number(itemForm.costPerUnit) || 0) *
+            (itemForm.unit === "GRAM" || itemForm.unit === "ML"
+              ? Number(itemForm.portionSize) || 1
+              : 1)
+          }
+          currentPrice={itemForm.sellingPrice}
+          currency={currency}
+          onApply={(suggested) => {
+            setItemForm({ ...itemForm, sellingPrice: String(suggested) });
+          }}
+        />
+      )}
 
       {/* ── Movement dialog ── */}
       <Dialog open={moveFor !== null} onOpenChange={(o) => !o && setMoveFor(null)}>

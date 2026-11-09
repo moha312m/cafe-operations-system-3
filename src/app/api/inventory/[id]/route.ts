@@ -4,13 +4,44 @@ import { lockItemForUpdate } from "@/lib/ledger";
 import { assertFinishedStockEditable } from "@/lib/finished-stock-history";
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
-import { requireKey, handleApiError } from "@/lib/api";
+import { requireKey, requirePermission, handleApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { publicInventoryItem } from "@/lib/public-shape";
 import { findScopedItem } from "@/lib/inventory-scope";
+import { db } from "@/lib/db";
+import {
+  getLinkedRecipes,
+  getDirectSaleInfo,
+  syncDirectSale,
+} from "@/lib/inventory-pricing-linkage";
 import type { Prisma } from "@prisma/client";
 
 type Params = { params: Promise<{ id: string }> };
+
+export async function GET(_request: NextRequest, { params }: Params) {
+  try {
+    const session = await requirePermission("inventory:read");
+    const { id } = await params;
+    const item = await findScopedItem(id, session);
+
+    const [linkedRecipes, directSale] = await Promise.all([
+      getLinkedRecipes(db, id, item.cafeId),
+      getDirectSaleInfo(db, id, item.cafeId),
+    ]);
+
+    return NextResponse.json({
+      item: publicInventoryItem(item),
+      isSoldDirectly: directSale.isSoldDirectly,
+      productId: directSale.productId ?? null,
+      sellingPrice: directSale.sellingPrice ?? null,
+      menuCategoryId: directSale.menuCategoryId ?? null,
+      portionSize: directSale.portionSize ?? null,
+      linkedRecipes,
+    });
+  } catch (error) {
+    return handleApiError(error);
+  }
+}
 
 const updateSchema = z.object({
   name: z.string().min(1, "اسم الخامة مطلوب").optional(),
@@ -23,6 +54,11 @@ const updateSchema = z.object({
   isActive: z.boolean().optional(),
   isCritical: z.boolean().optional(),
   archived: z.boolean().optional(),
+  // Finished Good / Menu Auto-Pricing Linkage
+  isSoldDirectly: z.boolean().optional(),
+  sellingPrice: z.number().min(0).optional(),
+  portionSize: z.number().positive().optional(),
+  menuCategoryId: z.string().optional(),
 });
 
 export async function PATCH(request: NextRequest, { params }: Params) {
@@ -53,23 +89,74 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       update.archivedAt = null;
     }
 
-    const updated = await protectedTransaction(async tx => {
-      await acquireInventorySharedLocks(tx, [item.branchId]);
-      const locked = await lockItemForUpdate(tx, id);
-      await assertFinishedStockEditable(tx, id, { retire: data.archived === true || data.isActive === false, changingUnit: data.unit !== undefined && data.unit !== locked.unit });
-      return tx.inventoryItem.update({ where: { id }, data: update });
-    }, { cafeId: item.cafeId, branchId: item.branchId });
+    const updated = await protectedTransaction(
+      async (tx) => {
+        await acquireInventorySharedLocks(tx, [item.branchId]);
+        const locked = await lockItemForUpdate(tx, id);
+        await assertFinishedStockEditable(tx, id, {
+          retire: data.archived === true || data.isActive === false,
+          changingUnit: data.unit !== undefined && data.unit !== locked.unit,
+        });
+
+        const savedItem = await tx.inventoryItem.update({
+          where: { id },
+          data: update,
+        });
+
+        if (data.isSoldDirectly !== undefined) {
+          await syncDirectSale(tx, {
+            inventoryItemId: id,
+            cafeId: item.cafeId,
+            branchId: item.branchId,
+            name: data.name ?? item.name,
+            unit: data.unit ?? item.unit,
+            costPerUnit:
+              data.costPerUnit !== undefined
+                ? data.costPerUnit
+                : Number(item.costPerUnit),
+            isSoldDirectly: data.isSoldDirectly,
+            sellingPrice: data.sellingPrice,
+            portionSize: data.portionSize,
+            menuCategoryId: data.menuCategoryId,
+            categoryName: data.category ?? item.category ?? undefined,
+          });
+        }
+
+        return savedItem;
+      },
+      { cafeId: item.cafeId, branchId: item.branchId }
+    );
 
     await audit({
       cafeId: item.cafeId,
       userId: session.id,
-      action: data.archived === true ? "INVENTORY_ITEM_ARCHIVED" : "INVENTORY_ITEM_UPDATED",
+      action:
+        data.archived === true
+          ? "INVENTORY_ITEM_ARCHIVED"
+          : "INVENTORY_ITEM_UPDATED",
       entity: "InventoryItem",
       entityId: id,
-      details: { name: updated.name, branchId: item.branchId },
+      details: {
+        name: updated.name,
+        branchId: item.branchId,
+        isSoldDirectly: data.isSoldDirectly,
+      },
     });
 
-    return NextResponse.json({ item: publicInventoryItem(updated) });
+    const [linkedRecipes, directSale] = await Promise.all([
+      getLinkedRecipes(db, id, item.cafeId),
+      getDirectSaleInfo(db, id, item.cafeId),
+    ]);
+
+    return NextResponse.json({
+      item: publicInventoryItem(updated),
+      isSoldDirectly: directSale.isSoldDirectly,
+      productId: directSale.productId ?? null,
+      sellingPrice: directSale.sellingPrice ?? null,
+      menuCategoryId: directSale.menuCategoryId ?? null,
+      portionSize: directSale.portionSize ?? null,
+      linkedRecipes,
+    });
   } catch (error) {
     return handleApiError(error);
   }
@@ -82,12 +169,29 @@ export async function DELETE(_request: NextRequest, { params }: Params) {
     const { id } = await params;
     const item = await findScopedItem(id, session);
 
-    await protectedTransaction(async tx => {
-      await acquireInventorySharedLocks(tx, [item.branchId]);
-      await lockItemForUpdate(tx, id);
-      await assertFinishedStockEditable(tx, id, { retire: true });
-      await tx.inventoryItem.update({ where: { id }, data: { archivedAt: new Date(), isActive: false } });
-    }, { cafeId: item.cafeId, branchId: item.branchId });
+    await protectedTransaction(
+      async (tx) => {
+        await acquireInventorySharedLocks(tx, [item.branchId]);
+        await lockItemForUpdate(tx, id);
+        await assertFinishedStockEditable(tx, id, { retire: true });
+        await tx.inventoryItem.update({
+          where: { id },
+          data: { archivedAt: new Date(), isActive: false },
+        });
+
+        // Safely unlink finished good bindings on archive
+        await syncDirectSale(tx, {
+          inventoryItemId: id,
+          cafeId: item.cafeId,
+          branchId: item.branchId,
+          name: item.name,
+          unit: item.unit,
+          costPerUnit: Number(item.costPerUnit),
+          isSoldDirectly: false,
+        });
+      },
+      { cafeId: item.cafeId, branchId: item.branchId }
+    );
 
     await audit({
       cafeId: item.cafeId,
