@@ -52,6 +52,9 @@ interface ResetPreview {
   itemsToRestore: RestoredItem[];
   affectedShiftCount: number;
   orderIds: string[];
+  totalShiftsInScope?: number;
+  totalHandoversInScope?: number;
+  totalVarianceCasesInScope?: number;
 }
 
 export function SalesResetCard({ branches = [] }: { branches?: BranchOption[] }) {
@@ -70,6 +73,7 @@ export function SalesResetCard({ branches = [] }: { branches?: BranchOption[] })
   }, [branches]);
   const [branchId, setBranchId] = useState<string>("ALL");
   const [resetMode, setResetMode] = useState<"ALL" | "PERIOD">("PERIOD");
+  const [includeShiftsAndHandovers, setIncludeShiftsAndHandovers] = useState(false);
   const [from, setFrom] = useState<string>("");
   const [to, setTo] = useState<string>("");
 
@@ -101,6 +105,7 @@ export function SalesResetCard({ branches = [] }: { branches?: BranchOption[] })
           from: resetMode === "PERIOD" && from ? from : undefined,
           to: resetMode === "PERIOD" && to ? to : undefined,
           resetAll: resetMode === "ALL",
+          includeShiftsAndHandovers,
         }),
       });
 
@@ -120,8 +125,13 @@ export function SalesResetCard({ branches = [] }: { branches?: BranchOption[] })
   }
 
   async function handleExecuteReset() {
-    if (!preview || preview.orderCount === 0) {
-      toast.error("لا توجد مبيعات لتصفيرها");
+    const hasItemsToReset =
+      (preview?.orderCount ?? 0) > 0 ||
+      (includeShiftsAndHandovers &&
+        ((preview?.totalShiftsInScope ?? 0) > 0 || (preview?.totalHandoversInScope ?? 0) > 0));
+
+    if (!preview || !hasItemsToReset) {
+      toast.error("لا توجد مبيعات أو ورديات مطابقة للتصفير");
       return;
     }
 
@@ -148,6 +158,7 @@ export function SalesResetCard({ branches = [] }: { branches?: BranchOption[] })
           from: resetMode === "PERIOD" && from ? from : undefined,
           to: resetMode === "PERIOD" && to ? to : undefined,
           resetAll: resetMode === "ALL",
+          includeShiftsAndHandovers,
           confirmPhrase,
           code: passcode,
         }),
@@ -159,9 +170,13 @@ export function SalesResetCard({ branches = [] }: { branches?: BranchOption[] })
       }
 
       const data = await res.json();
-      toast.success(
-        `تم تصفير ${data.result.orderCount} طلب واسترجاع ${data.result.restoredItemsCount} صنف خامات للمخزون بنجاح`
-      );
+      let msg = `تم تصفير ${data.result.orderCount} طلب واسترجاع ${data.result.restoredItemsCount} صنف خامات للمخزون بنجاح`;
+      if (data.result.shiftsResetCount > 0 || data.result.handoversResetCount > 0) {
+        msg += ` وحذف ${data.result.shiftsResetCount} وردية تجريبية و${data.result.handoversResetCount} جلسة تسليم عهدة (الوردية القادمة ستبدأ برقم 1)`;
+      } else if (data.result.realignedHandoverSessionsCount > 0) {
+        msg += ` وتحديث أرصدة المتوقع لـ ${data.result.realignedHandoverSessionsCount} جلسة تسليم عهدة`;
+      }
+      toast.success(msg);
 
       // Reset state and close modal
       setModalOpen(false);
@@ -283,6 +298,26 @@ export function SalesResetCard({ branches = [] }: { branches?: BranchOption[] })
             </div>
           )}
 
+          {/* Operational Clean Slate Option */}
+          <div className="rounded-lg border border-destructive/20 bg-background/60 p-3 space-y-1">
+            <label className="flex items-start gap-2.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={includeShiftsAndHandovers}
+                onChange={(e) => setIncludeShiftsAndHandovers(e.target.checked)}
+                className="mt-1 h-4 w-4 rounded border-gray-300 text-destructive focus:ring-destructive cursor-pointer"
+              />
+              <div className="space-y-0.5">
+                <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                  تطهير تجارب الورديات وتسليم العهدة (Clean Slate للتشغيل)
+                </span>
+                <p className="text-[11px] text-muted-foreground leading-relaxed">
+                  حذف ورديات التجارب لتبدأ الوردية الحقيقية برقم 1، وتصفير جلسات تسليم العهدة والفروقات الوهمية الناتجة عن فواتير التدريب، مع الحفاظ بنسبة 100% على الأصناف والأسعار والمخزون الحالي وحسابات الموظفين.
+                </p>
+              </div>
+            </label>
+          </div>
+
           {/* Action Button: Preview first */}
           <div className="flex items-center justify-between pt-1">
             <p className="text-xs text-muted-foreground flex items-center gap-1">
@@ -389,9 +424,39 @@ export function SalesResetCard({ branches = [] }: { branches?: BranchOption[] })
                 )}
               </div>
 
-              {preview.orderCount === 0 ? (
+              {/* Operational Clean Slate Preview */}
+              {includeShiftsAndHandovers && (
+                <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 space-y-2">
+                  <div className="flex items-center gap-1.5 text-xs font-bold text-amber-700 dark:text-amber-400">
+                    <ShieldAlert className="h-4 w-4" />
+                    تطهير العمليات التشغيلية (لتبدأ الوردية القادمة برقم 1):
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                    <div className="rounded-lg bg-background p-2 border shadow-xs">
+                      <span className="text-[11px] text-muted-foreground block">ورديات تجريبية للحذف</span>
+                      <span className="font-bold text-foreground text-sm">{preview.totalShiftsInScope ?? 0}</span>
+                    </div>
+                    <div className="rounded-lg bg-background p-2 border shadow-xs">
+                      <span className="text-[11px] text-muted-foreground block">جلسات تسليم عهدة</span>
+                      <span className="font-bold text-foreground text-sm">{preview.totalHandoversInScope ?? 0}</span>
+                    </div>
+                    <div className="rounded-lg bg-background p-2 border shadow-xs">
+                      <span className="text-[11px] text-muted-foreground block">حالات فروقات وهمية</span>
+                      <span className="font-bold text-foreground text-sm">{preview.totalVarianceCasesInScope ?? 0}</span>
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    سيتم تنظيف كافة السجلات المؤقتة وتصفير مؤشر الورديات لتبدأ أول وردية حقيقية بالرقم 1، مع الاحتفاظ بـ 100% من قائمة الطعام والأسعار والمخزون الفعلي الحالي.
+                  </p>
+                </div>
+              )}
+
+              {preview.orderCount === 0 &&
+              (!includeShiftsAndHandovers ||
+                ((preview.totalShiftsInScope ?? 0) === 0 &&
+                  (preview.totalHandoversInScope ?? 0) === 0)) ? (
                 <div className="rounded-lg bg-muted p-3 text-center text-xs text-muted-foreground">
-                  لا توجد أي فواتير تطابق النطاق والفرع المحددين. لن يتم اتخاذ أي إجراء.
+                  لا توجد أي فواتير أو عمليات تطابق النطاق المحدد. لن يتم اتخاذ أي إجراء.
                 </div>
               ) : (
                 <div className="space-y-3 rounded-lg border border-destructive/30 bg-destructive/5 p-3">
@@ -463,7 +528,10 @@ export function SalesResetCard({ branches = [] }: { branches?: BranchOption[] })
               onClick={handleExecuteReset}
               disabled={
                 !preview ||
-                preview.orderCount === 0 ||
+                (preview.orderCount === 0 &&
+                  (!includeShiftsAndHandovers ||
+                    ((preview.totalShiftsInScope ?? 0) === 0 &&
+                      (preview.totalHandoversInScope ?? 0) === 0))) ||
                 !isPhraseValid ||
                 passcode.length < 6 ||
                 executing
@@ -478,7 +546,7 @@ export function SalesResetCard({ branches = [] }: { branches?: BranchOption[] })
               ) : (
                 <>
                   <CheckCircle2 className="h-4 w-4" />
-                  تأكيد وتصفير المبيعات الآن
+                  {includeShiftsAndHandovers ? "تأكيد وتصفير المبيعات والورديات" : "تأكيد وتصفير المبيعات الآن"}
                 </>
               )}
             </Button>

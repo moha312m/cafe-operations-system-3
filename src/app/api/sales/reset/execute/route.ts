@@ -21,11 +21,12 @@ export async function POST(request: NextRequest) {
     const from = typeof body.from === "string" ? body.from : undefined;
     const to = typeof body.to === "string" ? body.to : undefined;
     const resetAll = Boolean(body.resetAll);
+    const includeShiftsAndHandovers = Boolean(body.includeShiftsAndHandovers);
     const confirmPhrase = typeof body.confirmPhrase === "string" ? body.confirmPhrase : "";
     const reason = typeof body.reason === "string" ? body.reason : undefined;
 
     // Verify date constraints in period mode
-    if (!resetAll && !from && !to) {
+    if (!resetAll && !from && !to && !includeShiftsAndHandovers) {
       throw new ApiError(
         400,
         "يجب تحديد تاريخ بداية أو نهاية في وضع الفترة الزمنية، أو اختيار التصفير الشامل"
@@ -83,6 +84,7 @@ export async function POST(request: NextRequest) {
       from,
       to,
       resetAll,
+      includeShiftsAndHandovers,
       actorId: session.id,
       reason,
     });

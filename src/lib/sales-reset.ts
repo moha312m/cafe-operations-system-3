@@ -12,6 +12,7 @@ export type SalesResetScope = {
   from?: string | null;
   to?: string | null;
   resetAll?: boolean;
+  includeShiftsAndHandovers?: boolean;
 };
 
 export type RestoredItemPreview = {
@@ -29,6 +30,9 @@ export type SalesResetPreview = {
   itemsToRestore: RestoredItemPreview[];
   affectedShiftCount: number;
   orderIds: string[];
+  totalShiftsInScope?: number;
+  totalHandoversInScope?: number;
+  totalVarianceCasesInScope?: number;
 };
 
 export type ExecuteSalesResetArgs = SalesResetScope & {
@@ -44,6 +48,10 @@ export type ExecuteSalesResetResult = {
   restoredItemsCount: number;
   itemsRestored: RestoredItemPreview[];
   affectedShiftCount: number;
+  shiftsResetCount?: number;
+  handoversResetCount?: number;
+  varianceCasesResetCount?: number;
+  realignedHandoverSessionsCount?: number;
 };
 
 /**
@@ -166,6 +174,28 @@ export async function previewSalesReset(
 ): Promise<SalesResetPreview> {
   const where = buildOrderScopeWhere(scope);
 
+  // Collect shifts, handovers, and variance cases in scope
+  const shiftWhere: Prisma.ShiftWhereInput = { cafeId: scope.cafeId };
+  const handoverWhere: Prisma.HandoverSessionWhereInput = { cafeId: scope.cafeId };
+  if (scope.branchId && scope.branchId !== "ALL") {
+    shiftWhere.branchId = scope.branchId;
+    handoverWhere.branchId = scope.branchId;
+  }
+  let totalShiftsInScope = 0;
+  let totalHandoversInScope = 0;
+  let totalVarianceCasesInScope = 0;
+  try {
+    if ("shift" in client && client.shift && typeof client.shift.count === "function") {
+      [totalShiftsInScope, totalHandoversInScope, totalVarianceCasesInScope] = await Promise.all([
+        client.shift.count({ where: shiftWhere }),
+        client.handoverSession.count({ where: handoverWhere }),
+        client.varianceCase.count({ where: { cafeId: scope.cafeId } }),
+      ]);
+    }
+  } catch {
+    // Continue for mock clients in unit tests
+  }
+
   const orders = await client.order.findMany({
     where,
     select: {
@@ -186,6 +216,9 @@ export async function previewSalesReset(
       itemsToRestore: [],
       affectedShiftCount: 0,
       orderIds: [],
+      totalShiftsInScope,
+      totalHandoversInScope,
+      totalVarianceCasesInScope,
     };
   }
 
@@ -239,7 +272,73 @@ export async function previewSalesReset(
     itemsToRestore,
     affectedShiftCount: shiftIds.size,
     orderIds,
+    totalShiftsInScope,
+    totalHandoversInScope,
+    totalVarianceCasesInScope,
   };
+}
+
+/**
+ * Re-aligns all lines in open/draft/submitted handover count sessions for the cafe
+ * so that expectedQuantity reflects live currentStock and varianceQuantity is re-computed accurately.
+ */
+export async function realignOpenHandoverSessions(
+  tx: Prisma.TransactionClient,
+  cafeId: string,
+  branchId?: string | null
+): Promise<number> {
+  const where: Prisma.StockCountSessionWhereInput = {
+    cafeId,
+    accountabilityContext: "HANDOVER",
+    status: { in: ["DRAFT", "IN_PROGRESS", "SUBMITTED"] },
+  };
+  if (branchId && branchId !== "ALL") {
+    where.branchId = branchId;
+  }
+
+  let updatedCount = 0;
+  if (!("stockCountSession" in tx) || !tx.stockCountSession || typeof tx.stockCountSession.findMany !== "function") {
+    return 0;
+  }
+
+  const openSessions = await tx.stockCountSession.findMany({
+    where,
+    include: {
+      lines: {
+        include: {
+          inventoryItem: { select: { currentStock: true } },
+        },
+      },
+    },
+  });
+
+  for (const session of openSessions) {
+    for (const line of session.lines) {
+      if (line.inventoryItem) {
+        const newExpected = round3(Number(line.inventoryItem.currentStock));
+        const activeCounted = line.effectiveCountedQuantity ?? line.countedQuantity;
+        let newVariance: number | null = null;
+        let newDisposition = line.disposition;
+
+        if (activeCounted !== null) {
+          newVariance = round3(Number(activeCounted) - newExpected);
+          newDisposition = newVariance === 0 ? "COUNTED" : "VARIANCE_RECORDED";
+        }
+
+        await tx.stockCountLine.update({
+          where: { id: line.id },
+          data: {
+            expectedQuantity: newExpected,
+            varianceQuantity: newVariance,
+            disposition: newDisposition,
+          },
+        });
+        updatedCount++;
+      }
+    }
+  }
+
+  return updatedCount;
 }
 
 /**
@@ -266,30 +365,91 @@ export async function executeSalesResetInTransaction(
 
   const where = buildOrderScopeWhere(args);
 
-      const orders = await tx.order.findMany({
-        where,
-        select: {
-          id: true,
-          total: true,
-          paidAmount: true,
-          saleShiftId: true,
-          servedShiftId: true,
-          branchId: true,
-          tableSessionId: true,
-        },
-      });
+  const orders = await tx.order.findMany({
+    where,
+    select: {
+      id: true,
+      total: true,
+      paidAmount: true,
+      saleShiftId: true,
+      servedShiftId: true,
+      branchId: true,
+      tableSessionId: true,
+    },
+  });
 
-      if (orders.length === 0) {
-        return {
-          success: true,
-          orderCount: 0,
-          totalAmount: 0,
-          paidAmount: 0,
-          restoredItemsCount: 0,
-          itemsRestored: [],
-          affectedShiftCount: 0,
-        };
+  let shiftsResetCount = 0;
+  let handoversResetCount = 0;
+  let varianceCasesResetCount = 0;
+  let realignedHandoverSessionsCount = 0;
+
+  // Handle case where no orders match but shifts/handovers reset or realignment was requested
+  if (orders.length === 0) {
+    if (args.includeShiftsAndHandovers) {
+      const cafeId = args.cafeId;
+      try {
+        if ("shift" in tx && tx.shift) shiftsResetCount = await tx.shift.count({ where: { cafeId } });
+        if ("handoverSession" in tx && tx.handoverSession) handoversResetCount = await tx.handoverSession.count({ where: { cafeId } });
+        if ("varianceCase" in tx && tx.varianceCase) varianceCasesResetCount = await tx.varianceCase.count({ where: { cafeId } });
+      } catch {}
+
+      if (typeof tx.$executeRawUnsafe === "function") {
+        await tx.$executeRawUnsafe(`UPDATE "Order" SET "servedShiftId" = NULL, "servedStockCustodyPeriodId" = NULL WHERE "cafeId" = $1;`, cafeId);
+        await tx.$executeRawUnsafe(`UPDATE "HandoverSession" SET "outgoingShiftId" = NULL, "incomingShiftId" = NULL, "outgoingCashCustodyId" = NULL, "outgoingStockCustodyId" = NULL, "incomingCashCustodyId" = NULL, "incomingStockCustodyId" = NULL, "stockCountSessionId" = NULL, "acceptedStockCountSessionId" = NULL WHERE "cafeId" = $1;`, cafeId);
+        await tx.$executeRawUnsafe(`UPDATE "CustodyPeriod" SET "responsibleShiftId" = NULL, "previousPeriodId" = NULL WHERE "cafeId" = $1;`, cafeId);
+        await tx.$executeRawUnsafe(`UPDATE "StockCountSession" SET "lockedByHandoverId" = NULL, "handoverId" = NULL, "shiftId" = NULL, "custodyPeriodId" = NULL, "openingBranchCustodyPeriodId" = NULL WHERE "cafeId" = $1;`, cafeId);
+        await tx.$executeRawUnsafe(`UPDATE "InventoryTransaction" SET "shiftId" = NULL, "custodyPeriodId" = NULL, "orderId" = NULL WHERE "cafeId" = $1;`, cafeId);
+        await tx.$executeRawUnsafe(`UPDATE "VarianceCase" SET "acceptedHandoverId" = NULL, "shiftId" = NULL, "custodyPeriodId" = NULL WHERE "cafeId" = $1;`, cafeId);
+        await tx.$executeRawUnsafe(`UPDATE "Shift" SET "cashVarianceCaseId" = NULL WHERE "cafeId" = $1;`, cafeId);
+
+        await tx.$executeRawUnsafe(`DELETE FROM "ShiftCashDisposition" WHERE "shiftId" IN (SELECT id FROM "Shift" WHERE "cafeId" = $1);`, cafeId);
+        await tx.$executeRawUnsafe(`DELETE FROM "CashDeliveryDeclaration" WHERE "shiftId" IN (SELECT id FROM "Shift" WHERE "cafeId" = $1);`, cafeId);
+        await tx.$executeRawUnsafe(`DELETE FROM "CashStorage" WHERE "outgoingShiftId" IN (SELECT id FROM "Shift" WHERE "cafeId" = $1);`, cafeId);
+        await tx.$executeRawUnsafe(`DELETE FROM "OpeningCashReceipt" WHERE "incomingShiftId" IN (SELECT id FROM "Shift" WHERE "cafeId" = $1);`, cafeId);
+        await tx.$executeRawUnsafe(`DELETE FROM "ShiftPlaceReceipt" WHERE "incomingShiftId" IN (SELECT id FROM "Shift" WHERE "cafeId" = $1);`, cafeId);
+        await tx.$executeRawUnsafe(`DELETE FROM "ShiftCustody" WHERE "shiftId" IN (SELECT id FROM "Shift" WHERE "cafeId" = $1);`, cafeId);
+        await tx.$executeRawUnsafe(`DELETE FROM "CustodyParticipant" WHERE "custodyPeriodId" IN (SELECT id FROM "CustodyPeriod" WHERE "cafeId" = $1);`, cafeId);
+        await tx.$executeRawUnsafe(`DELETE FROM "StockVarianceSpanCustody" WHERE "custodyPeriodId" IN (SELECT id FROM "CustodyPeriod" WHERE "cafeId" = $1);`, cafeId);
+        await tx.$executeRawUnsafe(`DELETE FROM "TenderReconciliation" WHERE "shiftId" IN (SELECT id FROM "Shift" WHERE "cafeId" = $1);`, cafeId);
+        await tx.$executeRawUnsafe(`DELETE FROM "ShiftMaterialsDecision" WHERE "branchId" IN (SELECT id FROM "Branch" WHERE "cafeId" = $1);`, cafeId);
+        await tx.$executeRawUnsafe(`DELETE FROM "VarianceCase" WHERE "cafeId" = $1;`, cafeId);
+        await tx.$executeRawUnsafe(`DELETE FROM "OpeningException" WHERE "cafeId" = $1;`, cafeId);
+        await tx.$executeRawUnsafe(`DELETE FROM "InventoryFreeze" WHERE "branchId" IN (SELECT id FROM "Branch" WHERE "cafeId" = $1);`, cafeId);
+        await tx.$executeRawUnsafe(`DELETE FROM "HandoverRequiredItem" WHERE "handoverId" IN (SELECT id FROM "HandoverSession" WHERE "cafeId" = $1);`, cafeId);
+        await tx.$executeRawUnsafe(`DELETE FROM "HandoverStockAcknowledgement" WHERE "handoverId" IN (SELECT id FROM "HandoverSession" WHERE "cafeId" = $1);`, cafeId);
+        await tx.$executeRawUnsafe(`DELETE FROM "HandoverStockBoundary" WHERE "handoverId" IN (SELECT id FROM "HandoverSession" WHERE "cafeId" = $1);`, cafeId);
+        await tx.$executeRawUnsafe(`DELETE FROM "HandoverIssue" WHERE "handoverId" IN (SELECT id FROM "HandoverSession" WHERE "cafeId" = $1);`, cafeId);
+        await tx.$executeRawUnsafe(`DELETE FROM "StockCountCorrection" WHERE "lineId" IN (SELECT id FROM "StockCountLine" WHERE "sessionId" IN (SELECT id FROM "StockCountSession" WHERE "cafeId" = $1));`, cafeId);
+        await tx.$executeRawUnsafe(`DELETE FROM "StockCountLine" WHERE "sessionId" IN (SELECT id FROM "StockCountSession" WHERE "cafeId" = $1);`, cafeId);
+        await tx.$executeRawUnsafe(`DELETE FROM "StockCountSession" WHERE "cafeId" = $1;`, cafeId);
+
+        await tx.$executeRawUnsafe(`DELETE FROM "HandoverSession" WHERE "cafeId" = $1;`, cafeId);
+        await tx.$executeRawUnsafe(`DELETE FROM "CustodyPeriod" WHERE "cafeId" = $1;`, cafeId);
+        await tx.$executeRawUnsafe(`DELETE FROM "Shift" WHERE "cafeId" = $1;`, cafeId);
+
+        await tx.$executeRawUnsafe(`DELETE FROM "TableSession" WHERE "branchId" IN (SELECT id FROM "Branch" WHERE "cafeId" = $1);`, cafeId);
+        await tx.$executeRawUnsafe(`UPDATE "CafeTable" SET "status" = 'AVAILABLE', "currentSessionId" = NULL WHERE "branchId" IN (SELECT id FROM "Branch" WHERE "cafeId" = $1);`, cafeId);
       }
+    } else {
+      try {
+        realignedHandoverSessionsCount = await realignOpenHandoverSessions(tx, args.cafeId, args.branchId);
+      } catch {}
+    }
+
+    return {
+      success: true,
+      orderCount: 0,
+      totalAmount: 0,
+      paidAmount: 0,
+      restoredItemsCount: 0,
+      itemsRestored: [],
+      affectedShiftCount: 0,
+      shiftsResetCount,
+      handoversResetCount,
+      varianceCasesResetCount,
+      realignedHandoverSessionsCount,
+    };
+  }
 
       const orderIds = orders.map((o) => o.id);
       const totalAmount = round2(
@@ -638,7 +798,59 @@ export async function executeSalesResetInTransaction(
         });
       }
 
-      // 7. Audit log entry
+      // 7. Optional Shift and Handover reset, or live Handover realignment
+      if (args.includeShiftsAndHandovers) {
+        const cafeId = args.cafeId;
+        try {
+          if ("shift" in tx && tx.shift) shiftsResetCount = await tx.shift.count({ where: { cafeId } });
+          if ("handoverSession" in tx && tx.handoverSession) handoversResetCount = await tx.handoverSession.count({ where: { cafeId } });
+          if ("varianceCase" in tx && tx.varianceCase) varianceCasesResetCount = await tx.varianceCase.count({ where: { cafeId } });
+        } catch {}
+
+        if (typeof tx.$executeRawUnsafe === "function") {
+          await tx.$executeRawUnsafe(`UPDATE "Order" SET "servedShiftId" = NULL, "servedStockCustodyPeriodId" = NULL WHERE "cafeId" = $1;`, cafeId);
+          await tx.$executeRawUnsafe(`UPDATE "HandoverSession" SET "outgoingShiftId" = NULL, "incomingShiftId" = NULL, "outgoingCashCustodyId" = NULL, "outgoingStockCustodyId" = NULL, "incomingCashCustodyId" = NULL, "incomingStockCustodyId" = NULL, "stockCountSessionId" = NULL, "acceptedStockCountSessionId" = NULL WHERE "cafeId" = $1;`, cafeId);
+          await tx.$executeRawUnsafe(`UPDATE "CustodyPeriod" SET "responsibleShiftId" = NULL, "previousPeriodId" = NULL WHERE "cafeId" = $1;`, cafeId);
+          await tx.$executeRawUnsafe(`UPDATE "StockCountSession" SET "lockedByHandoverId" = NULL, "handoverId" = NULL, "shiftId" = NULL, "custodyPeriodId" = NULL, "openingBranchCustodyPeriodId" = NULL WHERE "cafeId" = $1;`, cafeId);
+          await tx.$executeRawUnsafe(`UPDATE "InventoryTransaction" SET "shiftId" = NULL, "custodyPeriodId" = NULL, "orderId" = NULL WHERE "cafeId" = $1;`, cafeId);
+          await tx.$executeRawUnsafe(`UPDATE "VarianceCase" SET "acceptedHandoverId" = NULL, "shiftId" = NULL, "custodyPeriodId" = NULL WHERE "cafeId" = $1;`, cafeId);
+          await tx.$executeRawUnsafe(`UPDATE "Shift" SET "cashVarianceCaseId" = NULL WHERE "cafeId" = $1;`, cafeId);
+
+          await tx.$executeRawUnsafe(`DELETE FROM "ShiftCashDisposition" WHERE "shiftId" IN (SELECT id FROM "Shift" WHERE "cafeId" = $1);`, cafeId);
+          await tx.$executeRawUnsafe(`DELETE FROM "CashDeliveryDeclaration" WHERE "shiftId" IN (SELECT id FROM "Shift" WHERE "cafeId" = $1);`, cafeId);
+          await tx.$executeRawUnsafe(`DELETE FROM "CashStorage" WHERE "outgoingShiftId" IN (SELECT id FROM "Shift" WHERE "cafeId" = $1);`, cafeId);
+          await tx.$executeRawUnsafe(`DELETE FROM "OpeningCashReceipt" WHERE "incomingShiftId" IN (SELECT id FROM "Shift" WHERE "cafeId" = $1);`, cafeId);
+          await tx.$executeRawUnsafe(`DELETE FROM "ShiftPlaceReceipt" WHERE "incomingShiftId" IN (SELECT id FROM "Shift" WHERE "cafeId" = $1);`, cafeId);
+          await tx.$executeRawUnsafe(`DELETE FROM "ShiftCustody" WHERE "shiftId" IN (SELECT id FROM "Shift" WHERE "cafeId" = $1);`, cafeId);
+          await tx.$executeRawUnsafe(`DELETE FROM "CustodyParticipant" WHERE "custodyPeriodId" IN (SELECT id FROM "CustodyPeriod" WHERE "cafeId" = $1);`, cafeId);
+          await tx.$executeRawUnsafe(`DELETE FROM "StockVarianceSpanCustody" WHERE "custodyPeriodId" IN (SELECT id FROM "CustodyPeriod" WHERE "cafeId" = $1);`, cafeId);
+          await tx.$executeRawUnsafe(`DELETE FROM "TenderReconciliation" WHERE "shiftId" IN (SELECT id FROM "Shift" WHERE "cafeId" = $1);`, cafeId);
+          await tx.$executeRawUnsafe(`DELETE FROM "ShiftMaterialsDecision" WHERE "branchId" IN (SELECT id FROM "Branch" WHERE "cafeId" = $1);`, cafeId);
+          await tx.$executeRawUnsafe(`DELETE FROM "VarianceCase" WHERE "cafeId" = $1;`, cafeId);
+          await tx.$executeRawUnsafe(`DELETE FROM "OpeningException" WHERE "cafeId" = $1;`, cafeId);
+          await tx.$executeRawUnsafe(`DELETE FROM "InventoryFreeze" WHERE "branchId" IN (SELECT id FROM "Branch" WHERE "cafeId" = $1);`, cafeId);
+          await tx.$executeRawUnsafe(`DELETE FROM "HandoverRequiredItem" WHERE "handoverId" IN (SELECT id FROM "HandoverSession" WHERE "cafeId" = $1);`, cafeId);
+          await tx.$executeRawUnsafe(`DELETE FROM "HandoverStockAcknowledgement" WHERE "handoverId" IN (SELECT id FROM "HandoverSession" WHERE "cafeId" = $1);`, cafeId);
+          await tx.$executeRawUnsafe(`DELETE FROM "HandoverStockBoundary" WHERE "handoverId" IN (SELECT id FROM "HandoverSession" WHERE "cafeId" = $1);`, cafeId);
+          await tx.$executeRawUnsafe(`DELETE FROM "HandoverIssue" WHERE "handoverId" IN (SELECT id FROM "HandoverSession" WHERE "cafeId" = $1);`, cafeId);
+          await tx.$executeRawUnsafe(`DELETE FROM "StockCountCorrection" WHERE "lineId" IN (SELECT id FROM "StockCountLine" WHERE "sessionId" IN (SELECT id FROM "StockCountSession" WHERE "cafeId" = $1));`, cafeId);
+          await tx.$executeRawUnsafe(`DELETE FROM "StockCountLine" WHERE "sessionId" IN (SELECT id FROM "StockCountSession" WHERE "cafeId" = $1);`, cafeId);
+          await tx.$executeRawUnsafe(`DELETE FROM "StockCountSession" WHERE "cafeId" = $1;`, cafeId);
+
+          await tx.$executeRawUnsafe(`DELETE FROM "HandoverSession" WHERE "cafeId" = $1;`, cafeId);
+          await tx.$executeRawUnsafe(`DELETE FROM "CustodyPeriod" WHERE "cafeId" = $1;`, cafeId);
+          await tx.$executeRawUnsafe(`DELETE FROM "Shift" WHERE "cafeId" = $1;`, cafeId);
+
+          await tx.$executeRawUnsafe(`DELETE FROM "TableSession" WHERE "branchId" IN (SELECT id FROM "Branch" WHERE "cafeId" = $1);`, cafeId);
+          await tx.$executeRawUnsafe(`UPDATE "CafeTable" SET "status" = 'AVAILABLE', "currentSessionId" = NULL WHERE "branchId" IN (SELECT id FROM "Branch" WHERE "cafeId" = $1);`, cafeId);
+        }
+      } else {
+        try {
+          realignedHandoverSessionsCount = await realignOpenHandoverSessions(tx, args.cafeId, args.branchId);
+        } catch {}
+      }
+
+      // 8. Audit log entry
       await auditInTransaction(tx, {
         cafeId: args.cafeId,
         userId: args.actorId,
@@ -648,6 +860,7 @@ export async function executeSalesResetInTransaction(
         details: {
           branchId: args.branchId ?? "ALL",
           resetAll: args.resetAll ?? false,
+          includeShiftsAndHandovers: args.includeShiftsAndHandovers ?? false,
           from: args.from ?? null,
           to: args.to ?? null,
           deletedOrderCount: orders.length,
@@ -656,7 +869,11 @@ export async function executeSalesResetInTransaction(
           restoredItemsCount: itemsToRestore.length,
           restoredItems: itemsToRestore,
           affectedShiftCount: affectedShiftIds.length,
-          reason: args.reason ?? "تصفير مبيعات تجريبية قبل الافتتاح",
+          shiftsResetCount,
+          handoversResetCount,
+          varianceCasesResetCount,
+          realignedHandoverSessionsCount,
+          reason: args.reason ?? "تصفير مبيعات وتشغيل تجريبي قبل الافتتاح",
         },
       });
 
@@ -668,6 +885,10 @@ export async function executeSalesResetInTransaction(
         restoredItemsCount: itemsToRestore.length,
         itemsRestored: itemsToRestore,
         affectedShiftCount: affectedShiftIds.length,
+        shiftsResetCount,
+        handoversResetCount,
+        varianceCasesResetCount,
+        realignedHandoverSessionsCount,
       };
 }
 

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
+import { RotateCw } from "lucide-react";
 import { api } from "@/lib/client";
 import { useApp } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
@@ -213,6 +214,26 @@ export function StockCountDetail({
     }
   }
 
+  async function resyncExpectedStock() {
+    if (!detail) return;
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setBusy(true);
+    try {
+      const res = await api<{ success: boolean; updatedLinesCount: number; message: string }>(
+        `/api/stock-counts/${detail.id}/re-sync`,
+        { method: "POST" }
+      );
+      toast.success(res.message || `تمت مزامنة رصيد المتوقع مع المخزن لـ ${res.updatedLinesCount} صنف`);
+      await after();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "تعذّر مزامنة الرصيد المتوقع مع المخزن");
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+    }
+  }
+
   function startAction(kind: PendingAction["kind"], line: CountLine) {
     setQuantity("");
     setReasonCodeId("");
@@ -328,6 +349,20 @@ export function StockCountDetail({
                   </Badge>
                 )}
                 <div className="ms-auto flex flex-wrap gap-2">
+                  {detail.status !== "CONFIRMED" && detail.status !== "CANCELLED" && (canKey("stock_count.confirm") || canKey("stock_count.submit")) && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => void resyncExpectedStock()}
+                      title="تحديث الكميات المتوقعة والفروقات طبقاً للرصيد الفعلي الحالي في المخزن"
+                      className="border-dashed"
+                      data-testid="count-resync-expected"
+                    >
+                      <RotateCw className="me-1 h-3.5 w-3.5" />
+                      مزامنة المتوقع مع المخزن
+                    </Button>
+                  )}
                   {OPEN_FOR_CAPTURE.includes(detail.status) && canKey("stock_count.submit") && (
                     <Button
                       size="sm"
