@@ -123,14 +123,43 @@ async function recordedEvidenceIsCurrent(tx: Prisma.TransactionClient, sessionId
 }
 
 
-/** Receiving consent belongs to one immutable round; use requestRecount to replace it. */
-export async function assertHandoverCorrectionRoundOpen(tx: Prisma.TransactionClient, sessionId: string) {
-  const session=await tx.stockCountSession.findUnique({where:{id:sessionId},select:{handoverId:true}});
-  if(!session?.handoverId) return;
-  const handover=await tx.handoverSession.findUnique({where:{id:session.handoverId},select:{status:true,stockCountSessionId:true}});
-  if(handover?.stockCountSessionId !== sessionId) return;
-  const acknowledged=await tx.handoverStockAcknowledgement.count({where:{handoverId:session.handoverId,line:{sessionId}}});
-  if(acknowledged || ["COMPLETED","ACCEPTED","MANAGER_EXCEPTION"].includes(handover.status)) {
-    throw new ApiError(409,"تم توقيع هذا الجرد — اطلب إعادة الجرد في جولة جديدة قبل التصحيح");
+/** 
+ * Handover count correction round guard:
+ * Allows flexible line-level corrections while a handover is active (OUTGOING_SUBMITTED, INCOMING_REVIEW, DRAFT).
+ * Blocks corrections only once a handover has been permanently closed/completed (COMPLETED, ACCEPTED).
+ * When a correction is requested or approved for a specific line, any stale acknowledgement on that line
+ * is removed so that the line awaits re-review with the corrected quantity.
+ */
+export async function assertHandoverCorrectionRoundOpen(
+  tx: Prisma.TransactionClient,
+  sessionId: string,
+  lineId?: string
+) {
+  const session = await tx.stockCountSession.findUnique({
+    where: { id: sessionId },
+    select: { handoverId: true },
+  });
+  if (!session?.handoverId) return;
+
+  const handover = await tx.handoverSession.findUnique({
+    where: { id: session.handoverId },
+    select: { id: true, status: true, stockCountSessionId: true },
+  });
+  if (handover?.stockCountSessionId !== sessionId) return;
+
+  // Once the handover is finalized and closed, no live session edits are allowed.
+  if (["COMPLETED", "ACCEPTED", "MANAGER_EXCEPTION"].includes(handover.status)) {
+    throw new ApiError(409, "تم اكتمال هذا التسليم بالفعل — لا يمكن تعديل الجرد بعد إغلاق التسليم");
+  }
+
+  // If the handover is still active, clear stale acknowledgement for this line so it can be re-signed with the approved quantity.
+  if (lineId) {
+    await tx.handoverStockAcknowledgement.deleteMany({
+      where: {
+        handoverId: handover.id,
+        stockCountLineId: lineId,
+      },
+    });
   }
 }
+

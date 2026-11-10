@@ -23,10 +23,33 @@ export type CountLine = {
   reasonCodeId?: string | null;
   costImpact?: string | null;
   costImpactAvailable?: boolean;
+  corrections?: Array<{
+    id: string;
+    status: string;
+    oldCountedQuantity: number | string;
+    newCountedQuantity: number | string;
+    note?: string | null;
+    createdAt: string;
+    actor?: { id: string; name: string };
+    reasonCode?: { id: string; code: string; label: string };
+  }>;
 };
 export type LineAction = "capture" | "recount" | "accept-variance" | "correction" | "reason";
 
-export function CountLineRow({ line, sessionStatus, blind, handover = false, can, busy, entry, onDraft, onSave, onAct }: {
+export function CountLineRow({
+  line,
+  sessionStatus,
+  blind,
+  handover = false,
+  can,
+  busy,
+  entry,
+  onDraft,
+  onSave,
+  onAct,
+  onApproveCorrection,
+  onRejectCorrection,
+}: {
   line: CountLine;
   sessionStatus: CountStatus;
   blind: boolean;
@@ -37,11 +60,15 @@ export function CountLineRow({ line, sessionStatus, blind, handover = false, can
   onDraft: (lineId: string, value: string) => void;
   onSave: (lineId: string) => void;
   onAct: (action: Exclude<LineAction, "capture">, line: CountLine) => void;
+  onApproveCorrection?: (correctionId: string) => void;
+  onRejectCorrection?: (correctionId: string) => void;
 }) {
   const captureOpen = OPEN_FOR_CAPTURE.includes(sessionStatus);
   const disputed = DISPUTED_DISPOSITIONS.includes(line.disposition);
   const terminal = TERMINAL_DISPOSITIONS.includes(line.disposition);
   const compact = handover && ["DRAFT", "IN_PROGRESS"].includes(sessionStatus);
+  const pendingCorrection = line.corrections?.find((c) => c.status === "PENDING_APPROVAL");
+
   // Row colour: sage = counted above zero, caramel = an explicit zero, tide = still waiting.
   const draftValue = entry.value.trim();
   const tone: Tone = compact
@@ -86,7 +113,16 @@ export function CountLineRow({ line, sessionStatus, blind, handover = false, can
   return <TableRow data-testid="count-line-row">
     <TableCell className={`min-w-36 whitespace-normal font-medium [overflow-wrap:anywhere] ${nameCell}`}>{line.inventoryItem.name}</TableCell>
     <TableCell className="text-muted-foreground">{UNIT_LABEL[line.unit as keyof typeof UNIT_LABEL] ?? line.unit}</TableCell>
-    <TableCell className="tabular-nums">{line.countedQuantity ?? "—"}</TableCell>
+    <TableCell className="tabular-nums">
+      {line.countedQuantity ?? "—"}
+      {pendingCorrection && (
+        <div className="mt-1">
+          <span className="inline-block rounded-md border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-xs font-semibold text-amber-900 dark:text-amber-200">
+            قيد الاعتماد: {Number(pendingCorrection.newCountedQuantity)}
+          </span>
+        </div>
+      )}
+    </TableCell>
     <TableCell className="tabular-nums">{blind ? "مخفي" : (line.expectedQuantity ?? "—")}</TableCell>
     <TableCell className="tabular-nums">{blind ? "مخفي" : (line.varianceQuantity ?? "—")}</TableCell>
     <TableCell>{DISPOSITION_LABEL[line.disposition] ?? line.disposition}</TableCell>
@@ -95,10 +131,33 @@ export function CountLineRow({ line, sessionStatus, blind, handover = false, can
         {quantityInput}
         {savingStatus}
       </>}
+      {pendingCorrection && can("stock_count.approve_correction") && (
+        <div className="flex items-center gap-1">
+          <Button
+            size="sm"
+            className="h-8 bg-emerald-600 px-2.5 text-xs text-white hover:bg-emerald-700"
+            disabled={busy}
+            onClick={() => onApproveCorrection?.(pendingCorrection.id)}
+            data-testid="count-line-approve-correction"
+          >
+            اعتماد
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-8 px-2 text-xs text-destructive hover:bg-destructive/10"
+            disabled={busy}
+            onClick={() => onRejectCorrection?.(pendingCorrection.id)}
+            data-testid="count-line-reject-correction"
+          >
+            رفض
+          </Button>
+        </div>
+      )}
       {disputed && can("stock_count.recount") && <Button size="sm" variant="outline" disabled={busy} onClick={() => onAct("recount", line)} data-testid="count-line-recount">إعادة عد</Button>}
       {disputed && can("stock_count.confirm") && <Button size="sm" variant="outline" disabled={busy} onClick={() => onAct("accept-variance", line)} data-testid="count-line-accept-variance">اعتماد الفرق</Button>}
       {handover && ["SUBMITTED", "RECOUNT_REQUIRED", "CONFIRMED"].includes(sessionStatus) && !blind && !line.reasonCodeId && line.varianceQuantity != null && Number(line.varianceQuantity) !== 0 && can("stock_count.confirm") && <Button size="sm" variant="outline" disabled={busy} onClick={() => onAct("reason", line)}>تسجيل سبب الفرق</Button>}
-      {line.countedQuantity !== null && can("stock_count.correct") && <Button size="sm" variant="ghost" disabled={busy} onClick={() => onAct("correction", line)} data-testid="count-line-correction">تصحيح</Button>}
+      {!pendingCorrection && line.countedQuantity !== null && can("stock_count.correct") && <Button size="sm" variant="ghost" disabled={busy} onClick={() => onAct("correction", line)} data-testid="count-line-correction">تصحيح</Button>}
     </div></TableCell>
   </TableRow>;
 }

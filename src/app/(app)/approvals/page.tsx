@@ -18,6 +18,7 @@ import {
 import { QrApprovalSettingsDialog } from "@/components/qr-approval-settings-dialog";
 import { QrOrderEditDialog } from "@/components/approvals/qr-order-edit-dialog";
 import { OwnerActionQueue } from "@/components/approvals/owner-action-queue";
+import { StockCorrectionsQueue } from "@/components/approvals/stock-corrections-queue";
 import { collectOrderPages, type OrderPage } from "@/lib/order-pages-client";
 
 type OrderItem = {
@@ -121,6 +122,7 @@ export default function ApprovalsPage() {
   return (
     <div className="space-y-4">
       <OwnerActionQueue />
+      <StockCorrectionsQueue />
       {loadError && <p role="alert" className="rounded-lg border border-destructive p-3 text-sm text-destructive">تعذر تحديث القائمة؛ آخر بيانات مكتملة معروضة. {loadError}</p>}
       <div className="flex flex-wrap items-center gap-3">
         <div>

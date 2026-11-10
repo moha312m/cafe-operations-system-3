@@ -21,11 +21,14 @@ export async function POST(request: NextRequest, { params }: Params) {
     const { id } = await params;
     const cafeId = resolveCafeId(session, request.nextUrl.searchParams.get("cafeId"));
 
+    const isOwner = session.role === "CAFE_OWNER" || session.role === "SUPER_ADMIN";
+
     const result = await approveCountCorrection({
       correctionId: id,
       approvedById: session.id,
       cafeId,
       viewerBranchId: session.branchId,
+      isOwner,
     });
     return NextResponse.json(result);
   } catch (error) {

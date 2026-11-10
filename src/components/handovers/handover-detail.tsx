@@ -37,6 +37,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { HandoverActionBar } from "./handover-action-bar";
+import { StockCorrectionsQueue } from "@/components/approvals/stock-corrections-queue";
 import { HANDOVER_STATUS_LABEL, TARGET_LABEL, type HandoverStatus } from "./handover-labels";
 
 /**
@@ -444,6 +445,7 @@ export function HandoverDetail({
                     {view.count === null && <p className="rounded-lg border border-dashed p-4 text-center text-muted-foreground">مفيش جرد مربوط بالتسليم ده لسه</p>}
                     {canSignForBranch && view.count && <BranchSigningPanel key={view.count.sessionId} handoverId={view.handoverId} lines={lines} acknowledgements={acks} signedAt={latestSignature ? fmtDateTime(latestSignature, tz) : null} actorName={user.name} onChanged={after} />}
                     {canReceiveLines && view.count && <ReceivingSheet key={view.count.sessionId} handoverId={view.handoverId} countSessionId={view.count.sessionId} countVersion={view.count.countVersion} lines={view.count.lines} acknowledgements={view.workflow.acknowledgements} onSaved={after} />}
+                    <StockCorrectionsQueue branchId={view.branchId} handoverId={view.handoverId} onUpdated={after} />
                     {receiptVisible && view.count && !canReceiveLines && (
                       <div className="space-y-2">
                         <div className="flex flex-wrap items-end gap-2">

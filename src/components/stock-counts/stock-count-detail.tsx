@@ -265,6 +265,32 @@ export function StockCountDetail({
     }
   }
 
+  async function approveCorrection(correctionId: string) {
+    setBusy(true);
+    try {
+      await api(`/api/corrections/${correctionId}/approve`, { method: "POST" });
+      toast.success("تم اعتماد تصحيح الكمية بنجاح وتحديث الفارق");
+      await after();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "فشل اعتماد التصحيح");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function rejectCorrection(correctionId: string) {
+    setBusy(true);
+    try {
+      await api(`/api/corrections/${correctionId}/reject`, { method: "POST" });
+      toast.success("تم رفض طلب التصحيح");
+      await after();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "فشل رفض التصحيح");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const needsQuantity = pending?.kind === "recount" || pending?.kind === "correction";
   const needsReason = pending?.kind !== "recount";
   const isHandover = detail?.accountabilityContext === "HANDOVER";
@@ -394,6 +420,8 @@ export function StockCountDetail({
                         onDraft={editQuantity}
                         onSave={saveQuantity}
                         onAct={startAction}
+                        onApproveCorrection={approveCorrection}
+                        onRejectCorrection={rejectCorrection}
                       />
                     ))}
                   </TableBody>

@@ -431,6 +431,20 @@ const COUNT_SESSION_DETAIL = {
       reasonCodeId: true,
       reasonNote: true,
       inventoryItem: { select: { id: true, name: true, category: true, unit: true, isCritical: true } },
+      corrections: {
+        select: {
+          id: true,
+          status: true,
+          oldCountedQuantity: true,
+          newCountedQuantity: true,
+          note: true,
+          createdAt: true,
+          actor: { select: { id: true, name: true } },
+          reasonCode: { select: { id: true, code: true, label: true } },
+        },
+        orderBy: { createdAt: "desc" },
+        take: 1,
+      },
     },
     orderBy: { inventoryItem: { name: "asc" } },
   },
@@ -1413,12 +1427,13 @@ async function assertStockReason(reasonCodeId: string, cafeId: string) {
   if (!reasonCodeId) throw new ApiError(400, "لازم تحدد سبب التصحيح");
   const reason = await db.reasonCode.findUnique({
     where: { id: reasonCodeId },
-    select: { cafeId: true, domain: true, isActive: true },
+    select: { id: true, label: true, cafeId: true, domain: true, isActive: true },
   });
   if (!reason || reason.cafeId !== cafeId || reason.domain !== "STOCK") {
     throw new ApiError(400, "سبب التصحيح مش من أسباب المخزون بتاعة الكافيه");
   }
   if (!reason.isActive) throw new ApiError(400, "سبب التصحيح ده متوقف");
+  return reason;
 }
 
 /**
@@ -1443,7 +1458,7 @@ export async function createCountCorrection(args: {
   const candidate=await db.stockCountLine.findUnique({where:{id:args.lineId},select:{sessionId:true,session:{select:{accountabilityContext:true}}}});
   if(candidate?.session.accountabilityContext === "HANDOVER") return db.$transaction(async(tx)=>{
     await lockHandoverCount(tx,candidate.sessionId);
-    await assertHandoverCorrectionRoundOpen(tx,candidate.sessionId);
+    await assertHandoverCorrectionRoundOpen(tx,candidate.sessionId, args.lineId);
     return createCountCorrectionWithClient(args,tx);
   });
   return createCountCorrectionWithClient(args,db);
@@ -1461,6 +1476,7 @@ async function createCountCorrectionWithClient(args: {
     select: {
       ...EFFECTIVE_EVIDENCE_SELECT,
       sessionId: true,
+      inventoryItem: { select: { id: true, name: true } },
       session: { select: { id: true, cafeId: true, branchId: true, status: true, handoverId:true, confirmedById:true } },
     },
   });
@@ -1490,7 +1506,7 @@ async function createCountCorrectionWithClient(args: {
     );
   }
 
-  await assertStockReason(args.reasonCodeId, line.session.cafeId);
+  const reason = await assertStockReason(args.reasonCodeId, line.session.cafeId);
 
   // What is being superseded is the figure in force, not necessarily the
   // original observation: correcting a correction starts from where the line
@@ -1542,6 +1558,20 @@ async function createCountCorrectionWithClient(args: {
   };
   if(client === db) await audit(entry); else await auditInTransaction(client as Prisma.TransactionClient,entry);
 
+  const { notifyOwnerOfCorrection } = await import("@/lib/correction-notifications");
+  await notifyOwnerOfCorrection({
+    cafeId: line.session.cafeId,
+    branchId: line.session.branchId,
+    correctionId: correction.id,
+    lineId: line.id,
+    actorId: args.actorId,
+    itemName: line.inventoryItem?.name ?? "صنف مخزون",
+    oldCount: oldCountedQuantity,
+    newCount: newCountedQuantity,
+    reasonLabel: reason?.label ?? "تصحيح عد",
+    note: args.note,
+  }, client === db ? undefined : (client as Prisma.TransactionClient));
+
   return { correctionId: correction.id, status: "PENDING_APPROVAL" };
 }
 
@@ -1559,16 +1589,31 @@ export async function approveCountCorrection(args: {
   approvedById: string;
   cafeId?: string;
   viewerBranchId?: string | null;
+  isOwner?: boolean;
 }): Promise<{ correctionId: string; effectiveCountedQuantity: number; varianceQuantity: number }> {
-  const candidate=await db.stockCountCorrection.findUnique({where:{id:args.correctionId},select:{line:{select:{sessionId:true,session:{select:{accountabilityContext:true}}}}}});
-  if(candidate?.line.session.accountabilityContext === "HANDOVER") return db.$transaction(async(tx)=>{
-    await lockHandoverCount(tx,candidate.line.sessionId);
-    await assertHandoverCorrectionRoundOpen(tx,candidate.line.sessionId);
-    return approveCountCorrectionWithClient(args,tx);
+  const candidate = await db.stockCountCorrection.findUnique({
+    where: { id: args.correctionId },
+    select: { line: { select: { id: true, sessionId: true, session: { select: { accountabilityContext: true } } } } },
   });
-  return approveCountCorrectionWithClient(args,db);
+  if (candidate?.line.session.accountabilityContext === "HANDOVER") {
+    return db.$transaction(async (tx) => {
+      await lockHandoverCount(tx, candidate.line.sessionId);
+      await assertHandoverCorrectionRoundOpen(tx, candidate.line.sessionId, candidate.line.id);
+      return approveCountCorrectionWithClient(args, tx);
+    });
+  }
+  return approveCountCorrectionWithClient(args, db);
 }
-async function approveCountCorrectionWithClient(args:{correctionId:string;approvedById:string;cafeId?:string;viewerBranchId?:string|null},client:Prisma.TransactionClient|typeof db):Promise<{correctionId:string;effectiveCountedQuantity:number;varianceQuantity:number}> {
+async function approveCountCorrectionWithClient(
+  args: {
+    correctionId: string;
+    approvedById: string;
+    cafeId?: string;
+    viewerBranchId?: string | null;
+    isOwner?: boolean;
+  },
+  client: Prisma.TransactionClient | typeof db
+): Promise<{ correctionId: string; effectiveCountedQuantity: number; varianceQuantity: number }> {
   const correction = await client.stockCountCorrection.findUnique({
     where: { id: args.correctionId },
     select: {
@@ -1598,8 +1643,8 @@ async function approveCountCorrectionWithClient(args:{correctionId:string;approv
   if (correction.status !== "PENDING_APPROVAL") {
     throw new ApiError(409, "التصحيح ده اتبتّ فيه خلاص");
   }
-  // Holding the key is not the same as being a second person.
-  if (correction.actorId === args.approvedById) {
+  // Holding the key is not the same as being a second person, unless the actor is the owner or super admin.
+  if (correction.actorId === args.approvedById && !args.isOwner) {
     throw new ApiError(403, "مينفعش تعتمد تصحيح انت اللي طلبته — لازم توقيع تاني");
   }
 
@@ -1645,6 +1690,61 @@ async function approveCountCorrectionWithClient(args:{correctionId:string;approv
 
   return { correctionId: correction.id, effectiveCountedQuantity: effective, varianceQuantity: variance };
 }
+
+export async function rejectCountCorrection(args: {
+  correctionId: string;
+  rejectedById: string;
+  rejectedReason?: string;
+  cafeId?: string;
+  viewerBranchId?: string | null;
+}): Promise<{ correctionId: string; status: "REJECTED" }> {
+  return db.$transaction(async (tx) => {
+    const correction = await tx.stockCountCorrection.findUnique({
+      where: { id: args.correctionId },
+      include: {
+        line: {
+          select: {
+            id: true,
+            sessionId: true,
+            session: { select: { cafeId: true, branchId: true } },
+          },
+        },
+      },
+    });
+    if (!correction || (args.cafeId && correction.line.session.cafeId !== args.cafeId)) {
+      throw new ApiError(404, "التصحيح غير موجود");
+    }
+    if (args.viewerBranchId && correction.line.session.branchId !== args.viewerBranchId) {
+      throw new ApiError(403, "ليس لديك صلاحية على فرع تاني");
+    }
+    if (correction.status !== "PENDING_APPROVAL") {
+      throw new ApiError(409, "التصحيح ده اتبتّ فيه خلاص");
+    }
+
+    await tx.stockCountCorrection.update({
+      where: { id: args.correctionId },
+      data: {
+        status: "REJECTED",
+        rejectedReason: args.rejectedReason ?? "تم رفض التصحيح من قبل الإدارة",
+      },
+    });
+
+    await auditInTransaction(tx, {
+      cafeId: correction.line.session.cafeId,
+      userId: args.rejectedById,
+      action: "CORRECTION_REJECTED",
+      entity: "StockCountCorrection",
+      entityId: correction.id,
+      details: {
+        lineId: correction.line.id,
+        rejectedReason: args.rejectedReason,
+      },
+    });
+
+    return { correctionId: args.correctionId, status: "REJECTED" };
+  });
+}
+
 
 // ─────────────────────────── The LOCKED state ────────────────────────
 //
