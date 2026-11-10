@@ -4,6 +4,7 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { requireActiveSession, requireKey, requireFeature, resolveCafeId, handleApiError } from "@/lib/api";
 import { auditInTransaction } from "@/lib/audit";
+import { ensureDefaultReasonCodes } from "@/lib/default-reason-codes";
 const domain = z.enum(["STOCK", "CASH", "TENDER", "HANDOVER"]);
 const createSchema = z.object({ domain, code: z.string().trim().min(1).max(80).optional(), label: z.string().trim().min(1).max(200), cafeId: z.string().optional() }).strict();
 export async function GET(request: NextRequest) {
@@ -12,7 +13,7 @@ export async function GET(request: NextRequest) {
   await requireFeature(session, "inventoryEnabled");
   const cafeId = resolveCafeId(session, request.nextUrl.searchParams.get("cafeId"));
   const selectedDomain = domain.parse(request.nextUrl.searchParams.get("domain"));
-  const reasons = await db.reasonCode.findMany({ where: { cafeId, domain: selectedDomain, isActive: true }, select: { id: true, code: true, label: true, domain: true }, orderBy: { label: "asc" } });
+  const reasons = await ensureDefaultReasonCodes(db, cafeId, selectedDomain);
   return NextResponse.json({ reasons });
  } catch (error) { return handleApiError(error); }
 }
