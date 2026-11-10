@@ -176,11 +176,74 @@ export async function activeFreezeFor(
   if (lockProtectionHeld(branch) && branch.freezeKnown) return branch.freeze;
   const freeze = await tx.inventoryFreeze.findFirst({
     where: { branchId, releasedAt: null },
-    select: { id: true, handoverId: true },
+    select: { id: true, handoverId: true, cafeId: true },
   });
-  const result = freeze ? { freezeId: freeze.id, handoverId: freeze.handoverId } : null;
+  if (!freeze) {
+    if (lockProtectionHeld(branch)) rememberFreeze(tx, branchId, null);
+    return null;
+  }
+
+  // Self-healing check: Is the linked handover already resolved, completed, or missing?
+  const handover = await tx.handoverSession.findUnique({
+    where: { id: freeze.handoverId },
+    select: { status: true },
+  });
+
+  if (!handover || handover.status === "COMPLETED" || handover.status === "ACCEPTED") {
+    // Auto-release the dangling freeze immediately so the branch is never locked permanently!
+    const releasedAt = new Date();
+    await tx.inventoryFreeze.update({
+      where: { id: freeze.id },
+      data: { releasedAt, releasedById: null },
+    });
+    invalidateFreeze(tx, branchId);
+    if (lockProtectionHeld(branch)) rememberFreeze(tx, branchId, null);
+    return null;
+  }
+
+  const result = { freezeId: freeze.id, handoverId: freeze.handoverId };
   if (lockProtectionHeld(branch)) rememberFreeze(tx, branchId, result);
   return result;
+}
+
+export async function forceReleaseBranchFreezes(
+  tx: Prisma.TransactionClient,
+  branchId: string,
+  actorId?: string | null
+): Promise<number> {
+  await acquireInventoryExclusiveLock(tx, branchId);
+  const unreleased = await tx.inventoryFreeze.findMany({
+    where: { branchId, releasedAt: null },
+    select: { id: true, handoverId: true, cafeId: true },
+  });
+
+  if (unreleased.length === 0) return 0;
+
+  const releasedAt = new Date();
+  await tx.inventoryFreeze.updateMany({
+    where: { branchId, releasedAt: null },
+    data: { releasedAt, releasedById: actorId ?? null },
+  });
+
+  invalidateFreeze(tx, branchId);
+
+  for (const f of unreleased) {
+    await auditInTransaction(tx, {
+      cafeId: f.cafeId,
+      userId: actorId ?? null,
+      action: "INVENTORY_FREEZE_RELEASED",
+      entity: "InventoryFreeze",
+      entityId: f.id,
+      details: {
+        branchId,
+        handoverId: f.handoverId,
+        releasedAt: releasedAt.toISOString(),
+        forcedClean: true,
+      },
+    });
+  }
+
+  return unreleased.length;
 }
 
 type AcquireArgs = {
@@ -235,7 +298,9 @@ export async function acquireInventoryFreeze(
   }
 
   const active = await activeFreezeFor(tx, args.branchId);
-  if (active) throw new ApiError(409, "This branch already has an active inventory freeze");
+  if (active) {
+    throw new ApiError(409, `المخزون مجمد حالياً لوجود جلسة تسليم مفتوحة في الفرع (رقم: ${active.handoverId}). يمكنك إتمام التسليم أو إلغاؤه.`);
+  }
 
   const startedAt = new Date();
   try {
@@ -263,7 +328,7 @@ export async function acquireInventoryFreeze(
     // violation, so do not attempt a second query here. Normal idempotency and
     // branch conflicts are decided above while holding EXCLUSIVE; this is only
     // the defensive database-constraint fallback.
-    throw new ApiError(409, "This branch already has an active inventory freeze");
+    throw new ApiError(409, "المخزون مجمد حالياً لوجود جلسة تسليم مفتوحة في الفرع — يرجى إنهاء أو إلغاء الجلسة السابقة أولاً");
   }
 }
 

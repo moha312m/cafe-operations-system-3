@@ -55,7 +55,19 @@ export async function POST(request: NextRequest, { params }: Params) {
         data: { lockedByHandoverId: null },
       });
 
-      // 2. Mark handover as COMPLETED with target BRANCH_CUSTODY and exception reason
+      // 2. Release any inventory freeze for this handover or dangling on this branch
+      await tx.inventoryFreeze.updateMany({
+        where: {
+          branchId: handover.branchId,
+          releasedAt: null,
+        },
+        data: {
+          releasedAt: new Date(),
+          releasedById: session.id,
+        },
+      });
+
+      // 3. Mark handover as COMPLETED with target BRANCH_CUSTODY and exception reason
       await tx.handoverSession.update({
         where: { id: handover.id },
         data: {

@@ -280,6 +280,21 @@ function MoneyStep({ flow, currency, onCommitted }: {
     }
   }
 
+  async function handleReleaseFreeze() {
+    setQuickFixing(true);
+    try {
+      const res = await api<{ success: boolean; message: string }>(`/api/branches/${flow.branch.id}/inventory-freeze/release`, {
+        method: "POST",
+      });
+      toast.success(res.message || "تم فك تجميد المخزون بنجاح — يمكنك إغلاق الشيفت الآن");
+      setFailure(null);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "فشل فك تجميد المخزون");
+    } finally {
+      setQuickFixing(false);
+    }
+  }
+
   return <section className="space-y-4 rounded-2xl border bg-card p-4 sm:p-5" aria-labelledby="money-heading" data-testid="close-money-step">
     <div className="space-y-1">
       <h1 id="money-heading" className="text-xl font-bold">تسليم الفلوس</h1>
@@ -360,6 +375,42 @@ function MoneyStep({ flow, currency, onCommitted }: {
         <AlertTriangle className="h-4 w-4 shrink-0" />
         <p>{failure.message}</p>
       </div>
+      {(failure.message.toLowerCase().includes("inventory freeze") || failure.message.includes("تجميد") || failure.message.includes("المخزون مجمد")) && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-lg border border-amber-500/40 bg-amber-500/15 p-3 text-amber-950 dark:text-amber-100">
+          <div className="space-y-1">
+            <p className="font-bold text-xs sm:text-sm">
+              ⚠️ تنبيه: يوجد تجميد مخزون معلق في هذا الفرع
+            </p>
+            <p className="text-xs text-amber-900/80 dark:text-amber-200/80">
+              يحدث هذا بسبب جلسة تسليم سابقة لم تُفك أقفالها. اضغط الزر التالي لفك التجميد وتحرير الشيفت فوراً.
+            </p>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            disabled={quickFixing}
+            onClick={() => void handleReleaseFreeze()}
+            className="bg-amber-600 hover:bg-amber-700 text-white font-medium text-xs h-9 shrink-0 shadow-sm"
+          >
+            {quickFixing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "فك تجميد المخزون فوراً ⚡"}
+          </Button>
+        </div>
+      )}
+      {(user.role === "CAFE_OWNER" || user.role === "SUPER_ADMIN") && (
+        <div className="pt-2 border-t border-destructive/20 flex flex-wrap items-center justify-between gap-2">
+          <span className="text-xs text-muted-foreground">صلاحية الإدارة: فك جميع التجميدات والمسودات المعلقة دفعة واحدة.</span>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={quickFixing}
+            onClick={() => void handleReleaseFreeze()}
+            className="text-xs h-8 border-primary text-primary hover:bg-primary/10 font-semibold"
+          >
+            {quickFixing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "فك العوائق كمالك ⚡"}
+          </Button>
+        </div>
+      )}
       {failure.blockers.length > 0 && (
         <div className="space-y-2">
           {failure.blockers.map((b, idx) => {
