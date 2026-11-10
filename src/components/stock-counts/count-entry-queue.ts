@@ -5,7 +5,7 @@ export type CountEntry = {
   error?: string;
   conflict?: boolean;
 };
-type SavedLine = { countedQuantity: string | null; countedAt: string | null };
+type SavedLine = { countedQuantity: string | null; effectiveCountedQuantity?: string | null; countedAt: string | null };
 type Attempt = { value: string; expectedCountedAt: string | null };
 type Entry = CountEntry & { savedValue: string; countedAt: string | null; requested: boolean; failedAttempt?: Attempt };
 export function validCountQuantity(value: string): boolean {
@@ -27,7 +27,7 @@ export class CountEntryQueue {
       const entry = this.entries.get(line.id);
       if (entry && (this.running.has(line.id) || entry.status === "dirty" || entry.status === "failed")) continue;
       if (entry?.countedAt && (!line.countedAt || Date.parse(line.countedAt) < Date.parse(entry.countedAt))) continue;
-      const value = line.countedQuantity ?? "";
+      const value = (line.effectiveCountedQuantity ?? line.countedQuantity) ?? "";
       this.entries.set(line.id, { value, savedValue: value, countedAt: line.countedAt, requested: false, status: value === "" ? "empty" : "saved" });
     }
   }

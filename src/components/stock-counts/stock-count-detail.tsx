@@ -299,7 +299,7 @@ export function StockCountDetail({
   const unsaved = queue.unsaved().length;
   const captureBlocked = unsaved === 0 && !queue.canSubmit(!!isHandover);
   const sortedLines = [...(detail?.lines ?? [])].sort((a, b) => {
-    const priority = (line: CountLine) => line.countedQuantity === null ? 0 : line.varianceQuantity != null && Number(line.varianceQuantity) !== 0 ? 1 : 2;
+    const priority = (line: CountLine) => (line.effectiveCountedQuantity ?? line.countedQuantity) === null ? 0 : line.varianceQuantity != null && Number(line.varianceQuantity) !== 0 ? 1 : 2;
     return compactCapture ? 0 : priority(a) - priority(b);
   });
 
@@ -355,7 +355,7 @@ export function StockCountDetail({
               {compactCapture && <p className="text-xs text-muted-foreground">أدخل الكمية ثم اضغط Enter أو انتقل للخانة التالية للحفظ. الفراغ يعني أن الصنف لم يُعدّ؛ أدخل صفرًا فقط إذا عدَدته وكانت كميته صفرًا.</p>}
               <div className="flex flex-wrap items-center gap-2 rounded-xl border bg-muted p-1" data-testid="count-filter-tabs">
                 <Button type="button" size="sm" variant={filterTab === "all" ? "default" : "outline"} onClick={() => setFilterTab("all")}>الكل ({detail.lines.length})</Button>
-                <Button type="button" size="sm" variant={filterTab === "uncounted" ? "default" : "outline"} onClick={() => setFilterTab("uncounted")}>لم يُجرد بعد ({detail.lines.filter(l => (queue.get(l.id)?.status ?? (l.countedQuantity === null ? "empty" : "saved")) === "empty").length})</Button>
+                <Button type="button" size="sm" variant={filterTab === "uncounted" ? "default" : "outline"} onClick={() => setFilterTab("uncounted")}>لم يُجرد بعد ({detail.lines.filter(l => (queue.get(l.id)?.status ?? ((l.effectiveCountedQuantity ?? l.countedQuantity) === null ? "empty" : "saved")) === "empty").length})</Button>
                 <Button type="button" size="sm" variant={filterTab === "critical" ? "default" : "outline"} onClick={() => setFilterTab("critical")}>الأصناف الحرجة ({detail.lines.filter(l => l.inventoryItem.isCritical).length})</Button>
                 {Array.from(new Set(detail.lines.map(l => l.inventoryItem.category).filter((c): c is string => !!c))).map(cat => (
                   <Button key={cat} type="button" size="sm" variant={filterTab === `cat:${cat}` ? "default" : "outline"} onClick={() => setFilterTab(`cat:${cat}`)}>{cat}</Button>
@@ -402,12 +402,15 @@ export function StockCountDetail({
                   </TableHeader>
                   <TableBody>
                     {sortedLines.filter(line => {
+                      const activeVal = line.effectiveCountedQuantity ?? line.countedQuantity;
                       if (!line.inventoryItem.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())) return false;
-                      if (filterTab === "uncounted") return (queue.get(line.id)?.status ?? (line.countedQuantity === null ? "empty" : "saved")) === "empty";
+                      if (filterTab === "uncounted") return (queue.get(line.id)?.status ?? (activeVal === null ? "empty" : "saved")) === "empty";
                       if (filterTab === "critical") return !!line.inventoryItem.isCritical;
                       if (filterTab.startsWith("cat:")) return line.inventoryItem.category === filterTab.slice(4);
                       return true;
-                    }).map((line) => (
+                    }).map((line) => {
+                      const activeVal = line.effectiveCountedQuantity ?? line.countedQuantity;
+                      return (
                       <CountLineRow
                         key={line.id}
                         line={line}
@@ -416,14 +419,14 @@ export function StockCountDetail({
                         handover={detail.accountabilityContext === "HANDOVER"}
                         can={canKey}
                         busy={busy}
-                        entry={queue.get(line.id) ?? { value: line.countedQuantity ?? "", status: line.countedQuantity === null ? "empty" : "saved" }}
+                        entry={queue.get(line.id) ?? { value: activeVal ?? "", status: activeVal === null ? "empty" : "saved" }}
                         onDraft={editQuantity}
                         onSave={saveQuantity}
                         onAct={startAction}
                         onApproveCorrection={approveCorrection}
                         onRejectCorrection={rejectCorrection}
                       />
-                    ))}
+                    );})}
                   </TableBody>
                 </Table>
               </div>

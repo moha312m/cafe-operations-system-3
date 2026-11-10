@@ -484,7 +484,14 @@ export function HandoverDetail({
                                     return <>
                                       <TableCell className="min-w-32 whitespace-normal tabular-nums max-sm:block">
                                         {line.disposition === "PENDING" ? <span className="text-muted-foreground">غير معدود — خارج التوقيع</span> : <>
-                                          <div>العدّ: {row.outgoingCount}</div>
+                                          <div className="flex items-center gap-1.5">
+                                            <span>العدّ: {row.outgoingCount}</span>
+                                            {line.effectiveCountedQuantity != null && line.countedQuantity != null && Number(line.effectiveCountedQuantity) !== Number(line.countedQuantity) && (
+                                              <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
+                                                مُصحّح
+                                              </span>
+                                            )}
+                                          </div>
                                           <div className="text-xs text-muted-foreground">الفرق عن المتوقع: {row.outgoingDifference}</div>
                                         </>}
                                       </TableCell>

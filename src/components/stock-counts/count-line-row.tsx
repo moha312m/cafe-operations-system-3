@@ -71,9 +71,11 @@ export function CountLineRow({
 
   // Row colour: sage = counted above zero, caramel = an explicit zero, tide = still waiting.
   const draftValue = entry.value.trim();
+  const activeCounted = line.effectiveCountedQuantity ?? line.countedQuantity;
+  const isCorrected = line.effectiveCountedQuantity != null && line.countedQuantity != null && Number(line.effectiveCountedQuantity) !== Number(line.countedQuantity);
   const tone: Tone = compact
     ? (entry.status === "empty" || draftValue === "" ? "tide" : Number(draftValue) === 0 ? "caramel" : "sage")
-    : (line.countedQuantity === null ? "tide" : Number(line.countedQuantity) === 0 ? "caramel" : "sage");
+    : (activeCounted === null ? "tide" : Number(activeCounted) === 0 ? "caramel" : "sage");
   const nameCell = `${TONE_SIDE[tone]} ${TONE_SURFACE[tone]}`;
   const savingLabel = { empty: "لم تُعدّ", dirty: "غير محفوظ", saving: "جارٍ الحفظ…", saved: "محفوظ", failed: "فشل الحفظ" }[entry.status];
   const quantityInput = <Input
@@ -106,7 +108,7 @@ export function CountLineRow({
   if (compact) return <TableRow data-testid="count-line-row" className="max-sm:block max-sm:border-b max-sm:py-2">
     <TableCell className={`min-w-36 max-w-56 whitespace-normal font-medium [overflow-wrap:anywhere] max-sm:block max-sm:max-w-none ${nameCell}`}>{line.inventoryItem.name}</TableCell>
     <TableCell className="text-muted-foreground max-sm:block max-sm:pb-0">{UNIT_LABEL[line.unit as keyof typeof UNIT_LABEL] ?? line.unit}</TableCell>
-    <TableCell className="max-sm:block">{can("stock_count.submit") ? <div className="flex flex-wrap items-center gap-1.5">{quantityInput}<Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => { const cur = Number(entry.value); const next = Number.isFinite(cur) && entry.value.trim() !== "" ? Math.max(0, Math.round((cur - 1) * 1000) / 1000) : 0; onDraft(line.id, String(next)); if (handover) onSave(line.id); }} data-testid="count-line-dec" aria-label={`إنقاص ${line.inventoryItem.name}`}>-1</Button><Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => { const cur = Number(entry.value); const next = Number.isFinite(cur) && entry.value.trim() !== "" ? Math.round((cur + 1) * 1000) / 1000 : 1; onDraft(line.id, String(next)); if (handover) onSave(line.id); }} data-testid="count-line-inc" aria-label={`زيادة ${line.inventoryItem.name}`}>+1</Button><Button type="button" size="sm" variant={entry.value.trim() === "0" ? "default" : "outline"} disabled={busy} onClick={() => { onDraft(line.id, "0"); if (handover) onSave(line.id); }} data-testid="count-line-zero">0 (صفر فعلي)</Button></div> : (line.countedQuantity ?? "—")}</TableCell>
+    <TableCell className="max-sm:block">{can("stock_count.submit") ? <div className="flex flex-wrap items-center gap-1.5">{quantityInput}<Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => { const cur = Number(entry.value); const next = Number.isFinite(cur) && entry.value.trim() !== "" ? Math.max(0, Math.round((cur - 1) * 1000) / 1000) : 0; onDraft(line.id, String(next)); if (handover) onSave(line.id); }} data-testid="count-line-dec" aria-label={`إنقاص ${line.inventoryItem.name}`}>-1</Button><Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => { const cur = Number(entry.value); const next = Number.isFinite(cur) && entry.value.trim() !== "" ? Math.round((cur + 1) * 1000) / 1000 : 1; onDraft(line.id, String(next)); if (handover) onSave(line.id); }} data-testid="count-line-inc" aria-label={`زيادة ${line.inventoryItem.name}`}>+1</Button><Button type="button" size="sm" variant={entry.value.trim() === "0" ? "default" : "outline"} disabled={busy} onClick={() => { onDraft(line.id, "0"); if (handover) onSave(line.id); }} data-testid="count-line-zero">0 (صفر فعلي)</Button></div> : (activeCounted ?? "—")}</TableCell>
     <TableCell className="max-sm:block">{savingStatus}</TableCell>
   </TableRow>;
 
@@ -114,7 +116,14 @@ export function CountLineRow({
     <TableCell className={`min-w-36 whitespace-normal font-medium [overflow-wrap:anywhere] ${nameCell}`}>{line.inventoryItem.name}</TableCell>
     <TableCell className="text-muted-foreground">{UNIT_LABEL[line.unit as keyof typeof UNIT_LABEL] ?? line.unit}</TableCell>
     <TableCell className="tabular-nums">
-      {line.countedQuantity ?? "—"}
+      <div className="flex items-center gap-1.5">
+        <span>{activeCounted ?? "—"}</span>
+        {isCorrected && (
+          <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-700 dark:text-emerald-300">
+            مُصحّح
+          </span>
+        )}
+      </div>
       {pendingCorrection && (
         <div className="mt-1">
           <span className="inline-block rounded-md border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-xs font-semibold text-amber-900 dark:text-amber-200">

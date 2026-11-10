@@ -1,4 +1,4 @@
-﻿// HND-UX-003: a counted quantity is what the receiver accepts, even when it
+// HND-UX-003: a counted quantity is what the receiver accepts, even when it
 // differs from what was handed over. `refuse` is the separate, explicit
 // refusal and is the only thing that sends a reason.
 export type ReceivingDraft = { quantity: string; withoutCount: boolean; reason: string; note: string; refuse?: boolean };
@@ -53,8 +53,9 @@ export function signedQuantity(value: string | null | undefined): string {
  * An acknowledgement with no independent count (null) has no receiving count and no receiving
  * difference; it is not a zero and not a match.
  */
-export function receivingRowDisplay(line: { countedQuantity?: string | null; varianceQuantity?: string | null }, ack: ReceivingAck | undefined, disclosed: boolean) {
-  const outgoingCount = disclosed ? (line.countedQuantity != null ? trimmed(line.countedQuantity) : "—") : "مخفي";
+export function receivingRowDisplay(line: { countedQuantity?: string | null; effectiveCountedQuantity?: string | null; varianceQuantity?: string | null }, ack: ReceivingAck | undefined, disclosed: boolean) {
+  const activeCount = line.effectiveCountedQuantity ?? line.countedQuantity;
+  const outgoingCount = disclosed ? (activeCount != null ? trimmed(activeCount) : "—") : "مخفي";
   const outgoingDifference = disclosed ? signedQuantity(line.varianceQuantity) : "مخفي";
   if (!ack) return { outgoingCount, outgoingDifference, state: "pending" as const, incomingCount: "—", handedOver: "—", receivingDifference: "—" };
   const none = ack.incomingCountedQuantity == null;
