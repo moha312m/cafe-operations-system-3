@@ -219,7 +219,44 @@ export async function reconcileStrandedShifts(
     }
   }
 
-  // 2. If a shift is stuck in AWAITING_CUSTODY_TRANSFER with no live handover:
+  // 2. Reconcile orphaned open USER stock custody when no active open shift corresponds to it:
+  const openStockPeriods = await tx.custodyPeriod.findMany({
+    where: { branchId, scope: "STOCK", status: "OPEN", holderType: "USER" },
+    include: {
+      participants: { select: { userId: true } },
+    },
+  });
+
+  for (const stock of openStockPeriods) {
+    const activeShift = await tx.shift.findFirst({
+      where: {
+        branchId,
+        status: "OPEN",
+        OR: [
+          ...(stock.responsibleShiftId ? [{ id: stock.responsibleShiftId }] : []),
+          ...(stock.participants.length > 0 ? [{ cashierId: { in: stock.participants.map((p) => p.userId) } }] : []),
+        ],
+      },
+      select: { id: true },
+    });
+
+    if (!activeShift) {
+      // The user who held this stock is no longer on an open shift.
+      // Move this stock custody to BRANCH so incoming shifts can verify/receive it.
+      await tx.custodyPeriod.update({
+        where: { id: stock.id },
+        data: {
+          holderType: "BRANCH",
+          responsibleShiftId: null,
+        },
+      });
+      await tx.custodyParticipant.deleteMany({
+        where: { custodyPeriodId: stock.id },
+      });
+    }
+  }
+
+  // 3. If a shift is stuck in AWAITING_CUSTODY_TRANSFER with no live handover:
   const strandedShifts = await tx.shift.findMany({
     where: { branchId, status: "OPEN", custodyGateReason: "AWAITING_CUSTODY_TRANSFER" },
     select: { id: true, cafeId: true, cashierId: true, openingCashAmount: true },
@@ -239,6 +276,41 @@ export async function reconcileStrandedShifts(
         where: { id: shift.id },
         data: { custodyGateReason: null, custodyReadyAt: new Date() },
       });
+    }
+  }
+
+  // 4. If an open shift has no CASH custody period and no live CASH period exists:
+  const openCashPeriod = await tx.custodyPeriod.findFirst({
+    where: { branchId, scope: "CASH", status: "OPEN" },
+    select: { id: true },
+  });
+  if (!openCashPeriod) {
+    const openShiftWithoutCash = await tx.shift.findFirst({
+      where: {
+        branchId,
+        status: "OPEN",
+        custodyLinks: { none: { scope: "CASH" } },
+      },
+      select: { id: true, cafeId: true, cashierId: true, openingCashAmount: true },
+      orderBy: { openedAt: "asc" },
+    });
+    if (openShiftWithoutCash) {
+      const openedCash = await openCustodyPeriod(tx, {
+        cafeId: openShiftWithoutCash.cafeId,
+        branchId,
+        scope: "CASH",
+        participants: [{ userId: openShiftWithoutCash.cashierId, role: "PRIMARY" }],
+        shiftId: openShiftWithoutCash.id,
+        holderType: "USER",
+        openedById: openShiftWithoutCash.cashierId,
+        openingCashAmount: Number(openShiftWithoutCash.openingCashAmount),
+      });
+      await carryRetainedDrawerCash(tx, {
+        cafeId: openShiftWithoutCash.cafeId,
+        branchId,
+        shiftId: openShiftWithoutCash.id,
+        userId: openShiftWithoutCash.cashierId,
+      }, openedCash.custodyPeriodId);
     }
   }
 }
