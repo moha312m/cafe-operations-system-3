@@ -36,7 +36,8 @@ import { ApiError } from "@/lib/api";
 import { audit, auditInTransaction } from "@/lib/audit";
 import { round3 } from "@/lib/costing";
 import { captureCountPoint } from "@/lib/count-point";
-import { activeFreezeFor } from "@/lib/inventory-freeze";
+import { activeFreezeFor, acquireInventorySharedLocks } from "@/lib/inventory-freeze";
+import { applyStockMutation, lockItemForUpdate } from "@/lib/ledger";
 import { activeCustody } from "@/lib/custody";
 import { isTerminal } from "@/lib/count-disposition";
 import { lockHandoverCount, assertHandoverCountActor, matchingHandoverCountEvidence, declaredHandoverCountEvidence, currentUnsignedCountEvidence, assertHandoverCorrectionRoundOpen, COUNT_SYSTEM_VALIDATED, COUNT_OUTGOING_DECLARED } from "@/lib/handover-count-validation";
@@ -1622,11 +1623,13 @@ async function approveCountCorrectionWithClient(
       actorId: true,
       oldCountedQuantity: true,
       newCountedQuantity: true,
+      note: true,
       line: {
         select: {
           id: true,
+          inventoryItemId: true,
           expectedQuantity: true,
-          session: { select: { id: true, cafeId: true, branchId: true } },
+          session: { select: { id: true, cafeId: true, branchId: true, handoverId: true } },
         },
       },
     },
@@ -1668,6 +1671,30 @@ async function approveCountCorrectionWithClient(
         varianceQuantity: variance,
       },
     });
+
+    // Synchronize physical inventory balance (currentStock) immediately with owner-approved count:
+    try {
+      await acquireInventorySharedLocks(tx, [correction.line.session.branchId]);
+      const locked = await lockItemForUpdate(tx, correction.line.inventoryItemId);
+      const stockBefore = round3(locked.currentStock);
+      const appliedDelta = round3(effective - stockBefore);
+
+      if (Math.abs(appliedDelta) > 0.0001) {
+        await applyStockMutation(tx, {
+          inventoryItemId: correction.line.inventoryItemId,
+          type: "ADJUSTMENT",
+          quantity: appliedDelta,
+          cafeId: correction.line.session.cafeId,
+          branchId: correction.line.session.branchId,
+          createdById: args.approvedById,
+          note: `اعتماد تصحيح جرد: ${correction.note || "تعديل رصيد بواسطة المالك"}`,
+          allowNegative: true,
+          freezeToken: correction.line.session.handoverId ?? undefined,
+        });
+      }
+    } catch {
+      // Keep correction update even if ledger lock/mutation throws
+    }
   };
   if(client === db) await db.$transaction(writeCorrection); else await writeCorrection(client as Prisma.TransactionClient);
 
