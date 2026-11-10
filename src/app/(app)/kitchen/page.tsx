@@ -1,5 +1,6 @@
 "use client";
 import {KitchenAmendmentTickets} from '@/components/sales/kitchen-amendment-tickets';
+import { KdsPrepSummary } from "@/components/kds/kds-prep-summary";
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -142,6 +143,7 @@ export default function KitchenPage() {
   const [, setTick] = useState(0); // re-render for wait timers
   const [busy, setBusy] = useState(false);
   const [detail, setDetail] = useState<KitchenOrder | null>(null);
+  const [highlightedPrepKey, setHighlightedPrepKey] = useState<string | null>(null);
 
   const knownIds = useRef<Set<string> | null>(null);
   const soundRef = useRef(false);
@@ -410,6 +412,13 @@ export default function KitchenPage() {
         </div>
       </div>
 
+      {/* ── KDS All-Day Prep Summary Bar ── */}
+      <KdsPrepSummary
+        orders={filtered}
+        selectedItemKey={highlightedPrepKey}
+        onSelectItemKey={setHighlightedPrepKey}
+      />
+
       {/* ── Kanban columns ───────────────────────────────────── */}
       <div className="grid gap-4 lg:grid-cols-3">
         {COLUMNS.map((col) => {
@@ -450,6 +459,12 @@ export default function KitchenPage() {
                   col.status === "READY" && order.tableNumber
                     ? servable.filter((o) => o.tableNumber === order.tableNumber && o.branch.id === order.branch.id)
                     : [];
+                const containsHighlighted = highlightedPrepKey
+                  ? order.items.some((item) => {
+                      const k = `${item.productName.trim()}${item.variantName ? `__${item.variantName.trim()}` : ""}`;
+                      return k === highlightedPrepKey;
+                    })
+                  : false;
                 return (
                   <div
                     key={order.id}
@@ -457,7 +472,8 @@ export default function KitchenPage() {
                     tabIndex={0}
                     onClick={() => setDetail(order)}
                     className={cn(
-                      "cursor-pointer space-y-2.5 rounded-xl border-2 bg-card p-4 shadow-sm transition-colors hover:border-primary/40",
+                      "cursor-pointer space-y-2.5 rounded-xl border-2 bg-card p-4 shadow-sm transition-all hover:border-primary/40",
+                      containsHighlighted && "ring-2 ring-amber-500 border-amber-500 shadow-md bg-amber-500/5",
                       veryLate
                         ? "border-destructive/70"
                         : late
@@ -519,29 +535,45 @@ export default function KitchenPage() {
                     })()}
 
                     <ul className="space-y-1.5 border-y py-2.5">
-                      {order.items.map((item) => (
-                        <li key={item.id} className="text-lg leading-snug">
-                          <span className="font-bold tabular-nums">
-                            {item.quantity}×
-                          </span>{" "}
-                          {item.productName}
-                          {item.variantName && (
-                            <span className="text-muted-foreground">
-                              {" "}({item.variantName})
-                            </span>
-                          )}
-                          {item.addOns.length > 0 && (
-                            <span className="block ps-6 text-sm text-muted-foreground">
-                              + {item.addOns.map((a) => a.addOnName).join("، ")}
-                            </span>
-                          )}
-                          {item.notes && (
-                            <span className="block ps-6 text-sm font-medium text-amber-700 dark:text-amber-400">
-                              📝 {item.notes}
-                            </span>
-                          )}
-                        </li>
-                      ))}
+                      {order.items.map((item) => {
+                        const isThisItemHighlighted = highlightedPrepKey
+                          ? `${item.productName.trim()}${item.variantName ? `__${item.variantName.trim()}` : ""}` === highlightedPrepKey
+                          : false;
+                        return (
+                          <li
+                            key={item.id}
+                            className={cn(
+                              "text-lg leading-snug rounded-md px-1.5 py-0.5 transition-colors",
+                              isThisItemHighlighted && "bg-amber-500/15 font-bold ring-1 ring-amber-500/40"
+                            )}
+                          >
+                            <span className="font-bold tabular-nums">
+                              {item.quantity}×
+                            </span>{" "}
+                            {item.productName}
+                            {item.variantName && (
+                              <span className="text-muted-foreground">
+                                {" "}({item.variantName})
+                              </span>
+                            )}
+                            {isThisItemHighlighted && (
+                              <span className="ms-2 inline-flex items-center gap-1 rounded bg-amber-500/20 px-1.5 py-0.5 text-xs font-bold text-amber-800 dark:text-amber-300">
+                                🎯 مطلوب للتجهيز
+                              </span>
+                            )}
+                            {item.addOns.length > 0 && (
+                              <span className="block ps-6 text-sm text-muted-foreground">
+                                + {item.addOns.map((a) => a.addOnName).join("، ")}
+                              </span>
+                            )}
+                            {item.notes && (
+                              <span className="block ps-6 text-sm font-medium text-amber-700 dark:text-amber-400">
+                                📝 {item.notes}
+                              </span>
+                            )}
+                          </li>
+                        );
+                      })}
                     </ul>
                     {order.notes && (
                       <p className="text-sm font-medium text-amber-700 dark:text-amber-400">
