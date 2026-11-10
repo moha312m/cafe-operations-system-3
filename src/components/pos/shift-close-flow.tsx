@@ -16,7 +16,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { api, ApiRequestError, blockersOf, money } from "@/lib/client";
+import { api, ApiRequestError, blockersOf, detailedBlockersOf, type DetailedBlocker, money } from "@/lib/client";
+import { AlertTriangle, ArrowLeft, Loader2, XCircle } from "lucide-react";
 import { useApp } from "@/components/app-shell";
 import { clearCloseDraft, loadCloseDraft, saveCloseDraft, type DraftScope } from "@/lib/close-guidance";
 import { CashDenominationCalculator } from "@/components/pos/cash-denomination-calculator";
@@ -109,6 +110,65 @@ function Steps({ stage, withMaterials }: { stage: Flow["stage"]; withMaterials: 
   </ol>;
 }
 
+function getBlockerAction(blocker: DetailedBlocker, branchId: string): { label: string; href: string } | null {
+  const code = blocker.code ?? "";
+  const qBranch = encodeURIComponent(branchId);
+
+  switch (code) {
+    case "EXISTING_ACTIVE_HANDOVER":
+      return {
+        label: "الانتقال لصفحة التسليمات لحل الجلسة",
+        href: `/handovers?branchId=${qBranch}`,
+      };
+    case "UNSERVED_ORDERS":
+      return {
+        label: "الانتقال للطلبات والمطبخ لتقديمها أو إلغائها",
+        href: `/orders?branchId=${qBranch}`,
+      };
+    case "PENDING_APPROVAL_ORDERS":
+      return {
+        label: "الانتقال لموافقات طلبات QR",
+        href: `/approvals?branchId=${qBranch}`,
+      };
+    case "DRAFT_PURCHASE_INVOICES":
+      return {
+        label: "الانتقال لفواتير المشتريات المعلقة",
+        href: `/purchases?branchId=${qBranch}`,
+      };
+    case "PENDING_CORRECTIONS":
+      return {
+        label: "الانتقال لمراجعة واعتماد تصحيحات الجرد",
+        href: `/stock-counts?branchId=${qBranch}`,
+      };
+    case "FOREIGN_ACTIVE_COUNT": {
+      const sessionId = blocker.ids?.[0];
+      return {
+        label: "الانتقال لجلسة الجرد المفتوحة لإنهائها",
+        href: `/stock-counts?branchId=${qBranch}${sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ""}`,
+      };
+    }
+    case "HANDOVER_CONFIG_ERROR":
+      return {
+        label: "فتح إعدادات تسليم العهدة بالفرع",
+        href: `/settings?branchId=${qBranch}#handover-config`,
+      };
+    default:
+      if (code.includes("ORDER")) {
+        return { label: "الانتقال لشاشة الطلبات", href: `/orders?branchId=${qBranch}` };
+      }
+      if (code.includes("HANDOVER")) {
+        return { label: "الانتقال لشاشة التسليمات", href: `/handovers?branchId=${qBranch}` };
+      }
+      if (code.includes("COUNT") || code.includes("STOCK")) {
+        return { label: "الانتقال لجلسات الجرد", href: `/stock-counts?branchId=${qBranch}` };
+      }
+      return {
+        label: "الانتقال للتشغيل والمتابعة",
+        href: `/handovers?branchId=${qBranch}`,
+      };
+  }
+}
+
 function Identity({ branch, shiftNumber, name }: { branch: string; shiftNumber: number; name: string }) {
   return <p className="text-sm text-muted-foreground">{branch} · شيفت #{shiftNumber} · {name}</p>;
 }
@@ -139,7 +199,8 @@ function MoneyStep({ flow, currency, onCommitted }: {
   const [drawerChoice, setDrawerChoice] = useState<DrawerChoice>("RETAIN_ALL");
   const [openOrders, setOpenOrders] = useState<{ total: number; refs: string[]; carry: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState<{ message: string; blockers: string[] } | null>(null);
+  const [failure, setFailure] = useState<{ message: string; blockers: DetailedBlocker[] } | null>(null);
+  const [quickFixing, setQuickFixing] = useState(false);
   const inFlight = useRef(false);
 
   useEffect(() => {
@@ -194,9 +255,28 @@ function MoneyStep({ flow, currency, onCommitted }: {
       // remains rather than showing success — or a second close — on a guess.
       const next = await onCommitted(null);
       if (next && next.stage !== "MONEY") { clearCloseDraft(storage(), scope); return; }
-      setFailure({ message: e instanceof Error ? e.message : "تعذّر تسجيل الفلوس", blockers: e instanceof ApiRequestError ? blockersOf(e) : [] });
+      const detailed = e instanceof ApiRequestError ? detailedBlockersOf(e) : []; setFailure({ message: e instanceof Error ? e.message : "تعذّر تسجيل الفلوس", blockers: detailed });
     } finally {
       inFlight.current = false; setBusy(false);
+    }
+  }
+
+  async function handleQuickDismissHandover(handoverId?: string) {
+    if (!handoverId) {
+      toast.error("تعذر تحديد معرف جلسة التسليم");
+      return;
+    }
+    setQuickFixing(true);
+    try {
+      const res = await api<{ success: boolean; message: string }>(`/api/handovers/${handoverId}/cancel`, {
+        method: "POST",
+      });
+      toast.success(res.message || "تم إلغاء جلسة التسليم المعلقة بنجاح");
+      setFailure(null);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "فشل إلغاء جلسة التسليم المعلقة");
+    } finally {
+      setQuickFixing(false);
     }
   }
 
@@ -275,10 +355,58 @@ function MoneyStep({ flow, currency, onCommitted }: {
     </fieldset>}
     {materialsNext && <p className="rounded-lg border border-primary/30 bg-primary/5 p-2 text-sm font-medium" data-testid="materials-next-hint">{branchCustody && flow.materials.branchCustodyFullCountDue ? `📋 جرد كلي لنهاية اليوم (${(flow.branchCustodyItemsPreview ?? flow.dueItemsPreview ?? []).length} خامة) — ${materialsNextLine(flow.branchCustodyItemsPreview ?? flow.dueItemsPreview ?? [])}` : materialsNextLine(flow.dueItemsPreview ?? [])}</p>}
     {!materialsNext && flow.handover.enabled && <p className="rounded-lg bg-muted/50 p-2 text-sm" data-testid="materials-not-due-hint">جرد الخامات غير مستحق حسب الجدول{flow.materials.nextDueAt ? ` · الجرد الجاي: ${dateTime(flow.materials.nextDueAt)}` : ""}.</p>}
-    {failure && <div role="alert" className="space-y-1 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm text-destructive" data-testid="close-money-error">
-      <p>{failure.message}</p>
-      {failure.blockers.length > 0 && <ul className="list-inside list-disc">{failure.blockers.map((b) => <li key={b}>{b}</li>)}</ul>}
-      <p className="text-xs text-muted-foreground">المبالغ اللي كتبتها لسه موجودة.</p>
+    {failure && <div role="alert" className="space-y-3 rounded-xl border border-destructive/40 bg-destructive/5 p-3.5 text-sm" data-testid="close-money-error">
+      <div className="flex items-center gap-2 text-destructive font-semibold">
+        <AlertTriangle className="h-4 w-4 shrink-0" />
+        <p>{failure.message}</p>
+      </div>
+      {failure.blockers.length > 0 && (
+        <div className="space-y-2">
+          {failure.blockers.map((b, idx) => {
+            const action = getBlockerAction(b, flow.branch.id);
+            return (
+              <div key={idx} className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-lg border border-destructive/20 bg-background/90 p-3 shadow-2xs">
+                <div className="space-y-1">
+                  <p className="font-medium text-foreground text-xs sm:text-sm">
+                    {b.messageAr}
+                    {b.count > 0 ? ` (${b.count})` : ""}
+                  </p>
+                  {b.refs && b.refs.length > 0 && (
+                    <p className="text-xs text-muted-foreground">
+                      المراجع: {b.refs.join("، ")}
+                    </p>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-2 shrink-0">
+                  {action && (
+                    <Button asChild size="sm" variant="default" className="text-xs h-8 gap-1.5 shadow-xs">
+                      <Link href={action.href}>
+                        {action.label}
+                        <ArrowLeft className="h-3.5 w-3.5" />
+                      </Link>
+                    </Button>
+                  )}
+                  {b.code === "EXISTING_ACTIVE_HANDOVER" && (user.role === "CAFE_OWNER" || user.role === "SUPER_ADMIN" || canKey("handover.override")) && (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={quickFixing}
+                      onClick={() => void handleQuickDismissHandover(b.ids?.[0])}
+                      className="text-xs h-8 border-destructive/40 text-destructive hover:bg-destructive/10"
+                      title="إلغاء جلسة التسليم المعلقة فوراً دون مغادرة الشاشة"
+                    >
+                      {quickFixing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <XCircle className="h-3.5 w-3.5 me-1 text-destructive" />}
+                      إلغاء التسليم المعلق ⚡
+                    </Button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <p className="text-xs text-muted-foreground">المبالغ التي قمت بإدخالها محفوظة في هذه الشاشة ولن تفقدها.</p>
     </div>}
     <div className="sticky bottom-0 -mx-4 border-t bg-card/95 px-4 pt-3 pb-1 backdrop-blur sm:-mx-5 sm:px-5">
       <Button className="h-12 w-full text-base" disabled={busy || !ready} onClick={() => void commit()} data-testid="close-money-submit">

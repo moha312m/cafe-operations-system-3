@@ -47,6 +47,44 @@ export function blockersOf(error: unknown): string[] {
   return [...plain, ...structured];
 }
 
+export type DetailedBlocker = {
+  code?: string;
+  count: number;
+  messageAr: string;
+  ids?: string[];
+  refs?: string[];
+  plainText: string;
+};
+
+export function detailedBlockersOf(error: unknown): DetailedBlocker[] {
+  if (!(error instanceof ApiRequestError)) return [];
+  const blockers = (error.payload as { blockers?: unknown } | null)?.blockers;
+  if (!Array.isArray(blockers)) return [];
+  return blockers.map((b) => {
+    if (typeof b === "string") {
+      return { count: 1, messageAr: b, plainText: b };
+    }
+    if (isStructuredBlocker(b)) {
+      const code =
+        typeof (b as Record<string, unknown>).code === "string"
+          ? ((b as Record<string, unknown>).code as string)
+          : undefined;
+      const ids = Array.isArray((b as Record<string, unknown>).ids)
+        ? ((b as Record<string, unknown>).ids as string[])
+        : undefined;
+      return {
+        code,
+        count: b.count,
+        messageAr: b.messageAr,
+        ids,
+        refs: b.refs,
+        plainText: describeBlocker(b),
+      };
+    }
+    return { count: 1, messageAr: "عائق غير معروف", plainText: "عائق غير معروف" };
+  });
+}
+
 type StructuredBlocker = { count: number; messageAr: string; refs?: string[] };
 
 function isStructuredBlocker(b: unknown): b is StructuredBlocker {
