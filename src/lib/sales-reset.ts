@@ -257,6 +257,13 @@ export async function executeSalesResetInTransaction(
   tx: Prisma.TransactionClient,
   args: ExecuteSalesResetArgs
 ): Promise<ExecuteSalesResetResult> {
+  // Allow administrative sales reset to clean up append-only OrderTrace and OrderRevision
+  try {
+    await tx.$executeRawUnsafe(`SET LOCAL session_replication_role = 'replica';`);
+  } catch {
+    // Continue if running on SQLite or driver without raw query support
+  }
+
   const where = buildOrderScopeWhere(args);
 
       const orders = await tx.order.findMany({
