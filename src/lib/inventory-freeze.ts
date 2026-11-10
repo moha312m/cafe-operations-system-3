@@ -176,7 +176,7 @@ export async function activeFreezeFor(
   if (lockProtectionHeld(branch) && branch.freezeKnown) return branch.freeze;
   const freeze = await tx.inventoryFreeze.findFirst({
     where: { branchId, releasedAt: null },
-    select: { id: true, handoverId: true, cafeId: true },
+    select: { id: true, handoverId: true, cafeId: true, startedById: true },
   });
   if (!freeze) {
     if (lockProtectionHeld(branch)) rememberFreeze(tx, branchId, null);
@@ -191,10 +191,11 @@ export async function activeFreezeFor(
 
   if (!handover || handover.status === "COMPLETED" || handover.status === "ACCEPTED") {
     // Auto-release the dangling freeze immediately so the branch is never locked permanently!
+    // Note: InventoryFreeze_release_pair_consistent requires releasedById to be non-null when releasedAt is non-null.
     const releasedAt = new Date();
     await tx.inventoryFreeze.update({
       where: { id: freeze.id },
-      data: { releasedAt, releasedById: null },
+      data: { releasedAt, releasedById: freeze.startedById },
     });
     invalidateFreeze(tx, branchId);
     if (lockProtectionHeld(branch)) rememberFreeze(tx, branchId, null);
@@ -212,18 +213,30 @@ export async function forceReleaseBranchFreezes(
   actorId?: string | null
 ): Promise<number> {
   await acquireInventoryExclusiveLock(tx, branchId);
+  // Only release freezes that are orphaned or belong to draft/rejected/completed/accepted handovers.
+  // Never strip a freeze from an actively submitted handover awaiting acceptance!
   const unreleased = await tx.inventoryFreeze.findMany({
-    where: { branchId, releasedAt: null },
-    select: { id: true, handoverId: true, cafeId: true },
+    where: {
+      branchId,
+      releasedAt: null,
+      OR: [
+        { handover: null },
+        { handover: { status: { in: ["DRAFT", "REJECTED", "COMPLETED", "ACCEPTED"] } } },
+      ],
+    },
+    select: { id: true, handoverId: true, cafeId: true, startedById: true },
   });
 
   if (unreleased.length === 0) return 0;
 
   const releasedAt = new Date();
-  await tx.inventoryFreeze.updateMany({
-    where: { branchId, releasedAt: null },
-    data: { releasedAt, releasedById: actorId ?? null },
-  });
+  for (const f of unreleased) {
+    const releasedById = actorId || f.startedById;
+    await tx.inventoryFreeze.update({
+      where: { id: f.id },
+      data: { releasedAt, releasedById },
+    });
+  }
 
   invalidateFreeze(tx, branchId);
 

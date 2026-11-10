@@ -1671,30 +1671,6 @@ async function approveCountCorrectionWithClient(
         varianceQuantity: variance,
       },
     });
-
-    // Synchronize physical inventory balance (currentStock) immediately with owner-approved count:
-    try {
-      await acquireInventorySharedLocks(tx, [correction.line.session.branchId]);
-      const locked = await lockItemForUpdate(tx, correction.line.inventoryItemId);
-      const stockBefore = round3(locked.currentStock);
-      const appliedDelta = round3(effective - stockBefore);
-
-      if (Math.abs(appliedDelta) > 0.0001) {
-        await applyStockMutation(tx, {
-          inventoryItemId: correction.line.inventoryItemId,
-          type: "ADJUSTMENT",
-          quantity: appliedDelta,
-          cafeId: correction.line.session.cafeId,
-          branchId: correction.line.session.branchId,
-          createdById: args.approvedById,
-          note: `اعتماد تصحيح جرد: ${correction.note || "تعديل رصيد بواسطة المالك"}`,
-          allowNegative: true,
-          freezeToken: correction.line.session.handoverId ?? undefined,
-        });
-      }
-    } catch {
-      // Keep correction update even if ledger lock/mutation throws
-    }
   };
   if(client === db) await db.$transaction(writeCorrection); else await writeCorrection(client as Prisma.TransactionClient);
 

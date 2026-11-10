@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { requireActiveSession, handleApiError, ApiError } from "@/lib/api";
+import { resolvePermissions } from "@/lib/perms/effective";
 import { db } from "@/lib/db";
 
 type Params = { params: Promise<{ id: string }> };
@@ -18,29 +19,57 @@ export async function POST(request: NextRequest, { params }: Params) {
       throw new ApiError(404, "جلسة التسليم غير موجودة");
     }
 
-    // Owner, super admin, branch manager, the shift custodian, or staff with permissions can cancel
-    const isOwner = session.role === "CAFE_OWNER" || session.role === "SUPER_ADMIN" || session.role === "BRANCH_MANAGER";
-    const isCustodian = session.id === handover.outgoingUserId || session.branchId === handover.branchId;
-    const hasPermission = session.permissions?.some((p: string) =>
-      p === "handover.override" || p === "handover.exception" || p === "handover.cancel" || p === "shift.close"
-    );
+    const { keys } = await resolvePermissions(session);
+    const isOwner = session.role === "CAFE_OWNER" || session.role === "SUPER_ADMIN";
+    const isBranchManager = session.role === "BRANCH_MANAGER" && session.branchId === handover.branchId;
+    const isCustodian = session.id === handover.outgoingUserId && session.branchId === handover.branchId;
+    const hasPermission = keys.has("handover.override") || keys.has("handover.exception") || keys.has("handover.cancel");
 
-    if (!isOwner && !isCustodian && !hasPermission) {
-      throw new ApiError(403, "صلاحية إلغاء جلسات التسليم مخصصة للمالك أو المدير أو كاشير الشيفت فقط");
+    if (!isOwner && !isBranchManager && !isCustodian && !hasPermission) {
+      throw new ApiError(403, "صلاحية إلغاء جلسات التسليم مخصصة للمالك أو مدير هذا الفرع أو كاشير الشيفت فقط");
     }
 
-    if (handover.status === "COMPLETED" || handover.status === "ACCEPTED") {
-      throw new ApiError(400, "لا يمكن إلغاء جلسة تسليم مكتملة أو معتمدة بالفعل");
-    }
-
-    // Atomically cancel the handover and unlock any linked stock count
+    // Atomically cancel the handover, close the outgoing shift, and unlock stock counts
     await db.$transaction(async (tx) => {
-      // 1. If there's an associated stock count session in draft or in progress, lock and release it
+      // 1. Conditional optimistic claim: only cancel if still in an open state
+      const claimed = await tx.handoverSession.updateMany({
+        where: {
+          id: handover.id,
+          status: { in: ["DRAFT", "PENDING_REVIEW", "REJECTED"] },
+        },
+        data: {
+          status: "COMPLETED",
+          resolvedTarget: "BRANCH_CUSTODY",
+          completedAt: new Date(),
+          exceptionById: session.id,
+          exceptionReason: "تم إلغاء/إنهاء الجلسة يدوياً لتحرير الشيفت",
+        },
+      });
+
+      if (claimed.count === 0) {
+        throw new ApiError(409, "لا يمكن إلغاء جلسة تسليم مكتملة أو معتمدة بالفعل");
+      }
+
+      // 2. Complete the shift lifecycle so it does not stay in AWAITING_HANDOVER
+      await tx.shift.updateMany({
+        where: {
+          id: handover.outgoingShiftId,
+          status: "AWAITING_HANDOVER",
+        },
+        data: {
+          status: "CLOSED",
+          stockClosedAt: new Date(),
+          closedAt: new Date(),
+          closedById: session.id,
+        },
+      });
+
+      // 3. Lock associated stock count session
       if (handover.stockCountSessionId) {
         await tx.stockCountSession.updateMany({
           where: {
             id: handover.stockCountSessionId,
-            status: { in: ["DRAFT", "IN_PROGRESS", "SUBMITTED", "RECOUNT_REQUIRED"] },
+            status: { notIn: ["LOCKED"] },
           },
           data: {
             status: "LOCKED",
@@ -56,7 +85,7 @@ export async function POST(request: NextRequest, { params }: Params) {
         data: { lockedByHandoverId: null },
       });
 
-      // 2. Release any inventory freeze for this handover or dangling on this branch
+      // 4. Release any inventory freeze for this handover or dangling on this branch
       await tx.inventoryFreeze.updateMany({
         where: {
           branchId: handover.branchId,
@@ -67,23 +96,11 @@ export async function POST(request: NextRequest, { params }: Params) {
           releasedById: session.id,
         },
       });
-
-      // 3. Mark handover as COMPLETED with target BRANCH_CUSTODY and exception reason
-      await tx.handoverSession.update({
-        where: { id: handover.id },
-        data: {
-          status: "COMPLETED",
-          resolvedTarget: "BRANCH_CUSTODY",
-          completedAt: new Date(),
-          exceptionById: session.id,
-          exceptionReason: "تم إلغاء/إنهاء الجلسة يدوياً بواسطة الإدارة لتحرير الشيفت",
-        },
-      });
     });
 
     return NextResponse.json({
       success: true,
-      message: "تم إلغاء جلسة التسليم المعلقة بنجاح وتحرير الشيفت",
+      message: "تم إلغاء جلسة التسليم المعلقة بنجاح وإنهاء الشيفت",
     });
   } catch (error) {
     return handleApiError(error);
