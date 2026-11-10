@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { DEMO_ADD_ONS, DEMO_MENU } from "./menu-data";
+import { seedAllDefaultReasonCodesForCafe } from "../src/lib/default-reason-codes";
 
 const db = new PrismaClient();
 const hash = (pw: string) => bcrypt.hash(pw, 10);
@@ -107,6 +108,8 @@ async function main() {
       settings: { create: {} },
     },
   });
+
+  await seedAllDefaultReasonCodesForCafe(db, cafe.id);
 
   const tagamo3 = await db.branch.create({
     data: {

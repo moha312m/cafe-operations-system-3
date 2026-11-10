@@ -70,6 +70,11 @@ export async function POST(request: NextRequest) {
       include: { branches: true },
     });
 
+    // Seed standard operational reason codes across all domains (handover, stock, cash, tender)
+    // so any new coffee shop/tenant is fully ready out of the box.
+    const { seedAllDefaultReasonCodesForCafe } = await import("@/lib/default-reason-codes");
+    await seedAllDefaultReasonCodesForCafe(db, cafe.id);
+
     await audit({
       userId: session.id,
       action: "cafe.create",

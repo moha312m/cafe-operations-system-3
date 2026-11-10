@@ -77,3 +77,17 @@ export async function ensureDefaultReasonCodes(
     orderBy: { label: "asc" },
   });
 }
+
+export async function seedAllDefaultReasonCodesForCafe(
+  client: Prisma.TransactionClient | typeof db,
+  cafeId: string
+): Promise<number> {
+  const domains: ReasonDomain[] = ["HANDOVER", "STOCK", "CASH", "TENDER"];
+  let totalCount = 0;
+  for (const domain of domains) {
+    const reasons = await ensureDefaultReasonCodes(client, cafeId, domain);
+    totalCount += reasons.length;
+  }
+  return totalCount;
+}
+

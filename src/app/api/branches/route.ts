@@ -54,6 +54,10 @@ export async function POST(request: NextRequest) {
     const { ensureDefaultTables } = await import("@/lib/table-setup");
     await ensureDefaultTables(cafeId, branch.id);
 
+    // Ensure all operational reason codes (handover, stock, cash, tender) are present for the cafe.
+    const { seedAllDefaultReasonCodesForCafe } = await import("@/lib/default-reason-codes");
+    await seedAllDefaultReasonCodesForCafe(db, cafeId);
+
     await audit({
       cafeId,
       userId: session.id,
