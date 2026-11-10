@@ -63,7 +63,12 @@ export function StockCorrectionsQueue({
   useEffect(() => {
     void load();
     const timer = setInterval(load, 12000);
-    return () => clearInterval(timer);
+    const onUpdate = () => void load();
+    window.addEventListener("stock-correction-updated", onUpdate);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("stock-correction-updated", onUpdate);
+    };
   }, [load]);
 
   async function handleDecision(id: string, action: "approve" | "reject") {
@@ -71,6 +76,7 @@ export function StockCorrectionsQueue({
     try {
       await api(`/api/corrections/${id}/${action}`, { method: "POST" });
       toast.success(action === "approve" ? "تم اعتماد تصحيح الكمية بنجاح" : "تم رفض طلب التصحيح");
+      window.dispatchEvent(new Event("stock-correction-updated"));
       await load();
       onUpdated?.();
     } catch (err) {

@@ -254,6 +254,7 @@ export function StockCountDetail({
         // A correction is a REQUEST. Saying "corrected" here would report an
         // approval that has not happened.
         toast.success("اتسجل طلب التصحيح — مستني الاعتماد");
+        window.dispatchEvent(new Event("stock-correction-updated"));
       }
       setPending(null);
       await after();
@@ -270,6 +271,7 @@ export function StockCountDetail({
     try {
       await api(`/api/corrections/${correctionId}/approve`, { method: "POST" });
       toast.success("تم اعتماد تصحيح الكمية بنجاح وتحديث الفارق");
+      window.dispatchEvent(new Event("stock-correction-updated"));
       await after();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "فشل اعتماد التصحيح");
@@ -283,6 +285,7 @@ export function StockCountDetail({
     try {
       await api(`/api/corrections/${correctionId}/reject`, { method: "POST" });
       toast.success("تم رفض طلب التصحيح");
+      window.dispatchEvent(new Event("stock-correction-updated"));
       await after();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "فشل رفض التصحيح");

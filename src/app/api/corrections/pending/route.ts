@@ -13,17 +13,25 @@ export async function GET(request: NextRequest) {
     await requireFeature(session, "inventoryEnabled");
     const cafeId = resolveCafeId(session, request.nextUrl.searchParams.get("cafeId"));
     const branchId = request.nextUrl.searchParams.get("branchId") || session.branchId;
+    const countOnly = request.nextUrl.searchParams.get("countOnly") === "1" || request.nextUrl.searchParams.get("countOnly") === "true";
 
-    const pendingCorrections = await db.stockCountCorrection.findMany({
-      where: {
-        status: "PENDING_APPROVAL",
-        line: {
-          session: {
-            cafeId,
-            ...(branchId ? { branchId } : {}),
-          },
+    const whereClause = {
+      status: "PENDING_APPROVAL" as const,
+      line: {
+        session: {
+          cafeId,
+          ...(branchId ? { branchId } : {}),
         },
       },
+    };
+
+    if (countOnly) {
+      const count = await db.stockCountCorrection.count({ where: whereClause });
+      return NextResponse.json({ count });
+    }
+
+    const pendingCorrections = await db.stockCountCorrection.findMany({
+      where: whereClause,
       select: {
         id: true,
         lineId: true,
@@ -47,7 +55,7 @@ export async function GET(request: NextRequest) {
       orderBy: { createdAt: "desc" },
     });
 
-    return NextResponse.json({ pendingCorrections });
+    return NextResponse.json({ count: pendingCorrections.length, pendingCorrections });
   } catch (error) {
     return handleApiError(error);
   }

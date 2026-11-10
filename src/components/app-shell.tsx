@@ -18,6 +18,8 @@ import { cn } from "@/lib/utils";
 import type { CafeFeatures } from "@/lib/cafe-settings";
 import { LowStockBanner } from "@/components/low-stock-banner";
 import { StaleOrdersBanner } from "@/components/stale-orders-banner";
+import { StockCorrectionBell } from "@/components/notifications/stock-correction-bell";
+import { PendingCorrectionsBanner } from "@/components/notifications/pending-corrections-banner";
 import { CashierTouchViewport } from "@/components/pos/cashier-touch-viewport";
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 
@@ -224,6 +226,36 @@ export function AppShell({
     return () => { stop = true; clearInterval(timer); };
   }, [canSeeQr, features?.qrMenuEnabled, pathname]);
 
+  // Pending stock count corrections for owner/manager badge and notifications
+  const [pendingCorrectionsCount, setPendingCorrectionsCount] = useState(0);
+  const canApproveCorrections =
+    user.role === "CAFE_OWNER" ||
+    user.role === "BRANCH_MANAGER" ||
+    user.role === "SUPER_ADMIN" ||
+    canKey("stock_count.approve_correction");
+
+  useEffect(() => {
+    if (!canApproveCorrections) return;
+    let stop = false;
+    const tick = () =>
+      fetch("/api/corrections/pending?countOnly=1")
+        .then((r) => (r.ok ? r.json() : { count: 0 }))
+        .then((d) => { if (!stop) setPendingCorrectionsCount(d.count ?? 0); })
+        .catch(() => {});
+    tick();
+    const timer = setInterval(tick, 20_000);
+    const onFocus = () => tick();
+    const onCustomUpdate = () => tick();
+    window.addEventListener("focus", onFocus);
+    window.addEventListener("stock-correction-updated", onCustomUpdate);
+    return () => {
+      stop = true;
+      clearInterval(timer);
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("stock-correction-updated", onCustomUpdate);
+    };
+  }, [canApproveCorrections, pathname]);
+
   // Refresh branch and role after an owner edit while this page stays open.
   useEffect(() => {
     let stopped = false;
@@ -286,9 +318,14 @@ export function AppShell({
       >
         <Icon aria-hidden="true" className="size-5 shrink-0" />
         <span className="workspace-nav-label flex-1">{item.label}</span>
-        {item.href === "/approvals" && pendingQr > 0 && (
+        {item.href === "/approvals" && (pendingQr + pendingCorrectionsCount) > 0 && (
           <span className="flex min-w-5 items-center justify-center rounded-full bg-red-500 px-1.5 text-xs font-bold text-white">
-            {pendingQr}
+            {pendingQr + pendingCorrectionsCount}
+          </span>
+        )}
+        {item.href === "/handovers" && pendingCorrectionsCount > 0 && (
+          <span className="flex min-w-5 items-center justify-center rounded-full bg-amber-500 px-1.5 text-xs font-bold text-white">
+            {pendingCorrectionsCount}
           </span>
         )}
       </Link>
@@ -297,17 +334,22 @@ export function AppShell({
 
   const sidebarContent = (
     <>
-          <div className="flex items-center gap-3 border-b border-sidebar-border px-5 py-5 [@media(max-height:760px)]:py-3">
-            <span className="flex size-10 items-center justify-center rounded-xl bg-sidebar-primary text-xl text-sidebar-primary-foreground shadow-sm">
-              <Coffee className="size-6" aria-hidden="true" />
-            </span>
-            <div className="workspace-nav-label min-w-0">
-              <p className="font-heading text-base font-bold tracking-wider text-sidebar-accent-foreground" dir="ltr">NEXT CUP</p>
-              <p className="truncate text-xs" title={cafe?.name}>{cafe?.name ?? t.appName}</p>
-              {/^workspace\d{8}-/.test(cafe?.name ?? "") && <p className="mt-1 text-xs text-amber-200">بيانات اصطناعية · معاينة فقط</p>}
-              <p className="truncate text-xs text-sidebar-muted-foreground">
-                {branchName ?? t.appName}
-              </p>
+          <div className="flex items-center justify-between border-b border-sidebar-border px-5 py-5 [@media(max-height:760px)]:py-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-sidebar-primary text-xl text-sidebar-primary-foreground shadow-sm">
+                <Coffee className="size-6" aria-hidden="true" />
+              </span>
+              <div className="workspace-nav-label min-w-0">
+                <p className="font-heading text-base font-bold tracking-wider text-sidebar-accent-foreground" dir="ltr">NEXT CUP</p>
+                <p className="truncate text-xs" title={cafe?.name}>{cafe?.name ?? t.appName}</p>
+                {/^workspace\d{8}-/.test(cafe?.name ?? "") && <p className="mt-1 text-xs text-amber-200">بيانات اصطناعية · معاينة فقط</p>}
+                <p className="truncate text-xs text-sidebar-muted-foreground">
+                  {branchName ?? t.appName}
+                </p>
+              </div>
+            </div>
+            <div className="workspace-nav-label shrink-0">
+              <StockCorrectionBell />
             </div>
           </div>
 
@@ -319,7 +361,8 @@ export function AppShell({
               const isCurrent = group.id === activeGroup;
               const open = rail || isCurrent || !collapsedGroups.includes(group.id);
               // A collapsed section must not hide a waiting QR approval.
-              const badge = !open && items.some((item) => item.href === "/approvals") ? pendingQr : 0;
+              const badge = (!open && items.some((item) => item.href === "/approvals") ? pendingQr : 0) +
+                (!open && items.some((item) => item.href === "/approvals" || item.href === "/handovers") ? pendingCorrectionsCount : 0);
               return (
                 <div key={group.id} className="pt-1.5">
                   <button
@@ -378,11 +421,14 @@ export function AppShell({
           {sidebarContent}
         </aside>
         <Dialog open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
-          <div className="flex items-center gap-3 bg-sidebar px-4 py-3 text-sidebar-foreground md:hidden print:hidden">
-            <DialogTrigger className="shrink-0 rounded-lg border border-sidebar-border px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sidebar-ring">
-              القائمة
-            </DialogTrigger>
-            <p className="min-w-0 truncate text-sm font-semibold text-sidebar-accent-foreground">{cafe?.name ?? t.appName}</p>
+          <div className="flex items-center justify-between bg-sidebar px-4 py-3 text-sidebar-foreground md:hidden print:hidden">
+            <div className="flex items-center gap-3">
+              <DialogTrigger className="shrink-0 rounded-lg border border-sidebar-border px-3 py-2 text-sm font-medium focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sidebar-ring">
+                القائمة
+              </DialogTrigger>
+              <p className="min-w-0 truncate text-sm font-semibold text-sidebar-accent-foreground">{cafe?.name ?? t.appName}</p>
+            </div>
+            <StockCorrectionBell />
           </div>
           <DialogContent scrollable={false} className="flex h-[calc(100dvh-2rem)] max-w-xs flex-col gap-0 overflow-hidden bg-sidebar p-0 pt-10 text-sidebar-foreground">
             <DialogTitle className="sr-only">التنقل الرئيسي</DialogTitle>
@@ -391,6 +437,7 @@ export function AppShell({
         </Dialog>
 
         <main key={`${user.id}:${user.cafeId}:${user.branchId}:${user.role}:${permKeys.join(",")}`} className="workspace-content min-w-0 flex-1 p-4 md:p-6 lg:p-8">
+          <PendingCorrectionsBanner pathname={pathname} />
           {showStaleBanner && (
             <StaleOrdersBanner pathname={pathname} showBranch={!user.branchId} currency={cafe?.currency ?? "EGP"} />
           )}
