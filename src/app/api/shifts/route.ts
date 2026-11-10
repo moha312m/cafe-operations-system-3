@@ -3,9 +3,10 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { resolvePermissions } from "@/lib/perms/effective";
 import { requirePermission, resolveCafeId, resolveBranchId, handleApiError, ApiError, requireFeature, requireActiveSession, isUniqueConflict, retryOnUniqueConflict } from "@/lib/api";
-import { audit } from "@/lib/audit";
+import { auditInTransaction } from "@/lib/audit";
 import { redactBlindCount } from "@/lib/shifts";
-import { ensureCustodyForShift } from "@/lib/custody";
+import { ensureCustodyForShift, ShiftOpeningCustodyError, reconcileStrandedShifts } from "@/lib/custody";
+import { shiftOpeners, shiftOpeningRequirements } from "@/lib/shift-opening-view";
 import { resolveStaffBranchInTransaction } from "@/lib/staff-branch";
 import { protectedTransaction, protectedContext } from "@/lib/protected-transaction";
 import { lockShifts, lockBranchAllocator } from "@/lib/transaction-locks";
@@ -35,6 +36,7 @@ export async function GET(request: NextRequest) {
 
     // Branch scope: pinned staff are locked to their branch.
     const branchId = session.branchId ?? params.get("branchId") ?? undefined;
+    if (branchId) await reconcileStrandedShifts(db, branchId);
     // Cashiers without read permission only ever see their own shifts.
     const cashierId = canReadAll ? params.get("cashierId") ?? undefined : session.id;
     const status = params.get("status");
@@ -72,8 +74,23 @@ export async function GET(request: NextRequest) {
     });
     // Counters see their submitted amounts without reconciliation totals;
     // report access retains full shift visibility for oversight.
+    const open = shifts.filter((shift) => shift.status === "OPEN");
+    const [openers, settings] = await Promise.all([
+      shiftOpeners(cafeId, open.map((shift) => shift.id)),
+      open.length ? db.branchOpeningSettings.findMany({
+        where: { cafeId, branchId: { in: [...new Set(open.map((shift) => shift.branchId))] } },
+        select: { branchId: true, placeAcceptanceRequired: true, updatedAt: true },
+      }) : [],
+    ]);
+    const settingsByBranch = new Map(settings.map((row) => [row.branchId, row]));
     return NextResponse.json({
-      shifts: shifts.map((s) => redactBlindCount(s, canReadAll)),
+      shifts: shifts.map((shift) => ({
+        ...redactBlindCount(shift, canReadAll),
+        ...(shift.status === "OPEN" ? {
+          openedBy: openers.get(shift.id) ?? null,
+          waitingFor: shiftOpeningRequirements(shift, settingsByBranch.get(shift.branchId)),
+        } : {}),
+      })),
     });
   } catch (error) {
     return handleApiError(error);
@@ -159,7 +176,21 @@ export async function POST(request: NextRequest) {
           if (assets.length === 0) throw new ApiError(409, "The required place checklist is empty");
           await tx.shiftPlaceReceipt.create({ data: { cafeId, branchId, incomingShiftId: created.id, assignedUserId: placeSettings.placeInspectorId, createdById: session.id, snapshot: assets as unknown as import("@prisma/client").Prisma.InputJsonValue } });
         }
-        return tx.shift.findUniqueOrThrow({ where: { id: created.id }, include: shiftInclude });
+        const opened = await tx.shift.findUniqueOrThrow({ where: { id: created.id }, include: shiftInclude });
+        await auditInTransaction(tx, {
+          cafeId,
+          userId: session.id,
+          action: "SHIFT_OPENED",
+          entity: "Shift",
+          entityId: opened.id,
+          details: {
+            branchId,
+            shiftId: opened.id,
+            shiftNumber: opened.shiftNumber,
+            openingCashAmount: Number(opened.openingCashAmount),
+          },
+        });
+        return opened;
       }), {
         field: "shiftNumber",
         message: "في شيفت تاني اتفتح في نفس اللحظة — جرّب تاني",
@@ -182,26 +213,21 @@ export async function POST(request: NextRequest) {
 
     if (alreadyOpen) return NextResponse.json({ shift: redactBlindCount(shift, canViewReports), alreadyOpen: true });
 
-    await audit({
-      cafeId,
-      userId: session.id,
-      action: "SHIFT_OPENED",
-      entity: "Shift",
-      entityId: shift.id,
-      details: {
-        branchId,
-        shiftId: shift.id,
-        shiftNumber: shift.shiftNumber,
-        openingCashAmount: Number(shift.openingCashAmount),
-      },
-    });
-
     // Use the same visibility rule on opening as on subsequent reads.
     return NextResponse.json(
       { shift: redactBlindCount(shift, canViewReports) },
       { status: 201 }
     );
   } catch (error) {
+    if (error instanceof ShiftOpeningCustodyError) {
+      console.warn(JSON.stringify({
+        event: "shift_open_custody_blocked",
+        branchId: error.branchId,
+        reason: error.code,
+        ...error.openCustody,
+      }));
+      return NextResponse.json({ error: error.message, branchId: error.branchId, openingBlocker: { code: error.code } }, { status: error.status });
+    }
     return handleApiError(error);
   }
 }

@@ -430,12 +430,10 @@ function MoneyStep({ flow, currency, onCommitted }: {
                 </div>
                 <div className="flex flex-wrap items-center gap-2 shrink-0">
                   {action && (
-                    <Button asChild size="sm" variant="default" className="text-xs h-8 gap-1.5 shadow-xs">
-                      <Link href={action.href}>
-                        {action.label}
-                        <ArrowLeft className="h-3.5 w-3.5" />
-                      </Link>
-                    </Button>
+                    <Link href={action.href} className={buttonVariants({ size: "sm", className: "text-xs h-8 gap-1.5 shadow-xs" })}>
+                      {action.label}
+                      <ArrowLeft className="h-3.5 w-3.5" />
+                    </Link>
                   )}
                   {b.code === "EXISTING_ACTIVE_HANDOVER" && (
                     user.role === "CAFE_OWNER" ||

@@ -101,7 +101,7 @@ function SalesWorkspaceInner(){const money=useMoney();
       type="button"
       role="tab"
       aria-selected={filters.source === 'CASHIER_POS'}
-      onClick={() => setFilters(prev => { const n = { ...prev, source: 'CASHIER_POS' }; delete n.returns; return n; })}
+      onClick={() => setFilters(prev => { const n = { ...prev }; n.source = 'CASHIER_POS'; delete n.returns; return n; })}
       className={cn("px-4 py-2 rounded-lg text-sm font-semibold transition min-h-10", filters.source === 'CASHIER_POS' ? "bg-primary text-primary-foreground shadow-sm" : "bg-muted/70 hover:bg-muted text-muted-foreground hover:text-foreground")}
     >
       فواتير الكاشير
@@ -110,7 +110,7 @@ function SalesWorkspaceInner(){const money=useMoney();
       type="button"
       role="tab"
       aria-selected={filters.returns === '1'}
-      onClick={() => setFilters(prev => { const n = { ...prev, returns: '1' }; delete n.source; return n; })}
+      onClick={() => setFilters(prev => { const n = { ...prev }; n.returns = '1'; delete n.source; return n; })}
       className={cn("px-4 py-2 rounded-lg text-sm font-semibold transition min-h-10", filters.returns === '1' ? "bg-primary text-primary-foreground shadow-sm" : "bg-muted/70 hover:bg-muted text-muted-foreground hover:text-foreground")}
     >
       مرتجعات المبيعات

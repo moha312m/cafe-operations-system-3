@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { HistoricalSalesImportDialog } from "@/components/historical-sales/historical-sales-import-dialog";
 
 export function LegacyImportCard() {
@@ -51,9 +51,9 @@ export function LegacyImportCard() {
                   رفع الأصناف والأقسام والأسعار بملف إكسيل واحد بدلاً من إدخالها يدوياً صنفاً بصنف.
                 </p>
               </div>
-              <Button size="sm" variant="outline" asChild className="w-full">
-                <Link href="/menu">استيراد المنيو</Link>
-              </Button>
+              <Link href="/menu" className={buttonVariants({ size: "sm", variant: "outline", className: "w-full" })}>
+                استيراد المنيو
+              </Link>
             </div>
 
             <div className="rounded-xl border p-4 bg-muted/20 flex flex-col justify-between space-y-3">
@@ -66,9 +66,9 @@ export function LegacyImportCard() {
                   استيراد وصفات تحضير المنتجات وتكاليف الخامات لضبط هوامش الربح وخصم المخزون.
                 </p>
               </div>
-              <Button size="sm" variant="outline" asChild className="w-full">
-                <Link href="/recipe-review">استيراد الوصفات</Link>
-              </Button>
+              <Link href="/recipe-review" className={buttonVariants({ size: "sm", variant: "outline", className: "w-full" })}>
+                استيراد الوصفات
+              </Link>
             </div>
           </div>
         </CardContent>

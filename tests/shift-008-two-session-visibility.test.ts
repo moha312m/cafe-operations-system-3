@@ -55,10 +55,10 @@ test("owner and cashier use separate sessions and separate concurrent shifts", a
 
   const cashierReportPage = await as(fx.cashier.email, "/shifts");
   assert.equal(cashierReportPage.status, 200, cashierReportPage.text);
-  assert.match(cashierReportPage.text, /ليس لديك صلاحية لعرض تقارير الشيفتات/);
+  assert.match(cashierReportPage.text, /ليس لديك صلاحية عرض هذا التقرير/);
   const ownerReportPage = await as(fx.owner.email, "/shifts");
   assert.equal(ownerReportPage.status, 200, ownerReportPage.text);
-  assert.doesNotMatch(ownerReportPage.text, /ليس لديك صلاحية لعرض تقارير الشيفتات/);
+  assert.doesNotMatch(ownerReportPage.text, /ليس لديك صلاحية عرض هذا التقرير/);
 
   const cashierClose = await as<{ shift: ShiftRow }>(
     fx.cashier.email, `/api/shifts/${cashierOpen.body.shift.id}/close`, {

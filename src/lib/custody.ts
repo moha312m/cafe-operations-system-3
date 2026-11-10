@@ -115,7 +115,24 @@ export async function openCustodyPeriod(
   return { custodyPeriodId: period.id };
 }
 
-const LIVE_HANDOVER_STATUSES = ["DRAFT", "OUTGOING_SUBMITTED", "INCOMING_REVIEW"] as const;
+export const LIVE_HANDOVER_STATUSES = ["DRAFT", "OUTGOING_SUBMITTED", "INCOMING_REVIEW", "REJECTED"] as const;
+
+export function incompleteOpeningCustody(cash?: CustodyHolderType, stock?: CustodyHolderType) {
+  if (stock === "BRANCH" || (!cash && !stock) || (cash === "USER" && stock === "USER")) return null;
+  if (cash && !stock) return "CASH_WITHOUT_STOCK";
+  if (stock && !cash) return "STOCK_WITHOUT_CASH";
+  return "INCONSISTENT_CUSTODY";
+}
+
+export class ShiftOpeningCustodyError extends ApiError {
+  constructor(
+    readonly code: NonNullable<ReturnType<typeof incompleteOpeningCustody>>,
+    readonly branchId: string,
+    readonly openCustody: { cashCustodyId: string | null; stockCustodyId: string | null },
+  ) {
+    super(409, "حالة العهدة غير مكتملة في الفرع — راجع إجراءات التسليم والاستلام");
+  }
+}
 
 /**
  * Whether a live handover already names outgoing stock custody for this
@@ -170,6 +187,60 @@ export async function branchIsMidHandover(
        FOR SHARE
   `;
   return rows.length > 0;
+}
+
+/**
+ * Automatically reconcile stranded shifts and completed handovers when no handover is live.
+ * Follows Rule R-A1: "Nobody may be left waiting for a transfer that will not come."
+ */
+export async function reconcileStrandedShifts(
+  tx: Prisma.TransactionClient,
+  branchId: string
+): Promise<void> {
+  const isMid = await branchIsMidHandover(tx, branchId);
+  if (isMid) return;
+
+  // 1. If an outgoing shift is AWAITING_HANDOVER, but its handover is COMPLETED:
+  const completedHandovers = await tx.handoverSession.findMany({
+    where: { branchId, status: "COMPLETED", outgoingShift: { status: "AWAITING_HANDOVER" } },
+    select: { id: true, outgoingShiftId: true, completedAt: true, exceptionById: true },
+  });
+  for (const h of completedHandovers) {
+    if (h.outgoingShiftId) {
+      await tx.shift.updateMany({
+        where: { id: h.outgoingShiftId, status: "AWAITING_HANDOVER" },
+        data: {
+          status: "CLOSED",
+          closedAt: h.completedAt ?? new Date(),
+          stockClosedAt: h.completedAt ?? new Date(),
+          closedById: h.exceptionById ?? undefined,
+        },
+      });
+    }
+  }
+
+  // 2. If a shift is stuck in AWAITING_CUSTODY_TRANSFER with no live handover:
+  const strandedShifts = await tx.shift.findMany({
+    where: { branchId, status: "OPEN", custodyGateReason: "AWAITING_CUSTODY_TRANSFER" },
+    select: { id: true, cafeId: true, cashierId: true, openingCashAmount: true },
+  });
+  for (const shift of strandedShifts) {
+    const stock = await tx.custodyPeriod.findFirst({
+      where: { branchId, scope: "STOCK", status: "OPEN" },
+      select: { holderType: true },
+    });
+    if (stock?.holderType === "BRANCH") {
+      await tx.shift.update({
+        where: { id: shift.id },
+        data: { custodyGateReason: "AWAITING_OPENING_VERIFICATION" },
+      });
+    } else if (stock?.holderType === "USER") {
+      await tx.shift.update({
+        where: { id: shift.id },
+        data: { custodyGateReason: null, custodyReadyAt: new Date() },
+      });
+    }
+  }
 }
 
 /**
@@ -259,12 +330,14 @@ export async function ensureCustodyForShift(
     const receipt = await tx.openingCashReceipt.findUniqueOrThrow({ where: { id: claimedCash.receiptId } });
     args = { ...args, openingCashAmount: receipt.actualAmount === null ? 0 : Number(receipt.actualAmount) };
   }
+  await reconcileStrandedShifts(tx, args.branchId);
   const midHandover = await branchIsMidHandover(tx, args.branchId);
   const shift = await tx.shift.findFirst({
     where: { id: args.shiftId, cafeId: args.cafeId, branchId: args.branchId, cashierId: args.userId, status: "OPEN" },
-    select: { id: true },
+    select: { custodyLinks: { where: { scope: "CASH" }, select: { custodyPeriodId: true } } },
   });
   if (!shift) throw new ApiError(409, "لازم يكون شيفتك مفتوح في نفس الفرع لاستلام العهدة");
+  const shouldCarryCash = !claimedCash.receiptId && shift.custodyLinks.length === 0;
   const [cash, stock] = await Promise.all([
     tx.custodyPeriod.findFirst({
       where: { branchId: args.branchId, scope: "CASH", status: "OPEN" },
@@ -275,6 +348,13 @@ export async function ensureCustodyForShift(
       include: { participants: { select: { userId: true } } },
     }),
   ]);
+  const incomplete = incompleteOpeningCustody(cash?.holderType, stock?.holderType);
+  if (!midHandover && incomplete) {
+    throw new ShiftOpeningCustodyError(incomplete, args.branchId, {
+      cashCustodyId: cash?.id ?? null,
+      stockCustodyId: stock?.id ?? null,
+    });
+  }
 
   const result: CustodyBootstrapVerdict = {
     cashCustodyPeriodId: null,
@@ -315,7 +395,7 @@ export async function ensureCustodyForShift(
       result.opened.push("CASH");
     }
     // The branch-custody morning: the drawer the night left behind is this shift's opening.
-    if (!claimedCash.receiptId) await carryRetainedDrawerCash(tx, args, result.cashCustodyPeriodId);
+    if (shouldCarryCash) await carryRetainedDrawerCash(tx, args, result.cashCustodyPeriodId);
     result.withheld.push("STOCK");
     result.gate = "AWAITING_OPENING_VERIFICATION";
   } else if (!cash && !stock) {
@@ -329,7 +409,7 @@ export async function ensureCustodyForShift(
       openedById: args.userId,
       openingCashAmount: args.openingCashAmount,
     });
-    if (!claimedCash.receiptId) await carryRetainedDrawerCash(tx, args, openedCash.custodyPeriodId);
+    if (shouldCarryCash) await carryRetainedDrawerCash(tx, args, openedCash.custodyPeriodId);
     const openedStock = await openCustodyPeriod(tx, {
       cafeId: args.cafeId,
       branchId: args.branchId,
@@ -345,7 +425,7 @@ export async function ensureCustodyForShift(
     result.opened.push("CASH", "STOCK");
     result.operational = true;
   } else if (cash?.holderType === "USER" && stock?.holderType === "USER") {
-    if (!claimedCash.receiptId) await carryRetainedDrawerCash(tx, args, cash.id);
+    if (shouldCarryCash) await carryRetainedDrawerCash(tx, args, cash.id);
     for (const [scope, period] of [["CASH", cash], ["STOCK", stock]] as const) {
       if (!period.participants.some((p) => p.userId === args.userId)) {
         await tx.custodyParticipant.create({
@@ -371,8 +451,6 @@ export async function ensureCustodyForShift(
       });
     }
     result.operational = true;
-  } else {
-    throw new ApiError(409, "حالة العهدة غير مكتملة في الفرع — راجع إجراءات التسليم والاستلام");
   }
 
   await tx.shift.update({

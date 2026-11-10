@@ -5,8 +5,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { api, money } from "@/lib/client";
+import { api, ApiRequestError, money } from "@/lib/client";
 import type { OpeningCarryforward } from "@/lib/opening-carryforward";
+import type { ShiftOpeningRequirement } from "@/lib/shift-opening-view";
+import type { incompleteOpeningCustody } from "@/lib/custody";
 import { PendingCloseBanner } from "@/components/pos/close-guidance-panel";
 import { t } from "@/lib/i18n";
 import { useApp } from "@/components/app-shell";
@@ -32,6 +34,8 @@ export type Shift = {
   pendingHandover?: { id: string; status: string; stockCountSessionId: string | null; stockCountSession?: { status: string } | null; outgoingUser: { name: string }; outgoingShift: { shiftNumber: number } } | null;
   openingCashReceipt?: { status: string } | null;
   openedAt: string;
+  openedBy?: { id: string; name: string } | null;
+  waitingFor?: ShiftOpeningRequirement[];
   openingCashAmount: string;
   // Financial totals are available only to staff with report permission.
   expectedCashAmount?: string;
@@ -48,6 +52,20 @@ export type Shift = {
   cardSettlementRequired?: boolean;
   walletSettlementRequired?: boolean;
   cashier: { name: string };
+};
+
+const CUSTODY_BLOCKERS = {
+  CASH_WITHOUT_STOCK: "في عهدة درج مفتوحة من غير عهدة مخزون مقابلة.",
+  STOCK_WITHOUT_CASH: "في عهدة مخزون مفتوحة باسم موظف من غير عهدة درج مقابلة.",
+  INCONSISTENT_CUSTODY: "سجلات عهدة الدرج والمخزون في الفرع محتاجة مراجعة.",
+} satisfies Record<NonNullable<ReturnType<typeof incompleteOpeningCustody>>, string>;
+type OpeningBlocker = { code: keyof typeof CUSTODY_BLOCKERS };
+
+export const openingRequirementText: Record<ShiftOpeningRequirement, string> = {
+  CUSTODY_TRANSFER: "مستني تسليم المخزون من الكاشير اللي سلّم، وتأكيد المستلم المصرّح له.",
+  OPENING_VERIFICATION: "مستني جرد الافتتاح والتحقق من المخزون بواسطة مسؤول الاستلام.",
+  CASH_RECEIPT: "مستني المستلم المعيّن يعدّ كاش الدرج ويؤكد الاستلام.",
+  PLACE_RECEIPT: "مستني المسؤول المعيّن يكمل فحص المكان والأجهزة ويعتمده.",
 };
 
 /**
@@ -81,15 +99,16 @@ export function ShiftControls({
   // Receives the active shift (or null). The second arg lets consumers
   // that need the full figures (e.g. /current-shift) avoid a second fetch;
   // consumers that only need a boolean (POS) can ignore it.
-  onActiveChange: (hasActiveShift: boolean, shift?: Shift | null) => void;
+  onActiveChange: (hasActiveShift: boolean, shift?: Shift | null, pending?: Shift | null) => void;
 }) {
-  const { user } = useApp();
+  const { user, canKey, features } = useApp();
   const router = useRouter();
   const [shift, setShift] = useState<Shift | null>(null);
   const [loading, setLoading] = useState(true);
   const [readError,setReadError]=useState("");
   const controllerRef=useRef<AbortController|null>(null);
   const [pendingShift, setPendingShift] = useState<Shift | null>(null);
+  const [openingBlocker, setOpeningBlocker] = useState<OpeningBlocker | null>(null);
   const [openDialog, setOpenDialog] = useState(false);
   const [openingCash, setOpeningCash] = useState("");
   const [busy, setBusy] = useState(false);
@@ -100,9 +119,10 @@ export function ShiftControls({
   const [carryforward, setCarryforward] = useState<OpeningCarryforward | null>(null);
 
   const setActive = useCallback(
-    (s: Shift | null) => {
+    (s: Shift | null, pending: Shift | null = null) => {
       setShift(s);
-      onActiveChange(s !== null, s);
+      setPendingShift(pending);
+      onActiveChange(s !== null, s, pending);
     },
     [onActiveChange]
   );
@@ -113,12 +133,14 @@ export function ShiftControls({
     const controller=new AbortController();controllerRef.current=controller;
     setLoading(true);setReadError("");
     try {
-      const { shift, pendingShift, carryforward: carried } = await api<{ shift: Shift | null; pendingShift: Shift | null; carryforward?: OpeningCarryforward | null }>(
+      const { shift, pendingShift, carryforward: carried, openingBlocker } = await api<{
+        shift: Shift | null; pendingShift: Shift | null; carryforward?: OpeningCarryforward | null; openingBlocker: OpeningBlocker | null;
+      }>(
         `/api/shifts/active?branchId=${branchId}`,{signal:controller.signal,readTimeoutMs:20_000}
       );
       if(controller.signal.aborted)return;
-      setActive(shift);
-      setPendingShift(pendingShift);
+      setActive(shift, pendingShift);
+      setOpeningBlocker(openingBlocker);
       setCarryforward(carried ?? null);
       if (!shift) {
         api<{ stage: string }>(`/api/shifts/close-flow?branchId=${encodeURIComponent(branchId)}`,{signal:controller.signal,readTimeoutMs:20_000})
@@ -140,6 +162,7 @@ export function ShiftControls({
   }, [load]);
 
   async function openShift() {
+    const scope = controllerRef.current?.signal;
     setBusy(true);
     try {
       const { shift: s, alreadyOpen } = await api<{ shift: Shift; alreadyOpen?: boolean }>(
@@ -153,6 +176,7 @@ export function ShiftControls({
           },
         }
       );
+      if (scope?.aborted) return;
       if (s.branchId !== branchId) {
         // The owner transferred this employee while their page was still open.
         // Do not enable the old branch UI using a shift opened at the new one.
@@ -163,20 +187,27 @@ export function ShiftControls({
         toast.success("تم فتح الشيفت في فرعك الحالي وتحديث الصفحة");
         return;
       }
-      if (s.custodyGateReason || (s.openingCashReceipt && !["ACCEPTED", "OVERRIDDEN"].includes(s.openingCashReceipt.status))) {
-        setPendingShift(s);
-        setActive(null);
-        setOpenDialog(false);
-        toast.error("الشيفت في انتظار التسليم أو التحقق الافتتاحي — أكمل إجراءات العهدة أولًا");
-        router.refresh();
-        return;
-      }
-      setActive(s);
       setOpenDialog(false);
       setOpeningCash("");
+      setOpeningBlocker(null);
+      await load();
       toast.success(alreadyOpen ? t.shifts.alreadyOpen : t.shifts.openedSuccess);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "فشل فتح الشيفت");
+      if (scope?.aborted) return;
+      const failure = e instanceof ApiRequestError
+        ? e.payload as { branchId?: string; openingBlocker?: OpeningBlocker } | null : null;
+      if (failure?.openingBlocker && Object.hasOwn(CUSTODY_BLOCKERS, failure.openingBlocker.code)) {
+        setOpenDialog(false);
+        if (failure.branchId === branchId) {
+          setOpeningBlocker(failure.openingBlocker);
+        } else {
+          setActive(null);
+          router.refresh();
+          toast.error("فرعك اتغير. راجع حالة العهدة في الفرع الحالي.");
+        }
+      } else {
+        toast.error(e instanceof Error ? e.message : "فشل فتح الشيفت");
+      }
     } finally {
       setBusy(false);
     }
@@ -192,6 +223,8 @@ export function ShiftControls({
   }
 
   const closeHref = `/close-shift?branchId=${encodeURIComponent(branchId)}`;
+  const handoverHref = `/handovers?branchId=${encodeURIComponent(branchId)}`;
+  const canViewHandover = canKey("handover.view") && features?.inventoryEnabled !== false;
   const carried = !shift && !pendingShift ? carryforward : null;
   const pendingDirect = carried?.source === "PENDING_HANDOVER" ? carried : null;
   const startOpen = () => {
@@ -232,9 +265,15 @@ export function ShiftControls({
         </div>
       )}
 
+      {openingBlocker && <section role="alert" className="space-y-2 rounded-lg border border-amber-500/50 bg-amber-500/10 p-3 text-sm" data-testid="shift-opening-blocker">
+        <p className="font-semibold">فتح الشيفت متوقف بسبب عهدة الفرع</p>
+        <p>{CUSTODY_BLOCKERS[openingBlocker.code]} اطلب من مدير الفرع أو صاحب الكافيه يراجع العهدة من «التسليم والاستلام» قبل ما تحاول تفتح الشيفت تاني.</p>
+        {canViewHandover && <Link className="text-primary underline" href={handoverHref}>التسليم والاستلام للفرع</Link>}
+      </section>}
+
       {pendingDirect && <section role="alert" className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-500/50 bg-amber-500/10 p-3 text-sm" data-testid="carryforward-pending-handover">
         <p className="font-medium">فيه تسليم مباشر منتظر استلامك{pendingDirect.previousShiftNumber ? ` من الشيفت #${pendingDirect.previousShiftNumber}` : ""}{pendingDirect.previousCashierName ? ` (الكاشير: ${pendingDirect.previousCashierName})` : ""}{pendingDirect.expectedOpeningCash != null ? ` · عهدة الدرج ${money(pendingDirect.expectedOpeningCash, currency)}` : ""}. افتح الشيفت واستلم العهدة قبل البيع — مينفعش تبدأ من غيره.</p>
-        {pendingDirect.pendingDirectHandoverId && <Link className={buttonVariants({ size: "sm", variant: "outline", className: "ms-auto" })} href={`/handovers?branchId=${encodeURIComponent(branchId)}&handoverId=${encodeURIComponent(pendingDirect.pendingDirectHandoverId)}`}>عرض التسليم</Link>}
+        {canViewHandover && <Link className={buttonVariants({ size: "sm", variant: "outline", className: "ms-auto" })} href={pendingDirect.pendingDirectHandoverId ? `${handoverHref}&handoverId=${encodeURIComponent(pendingDirect.pendingDirectHandoverId)}` : handoverHref}>عرض التسليم</Link>}
       </section>}
       {carried?.source === "CASH_DISPOSITION" && carried.expectedOpeningCash != null && <section className="space-y-1 rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-3 text-sm" data-testid="carryforward-card">
         <p className="font-medium">عهدة الدرج المرحّلة من الشيفت السابق (#{carried.previousShiftNumber} - الكاشير: {carried.previousCashierName}): <span className="tabular-nums">{money(carried.expectedOpeningCash, currency)}</span></p>
@@ -248,8 +287,16 @@ export function ShiftControls({
 
       {pendingShift && <section className="space-y-2 rounded-lg border p-3 text-sm" aria-label="إجراءات استلام الشيفت">
         <p className="font-medium">شيفت #{pendingShift.shiftNumber} مفتوح لكنه غير جاهز للبيع.</p>
-        {pendingShift.pendingHandover ? <p data-testid="handover-gate-message">{handoverBlockMessage({ status: pendingShift.pendingHandover.status, countStatus: pendingShift.pendingHandover.stockCountSession?.status ?? null, outgoingName: pendingShift.pendingHandover.outgoingUser.name, outgoingShiftNumber: pendingShift.pendingHandover.outgoingShift.shiftNumber })}</p> : <p>{pendingShift.custodyGateReason === "AWAITING_OPENING_VERIFICATION" ? "المطلوب التحقق الافتتاحي من المخزون المستلم بعهدة الفرع." : "استكمل إجراءات العهدة والنقدية أو فحص المكان حسب المهمة المعروضة. إذا لم يظهر تسليم محدد، راجع المسؤول؛ لن نختار سجلًا بشكل تخميني."}</p>}
-        <Link className="inline-flex rounded-lg border px-3 py-2 text-primary underline" href={`/handovers?branchId=${encodeURIComponent(branchId)}${pendingShift.pendingHandover ? `&handoverId=${encodeURIComponent(pendingShift.pendingHandover.id)}` : ""}`}>متابعة التسليم</Link>
+        <div className="space-y-1" data-testid="handover-gate-message">
+          {pendingShift.waitingFor?.map((requirement) => (
+            <p key={requirement}>
+              {requirement === "CUSTODY_TRANSFER" && pendingShift.pendingHandover
+                ? handoverBlockMessage({ status: pendingShift.pendingHandover.status, countStatus: pendingShift.pendingHandover.stockCountSession?.status ?? null, outgoingName: pendingShift.pendingHandover.outgoingUser.name, outgoingShiftNumber: pendingShift.pendingHandover.outgoingShift.shiftNumber })
+                : openingRequirementText[requirement]}
+            </p>
+          ))}
+        </div>
+        {canViewHandover && <Link className="inline-flex rounded-lg border px-3 py-2 text-primary underline" href={pendingShift.pendingHandover ? `${handoverHref}&handoverId=${encodeURIComponent(pendingShift.pendingHandover.id)}` : handoverHref}>متابعة التسليم والاستلام</Link>}
       </section>}
       <PendingCloseBanner branchId={branchId} refreshKey={0} />
       {!shift && <OpeningCashPanel branchId={branchId} onAccepted={load}/>}

@@ -214,7 +214,7 @@ export function SalesResetCard({ branches = [] }: { branches?: BranchOption[] })
                 <Store className="h-3.5 w-3.5 text-muted-foreground" />
                 الفرع المستهدف
               </Label>
-              <Select value={branchId} onValueChange={setBranchId}>
+              <Select value={branchId} onValueChange={(value) => setBranchId(value ?? "")}>
                 <SelectTrigger className="h-9 w-full bg-background">
                   <SelectValue placeholder="اختر الفرع">
                     {branchId === "ALL"

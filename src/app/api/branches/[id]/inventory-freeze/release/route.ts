@@ -83,9 +83,7 @@ export async function POST(request: NextRequest, { params }: Params) {
           },
           data: {
             status: "REJECTED",
-            reviewNotes: "تم إلغاء طلب التصحيح تلقائياً بسبب إنهاء جلسة التسليم وفك أقفال الفرع",
-            reviewedAt: new Date(),
-            reviewedById: session.id,
+            rejectedReason: "تم إلغاء طلب التصحيح تلقائياً بسبب إنهاء جلسة التسليم وفك أقفال الفرع",
           },
         });
       }

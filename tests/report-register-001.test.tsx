@@ -1,6 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import net from "node:net";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { RegisterDetailsContent } from "../src/components/reports/register-details";
@@ -232,29 +231,12 @@ test("Register equation and product/category breakdown reconcile with drawerExpe
   assert.equal(catTotal, 345, "category totals match product-sales totals");
 });
 
-function canConnectPort(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const socket = net.createConnection({ host: "127.0.0.1", port });
-    socket.setTimeout(1000);
-    socket.once("connect", () => {
-      socket.destroy();
-      resolve(true);
-    });
-    const fail = () => {
-      socket.destroy();
-      resolve(false);
-    };
-    socket.once("error", fail);
-    socket.once("timeout", fail);
-  });
-}
-
 test(
-  "buildShiftReport on disposable DB 5434 computes per-method counts, closing equation, SKU rows and category rows matching product-sales",
+  "buildShiftReport on the configured disposable database computes per-method counts, closing equation, SKU rows and category rows matching product-sales",
   { timeout: 60000 },
   async (t) => {
-    if (!process.env.DATABASE_URL?.includes("5434") || !(await canConnectPort(5434))) {
-      t.skip("Disposable test DB on port 5434 is not currently running");
+    if (!process.env.DATABASE_URL || !process.env.TEST_BASE_URL) {
+      t.skip("Run with npm test against the configured disposable database");
       return;
     }
     const { db, teardownTaggedCafe } = await import("./helpers/db");
@@ -284,7 +266,7 @@ test(
         data: {
           cafeId: fx.cafeId,
           branchId: fx.branchId,
-          cashierId: fx.cashier.id,
+          cashierId: fx.manager.id,
           shiftNumber: 901,
           status: "OPEN",
           openingCashAmount: 500,
@@ -300,8 +282,8 @@ test(
           type: "TAKEAWAY",
           status: "SERVED",
           source: "CASHIER_POS",
-          createdById: fx.cashier.id,
-          servedById: fx.cashier.id,
+          createdById: fx.manager.id,
+          servedById: fx.manager.id,
           saleShiftId: shift.id,
           servedShiftId: shift.id,
           subtotal: 190,
@@ -327,8 +309,8 @@ test(
           type: "TAKEAWAY",
           status: "SERVED",
           source: "CASHIER_POS",
-          createdById: fx.cashier.id,
-          servedById: fx.cashier.id,
+          createdById: fx.manager.id,
+          servedById: fx.manager.id,
           saleShiftId: shift.id,
           servedShiftId: shift.id,
           subtotal: 155,
@@ -350,7 +332,7 @@ test(
             cafeId: fx.cafeId,
             orderId: order1.id,
             shiftId: shift.id,
-            receivedById: fx.cashier.id,
+            receivedById: fx.manager.id,
             method: "CASH",
             type: "COLLECTION",
             status: "PAID",
@@ -360,7 +342,7 @@ test(
             cafeId: fx.cafeId,
             orderId: order1.id,
             shiftId: shift.id,
-            receivedById: fx.cashier.id,
+            receivedById: fx.manager.id,
             method: "CASH",
             type: "REFUND",
             status: "PAID",
@@ -370,7 +352,7 @@ test(
             cafeId: fx.cafeId,
             orderId: order2.id,
             shiftId: shift.id,
-            receivedById: fx.cashier.id,
+            receivedById: fx.manager.id,
             method: "CARD",
             type: "COLLECTION",
             status: "PAID",
@@ -380,7 +362,7 @@ test(
             cafeId: fx.cafeId,
             orderId: order2.id,
             shiftId: shift.id,
-            receivedById: fx.cashier.id,
+            receivedById: fx.manager.id,
             method: "CARD",
             type: "COLLECTION",
             status: "PAID",
@@ -390,7 +372,7 @@ test(
             cafeId: fx.cafeId,
             orderId: order2.id,
             shiftId: shift.id,
-            receivedById: fx.cashier.id,
+            receivedById: fx.manager.id,
             method: "CARD",
             type: "COLLECTION",
             status: "PAID",
@@ -399,8 +381,9 @@ test(
         ],
       });
 
-      const expCat = await db.operatingExpenseCategory.create({
-        data: { cafeId: fx.cafeId, code: "ICE_TEST", nameAr: "ثلج", classification: "OPERATING_EXPENSE" },
+      const { currency } = await db.cafe.findUniqueOrThrow({ where: { id: fx.cafeId }, select: { currency: true } });
+      const expCat = await db.expenseCategory.create({
+        data: { cafeId: fx.cafeId, code: "ICE_TEST", nameAr: "ثلج", createdById: fx.owner.id },
       });
       await db.operatingExpense.create({
         data: {
@@ -408,10 +391,16 @@ test(
           branchId: fx.branchId,
           shiftId: shift.id,
           categoryId: expCat.id,
+          categoryCodeSnapshot: expCat.code,
+          categoryNameSnapshot: expCat.nameAr,
           amount: 15,
+          currency,
           description: "شراء ثلج",
-          executedByUserId: fx.owner.id,
-          sourceKey: `operating-expense:${shift.id}:paid:v1`,
+          actorId: fx.manager.id,
+          actorNameSnapshot: fx.manager.name,
+          idempotencyScope: `operating-expense:${shift.id}`,
+          idempotencyKey: "paid:v1",
+          requestHash: "a".repeat(64),
         },
       });
 

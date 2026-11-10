@@ -51,6 +51,7 @@ type InvItem = {
   expiryDate: string | null;
   isActive: boolean;
   isCritical?: boolean;
+  isSoldDirectly: boolean;
   branchId: string;
   branch: { id: string; name: string };
   status: "ok" | "low" | "out";

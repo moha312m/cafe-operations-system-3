@@ -102,7 +102,7 @@ const NAV: NavItem[] = [
   ...SALES_WORKSPACE_LINKS.map(item=>({...item,icon:"",permission:"orders:read" as const,group:"sales" as const})),
   { href: "/report-center", label: "مركز التقارير", icon: "📊", permission: "reports:read", group: "reports" },
   { href: "/dashboard", label: t.nav.dashboard, icon: "📊", permission: "dashboard:read" },
-  { href: "/current-shift", label: t.nav.currentShift, icon: "🧑‍💼", permission: "shifts:operate", group: "daily", feature: (f) => f.shiftManagementEnabled },
+  { href: "/current-shift", label: t.nav.currentShift, icon: "🧑‍💼", permission: "shifts:operate", anyKey: ["shifts.view_current", "shifts.view_reports"], group: "daily", feature: (f) => f.shiftManagementEnabled },
   { href: "/kitchen", label: t.nav.kitchen, icon: "☕", permission: "orders:update-status", group: "daily", feature: (f) => f.kitchenScreenEnabled },
   { href: "/tables", label: "الترابيزات", icon: "🍽️", permission: "orders:create", group: "daily", key: "tables.view", feature: (f) => f.enableTables },
   // Table setup is no longer a prominent daily page — it's reached from a

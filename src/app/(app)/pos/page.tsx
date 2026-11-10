@@ -242,7 +242,11 @@ function PosPageInner() {
   }
 
   // ── Shift gate (cashiers must have an open shift) ────────────
-  const [shiftActive, setShiftActive] = useState(false);
+  const [activeShiftBranch, setActiveShiftBranch] = useState<string | null>(null);
+  const shiftActive = activeShiftBranch === branchId;
+  const handleShiftActive = useCallback((active: boolean) => {
+    setActiveShiftBranch(active ? branchId : null);
+  }, [branchId]);
   const canOperateShift =
     user.role === "CASHIER" ||
     user.role === "BRANCH_MANAGER" ||
@@ -620,9 +624,10 @@ function PosPageInner() {
 
         {canOperateShift && branchId && (
           <details className="cashier-shift-context rounded-xl bg-card px-3"><summary className="flex cursor-pointer items-center justify-between gap-2 text-sm"><span>{shiftActive ? "الوردية مفتوحة" : "راجع حالة الوردية قبل التحصيل"}</span><span className="text-primary">تفاصيل الوردية</span></summary><ShiftControls
+            key={branchId}
             branchId={branchId}
             currency={currency}
-            onActiveChange={setShiftActive}
+            onActiveChange={handleShiftActive}
           /></details>
         )}
 

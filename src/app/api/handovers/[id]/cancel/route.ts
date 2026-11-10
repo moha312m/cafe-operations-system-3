@@ -120,9 +120,7 @@ export async function POST(request: NextRequest, { params }: Params) {
           },
           data: {
             status: "REJECTED",
-            reviewNotes: "تم إلغاء طلب التصحيح تلقائياً بسبب إلغاء جلسة التسليم المعلقة",
-            reviewedAt: new Date(),
-            reviewedById: session.id,
+            rejectedReason: "تم إلغاء طلب التصحيح تلقائياً بسبب إلغاء جلسة التسليم المعلقة",
           },
         });
       }

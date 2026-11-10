@@ -33,7 +33,10 @@ export function NextStepCard({ reports, sources, onOpen }: {
       ) : checking ? (
         <p className="text-sm text-muted-foreground" role="status">جاري فحص المطلوب…</p>
       ) : (
-        <p className="text-base font-semibold" role="status" data-testid="handover-next-step-idle">مفيش حاجة مستنياك دلوقتي ✓</p>
+        <div role="status" data-testid="handover-next-step-idle">
+          <p className="text-base font-semibold">مفيش حاجة مستنياك دلوقتي ✓</p>
+          <p className="text-sm text-muted-foreground">مفيش مهام تسليم واستلام مطلوبة منك شخصيًا هنا. ممكن يفضل إجراء على عهدة الفرع محتاج متابعة من مسؤول تاني.</p>
+        </div>
       )}
       {later.length > 0 && (
         <ul className="space-y-1 border-t pt-2 text-sm" aria-label="بعدها">

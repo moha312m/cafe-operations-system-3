@@ -127,7 +127,7 @@ export function buildHandoverReport(p: HandoverPayload, meta: ReportMeta): Hando
   // Inventory — outgoing/expected figures only once the server disclosed them (p.acknowledged).
   const acks = new Map(p.workflow.acknowledgements.map((a) => [a.stockCountLineId, a]));
   const lines = (p.count?.lines ?? []) as ReportLine[];
-  const disclosed = true;
+  const disclosed = p.acknowledged;
   const directAcked = Boolean(o.signatures.directAcknowledgedAt);
   tables.push({
     key: "inventory", title: "الجرد",

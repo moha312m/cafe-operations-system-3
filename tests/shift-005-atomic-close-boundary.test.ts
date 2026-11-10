@@ -171,8 +171,8 @@ async function injectFreezeConflict() {
       branchId: fx.branchId,
       outgoingShiftId: (await openOperationalShift(fx.manager.id)).id,
       outgoingUserId: fx.manager.id,
-      status: "COMPLETED",
-      completedAt: new Date(),
+      status: "OUTGOING_SUBMITTED",
+      submittedAt: new Date(),
     },
   });
   await db.inventoryFreeze.create({

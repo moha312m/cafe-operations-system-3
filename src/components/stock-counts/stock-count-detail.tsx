@@ -420,7 +420,7 @@ export function StockCountDetail({
                       إلغاء التسليم المعلق ⚡
                     </Button>
                   )}
-                  {detail.status !== "CONFIRMED" && detail.status !== "CANCELLED" && (canKey("stock_count.confirm") || canKey("stock_count.submit")) && (
+                  {detail.status !== "CONFIRMED" && (canKey("stock_count.confirm") || canKey("stock_count.submit")) && (
                     <Button
                       size="sm"
                       variant="outline"
@@ -565,7 +565,7 @@ export function StockCountDetail({
                       {isHandover ? "إنهاء العد والتحقق 📤" : "تسليم الجرد 📤"}
                     </Button>
                   )}
-                  {detail.status !== "CONFIRMED" && detail.status !== "CANCELLED" && (canKey("stock_count.confirm") || canKey("stock_count.submit")) && (
+                  {detail.status !== "CONFIRMED" && (canKey("stock_count.confirm") || canKey("stock_count.submit")) && (
                     <Button
                       size="sm"
                       variant="outline"

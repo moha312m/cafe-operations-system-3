@@ -234,6 +234,18 @@ export async function finalizeCashCustodyAtFinancialClose(
   }
   if (period.status !== "OPEN") return absent;
 
+  const otherShift = await tx.shiftCustody.findFirst({
+    where: {
+      custodyPeriodId: period.id,
+      shiftId: { not: args.outgoingShiftId },
+      shift: { status: { in: ["OPEN", "AWAITING_HANDOVER"] } },
+    },
+    select: { shiftId: true },
+  });
+  // The departing shift can settle its balance while the shared drawer
+  // remains in service. Manager approval likewise preserves shared stock.
+  if (otherShift) return absent;
+
   await tx.custodyPeriod.update({
     where: { id: period.id },
     data: {
@@ -3565,7 +3577,7 @@ const WAITING_SHIFT_NOT_REDECIDED =
 const NOT_BRANCH_TARGET =
   "التسليم ده مش للعهدة المركزية — استخدم الاستلام العادي";
 const OUTGOING_CASH_STILL_OPEN =
-  "عهدة الخزنة لسه مفتوحة — لازم تتقفل مع الإقفال المالي قبل التحويل لعهدة الفرع";
+  "عهدة الخزنة لسه مفتوحة — لازم تتقفل قبل التحويل لعهدة الفرع. لو الدرج مشترك مع شيفت تاني مفتوح، خلي المدير أو المالك يراجع ويعتمد الجرد من صفحة التسليم.";
 const BRANCH_OMISSION_REASON_REQUIRED =
   "في أصناف مطلوبة ماتعدّتش — لازم سبب مدير ومبرر مكتوب";
 
