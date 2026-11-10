@@ -49,7 +49,7 @@ export function HandoverActionBar({
   target?: string | null;
   onDone: () => void | Promise<void>;
 }) {
-  const { canKey } = useApp();
+  const { canKey, user } = useApp();
   const inFlight = useRef(false);
   const [confirmAccept, setConfirmAccept] = useState(false);
   const [countedCash,setCountedCash]=useState("");
@@ -202,6 +202,30 @@ export function HandoverActionBar({
               تحويل لعهدة الفرع
             </Button>}
           </>
+        )}
+        {(user?.role === "CAFE_OWNER" || user?.role === "SUPER_ADMIN" || canKey("handover.cancel") || canKey("handover.exception")) && (
+          <Button
+            size="sm"
+            variant="destructive"
+            disabled={busy}
+            onClick={async () => {
+              if (!window.confirm("هل أنت متأكد من إلغاء جلسة التسليم المعلقة؟ سيتم تحويلها لعهدة الفرع وتحرير الشيفت.")) return;
+              try {
+                setBusy(true);
+                const res = await api<{ success: boolean; message: string }>(`/api/handovers/${handoverId}/cancel`, { method: "POST" });
+                toast.success(res.message || "تم إلغاء جلسة التسليم المعلقة بنجاح وتحرير الشيفت");
+                await onDone();
+              } catch (err) {
+                toast.error(err instanceof Error ? err.message : "تعذّر إلغاء جلسة التسليم");
+              } finally {
+                setBusy(false);
+              }
+            }}
+            className="bg-rose-600 hover:bg-rose-700 text-white"
+            data-testid="handover-cancel-btn"
+          >
+            إلغاء التسليم المعلق ⚡
+          </Button>
         )}
       </div>
 

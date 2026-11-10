@@ -34,7 +34,7 @@ export async function POST(request: NextRequest, { params }: Params) {
 
     // Atomically cancel the handover and unlock any linked stock count
     await db.$transaction(async (tx) => {
-      // 1. If there's an associated stock count session in draft or in progress, cancel it or unlock it
+      // 1. If there's an associated stock count session in draft or in progress, lock and release it
       if (handover.stockCountSessionId) {
         await tx.stockCountSession.updateMany({
           where: {
@@ -42,7 +42,8 @@ export async function POST(request: NextRequest, { params }: Params) {
             status: { in: ["DRAFT", "IN_PROGRESS", "SUBMITTED", "RECOUNT_REQUIRED"] },
           },
           data: {
-            status: "CANCELLED",
+            status: "LOCKED",
+            lockedAt: new Date(),
             lockedByHandoverId: null,
           },
         });

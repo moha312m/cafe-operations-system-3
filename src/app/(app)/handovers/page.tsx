@@ -36,6 +36,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Button } from "@/components/ui/button";
 
 const ANY = "ALL";
 
@@ -152,6 +153,16 @@ function HandoversWorkspace() {
       <header className="flex flex-wrap items-center gap-3 [&_select]:max-w-[calc(100vw-2rem)]">
         <BranchScopeSelect value={branchId} onChange={selectBranch} />
         <h1 className="text-lg font-semibold">تسليم الشيفت</h1>
+        {selectedId && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="ms-auto"
+            onClick={() => setSelectedId(null)}
+          >
+            عرض سجل التسليمات الكامل 📋
+          </Button>
+        )}
       </header>
 
       {!selectedId && branchId && <NextStepCard reports={{ ...pendingReports, handover: openReport === "error" ? "error" : openHandoverIds?.length ?? null }} sources={["handover", "night-cash", "opening", "place", "cash-deliveries"]} onOpen={openStep} />}

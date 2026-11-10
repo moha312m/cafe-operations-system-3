@@ -281,7 +281,7 @@ export function HandoverDetail({
                 {reviewSessionId && canKey("stock_count.confirm") && canKey("stock_count.view") ? " جرد المُسلّم ظاهر تحت للمراجعة." : ""}
               </p>
             : <p role="alert" className="rounded-lg border p-3 text-sm">{error}. لم يتغير شيء — لو التسليم مسودة لموظف آخر، المسؤول يراجع الجرد ثم يقدّم المُسلّم العهدة.</p>)}
-          {!view && reviewSessionId && canKey("stock_count.confirm") && canKey("stock_count.view") && <StockCountDetail key={reviewSessionId} embedded expectedBranchId={expectedBranchId} sessionId={reviewSessionId} onClose={onClose} onChanged={onChanged} />}
+          {!view && reviewSessionId && canKey("stock_count.confirm") && canKey("stock_count.view") && <StockCountDetail key={reviewSessionId} embedded expectedBranchId={expectedBranchId} sessionId={reviewSessionId} handoverId={handoverId} onClose={onClose} onChanged={onChanged} />}
 
           {!loading && !view && !error && auxiliary}
           {!loading && view && journey && (
@@ -441,7 +441,7 @@ export function HandoverDetail({
                         {view.requiredItems.map((i) => `${i.itemNameSnapshot} (${unitLabel(i.unitSnapshot)})`).join(" · ")}
                       </p>
                     )}
-                    {view.count && view.status === "DRAFT" && canKey("stock_count.view") && <StockCountDetail key={view.count.sessionId} embedded expectedBranchId={view.branchId} sessionId={view.count.sessionId} onClose={onClose} onChanged={after} />}
+                    {view.count && view.status === "DRAFT" && canKey("stock_count.view") && <StockCountDetail key={view.count.sessionId} embedded expectedBranchId={view.branchId} sessionId={view.count.sessionId} handoverId={view.handoverId} onClose={onClose} onChanged={after} />}
                     {view.count === null && <p className="rounded-lg border border-dashed p-4 text-center text-muted-foreground">مفيش جرد مربوط بالتسليم ده لسه</p>}
                     {canSignForBranch && view.count && <BranchSigningPanel key={view.count.sessionId} handoverId={view.handoverId} lines={lines} acknowledgements={acks} signedAt={latestSignature ? fmtDateTime(latestSignature, tz) : null} actorName={user.name} onChanged={after} />}
                     {canReceiveLines && view.count && <ReceivingSheet key={view.count.sessionId} handoverId={view.handoverId} countSessionId={view.count.sessionId} countVersion={view.count.countVersion} lines={view.count.lines} acknowledgements={view.workflow.acknowledgements} onSaved={after} />}
