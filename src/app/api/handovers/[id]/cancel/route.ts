@@ -18,14 +18,15 @@ export async function POST(request: NextRequest, { params }: Params) {
       throw new ApiError(404, "جلسة التسليم غير موجودة");
     }
 
-    // Only owner, super admin, or staff with handover.override / handover.exception can cancel a handover
-    const isOwner = session.role === "CAFE_OWNER" || session.role === "SUPER_ADMIN";
+    // Owner, super admin, branch manager, the shift custodian, or staff with permissions can cancel
+    const isOwner = session.role === "CAFE_OWNER" || session.role === "SUPER_ADMIN" || session.role === "BRANCH_MANAGER";
+    const isCustodian = session.id === handover.outgoingUserId || session.branchId === handover.branchId;
     const hasPermission = session.permissions?.some((p: string) =>
-      p === "handover.override" || p === "handover.exception" || p === "handover.cancel"
+      p === "handover.override" || p === "handover.exception" || p === "handover.cancel" || p === "shift.close"
     );
 
-    if (!isOwner && !hasPermission) {
-      throw new ApiError(403, "صلاحية إلغاء جلسات التسليم مخصصة للمالك أو المدير فقط");
+    if (!isOwner && !isCustodian && !hasPermission) {
+      throw new ApiError(403, "صلاحية إلغاء جلسات التسليم مخصصة للمالك أو المدير أو كاشير الشيفت فقط");
     }
 
     if (handover.status === "COMPLETED" || handover.status === "ACCEPTED") {

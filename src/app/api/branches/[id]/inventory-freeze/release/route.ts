@@ -19,13 +19,14 @@ export async function POST(request: NextRequest, { params }: Params) {
       throw new ApiError(404, "الفرع غير موجود");
     }
 
-    const isOwner = session.role === "CAFE_OWNER" || session.role === "SUPER_ADMIN";
+    const isOwner = session.role === "CAFE_OWNER" || session.role === "SUPER_ADMIN" || session.role === "BRANCH_MANAGER";
+    const isBranchStaff = session.branchId === branchId;
     const hasPermission = session.permissions?.some((p: string) =>
-      p === "handover.override" || p === "handover.exception" || p === "handover.cancel"
+      p === "handover.override" || p === "handover.exception" || p === "handover.cancel" || p === "shift.close"
     );
 
-    if (!isOwner && !hasPermission) {
-      throw new ApiError(403, "صلاحية فك تجميد المخزون مخصصة للمالك أو المدير فقط");
+    if (!isOwner && !isBranchStaff && !hasPermission) {
+      throw new ApiError(403, "صلاحية فك تجميد المخزون مخصصة للمالك أو المدير أو كادر الفرع فقط");
     }
 
     const releasedCount = await db.$transaction(async (tx) => {
