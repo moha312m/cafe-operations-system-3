@@ -7,15 +7,16 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 type Reason = { id: string; label: string; code: string };
 export function ReasonCodeSelect({ domain, value, onChange, label = "سبب الفرق", optional = false }: { domain: "STOCK" | "HANDOVER"; value: string; onChange: (value: string) => void; label?: string; optional?: boolean }) {
- const { canKey } = useApp(); const id = useId();
+ const { canKey, cafe } = useApp(); const id = useId();
  const [reasons, setReasons] = useState<Reason[]>([]); const [loading, setLoading] = useState(true); const [error, setError] = useState("");
  const [adding, setAdding] = useState(false); const [newLabel, setNewLabel] = useState(""); const [saving, setSaving] = useState(false);
  useEffect(() => { let alive = true; setLoading(true); setError(""); setReasons([]);
-  api<{ reasons: Reason[] }>(`/api/reason-codes?domain=${domain}`).then(r => { if (alive) setReasons(r.reasons); }).catch(e => { if (alive) setError(e instanceof Error ? e.message : "تعذر تحميل الأسباب"); }).finally(() => { if (alive) setLoading(false); });
+  const cafeQuery = cafe?.id ? `&cafeId=${encodeURIComponent(cafe.id)}` : "";
+  api<{ reasons: Reason[] }>(`/api/reason-codes?domain=${domain}${cafeQuery}`).then(r => { if (alive) setReasons(r.reasons); }).catch(e => { if (alive) setError(e instanceof Error ? e.message : "تعذر تحميل الأسباب"); }).finally(() => { if (alive) setLoading(false); });
   return () => { alive = false; };
- }, [domain]);
+ }, [domain, cafe?.id]);
  async function create() { if (!newLabel.trim()) return; setSaving(true); setError("");
-  try { const r = await api<{ reason: Reason }>("/api/reason-codes", { method: "POST", body: { domain, label: newLabel.trim() } }); setReasons(current => [...current, r.reason]); onChange(r.reason.id); setAdding(false); setNewLabel(""); }
+  try { const r = await api<{ reason: Reason }>("/api/reason-codes", { method: "POST", body: { domain, label: newLabel.trim(), ...(cafe?.id ? { cafeId: cafe.id } : {}) } }); setReasons(current => [...current, r.reason]); onChange(r.reason.id); setAdding(false); setNewLabel(""); }
   catch (e) { setError(e instanceof Error ? e.message : "تعذر حفظ السبب"); } finally { setSaving(false); }
  }
  return <div className="space-y-2"><Label htmlFor={id}>{label}{optional ? " (اختياري)" : ""}</Label>
