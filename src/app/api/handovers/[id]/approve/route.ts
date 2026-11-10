@@ -3,6 +3,7 @@ import { z } from "zod";
 import { requireActiveSession, handleApiError, ApiError, resolveCafeId } from "@/lib/api";
 import { resolvePermissions } from "@/lib/perms/effective";
 import { approveHandoverAsManager } from "@/lib/handover-approval";
+import { db } from "@/lib/db";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -16,20 +17,31 @@ const approveSchema = z
 export async function POST(request: NextRequest, { params }: Params) {
   try {
     const session = await requireActiveSession();
-    const { keys } = await resolvePermissions(session);
-    const isOwnerOrManager =
-      session.role === "CAFE_OWNER" || session.role === "BRANCH_MANAGER" || session.role === "SUPER_ADMIN";
-    const hasHandoverPerm =
-      keys.has("handover.accept") ||
-      keys.has("handover.exception") ||
-      keys.has("handover.manage") ||
-      keys.has("shifts:operate");
+    const { id } = await params;
 
-    if (!isOwnerOrManager && !hasHandoverPerm) {
-      throw new ApiError(403, "ليس لديك صلاحية اعتماد الجرد وإغلاق التسليم");
+    const handover = await db.handoverSession.findUnique({
+      where: { id },
+      select: { branchId: true, cafeId: true, stockCountSessionId: true, status: true },
+    });
+
+    if (!handover || (session.cafeId && handover.cafeId !== session.cafeId)) {
+      throw new ApiError(404, "جلسة التسليم غير موجودة");
     }
 
-    const { id } = await params;
+    const { keys } = await resolvePermissions(session);
+    const isOwner = session.role === "CAFE_OWNER" || session.role === "SUPER_ADMIN";
+    const isBranchManager = session.role === "BRANCH_MANAGER" && session.branchId === handover.branchId;
+    const hasHandoverException = keys.has("handover.exception");
+
+    if (!isOwner && !isBranchManager && !hasHandoverException) {
+      throw new ApiError(403, "صلاحية الاعتماد الاستثنائي للتسليم مخصصة للمالك أو مدير هذا الفرع فقط");
+    }
+
+    // Require an actual bound stock count session before allowing manager approval
+    if (!handover.stockCountSessionId) {
+      throw new ApiError(400, "لا يمكن اعتماد تسليم لا يحتوي على جلسة جرد خامات");
+    }
+
     const body = approveSchema.parse(await request.json().catch(() => ({})));
     const cafeId = resolveCafeId(session, body.cafeId);
 

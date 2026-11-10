@@ -170,7 +170,8 @@ export async function acquireInventoryExclusiveLock(
 
 export async function activeFreezeFor(
   tx: Prisma.TransactionClient,
-  branchId: string
+  branchId: string,
+  actorId?: string | null
 ): Promise<{ freezeId: string; handoverId: string } | null> {
   const branch = branchMemo(tx, branchId);
   if (lockProtectionHeld(branch) && branch.freezeKnown) return branch.freeze;
@@ -193,9 +194,24 @@ export async function activeFreezeFor(
     // Auto-release the dangling freeze immediately so the branch is never locked permanently!
     // Note: InventoryFreeze_release_pair_consistent requires releasedById to be non-null when releasedAt is non-null.
     const releasedAt = new Date();
+    const effectiveActorId = actorId || freeze.startedById;
     await tx.inventoryFreeze.update({
       where: { id: freeze.id },
-      data: { releasedAt, releasedById: freeze.startedById },
+      data: { releasedAt, releasedById: effectiveActorId },
+    });
+    await auditInTransaction(tx, {
+      cafeId: freeze.cafeId,
+      userId: effectiveActorId,
+      action: "INVENTORY_FREEZE_RELEASED",
+      entity: "InventoryFreeze",
+      entityId: freeze.id,
+      details: {
+        branchId,
+        handoverId: freeze.handoverId,
+        releasedAt: releasedAt.toISOString(),
+        autoHealed: true,
+        reason: "Auto-released dangling freeze because linked handover is no longer active",
+      },
     });
     invalidateFreeze(tx, branchId);
     if (lockProtectionHeld(branch)) rememberFreeze(tx, branchId, null);

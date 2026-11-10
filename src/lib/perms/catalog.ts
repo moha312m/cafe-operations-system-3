@@ -235,6 +235,7 @@ export const PERMISSION_KEYS: PermKey[] = [
   // own key rather than borrowed from `handover.accept`.
   { key: "handover.request_recount", module: "HANDOVER", label: "طلب إعادة الجرد (الطرف المُستلِم)" },
   { key: "handover.exception", module: "HANDOVER", label: "تسليم استثنائي بموافقة المدير", sensitive: true },
+  { key: "handover.cancel", module: "HANDOVER", label: "إلغاء وفك جلسات التسليم المعلقة", sensitive: true },
 
   // Tables
   { key: "tables.view", module: "TABLES", label: "عرض الترابيزات" },

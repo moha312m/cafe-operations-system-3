@@ -1720,17 +1720,16 @@ export async function rejectCountCorrection(args: {
     if (args.viewerBranchId && correction.line.session.branchId !== args.viewerBranchId) {
       throw new ApiError(403, "ليس لديك صلاحية على فرع تاني");
     }
-    if (correction.status !== "PENDING_APPROVAL") {
-      throw new ApiError(409, "التصحيح ده اتبتّ فيه خلاص");
-    }
-
-    await tx.stockCountCorrection.update({
-      where: { id: args.correctionId },
+    const claimed = await tx.stockCountCorrection.updateMany({
+      where: { id: args.correctionId, status: "PENDING_APPROVAL" },
       data: {
         status: "REJECTED",
         rejectedReason: args.rejectedReason ?? "تم رفض التصحيح من قبل الإدارة",
       },
     });
+    if (claimed.count === 0) {
+      throw new ApiError(409, "التصحيح ده اتبتّ فيه خلاص");
+    }
 
     await auditInTransaction(tx, {
       cafeId: correction.line.session.cafeId,

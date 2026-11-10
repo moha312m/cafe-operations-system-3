@@ -57,6 +57,7 @@ const MANAGER_KEYS = [
   "handover.view", "handover.manage", "handover.submit", "handover.accept",
   "handover.request_recount",
   "handover.exception",
+  "handover.cancel",
   // Customers & loyalty (settings edits stay owner-only by default).
   "customers.lookup", "customers.view", "customers.edit",
   "loyalty.view", "loyalty.redeem_points",
