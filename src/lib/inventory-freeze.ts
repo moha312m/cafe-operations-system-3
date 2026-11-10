@@ -56,7 +56,7 @@ function rememberFreeze(tx: Prisma.TransactionClient, branchId: string, freeze: 
   branch.freeze = freeze;
 }
 
-function invalidateFreeze(tx: Prisma.TransactionClient, branchId: string) {
+export function invalidateFreeze(tx: Prisma.TransactionClient, branchId: string) {
   const branch = branchMemo(tx, branchId);
   branch.freezeKnown = false;
   branch.freeze = null;

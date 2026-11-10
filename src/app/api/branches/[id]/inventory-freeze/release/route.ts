@@ -75,6 +75,19 @@ export async function POST(request: NextRequest, { params }: Params) {
             lockedByHandoverId: null,
           },
         });
+
+        await tx.stockCountCorrection.updateMany({
+          where: {
+            line: { sessionId: { in: countIds } },
+            status: "PENDING_APPROVAL",
+          },
+          data: {
+            status: "REJECTED",
+            reviewNotes: "تم إلغاء طلب التصحيح تلقائياً بسبب إنهاء جلسة التسليم وفك أقفال الفرع",
+            reviewedAt: new Date(),
+            reviewedById: session.id,
+          },
+        });
       }
 
       // 5. Ensure outgoing shifts do not get stranded in AWAITING_HANDOVER

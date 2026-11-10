@@ -4,6 +4,8 @@ import { resolvePermissions } from "@/lib/perms/effective";
 import { db } from "@/lib/db";
 import { transferCustody } from "@/lib/custody";
 import { finalizeCashCustodyAtFinancialClose } from "@/lib/handover";
+import { acquireInventoryExclusiveLock, invalidateFreeze } from "@/lib/inventory-freeze";
+import { auditInTransaction } from "@/lib/audit";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -37,10 +39,27 @@ export async function POST(request: NextRequest, { params }: Params) {
 
     // Atomically cancel the handover, discharge custody, close the outgoing shift, and unlock stock counts
     await db.$transaction(async (tx) => {
-      // 1. Conditional CAS: Only cancel if still in an open, uncompleted state
+      // 1. Acquire branch advisory exclusive lock first to protect the cancellation boundary
+      await acquireInventoryExclusiveLock(tx, handover.branchId);
+
+      // 2. Re-read the fresh state inside transaction under lock to prevent concurrent races
+      const currentHandover = await tx.handoverSession.findUnique({
+        where: { id: handover.id },
+        include: {
+          outgoingShift: {
+            select: { id: true, actualCashAmount: true, status: true },
+          },
+        },
+      });
+
+      if (!currentHandover) {
+        throw new ApiError(404, "جلسة التسليم غير موجودة");
+      }
+
+      // 3. Conditional CAS: Only cancel if still in an open, uncompleted state
       const moved = await tx.handoverSession.updateMany({
         where: {
-          id: handover.id,
+          id: currentHandover.id,
           status: { in: ["DRAFT", "OUTGOING_SUBMITTED", "INCOMING_REVIEW", "REJECTED"] },
         },
         data: {
@@ -56,10 +75,67 @@ export async function POST(request: NextRequest, { params }: Params) {
         throw new ApiError(409, "حالة التسليم تغيرت — حدّث الصفحة");
       }
 
-      // 2. Transfer STOCK custody to BRANCH if an outgoing stock custody period is still open
-      if (handover.outgoingStockCustodyId) {
+      // 4. Collect all count session IDs linked to this handover or shift
+      const countSessionIds = new Set<string>();
+      if (currentHandover.stockCountSessionId) {
+        countSessionIds.add(currentHandover.stockCountSessionId);
+      }
+      const lockedByThis = await tx.stockCountSession.findMany({
+        where: { lockedByHandoverId: currentHandover.id },
+        select: { id: true },
+      });
+      for (const s of lockedByThis) {
+        countSessionIds.add(s.id);
+      }
+      if (currentHandover.outgoingShiftId) {
+        const byShift = await tx.stockCountSession.findMany({
+          where: { shiftId: currentHandover.outgoingShiftId },
+          select: { id: true },
+        });
+        for (const s of byShift) {
+          countSessionIds.add(s.id);
+        }
+      }
+
+      const allCountIds = Array.from(countSessionIds);
+      if (allCountIds.length > 0) {
+        // Lock all linked count sessions
+        await tx.stockCountSession.updateMany({
+          where: {
+            id: { in: allCountIds },
+            status: { not: "LOCKED" },
+          },
+          data: {
+            status: "LOCKED",
+            lockedAt: new Date(),
+            lockedByHandoverId: null,
+          },
+        });
+
+        // Auto-reject any pending corrections on these sessions to clear preflight blockers
+        await tx.stockCountCorrection.updateMany({
+          where: {
+            line: { sessionId: { in: allCountIds } },
+            status: "PENDING_APPROVAL",
+          },
+          data: {
+            status: "REJECTED",
+            reviewNotes: "تم إلغاء طلب التصحيح تلقائياً بسبب إلغاء جلسة التسليم المعلقة",
+            reviewedAt: new Date(),
+            reviewedById: session.id,
+          },
+        });
+      }
+
+      await tx.stockCountSession.updateMany({
+        where: { lockedByHandoverId: currentHandover.id },
+        data: { lockedByHandoverId: null },
+      });
+
+      // 5. Transfer STOCK custody to BRANCH if an outgoing stock custody period is still open
+      if (currentHandover.outgoingStockCustodyId) {
         const stockPeriod = await tx.custodyPeriod.findUnique({
-          where: { id: handover.outgoingStockCustodyId },
+          where: { id: currentHandover.outgoingStockCustodyId },
           select: { id: true, status: true },
         });
 
@@ -81,20 +157,20 @@ export async function POST(request: NextRequest, { params }: Params) {
         }
       }
 
-      // 3. Finalize CASH custody at financial close if not already closed
-      if (handover.outgoingShiftId) {
+      // 6. Finalize CASH custody at financial close if not already closed
+      if (currentHandover.outgoingShiftId) {
         await finalizeCashCustodyAtFinancialClose(tx, {
-          cafeId: handover.cafeId,
-          branchId: handover.branchId,
-          outgoingShiftId: handover.outgoingShiftId,
-          actualCash: Number(handover.outgoingShift?.actualCashAmount ?? 0),
+          cafeId: currentHandover.cafeId,
+          branchId: currentHandover.branchId,
+          outgoingShiftId: currentHandover.outgoingShiftId,
+          actualCash: Number(currentHandover.outgoingShift?.actualCashAmount ?? 0),
         });
       }
 
-      // 4. Complete the outgoing shift lifecycle (set stockClosedAt and status to CLOSED)
+      // 7. Complete the outgoing shift lifecycle (set stockClosedAt and status to CLOSED)
       await tx.shift.updateMany({
         where: {
-          id: handover.outgoingShiftId,
+          id: currentHandover.outgoingShiftId,
           status: "AWAITING_HANDOVER",
         },
         data: {
@@ -105,42 +181,51 @@ export async function POST(request: NextRequest, { params }: Params) {
         },
       });
 
-      // 5. Lock any linked stock count sessions (including CONFIRMED, SUBMITTED, DRAFT)
-      if (handover.stockCountSessionId) {
-        await tx.stockCountSession.updateMany({
-          where: {
-            id: handover.stockCountSessionId,
-            status: { not: "LOCKED" },
-          },
-          data: {
-            status: "LOCKED",
-            lockedAt: new Date(),
-            lockedByHandoverId: null,
-          },
-        });
-      }
-
-      await tx.stockCountSession.updateMany({
-        where: { lockedByHandoverId: handover.id },
-        data: { lockedByHandoverId: null },
-      });
-
-      // 6. Release active inventory freeze on this branch
-      await tx.inventoryFreeze.updateMany({
+      // 8. Release active inventory freeze on this branch and write transactional audit logs
+      const releasedAt = new Date();
+      const activeFreezes = await tx.inventoryFreeze.findMany({
         where: {
-          branchId: handover.branchId,
+          branchId: currentHandover.branchId,
           releasedAt: null,
         },
-        data: {
-          releasedAt: new Date(),
-          releasedById: session.id,
-        },
+        select: { id: true, cafeId: true, handoverId: true },
       });
 
-      // 7. Re-evaluate waiting shifts that were waiting for custody transfer
+      if (activeFreezes.length > 0) {
+        await tx.inventoryFreeze.updateMany({
+          where: {
+            branchId: currentHandover.branchId,
+            releasedAt: null,
+          },
+          data: {
+            releasedAt,
+            releasedById: session.id,
+          },
+        });
+
+        invalidateFreeze(tx, currentHandover.branchId);
+
+        for (const f of activeFreezes) {
+          await auditInTransaction(tx, {
+            cafeId: f.cafeId,
+            userId: session.id,
+            action: "INVENTORY_FREEZE_RELEASED",
+            entity: "InventoryFreeze",
+            entityId: f.id,
+            details: {
+              branchId: currentHandover.branchId,
+              handoverId: f.handoverId,
+              releasedAt: releasedAt.toISOString(),
+              cancelledByHandover: currentHandover.id,
+            },
+          });
+        }
+      }
+
+      // 9. Re-evaluate waiting shifts that were waiting for custody transfer
       await tx.shift.updateMany({
         where: {
-          branchId: handover.branchId,
+          branchId: currentHandover.branchId,
           status: "OPEN",
           custodyGateReason: "AWAITING_CUSTODY_TRANSFER",
         },

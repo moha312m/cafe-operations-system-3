@@ -437,7 +437,14 @@ function MoneyStep({ flow, currency, onCommitted }: {
                       </Link>
                     </Button>
                   )}
-                  {b.code === "EXISTING_ACTIVE_HANDOVER" && (user.role === "CAFE_OWNER" || user.role === "SUPER_ADMIN" || canKey("handover.override")) && (
+                  {b.code === "EXISTING_ACTIVE_HANDOVER" && (
+                    user.role === "CAFE_OWNER" ||
+                    user.role === "SUPER_ADMIN" ||
+                    user.branchId === flow.branch.id ||
+                    canKey("handover.cancel") ||
+                    canKey("handover.override") ||
+                    canKey("handover.exception")
+                  ) && (
                     <Button
                       type="button"
                       size="sm"

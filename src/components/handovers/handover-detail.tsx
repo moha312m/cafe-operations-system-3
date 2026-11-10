@@ -511,7 +511,7 @@ export function HandoverDetail({
                         </div>
                       </div>
                     )}
-                    {(["OUTGOING_SUBMITTED", "INCOMING_REVIEW"] as string[]).includes(view.status) && <HandoverActionBar key={view.handoverId} handoverId={view.handoverId} allowReceive={mayReviewStock && stockReviewReady} hasIncomingShift={!!view.workflow.incomingShift} stockReviewReady={stockReviewReady} target={view.target} onDone={async () => {
+                    {(["OUTGOING_SUBMITTED", "INCOMING_REVIEW"] as string[]).includes(view.status) && <HandoverActionBar key={view.handoverId} handoverId={view.handoverId} branchId={view.branchId} outgoingUserId={view.outgoingUserId} allowReceive={mayReviewStock && stockReviewReady} hasIncomingShift={!!view.workflow.incomingShift} stockReviewReady={stockReviewReady} target={view.target} onDone={async () => {
                       try {
                         if (canKey("shifts.view_current")) await api(`/api/shifts/active?branchId=${encodeURIComponent(view.branchId)}`);
                       } catch {

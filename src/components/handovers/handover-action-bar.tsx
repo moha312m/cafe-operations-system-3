@@ -36,6 +36,8 @@ type Action = "recount" | "override" | "branch";
  */
 export function HandoverActionBar({
   handoverId,
+  branchId,
+  outgoingUserId,
   onDone,
   allowReceive = true,
   hasIncomingShift = true,
@@ -43,6 +45,8 @@ export function HandoverActionBar({
   target = "SHIFT_TO_SHIFT",
 }: {
   handoverId: string;
+  branchId?: string;
+  outgoingUserId?: string;
   allowReceive?: boolean;
   hasIncomingShift?: boolean;
   stockReviewReady?: boolean;
@@ -62,6 +66,11 @@ export function HandoverActionBar({
   const [kind, setKind] = useState<"MANAGER_ADJUSTMENT" | "NO_INCOMING">(
     "MANAGER_ADJUSTMENT"
   );
+
+  const isOwner = user?.role === "CAFE_OWNER" || user?.role === "SUPER_ADMIN";
+  const isBranchManager = Boolean(user?.role === "BRANCH_MANAGER" && branchId && user?.branchId === branchId);
+  const isCustodian = Boolean(outgoingUserId && user?.id === outgoingUserId && (!branchId || user?.branchId === branchId));
+  const canCancel = isOwner || isBranchManager || isCustodian || canKey("handover.cancel") || canKey("handover.exception");
 
   function start(action: Action) {
     setReasonCodeId("");
@@ -203,7 +212,7 @@ export function HandoverActionBar({
             </Button>}
           </>
         )}
-        {(user?.role === "CAFE_OWNER" || user?.role === "SUPER_ADMIN" || canKey("handover.cancel") || canKey("handover.exception")) && (
+        {canCancel && (
           <Button
             size="sm"
             variant="destructive"
