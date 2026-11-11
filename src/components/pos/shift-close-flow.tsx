@@ -17,7 +17,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { api, ApiRequestError, blockersOf, detailedBlockersOf, type DetailedBlocker, money } from "@/lib/client";
-import { AlertTriangle, ArrowLeft, Loader2, XCircle } from "lucide-react";
+import { AlertTriangle, ArrowLeft, XCircle } from "lucide-react";
 import { useApp } from "@/components/app-shell";
 import { clearCloseDraft, loadCloseDraft, saveCloseDraft, type DraftScope } from "@/lib/close-guidance";
 import { CashDenominationCalculator } from "@/components/pos/cash-denomination-calculator";
@@ -33,6 +33,7 @@ import { materialsDecisionLabel } from "@/lib/materials-labels";
 import { parseAmount } from "@/lib/close-amount";
 import { UNIT_LABEL } from "@/lib/inventory";
 import { materialsNextLine } from "@/lib/handover-enablement";
+import { ManagerHandoverActionDialog } from "@/components/handovers/manager-handover-action";
 import { CashDispositionEditor, type DispositionEditorController, type DispositionView, type EligibleRecipient } from "@/components/pos/cash-disposition-editor";
 
 type MoneyShift = {
@@ -200,7 +201,6 @@ function MoneyStep({ flow, currency, onCommitted }: {
   const [openOrders, setOpenOrders] = useState<{ total: number; refs: string[]; carry: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<{ message: string; blockers: DetailedBlocker[] } | null>(null);
-  const [quickFixing, setQuickFixing] = useState(false);
   const inFlight = useRef(false);
 
   useEffect(() => {
@@ -261,39 +261,10 @@ function MoneyStep({ flow, currency, onCommitted }: {
     }
   }
 
-  async function handleQuickDismissHandover(handoverId?: string) {
-    if (!handoverId) {
-      toast.error("تعذر تحديد معرف جلسة التسليم");
-      return;
-    }
-    setQuickFixing(true);
-    try {
-      const res = await api<{ success: boolean; message: string }>(`/api/handovers/${handoverId}/cancel`, {
-        method: "POST",
-      });
-      toast.success(res.message || "تم إلغاء جلسة التسليم المعلقة بنجاح");
-      setFailure(null);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "فشل إلغاء جلسة التسليم المعلقة");
-    } finally {
-      setQuickFixing(false);
-    }
-  }
-
-  async function handleReleaseFreeze() {
-    setQuickFixing(true);
-    try {
-      const res = await api<{ success: boolean; message: string }>(`/api/branches/${flow.branch.id}/inventory-freeze/release`, {
-        method: "POST",
-      });
-      toast.success(res.message || "تم فك تجميد المخزون بنجاح — يمكنك إغلاق الشيفت الآن");
-      setFailure(null);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "فشل فك تجميد المخزون");
-    } finally {
-      setQuickFixing(false);
-    }
-  }
+  // Ending a stuck handover or clearing the branch is a manager exception with a written reason, never one click.
+  const [managerFix, setManagerFix] = useState<{ kind: "cancel" | "release"; handoverId?: string } | null>(null);
+  const isOwner = user.role === "CAFE_OWNER" || user.role === "SUPER_ADMIN";
+  const mayEndHandovers = isOwner || canKey("handover.exception") || canKey("handover.cancel");
 
   return <section className="space-y-4 rounded-2xl border bg-card p-4 sm:p-5" aria-labelledby="money-heading" data-testid="close-money-step">
     <div className="space-y-1">
@@ -382,33 +353,18 @@ function MoneyStep({ flow, currency, onCommitted }: {
               ⚠️ تنبيه: يوجد تجميد مخزون معلق في هذا الفرع
             </p>
             <p className="text-xs text-amber-900/80 dark:text-amber-200/80">
-              يحدث هذا بسبب جلسة تسليم سابقة لم تُفك أقفالها. اضغط الزر التالي لفك التجميد وتحرير الشيفت فوراً.
+              يحدث هذا بسبب جلسة تسليم سابقة لسه مفتوحة. الحل إن التسليم يكمل، أو المدير ينهيه لعهدة الفرع بسبب مكتوب.
             </p>
           </div>
-          <Button
-            type="button"
-            size="sm"
-            disabled={quickFixing}
-            onClick={() => void handleReleaseFreeze()}
-            className="bg-amber-600 hover:bg-amber-700 text-white font-medium text-xs h-9 shrink-0 shadow-sm"
-          >
-            {quickFixing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "فك تجميد المخزون فوراً ⚡"}
-          </Button>
-        </div>
-      )}
-      {(user.role === "CAFE_OWNER" || user.role === "SUPER_ADMIN") && (
-        <div className="pt-2 border-t border-destructive/20 flex flex-wrap items-center justify-between gap-2">
-          <span className="text-xs text-muted-foreground">صلاحية الإدارة: فك جميع التجميدات والمسودات المعلقة دفعة واحدة.</span>
-          <Button
+          {mayEndHandovers ? <Button
             type="button"
             size="sm"
             variant="outline"
-            disabled={quickFixing}
-            onClick={() => void handleReleaseFreeze()}
-            className="text-xs h-8 border-primary text-primary hover:bg-primary/10 font-semibold"
+            onClick={() => setManagerFix({ kind: "release" })}
+            className="text-xs h-9 shrink-0"
           >
-            {quickFixing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "فك العوائق كمالك ⚡"}
-          </Button>
+            مراجعة وفك العوائق (مدير)
+          </Button> : <span className="text-xs">اطلب من المدير أو المالك يراجع التسليم المفتوح.</span>}
         </div>
       )}
       {failure.blockers.length > 0 && (
@@ -435,25 +391,16 @@ function MoneyStep({ flow, currency, onCommitted }: {
                       <ArrowLeft className="h-3.5 w-3.5" />
                     </Link>
                   )}
-                  {b.code === "EXISTING_ACTIVE_HANDOVER" && (
-                    user.role === "CAFE_OWNER" ||
-                    user.role === "SUPER_ADMIN" ||
-                    user.branchId === flow.branch.id ||
-                    canKey("handover.cancel") ||
-                    canKey("handover.override") ||
-                    canKey("handover.exception")
-                  ) && (
+                  {b.code === "EXISTING_ACTIVE_HANDOVER" && mayEndHandovers && b.ids?.[0] && (
                     <Button
                       type="button"
                       size="sm"
                       variant="outline"
-                      disabled={quickFixing}
-                      onClick={() => void handleQuickDismissHandover(b.ids?.[0])}
+                      onClick={() => setManagerFix({ kind: "cancel", handoverId: b.ids?.[0] })}
                       className="text-xs h-8 border-destructive/40 text-destructive hover:bg-destructive/10"
-                      title="إلغاء جلسة التسليم المعلقة فوراً دون مغادرة الشاشة"
                     >
-                      {quickFixing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <XCircle className="h-3.5 w-3.5 me-1 text-destructive" />}
-                      إلغاء التسليم المعلق ⚡
+                      <XCircle className="h-3.5 w-3.5 me-1 text-destructive" />
+                      إنهاء التسليم لعهدة الفرع (مدير)
                     </Button>
                   )}
                 </div>
@@ -464,6 +411,7 @@ function MoneyStep({ flow, currency, onCommitted }: {
       )}
       <p className="text-xs text-muted-foreground">المبالغ التي قمت بإدخالها محفوظة في هذه الشاشة ولن تفقدها.</p>
     </div>}
+    {managerFix && <ManagerHandoverActionDialog kind={managerFix.kind} open handoverId={managerFix.handoverId} branchId={flow.branch.id} onClose={() => setManagerFix(null)} onDone={() => setFailure(null)} />}
     <div className="sticky bottom-0 -mx-4 border-t bg-card/95 px-4 pt-3 pb-1 backdrop-blur sm:-mx-5 sm:px-5">
       <Button className="h-12 w-full text-base" disabled={busy || !ready} onClick={() => void commit()} data-testid="close-money-submit">
         {busy ? "جارٍ التسجيل…" : materialsNext ? "التالي: جرد الخامات وإغلاق الشيفت" : "إنهاء الشيفت"}
@@ -709,9 +657,7 @@ function AutoBranchSave({ handoverId, href }: { handoverId: string; href: string
 }
 
 function DoneStep({ flow, currency, outcome }: { flow: ClosedFlow; currency: string; outcome: { notDue?: { nextDueAt: string | null }; recordedDifferences?: number } | null }) {
-  const { canKey, user } = useApp();
-  const [approving, setApproving] = useState(false);
-  const [approved, setApproved] = useState(false);
+  const { canKey } = useApp();
   const router = useRouter();
   const shift = flow.shift;
   const handover = flow.handover;
@@ -766,35 +712,7 @@ function DoneStep({ flow, currency, outcome }: { flow: ClosedFlow; currency: str
       <summary className="cursor-pointer text-muted-foreground">تفاصيل تسليم الفلوس</summary>
       <MoneySummary shift={shift} currency={currency} />
     </details>
-    {handover && !approved && (user.role === "CAFE_OWNER" || user.role === "BRANCH_MANAGER" || canKey("handover.exception") || canKey("handover.manage")) && (
-        <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-start space-y-2">
-          <p className="text-sm font-bold text-amber-900 dark:text-amber-200">بصفتك مالك / مدير:</p>
-          <p className="text-xs text-muted-foreground">يمكنك اعتماد الجرد وتحديث أرصدة المخزون بالسيستم فوراً، أو مراجعته لاحقاً من تقرير الشيفت.</p>
-          <Button
-            size="sm"
-            className="bg-amber-600 hover:bg-amber-700 text-white font-bold"
-            disabled={approving}
-            onClick={async () => {
-              setApproving(true);
-              try {
-                const res = await api<{ message?: string }>(`/api/handovers/${handover.id}/approve`, { method: "POST", body: {} });
-                toast.success(res.message || "تم اعتماد الجرد وتحديث المخزون بنجاح!");
-                setApproved(true);
-              } catch (e) {
-                toast.error(e instanceof Error ? e.message : "تعذّر الاعتماد");
-              } finally {
-                setApproving(false);
-              }
-            }}
-          >
-            {approving ? "جارٍ الاعتماد وتحديث المخزون…" : "اعتماد الجرد وتحديث أرصدة المخزون الآن"}
-          </Button>
-        </div>
-      )}
-      {approved && (
-        <p className="text-sm font-bold text-emerald-600">✓ تم اعتماد الجرد وتحديث أرصدة المخزون بالسيستم بنجاح</p>
-      )}
-      <div className="flex flex-col gap-2 sm:flex-row sm:justify-center">
+    <div className="flex flex-col gap-2 sm:flex-row sm:justify-center">
       {waiting && <Button className="h-12" disabled={dispositionMissing} onClick={() => void handOver()} data-testid="close-hand-device">تسليم الجهاز للموظف الجاي</Button>}
       <Link href="/pos" className={buttonVariants({ variant: "outline", className: "h-12" })}>رجوع للكاشير</Link>
     </div>

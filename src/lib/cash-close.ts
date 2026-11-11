@@ -509,6 +509,17 @@ export async function closeShiftWithSettlement(
     if (target === "BRANCH_CUSTODY" && !grants.handoverException) {
       throw new ApiError(403, "تسليم عهدة الفرع محتاج موافقة مدير");
     }
+    // Branch custody means NOBODY holds the shelf. A colleague still trading
+    // on it is somebody, so the night close waits for them — the same rule
+    // overnight drawer storage already applies.
+    if (target === "BRANCH_CUSTODY") {
+      const stillTrading = await tx.shift.count({
+        where: { cafeId: locked.cafeId, branchId: locked.branchId, id: { not: locked.id }, status: "OPEN", custodyGateReason: null },
+      });
+      if (stillTrading > 0) {
+        throw new ApiError(409, "فيه شيفت تاني لسه شغال في الفرع — تسليم المخزون لعهدة الفرع بيكون بعد قفل كل الشيفتات؛ سلّم شيفت لشيفت أو استنى لحد ما يقفل");
+      }
+    }
     const closedAt = new Date();
     const overnightStorage = target === "BRANCH_CUSTODY"
       && (await tx.branchOpeningSettings.findUnique({ where: { branchId: locked.branchId }, select: { overnightCashEnabled: true } }))?.overnightCashEnabled === true;

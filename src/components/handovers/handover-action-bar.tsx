@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/dialog";
 import { ConfirmHandoverAction } from "./detail-frame";
 import { handoverIntents } from "./handover-intent";
+import { ManagerHandoverActionDialog, useMayEndHandover } from "./manager-handover-action";
 
 type Action = "recount" | "override" | "branch";
 
@@ -36,7 +37,6 @@ type Action = "recount" | "override" | "branch";
  */
 export function HandoverActionBar({
   handoverId,
-  branchId,
   outgoingUserId,
   onDone,
   allowReceive = true,
@@ -53,7 +53,7 @@ export function HandoverActionBar({
   target?: string | null;
   onDone: () => void | Promise<void>;
 }) {
-  const { canKey, user } = useApp();
+  const { canKey } = useApp();
   const inFlight = useRef(false);
   const [confirmAccept, setConfirmAccept] = useState(false);
   const [countedCash,setCountedCash]=useState("");
@@ -67,10 +67,10 @@ export function HandoverActionBar({
     "MANAGER_ADJUSTMENT"
   );
 
-  const isOwner = user?.role === "CAFE_OWNER" || user?.role === "SUPER_ADMIN";
-  const isBranchManager = Boolean(user?.role === "BRANCH_MANAGER" && branchId && user?.branchId === branchId);
-  const isCustodian = Boolean(outgoingUserId && user?.id === outgoingUserId && (!branchId || user?.branchId === branchId));
-  const canCancel = isOwner || isBranchManager || isCustodian || canKey("handover.cancel") || canKey("handover.exception");
+  // Ending a handover without its receiver is a manager exception, and never
+  // the outgoing custodian's on their own handover.
+  const canCancel = useMayEndHandover(outgoingUserId);
+  const [cancelOpen, setCancelOpen] = useState(false);
 
   function start(action: Action) {
     setReasonCodeId("");
@@ -217,27 +217,14 @@ export function HandoverActionBar({
             size="sm"
             variant="destructive"
             disabled={busy}
-            onClick={async () => {
-              if (!window.confirm("هل أنت متأكد من إلغاء جلسة التسليم المعلقة؟ سيتم تحويلها لعهدة الفرع وتحرير الشيفت.")) return;
-              try {
-                setBusy(true);
-                const res = await api<{ success: boolean; message: string }>(`/api/handovers/${handoverId}/cancel`, { method: "POST" });
-                toast.success(res.message || "تم إلغاء جلسة التسليم المعلقة بنجاح وتحرير الشيفت");
-                await onDone();
-              } catch (err) {
-                toast.error(err instanceof Error ? err.message : "تعذّر إلغاء جلسة التسليم");
-              } finally {
-                setBusy(false);
-              }
-            }}
-            className="bg-rose-600 hover:bg-rose-700 text-white"
+            onClick={() => setCancelOpen(true)}
             data-testid="handover-cancel-btn"
           >
-            إلغاء التسليم المعلق ⚡
+            إنهاء التسليم لعهدة الفرع
           </Button>
         )}
       </div>
-
+      <ManagerHandoverActionDialog kind="cancel" open={cancelOpen} handoverId={handoverId} onClose={() => setCancelOpen(false)} onDone={() => onDone()} />
       <ConfirmHandoverAction title="تأكيد استلام العهدة" open={confirmAccept} busy={busy} onCancel={() => setConfirmAccept(false)} onConfirm={() => {setConfirmAccept(false); void accept();}}>أؤكد استلام العهدة والنقدية الفعلية المسجلة ({countedCash}). لن يصبح الشيفت جاهزًا إلا بعد قبول الخادم لجميع شروط التسليم.</ConfirmHandoverAction>
       <Dialog open={open !== null} onOpenChange={(o) => !o && !busy && setOpen(null)}>
         <DialogContent className="max-w-sm">
