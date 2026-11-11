@@ -7,50 +7,63 @@ import { db } from "@/lib/db";
 
 type Params = { params: Promise<{ id: string }> };
 
+// POST /api/handovers/:id/approve — a manager finishes a handover through the
+// audited acceptance doors (see `handover-approval.ts`).
+//
+// `.strict()`, and the reason code and note are REQUIRED: this is a manager
+// exception however it is pressed, and an exception without a stated reason
+// is the one record the handover model must never carry. `idempotencyKey`
+// defaults to one derived from the handover, so a retry replays rather than
+// claiming a second acceptance.
 const approveSchema = z
   .object({
-    note: z.string().max(1000).optional(),
+    reasonCodeId: z
+      .string({ error: "لازم تحدد سبب الاعتماد" })
+      .min(1, "لازم تحدد سبب الاعتماد"),
+    note: z
+      .string({ error: "لازم تكتب سبب الاعتماد بالتفصيل" })
+      .max(2000),
+    kind: z.enum(["MANAGER_ADJUSTMENT", "NO_INCOMING"]).optional(),
+    idempotencyKey: z.string().min(1).max(200).optional(),
     cafeId: z.string().optional(),
   })
-  .strip();
+  .strict();
 
 export async function POST(request: NextRequest, { params }: Params) {
   try {
     const session = await requireActiveSession();
     const { id } = await params;
+    const body = approveSchema.parse(await request.json().catch(() => ({})));
+    const cafeId = resolveCafeId(session, body.cafeId);
 
-    const handover = await db.handoverSession.findUnique({
-      where: { id },
-      select: { branchId: true, cafeId: true, stockCountSessionId: true, status: true },
+    const handover = await db.handoverSession.findFirst({
+      where: { id, cafeId },
+      select: { branchId: true, stockCountSessionId: true },
     });
-
-    if (!handover || (session.cafeId && handover.cafeId !== session.cafeId)) {
-      throw new ApiError(404, "جلسة التسليم غير موجودة");
+    if (!handover) throw new ApiError(404, "جلسة التسليم غير موجودة");
+    if (session.branchId && handover.branchId !== session.branchId) {
+      throw new ApiError(403, "ليس لديك صلاحية على فرع تاني");
     }
 
     const { keys } = await resolvePermissions(session);
     const isOwner = session.role === "CAFE_OWNER" || session.role === "SUPER_ADMIN";
     const isBranchManager = session.role === "BRANCH_MANAGER" && session.branchId === handover.branchId;
-    const hasHandoverException = keys.has("handover.exception");
-
-    if (!isOwner && !isBranchManager && !hasHandoverException) {
-      throw new ApiError(403, "صلاحية الاعتماد الاستثنائي للتسليم مخصصة للمالك أو مدير هذا الفرع فقط");
+    if (!isOwner && !isBranchManager && !keys.has("handover.exception")) {
+      throw new ApiError(403, "اعتماد التسليم مخصص للمالك أو مدير هذا الفرع");
     }
-
-    // Require an actual bound stock count session before allowing manager approval
     if (!handover.stockCountSessionId) {
-      throw new ApiError(400, "لا يمكن اعتماد تسليم لا يحتوي على جلسة جرد خامات");
+      throw new ApiError(409, "لا يمكن اعتماد تسليم لم يبدأ جرده — المُسلّم يبدأ الجرد الأول");
     }
-
-    const body = approveSchema.parse(await request.json().catch(() => ({})));
-    const cafeId = resolveCafeId(session, body.cafeId);
 
     const result = await approveHandoverAsManager({
       handoverId: id,
       managerId: session.id,
       cafeId,
       viewerBranchId: session.branchId,
+      reasonCodeId: body.reasonCodeId,
       note: body.note,
+      kind: body.kind,
+      idempotencyKey: body.idempotencyKey ?? `manager-approve:${id}`,
     });
 
     return NextResponse.json(result);

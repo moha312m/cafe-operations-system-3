@@ -229,13 +229,14 @@ export async function forceReleaseBranchFreezes(
   actorId?: string | null
 ): Promise<number> {
   await acquireInventoryExclusiveLock(tx, branchId);
-  // Only release freezes on draft, rejected, completed, or accepted handovers.
-  // Never strip a freeze from an actively submitted handover awaiting acceptance!
+  // Only a freeze whose handover already FINISHED is dangling. A freeze on a
+  // draft, rejected or submitted handover still protects a count somebody
+  // answers for; ending that handover (with a reason) is what releases it.
   const unreleased = await tx.inventoryFreeze.findMany({
     where: {
       branchId,
       releasedAt: null,
-      handover: { status: { in: ["DRAFT", "REJECTED", "COMPLETED", "ACCEPTED"] } },
+      handover: { status: { in: ["COMPLETED", "ACCEPTED"] } },
     },
     select: { id: true, handoverId: true, cafeId: true, startedById: true },
   });

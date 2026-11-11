@@ -5,7 +5,7 @@ import { resolvePermissions } from "@/lib/perms/effective";
 import { requirePermission, resolveCafeId, resolveBranchId, handleApiError, ApiError, requireFeature, requireActiveSession, isUniqueConflict, retryOnUniqueConflict } from "@/lib/api";
 import { auditInTransaction } from "@/lib/audit";
 import { redactBlindCount } from "@/lib/shifts";
-import { ensureCustodyForShift, ShiftOpeningCustodyError, reconcileStrandedShifts } from "@/lib/custody";
+import { ensureCustodyForShift, ShiftOpeningCustodyError } from "@/lib/custody";
 import { shiftOpeners, shiftOpeningRequirements } from "@/lib/shift-opening-view";
 import { resolveStaffBranchInTransaction } from "@/lib/staff-branch";
 import { protectedTransaction, protectedContext } from "@/lib/protected-transaction";
@@ -36,7 +36,6 @@ export async function GET(request: NextRequest) {
 
     // Branch scope: pinned staff are locked to their branch.
     const branchId = session.branchId ?? params.get("branchId") ?? undefined;
-    if (branchId) await reconcileStrandedShifts(db, branchId);
     // Cashiers without read permission only ever see their own shifts.
     const cashierId = canReadAll ? params.get("cashierId") ?? undefined : session.id;
     const status = params.get("status");

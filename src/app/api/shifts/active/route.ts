@@ -4,7 +4,7 @@ import { ApiError, requirePermission, resolveBranchId, handleApiError } from "@/
 import { getActiveShift, redactBlindCount } from "@/lib/shifts";
 import { resolvePermissions } from "@/lib/perms/effective";
 import { openingCarryforward } from "@/lib/opening-carryforward";
-import { incompleteOpeningCustody, LIVE_HANDOVER_STATUSES, reconcileStrandedShifts } from "@/lib/custody";
+import { incompleteOpeningCustody, LIVE_HANDOVER_STATUSES } from "@/lib/custody";
 import { shiftOpeners, shiftOpeningRequirements } from "@/lib/shift-opening-view";
 
 // GET /api/shifts/active — the current cashier's open shift (or null).
@@ -27,7 +27,6 @@ export async function GET(request: NextRequest) {
       },
     });
     if (!branch) throw new ApiError(404, "الفرع مش موجود");
-    await reconcileStrandedShifts(db, branchId);
     const operational = await getActiveShift(branchId, session.id);
     const shift = operational
       ? await db.shift.findUnique({

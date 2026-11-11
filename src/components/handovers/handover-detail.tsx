@@ -37,6 +37,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { HandoverActionBar } from "./handover-action-bar";
+import { ManagerHandoverActionDialog, useMayApproveHandover, useMayEndHandover, type ManagerHandoverActionKind } from "./manager-handover-action";
 import { StockCorrectionsQueue } from "@/components/approvals/stock-corrections-queue";
 import { HANDOVER_STATUS_LABEL, TARGET_LABEL, type HandoverStatus } from "./handover-labels";
 
@@ -131,6 +132,7 @@ export function HandoverDetail({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [managerAction, setManagerAction] = useState<ManagerHandoverActionKind | null>(null);
   const [search, setSearch] = useState("");
 
   const load = useCallback(async () => {
@@ -204,6 +206,8 @@ export function HandoverDetail({
   }, []);
 
   const branchCustody = view?.target === "BRANCH_CUSTODY";
+  const mayEndHandover = useMayEndHandover(view?.outgoingUserId ?? null);
+  const mayApproveHandover = useMayApproveHandover(view?.branchId, view?.outgoingUserId ?? null);
   const directMode = !!view?.overview.directHandover && view?.target === "SHIFT_TO_SHIFT";
   const directReviewing = directMode && ["OUTGOING_SUBMITTED", "INCOMING_REVIEW"].includes(view?.status ?? "");
   const isRecipient = !!view && view.workflow.incomingShift?.cashierId === user.id;
@@ -347,33 +351,19 @@ export function HandoverDetail({
                 />
               )}
 
-              {view.target !== "SHIFT_TO_SHIFT" && view.status !== "COMPLETED" && (user.role === "CAFE_OWNER" || user.role === "BRANCH_MANAGER" || canKey("handover.exception") || canKey("handover.manage")) && (
-                <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 flex flex-wrap items-center justify-between gap-3">
+              {["DRAFT", "REJECTED"].includes(view.status) && (mayEndHandover || (mayApproveHandover && view.target === "BRANCH_CUSTODY" && view.status === "DRAFT")) && (
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3" data-testid="handover-manager-exceptions">
                   <div className="space-y-0.5">
-                    <p className="text-sm font-bold text-amber-900 dark:text-amber-200">🛡️ اعتماد الجرد وتحديث أرصدة المخزون</p>
-                    <p className="text-xs text-muted-foreground">بصفتك مالك/مدير يمكنك اعتماد الجرد الفعلي وتحديث المخزون بالسيستم مباشرة.</p>
+                    <p className="text-sm font-bold">إجراءات المدير على تسليم لسه عند المُسلّم</p>
+                    <p className="text-xs text-muted-foreground">لو المُسلّم مش هيكمّل: الاعتماد بيستخدم جرده بعد ما يتأكد، والإنهاء بيحوّل المخزون لعهدة الفرع من غير جرد مقبول. الاتنين بسبب مكتوب وباسمك.</p>
                   </div>
-                  <Button
-                    size="sm"
-                    className="bg-amber-600 hover:bg-amber-700 text-white font-bold"
-                    disabled={busy}
-                    onClick={async () => {
-                      setBusy(true);
-                      try {
-                        const res = await api<{ message?: string }>(`/api/handovers/${view.handoverId}/approve`, { method: "POST", body: {} });
-                        toast.success(res.message || "تم اعتماد الجرد وتحديث المخزون بنجاح!");
-                        await after();
-                      } catch (e) {
-                        toast.error(e instanceof Error ? e.message : "تعذّر اعتماد الجرد");
-                      } finally {
-                        setBusy(false);
-                      }
-                    }}
-                  >
-                    {busy ? "جارٍ الاعتماد…" : "اعتماد الجرد وتحديث المخزون الآن"}
-                  </Button>
+                  <div className="flex flex-wrap gap-2">
+                    {mayApproveHandover && view.target === "BRANCH_CUSTODY" && view.status === "DRAFT" && <Button size="sm" variant="outline" disabled={busy} onClick={() => setManagerAction("approve")} data-testid="handover-manager-approve">اعتماد التسليم كمدير</Button>}
+                    {mayEndHandover && <Button size="sm" variant="destructive" disabled={busy} onClick={() => setManagerAction("cancel")} data-testid="handover-manager-cancel">إنهاء التسليم لعهدة الفرع</Button>}
+                  </div>
                 </div>
               )}
+              {managerAction && <ManagerHandoverActionDialog kind={managerAction} open handoverId={view.handoverId} onClose={() => setManagerAction(null)} onDone={after} />}
 
               {receivingDisputed && step !== "complete" && (
                 // The current dispute outranks any earlier all-clear: the outgoing count may well have matched,

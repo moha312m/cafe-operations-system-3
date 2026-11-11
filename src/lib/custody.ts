@@ -195,10 +195,17 @@ export async function branchIsMidHandover(
  */
 export async function reconcileStrandedShifts(
   tx: Prisma.TransactionClient,
-  branchId: string
+  branchId: string,
+  /** The shift being opened by the caller; it gets custody from the caller, not from here. */
+  excludeShiftId?: string,
 ): Promise<void> {
   const isMid = await branchIsMidHandover(tx, branchId);
   if (isMid) return;
+  // The locking probe only sees handovers that name a stock custody; a live
+  // handover without one (a legacy shift) is still live, and reconciling
+  // underneath it would move the shelf it is about to answer for.
+  const liveAny = await tx.handoverSession.count({ where: { branchId, status: { in: [...LIVE_HANDOVER_STATUSES] } } });
+  if (liveAny > 0) return;
 
   // 1. If an outgoing shift is AWAITING_HANDOVER, but its handover is COMPLETED:
   const completedHandovers = await tx.handoverSession.findMany({
@@ -241,54 +248,84 @@ export async function reconcileStrandedShifts(
     });
 
     if (!activeShift) {
-      // The user who held this stock is no longer on an open shift.
-      // Move this stock custody to BRANCH so incoming shifts can verify/receive it.
-      await tx.custodyPeriod.update({
-        where: { id: stock.id },
-        data: {
-          holderType: "BRANCH",
-          responsibleShiftId: null,
+      // The user who held this stock is no longer on an open shift. The
+      // shelf passes to the BRANCH through the one transfer primitive — the
+      // period that held it is closed and kept, a successor opens, and the
+      // audit row says so. Rewriting the period in place would erase who was
+      // answerable for it.
+      const openedById = stock.participants[0]?.userId ?? null;
+      const transfer = await transferCustody(tx, {
+        outgoingPeriodId: stock.id,
+        scope: "STOCK",
+        incoming: { participants: [], shiftId: null, responsibleShiftId: null, holderType: "BRANCH", openedById },
+        actorId: (openedById ?? stock.openedById)!,
+      });
+      await auditInTransaction(tx, {
+        cafeId: stock.cafeId, userId: openedById ?? stock.openedById ?? null, action: "SHIFT_CUSTODY_RECONCILED",
+        entity: "CustodyPeriod", entityId: stock.id,
+        details: {
+          branchId, reason: "STOCK_CUSTODY_WITHOUT_OPEN_SHIFT", responsibleShiftId: stock.responsibleShiftId,
+          participants: stock.participants.map((p) => p.userId), branchCustodyPeriodId: transfer.incomingPeriodId,
         },
       });
-      await tx.custodyParticipant.deleteMany({
-        where: { custodyPeriodId: stock.id },
-      });
     }
   }
 
-  // 3. If a shift is stuck in AWAITING_CUSTODY_TRANSFER with no live handover:
+  // 3. A shift stuck in AWAITING_CUSTODY_TRANSFER with no live handover can
+  //    only be re-decided onto the opening verification, and only when the
+  //    branch actually holds the shelf. A USER-held shelf with nobody mid-
+  //    handover is somebody else's custody; clearing the gate would make the
+  //    waiting cashier operational on stock nobody handed them.
   const strandedShifts = await tx.shift.findMany({
-    where: { branchId, status: "OPEN", custodyGateReason: "AWAITING_CUSTODY_TRANSFER" },
+    where: {
+      branchId, status: "OPEN", custodyGateReason: "AWAITING_CUSTODY_TRANSFER",
+      // The caller is deciding (and auditing) that shift itself.
+      ...(excludeShiftId ? { id: { not: excludeShiftId } } : {}),
+    },
     select: { id: true, cafeId: true, cashierId: true, openingCashAmount: true },
   });
-  for (const shift of strandedShifts) {
+  if (strandedShifts.length > 0) {
     const stock = await tx.custodyPeriod.findFirst({
       where: { branchId, scope: "STOCK", status: "OPEN" },
-      select: { holderType: true },
+      select: { id: true, holderType: true },
     });
     if (stock?.holderType === "BRANCH") {
-      await tx.shift.update({
-        where: { id: shift.id },
-        data: { custodyGateReason: "AWAITING_OPENING_VERIFICATION" },
-      });
-    } else if (stock?.holderType === "USER") {
-      await tx.shift.update({
-        where: { id: shift.id },
-        data: { custodyGateReason: null, custodyReadyAt: new Date() },
-      });
+      for (const shift of strandedShifts) {
+        await tx.shift.update({
+          where: { id: shift.id },
+          data: { custodyGateReason: "AWAITING_OPENING_VERIFICATION" },
+        });
+        await auditInTransaction(tx, {
+          cafeId: shift.cafeId, userId: shift.cashierId, action: "SHIFT_CUSTODY_GATE_REDECIDED",
+          entity: "Shift", entityId: shift.id,
+          details: { from: "AWAITING_CUSTODY_TRANSFER", to: "AWAITING_OPENING_VERIFICATION", branchCustodyPeriodId: stock.id, reconciled: true },
+        });
+      }
     }
   }
 
-  // 4. If an open shift has no CASH custody period and no live CASH period exists:
+  // 4. A gated shift that opened mid-handover had its drawer withheld. Once
+  //    the branch holds the shelf it is waiting on the opening verification
+  //    and still needs a drawer of its own. Only THAT shift — never the shift
+  //    being opened right now (ensureCustodyForShift gives it custody itself),
+  //    and never while no branch-held stock exists: opening a lone drawer
+  //    there is exactly the CASH_WITHOUT_STOCK state the open then refuses,
+  //    which made every branch with no open custody unable to open a shift.
   const openCashPeriod = await tx.custodyPeriod.findFirst({
     where: { branchId, scope: "CASH", status: "OPEN" },
     select: { id: true },
   });
-  if (!openCashPeriod) {
+  const branchStock = await tx.custodyPeriod.findFirst({
+    where: { branchId, scope: "STOCK", status: "OPEN", holderType: "BRANCH" },
+    select: { id: true },
+  });
+  if (!openCashPeriod && branchStock) {
     const openShiftWithoutCash = await tx.shift.findFirst({
       where: {
         branchId,
         status: "OPEN",
+        custodyGateReason: { not: null },
+        ...(excludeShiftId ? { id: { not: excludeShiftId } } : {}),
         custodyLinks: { none: { scope: "CASH" } },
       },
       select: { id: true, cafeId: true, cashierId: true, openingCashAmount: true },
@@ -402,7 +439,7 @@ export async function ensureCustodyForShift(
     const receipt = await tx.openingCashReceipt.findUniqueOrThrow({ where: { id: claimedCash.receiptId } });
     args = { ...args, openingCashAmount: receipt.actualAmount === null ? 0 : Number(receipt.actualAmount) };
   }
-  await reconcileStrandedShifts(tx, args.branchId);
+  await reconcileStrandedShifts(tx, args.branchId, args.shiftId);
   const midHandover = await branchIsMidHandover(tx, args.branchId);
   const shift = await tx.shift.findFirst({
     where: { id: args.shiftId, cafeId: args.cafeId, branchId: args.branchId, cashierId: args.userId, status: "OPEN" },

@@ -883,7 +883,16 @@ async function submitCountSessionWithClient(args: {
       const current = prior ? await currentUnsignedCountEvidence(client as Prisma.TransactionClient,session.id) : null;
       if (current === "SYSTEM_MATCH") return {status:"CONFIRMED",systemValidated:true,within:session.lines.length,outside:0,skippedUnobserved:0};
       if (current === "OUTGOING_DECLARED") return {status:"CONFIRMED",systemValidated:false,recordedDifferences:session.lines.filter((l)=>l.disposition==="VARIANCE_RECORDED").length,within:session.lines.length,outside:0,skippedUnobserved:0};
-      if (prior) throw new ApiError(409,"دليل الجرد اتغير بعد تسجيله — حدّث الصفحة وراجع الجرد");
+      if (prior) {
+        // The recorded evidence went stale — an approved correction or a
+        // self-recount landed after the automatic validation. Refusing here
+        // forever left the handover with no door (submit, finish, confirm and
+        // recount all refused), so the CURRENT round is validated again, by
+        // the same two rules, and a new audit row becomes the evidence.
+        const revalidated = await revalidateUnsignedHandoverCount(client as Prisma.TransactionClient, session.id, args.submittedById);
+        if (revalidated) return revalidated;
+        throw new ApiError(409,"دليل الجرد اتغير بعد تسجيله وفيه سطر ناقص أو معترض عليه — راجع الجرد الحالي");
+      }
     }
   }
   if (!SUBMITTABLE.includes(session.status)) {
@@ -1099,6 +1108,45 @@ async function submitCountSessionWithClient(args: {
     }
   }
   return { status, within, outside, skippedUnobserved, ...(session.accountabilityContext === "HANDOVER" ? {systemValidated:false} : {}) };
+}
+
+/**
+ * Validate a CONFIRMED, unsigned handover count again after its recorded
+ * evidence went stale. The session stays CONFIRMED; the fresh audit row is
+ * what `recordedEvidenceIsCurrent` reads. Returns null when the current round
+ * is neither a match nor a complete declaration (a gap, a dispute, a stale
+ * cursor), and the caller refuses as before.
+ */
+async function revalidateUnsignedHandoverCount(
+  tx: Prisma.TransactionClient,
+  sessionId: string,
+  actorId: string,
+): Promise<SubmitCountResult | null> {
+  const session = await tx.stockCountSession.findUniqueOrThrow({
+    where: { id: sessionId },
+    select: { cafeId: true, lines: { select: { disposition: true } } },
+  });
+  const confirmedAt = new Date();
+  const matching = await matchingHandoverCountEvidence(tx, sessionId);
+  if (matching) {
+    await auditInTransaction(tx, {cafeId:session.cafeId,userId:actorId,
+      action:COUNT_SYSTEM_VALIDATED,entity:"StockCountSession",entityId:sessionId,
+      details:{...matching,validation:"SYSTEM_MATCHING_QUANTITIES",revalidated:true,initiatedById:actorId,confirmedAt:confirmedAt.toISOString()},
+    });
+    return { status: "CONFIRMED", systemValidated: true, within: session.lines.length, outside: 0, skippedUnobserved: 0 };
+  }
+  const declared = await declaredHandoverCountEvidence(tx, sessionId);
+  if (!declared) return null;
+  await tx.stockCountLine.updateMany({
+    where:{sessionId,disposition:{in:["OUTSIDE_TOLERANCE","RECOUNT_REQUIRED"]}},
+    data:{disposition:"VARIANCE_RECORDED"},
+  });
+  await auditInTransaction(tx, {cafeId:session.cafeId,userId:actorId,
+    action:COUNT_OUTGOING_DECLARED,entity:"StockCountSession",entityId:sessionId,
+    details:{...declared,validation:"OUTGOING_DECLARED_QUANTITIES",revalidated:true,differenceLines:declared.differenceLineIds.length,
+      initiatedById:actorId,confirmedAt:confirmedAt.toISOString()},
+  });
+  return { status: "CONFIRMED", systemValidated: false, recordedDifferences: declared.differenceLineIds.length, within: session.lines.length, outside: 0, skippedUnobserved: 0 };
 }
 
 // ───────────────────────── Confirming a count ────────────────────────

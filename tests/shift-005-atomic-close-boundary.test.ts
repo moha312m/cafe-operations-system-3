@@ -649,6 +649,25 @@ describe("SHIFT-005 — the atomic close boundary", () => {
     await openOperationalShift(fx.manager.id);
     const shift = await openOperationalShift(fx.cashier.id);
 
+    // Branch custody means nobody holds the shelf, so it is REFUSED while a
+    // colleague still trades on it — never silently turned into a different
+    // target. (Accepting it left the shared drawer open, branch acceptance
+    // refused on that drawer, and the colleague's own close was blocked by
+    // the open handover: a deadlock.)
+    await assert.rejects(
+      closeService({
+        shiftId: shift.id,
+        actualCash: 100,
+        actorId: fx.cashier.id,
+        handoverTarget: "BRANCH_CUSTODY",
+      }),
+      (e: unknown) => (e as { status?: number }).status === 409,
+    );
+    assert.equal((await db.shift.findUniqueOrThrow({ where: { id: shift.id } })).status, "OPEN");
+    assert.equal(await db.handoverSession.count({ where: { outgoingShiftId: shift.id } }), 0);
+
+    // The stated intent is honoured as stated once nobody else is trading.
+    await db.shift.updateMany({ where: { branchId: fx.branchId, id: { not: shift.id }, status: "OPEN" }, data: { status: "CLOSED", closedAt: new Date() } });
     const result = await closeService({
       shiftId: shift.id,
       actualCash: 100,
@@ -656,15 +675,10 @@ describe("SHIFT-005 — the atomic close boundary", () => {
       handoverTarget: "BRANCH_CUSTODY",
     });
     assert.equal(result.handoverTarget, "BRANCH_CUSTODY");
-
     const handover = await db.handoverSession.findUniqueOrThrow({
       where: { id: result.handoverId! },
     });
-    assert.equal(
-      handover.target,
-      "BRANCH_CUSTODY",
-      "the stated intent survived a branch that still has an open shift",
-    );
+    assert.equal(handover.target, "BRANCH_CUSTODY", "the stated intent is never reconstructed");
 
     // And no source path reconstructs it.
     const sources = ["src/lib/cash-close.ts", "src/lib/handover.ts"]

@@ -80,7 +80,6 @@ export function StockCountDetail({
 }) {
   const { canKey, user } = useApp();
   const router = useRouter();
-  const [confirmCancel, setConfirmCancel] = useState(false);
   const [search, setSearch] = useState("");
   const [filterTab, setFilterTab] = useState<string>("all");
   const tableWrapRef = useRef<HTMLDivElement | null>(null);
@@ -325,27 +324,9 @@ export function StockCountDetail({
   const isHandover = detail?.accountabilityContext === "HANDOVER" || !!detail?.handoverId || !!handoverId;
   const effectiveHandoverId = handoverId || detail?.handoverId || null;
   const isOwner = user?.role === "CAFE_OWNER" || user?.role === "SUPER_ADMIN";
-  const canCancelHandover = !!effectiveHandoverId && (isOwner || canKey("handover.cancel") || canKey("handover.exception") || canKey("handover.override"));
-
-  async function cancelHandover(hId: string) {
-    if (inFlight.current) return;
-    inFlight.current = true;
-    setBusy(true);
-    try {
-      const res = await api<{ success: boolean; message: string }>(
-        `/api/handovers/${hId}/cancel`,
-        { method: "POST" }
-      );
-      toast.success(res.message || "تم إلغاء جلسة التسليم المعلقة بنجاح وتحرير الشيفت");
-      await after();
-      onClose();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "تعذّر إلغاء جلسة التسليم");
-    } finally {
-      inFlight.current = false;
-      setBusy(false);
-    }
-  }
+  // Re-reading the expected figure is an owner act on an ORDINARY count only; the server refuses the rest.
+  const canResync = isOwner && !!detail && detail.accountabilityContext === "NONE" && !detail.handoverId && !handoverId;
+  void effectiveHandoverId;
 
   const compactCapture = isHandover && !!detail && ["DRAFT", "IN_PROGRESS"].includes(detail.status);
   // Typed quantities that are not saved yet do not block the submit: it saves them first.
@@ -377,21 +358,8 @@ export function StockCountDetail({
                     </Badge>
                   </div>
                   <p className="text-xs sm:text-sm text-amber-900/90 dark:text-amber-200/90 leading-relaxed">
-                    هذا الجرد يخص تسليم العهدة النشط في الفرع. لحل العائق وإتاحة إغلاق الشيفت، اختر أحد الإجراءات من الشريط بالأسفل:
+                    هذا الجرد يخص تسليم العهدة النشط في الفرع. كمّل العدّ وابعته؛ لو المُسلّم مش هيكمّل، المدير يعتمد التسليم أو ينهيه لعهدة الفرع من صفحة التسليم بسبب مكتوب.
                   </p>
-                  <div className="flex flex-wrap gap-2 text-xs font-medium">
-                    <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/20 px-2 py-1">
-                      1️⃣ <b>تأكيد واعتماد الجرد:</b> لاعتماد الأرصدة وإتمام دورة التسليم
-                    </span>
-                    {canCancelHandover && (
-                      <span className="inline-flex items-center gap-1 rounded-md bg-rose-500/20 text-rose-950 dark:text-rose-100 px-2 py-1">
-                        2️⃣ <b>إلغاء جلسة التسليم ⚡:</b> لتحرير الشيفت وإغلاقه فوراً
-                      </span>
-                    )}
-                    <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/20 px-2 py-1">
-                      3️⃣ <b>مزامنة المتوقع:</b> لتعديل المتوقع طبقاً لرصيد المخزن الفعلي الحالي وتصفير الفروقات
-                    </span>
-                  </div>
                 </div>
               )}
 
@@ -408,19 +376,7 @@ export function StockCountDetail({
                   </Badge>
                 )}
                 <div className="ms-auto flex flex-wrap gap-2">
-                  {canCancelHandover && effectiveHandoverId && (
-                    <Button
-                      size="sm"
-                      variant="destructive"
-                      disabled={busy}
-                      onClick={() => setConfirmCancel(true)}
-                      className="bg-rose-600 hover:bg-rose-700 text-white"
-                      data-testid="count-cancel-handover-top"
-                    >
-                      إلغاء التسليم المعلق ⚡
-                    </Button>
-                  )}
-                  {detail.status !== "CONFIRMED" && (canKey("stock_count.confirm") || canKey("stock_count.submit")) && (
+                  {canResync && ["DRAFT", "IN_PROGRESS", "SUBMITTED", "RECOUNT_REQUIRED"].includes(detail.status) && (
                     <Button
                       size="sm"
                       variant="outline"
@@ -565,7 +521,7 @@ export function StockCountDetail({
                       {isHandover ? "إنهاء العد والتحقق 📤" : "تسليم الجرد 📤"}
                     </Button>
                   )}
-                  {detail.status !== "CONFIRMED" && (canKey("stock_count.confirm") || canKey("stock_count.submit")) && (
+                  {canResync && ["DRAFT", "IN_PROGRESS", "SUBMITTED", "RECOUNT_REQUIRED"].includes(detail.status) && (
                     <Button
                       size="sm"
                       variant="outline"
@@ -579,21 +535,9 @@ export function StockCountDetail({
                       مزامنة المتوقع مع المخزن
                     </Button>
                   )}
-                  {canCancelHandover && effectiveHandoverId && (
-                    <Button
-                      size="sm"
-                      variant="destructive"
-                      disabled={busy}
-                      onClick={() => setConfirmCancel(true)}
-                      className="h-10 bg-rose-600 px-4 text-xs sm:text-sm font-semibold text-white hover:bg-rose-700 active:scale-[0.98]"
-                      data-testid="handover-cancel-sticky"
-                    >
-                      إلغاء جلسة التسليم المعلقة ⚡
-                    </Button>
-                  )}
                 </div>
 
-                <div className="flex items-center gap-2">
+                {detail.accountabilityContext === "HANDOVER" && <div className="flex items-center gap-2">
                   <Button
                     size="sm"
                     variant="outline"
@@ -602,24 +546,12 @@ export function StockCountDetail({
                   >
                     الانتقال لإغلاق الشيفت ⬅
                   </Button>
-                </div>
+                </div>}
               </div>
             </div>
           )}
       </DetailFrame>
       <ConfirmHandoverAction title={confirmation === "submit" ? "تسليم الجرد للمراجعة" : "اعتماد الجرد"} open={confirmation !== null} busy={busy} onCancel={() => setConfirmation(null)} onConfirm={() => { const action = confirmation; setConfirmation(null); if (action === "submit") void submit(); else if (action === "confirm") void confirm(); }} />
-      <ConfirmHandoverAction
-        title="إلغاء جلسة تسليم العهدة"
-        open={confirmCancel}
-        busy={busy}
-        onCancel={() => setConfirmCancel(false)}
-        onConfirm={() => {
-          setConfirmCancel(false);
-          if (effectiveHandoverId) void cancelHandover(effectiveHandoverId);
-        }}
-      >
-        هل أنت متأكد من إلغاء جلسة تسليم العهدة هذه؟ سيتم تحويل العهدة لعهدة الفرع وفك قفل الجرد فوراً، مما يسمح لك بإغلاق الشيفت دون أي عوائق.
-      </ConfirmHandoverAction>
 
       {/* Line actions use the active reasons configured for this cafe. */}
       <Dialog open={pending !== null} onOpenChange={(o) => !o && !busy && setPending(null)}>
