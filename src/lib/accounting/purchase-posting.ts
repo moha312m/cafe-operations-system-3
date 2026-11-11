@@ -11,6 +11,9 @@
 //                 TRANSFER_OUT/IN through inventory in transit
 //               A row without a cost is an exception: its value is unknown,
 //               and guessing it from today's average would rewrite history.
+//               A count rebase written before rebases carried a cost is
+//               valued from the cost its count line captured when judged —
+//               evidence from that day, not today's average.
 //   confirm     Dr goods received not invoiced (subtotal), Dr purchase tax,
 //               Cr purchase discounts, Cr payables (total); payments made
 //               before confirmation move from supplier advances to payables
@@ -68,6 +71,21 @@ function invoiceLines(inv: Invoice): PostingLine[] | string {
 
 const mirror = (lines: PostingLine[]): PostingLine[] => lines.map(({ debit, credit, ...rest }) => ({ ...rest, ...(debit !== undefined ? { credit: debit } : { debit: credit }) }));
 
+/** Captured unit cost per cost-less COUNT_REBASE row, from its count line. */
+async function countRebaseCosts(client: Prisma.TransactionClient | typeof db, rows: { id: string; note: string | null }[]): Promise<Map<string, Decimal>> {
+  const costs = new Map<string, Decimal>();
+  if (rows.length === 0) return costs;
+  const rebases = await client.stockCountRebase.findMany({ where: { ledgerTransactionId: { in: rows.map((r) => r.id) } }, select: { ledgerTransactionId: true, line: { select: { unitCostSnapshot: true } } } });
+  for (const r of rebases) if (r.line.unitCostSnapshot !== null && decimal(r.line.unitCostSnapshot).isPositive()) costs.set(r.ledgerTransactionId, decimal(r.line.unitCostSnapshot));
+  // A handover receiving count names its acknowledgement in the note.
+  const byAck = new Map(rows.flatMap((r) => { const id = r.note?.match(/^HANDOVER_RECEIVING_COUNT .*acknowledgement=(\S+)/)?.[1]; return id ? [[id, r.id] as const] : []; }));
+  if (byAck.size) {
+    const acks = await client.handoverStockAcknowledgement.findMany({ where: { id: { in: [...byAck.keys()] } }, select: { id: true, line: { select: { unitCostSnapshot: true } } } });
+    for (const a of acks) if (a.line.unitCostSnapshot !== null && decimal(a.line.unitCostSnapshot).isPositive()) costs.set(byAck.get(a.id)!, decimal(a.line.unitCostSnapshot));
+  }
+  return costs;
+}
+
 export async function purchaseAndStockCandidates(client: Prisma.TransactionClient | typeof db, cafeId: string, window: { gte: Date; lt: Date }): Promise<Candidate[]> {
   const invoiceSelect = { id: true, invoiceNumber: true, branchId: true, confirmedAt: true, subtotalAmount: true, discountAmount: true, taxAmount: true, totalAmount: true, payments: { select: { amount: true, paidAt: true } } } as const;
   const [confirmed, cancelled, payments, moves] = await Promise.all([
@@ -90,11 +108,17 @@ export async function purchaseAndStockCandidates(client: Prisma.TransactionClien
     out.push({ sourceType: "SUPPLIER_PAYMENT", sourceId: p.id, sourceKey: `supplier-payment:${p.id}`, at: p.paidAt, description: `دفعة لمورد — فاتورة ${p.invoice.invoiceNumber}`,
       branchId: p.branchId, lines: credit ? pair(debit, credit, decimal(p.amount), p.branchId) : "دفعة قديمة مصدرها مش متسجل (درج ولا خزنة ولا بنك)" });
   }
+  const countCost = await countRebaseCosts(client, moves.filter((m) => m.type === "COUNT_REBASE" && m.totalCost === null));
   for (const m of moves) {
     const quantity = decimal(m.quantity);
     if (quantity.isZero()) continue;
-    const description = `${m.type} — ${m.inventoryItem.name}`;
-    if (m.totalCost === null) { out.push({ sourceType: "STOCK_MOVEMENT", sourceId: m.id, sourceKey: `stock:${m.id}`, at: m.createdAt, branchId: m.branchId, description, lines: "حركة مخزون من غير تكلفة" }); continue; }
+    const description = m.type === "COUNT_REBASE" ? `فرق جرد — ${m.inventoryItem.name}` : `${m.type} — ${m.inventoryItem.name}`;
+    const snapshot = countCost.get(m.id);
+    if (m.totalCost === null && snapshot) {
+      out.push({ sourceType: "STOCK_MOVEMENT", sourceId: m.id, sourceKey: `stock:${m.id}`, at: m.createdAt, branchId: m.branchId, description, lines: pair("INVENTORY", "INVENTORY_LOSS", money(quantity.abs().times(snapshot)).times(quantity.isPositive() ? 1 : -1), m.branchId) });
+      continue;
+    }
+    if (m.totalCost === null) { out.push({ sourceType: "STOCK_MOVEMENT", sourceId: m.id, sourceKey: `stock:${m.id}`, at: m.createdAt, branchId: m.branchId, description, lines: m.type === "COUNT_REBASE" ? "فرق جرد من غير تكلفة — الصنف ماكانش له تكلفة وقت الجرد" : "حركة مخزون من غير تكلفة" }); continue; }
     const signed = money(m.totalCost).abs().times(quantity.isPositive() ? 1 : -1);
     const counter = m.type === "PURCHASE" && m.note === OPENING_STOCK_NOTE ? "OPENING_BALANCE" : STOCK_COUNTER[m.type];
     out.push({ sourceType: "STOCK_MOVEMENT", sourceId: m.id, sourceKey: `stock:${m.id}`, at: m.createdAt, branchId: m.branchId, description, lines: pair("INVENTORY", counter, signed, m.branchId) });
