@@ -4,7 +4,7 @@ import { ApiError, requirePermission, resolveBranchId, handleApiError } from "@/
 import { getActiveShift, redactBlindCount } from "@/lib/shifts";
 import { resolvePermissions } from "@/lib/perms/effective";
 import { openingCarryforward } from "@/lib/opening-carryforward";
-import { incompleteOpeningCustody, LIVE_HANDOVER_STATUSES } from "@/lib/custody";
+import { LIVE_HANDOVER_STATUSES, predictOpeningBlocker } from "@/lib/custody";
 import { shiftOpeners, shiftOpeningRequirements } from "@/lib/shift-opening-view";
 
 // GET /api/shifts/active — the current cashier's open shift (or null).
@@ -41,17 +41,15 @@ export async function GET(request: NextRequest) {
       where: { branchId, cashierId: session.id, status: 'OPEN' }, orderBy: { openedAt: 'desc' },
       include: { cashier: { select: { id: true, name: true } }, branch: { select: { id: true, name: true } }, openingCashReceipt: { select: { status: true } }, placeReceipt: { select: { id: true, status: true, assignedUser: { select: { id: true, name: true } } } } },
     });
-    const [candidates, periods, openers, carryforward] = await Promise.all([
+    const [candidates, predictedBlocker, openers, carryforward] = await Promise.all([
       !shift && (!pendingShift || pendingShift.custodyGateReason === "AWAITING_CUSTODY_TRANSFER")
       ? db.handoverSession.findMany({
           where: { cafeId: branch.cafeId, branchId, status: { in: [...LIVE_HANDOVER_STATUSES] }, outgoingStockCustodyId: { not: null } },
           select: { id: true, status: true, outgoingUserId: true, stockCountSessionId: true, stockCountSession: { select: { status: true } }, outgoingUser: { select: { name: true } }, outgoingShift: { select: { shiftNumber: true } } },
           take: 2,
         }) : [],
-      !shift && !pendingShift ? db.custodyPeriod.findMany({
-        where: { cafeId: branch.cafeId, branchId, status: "OPEN" },
-        select: { scope: true, holderType: true },
-      }) : [],
+      // What the open itself would refuse, after the reconciliation it runs first.
+      !shift && !pendingShift ? predictOpeningBlocker(db, branchId) : null,
       shiftOpeners(branch.cafeId, [shift?.id ?? pendingShift?.id].filter((id): id is string => !!id)),
       !shift && !pendingShift
         ? openingCarryforward(db, { cafeId: branch.cafeId, branchId, canSeeBlindAmounts: canViewReports })
@@ -64,10 +62,7 @@ export async function GET(request: NextRequest) {
     const pendingHandover = match && canViewHandover && (
       match.status === "OUTGOING_SUBMITTED" || match.status === "INCOMING_REVIEW" || match.outgoingUserId === session.id
     ) ? match : null;
-    const blocker = candidates.length === 0 ? incompleteOpeningCustody(
-      periods.find((period) => period.scope === "CASH")?.holderType,
-      periods.find((period) => period.scope === "STOCK")?.holderType,
-    ) : null;
+    const blocker = candidates.length === 0 ? predictedBlocker : null;
     // SHIFT-003: this is always the requester's own shift, so the
     // reconciliation target is withheld while it is open.
     return NextResponse.json({

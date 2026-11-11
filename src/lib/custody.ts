@@ -117,6 +117,67 @@ export async function openCustodyPeriod(
 
 export const LIVE_HANDOVER_STATUSES = ["DRAFT", "OUTGOING_SUBMITTED", "INCOMING_REVIEW", "REJECTED"] as const;
 
+type CustodyReader = Prisma.TransactionClient | typeof db;
+
+/**
+ * Open USER stock periods that no OPEN shift answers for — neither the shift
+ * named responsible nor any participant's open shift. The one definition both
+ * the shift open (`reconcileStrandedShifts`, which hands them to the branch)
+ * and the opening preview (`predictOpeningBlocker`) use, so the screen and
+ * the open cannot disagree about what counts as orphaned.
+ */
+async function orphanedUserStock(client: CustodyReader, branchId: string) {
+  const periods = await client.custodyPeriod.findMany({
+    where: { branchId, scope: "STOCK", status: "OPEN", holderType: "USER" },
+    include: { participants: { select: { userId: true } } },
+  });
+  const orphaned: typeof periods = [];
+  for (const stock of periods) {
+    const activeShift = await client.shift.findFirst({
+      where: {
+        branchId,
+        status: "OPEN",
+        OR: [
+          ...(stock.responsibleShiftId ? [{ id: stock.responsibleShiftId }] : []),
+          ...(stock.participants.length > 0 ? [{ cashierId: { in: stock.participants.map((p) => p.userId) } }] : []),
+        ],
+      },
+      select: { id: true },
+    });
+    if (!activeShift) orphaned.push(stock);
+  }
+  return orphaned;
+}
+
+/**
+ * What `ensureCustodyForShift` would refuse a new opener with, asked without
+ * writing anything — for the screen that warns before the cashier tries.
+ *
+ * Reading the raw rows is not enough: the open first reconciles, and an
+ * orphaned employee stock custody passes to the branch, after which the open
+ * succeeds. A preview that skipped that step would warn about a state the
+ * open repairs on its own. A handover that names stock custody gates the
+ * open instead of refusing it, so it yields no blocker either.
+ */
+export async function predictOpeningBlocker(client: CustodyReader, branchId: string) {
+  const live = await client.handoverSession.findMany({
+    where: { branchId, status: { in: [...LIVE_HANDOVER_STATUSES] } },
+    select: { outgoingStockCustodyId: true },
+  });
+  if (live.some((h) => h.outgoingStockCustodyId !== null)) return null;
+  const periods = await client.custodyPeriod.findMany({
+    where: { branchId, status: "OPEN" },
+    select: { id: true, scope: true, holderType: true },
+  });
+  const cash = periods.find((p) => p.scope === "CASH");
+  const stock = periods.find((p) => p.scope === "STOCK");
+  // Reconciliation runs only when no handover at all is live.
+  const reconciles = live.length === 0;
+  const orphan = reconciles && stock?.holderType === "USER"
+    && (await orphanedUserStock(client, branchId)).some((p) => p.id === stock.id);
+  return incompleteOpeningCustody(cash?.holderType, orphan ? "BRANCH" : stock?.holderType);
+}
+
 export function incompleteOpeningCustody(cash?: CustodyHolderType, stock?: CustodyHolderType) {
   if (stock === "BRANCH" || (!cash && !stock) || (cash === "USER" && stock === "USER")) return null;
   if (cash && !stock) return "CASH_WITHOUT_STOCK";
@@ -227,48 +288,27 @@ export async function reconcileStrandedShifts(
   }
 
   // 2. Reconcile orphaned open USER stock custody when no active open shift corresponds to it:
-  const openStockPeriods = await tx.custodyPeriod.findMany({
-    where: { branchId, scope: "STOCK", status: "OPEN", holderType: "USER" },
-    include: {
-      participants: { select: { userId: true } },
-    },
-  });
-
-  for (const stock of openStockPeriods) {
-    const activeShift = await tx.shift.findFirst({
-      where: {
-        branchId,
-        status: "OPEN",
-        OR: [
-          ...(stock.responsibleShiftId ? [{ id: stock.responsibleShiftId }] : []),
-          ...(stock.participants.length > 0 ? [{ cashierId: { in: stock.participants.map((p) => p.userId) } }] : []),
-        ],
-      },
-      select: { id: true },
+  for (const stock of await orphanedUserStock(tx, branchId)) {
+    // The user who held this stock is no longer on an open shift. The
+    // shelf passes to the BRANCH through the one transfer primitive — the
+    // period that held it is closed and kept, a successor opens, and the
+    // audit row says so. Rewriting the period in place would erase who was
+    // answerable for it.
+    const openedById = stock.participants[0]?.userId ?? null;
+    const transfer = await transferCustody(tx, {
+      outgoingPeriodId: stock.id,
+      scope: "STOCK",
+      incoming: { participants: [], shiftId: null, responsibleShiftId: null, holderType: "BRANCH", openedById },
+      actorId: (openedById ?? stock.openedById)!,
     });
-
-    if (!activeShift) {
-      // The user who held this stock is no longer on an open shift. The
-      // shelf passes to the BRANCH through the one transfer primitive — the
-      // period that held it is closed and kept, a successor opens, and the
-      // audit row says so. Rewriting the period in place would erase who was
-      // answerable for it.
-      const openedById = stock.participants[0]?.userId ?? null;
-      const transfer = await transferCustody(tx, {
-        outgoingPeriodId: stock.id,
-        scope: "STOCK",
-        incoming: { participants: [], shiftId: null, responsibleShiftId: null, holderType: "BRANCH", openedById },
-        actorId: (openedById ?? stock.openedById)!,
-      });
-      await auditInTransaction(tx, {
-        cafeId: stock.cafeId, userId: openedById ?? stock.openedById ?? null, action: "SHIFT_CUSTODY_RECONCILED",
-        entity: "CustodyPeriod", entityId: stock.id,
-        details: {
-          branchId, reason: "STOCK_CUSTODY_WITHOUT_OPEN_SHIFT", responsibleShiftId: stock.responsibleShiftId,
-          participants: stock.participants.map((p) => p.userId), branchCustodyPeriodId: transfer.incomingPeriodId,
-        },
-      });
-    }
+    await auditInTransaction(tx, {
+      cafeId: stock.cafeId, userId: openedById ?? stock.openedById ?? null, action: "SHIFT_CUSTODY_RECONCILED",
+      entity: "CustodyPeriod", entityId: stock.id,
+      details: {
+        branchId, reason: "STOCK_CUSTODY_WITHOUT_OPEN_SHIFT", responsibleShiftId: stock.responsibleShiftId,
+        participants: stock.participants.map((p) => p.userId), branchCustodyPeriodId: transfer.incomingPeriodId,
+      },
+    });
   }
 
   // 3. A shift stuck in AWAITING_CUSTODY_TRANSFER with no live handover can
