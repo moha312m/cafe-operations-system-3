@@ -1,0 +1,12 @@
+### D1-PM-S2w — طاولات 5 و6 و7 و8 (وليد، ويتر)
+- What I tried: فتحت 4 طاولات DINE_IN بدفع PENDING. طاولة 7 أضافت كرواسون بعد دقائق فعملت أوردر ثاني على نفس الطاولة. بعدها تابعت الأوردرات حتى READY وعملت SERVED.
+- What I expected, as a ويتر: الأوردرات تتحول CONFIRMED ثم PREPARING ثم READY، أقدمها وأعلّمها SERVED، وبعدها الكاشير يحصّل.
+- What the system did:
+  - طاولة 5: أوردر #35 id cmwc9d6q50014hljoojxfqy3k، 2 شاي، إجمالي 57، جلسة cmwc9d6s60018hljoojomqlrh (201)
+  - طاولة 6: أوردر #37 id cmwc9d76r001vhljott3688xt، كابتشينو وسط + كرواسون، إجمالي 148.2، جلسة cmwc9d77s0020hljoyhcap47t (201)
+  - طاولة 7: أوردر #38 id cmwc9d7l6002bhljoxvjg2r4y، عصير برتقال + شاي، 96.9 (201). أوردر #40 id cmwc9dcaf0036hljocazrc3cb، كرواسون، 68.4 (201). جلسة cmwc9d7li002ghljoqsqk93yr، المجموع 165.3
+  - طاولة 8: أوردر #39 id cmwc9d7wf002rhljogc9s5g47، إسبريسو سنجل، 51.3، جلسة cmwc9d7ws002vhljo0brdyhh1 (201)
+  - بقت CONFIRMED حوالي دقيقتين ونصف، بعدها READY كلها. علّمتها SERVED كلها 200.
+  - لما قرأت الطاولات: كلها paidAmount = الإجمالي، remainingAmount 0، READY_TO_CLOSE، والأوردرات paymentStatus PAID قبل ما أعلّم SERVED (الكاشير حصّل قبل التقديم).
+  - لا يوجد أوردر QR في PENDING_WAITER_APPROVAL (قائمة فاضية).
+- My comment: السيستم سمح للكاشير يحصّل قبل التقديم؛ مش مشكلة بحد ذاتها. ملاحظة: شاشة القائمة بترجّع أوردرات كثيرة (140 ألف حرف) بدون فلتر حالة مفيد لي. غير كده fine.

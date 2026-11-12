@@ -1,0 +1,16 @@
+import { api } from "./api.mjs";
+const O = "owner@demo.com", B = "cmwc33qgt0012hlng6f0q8uz6";
+const show = (k, v) => console.log(`--- ${k}\n` + JSON.stringify(v).slice(0, 2500));
+const hc = await api(O, "GET", `/api/branches/${B}/handover-config`); show("handover-config " + hc.status, hc.json);
+const pol = await api(O, "GET", `/api/cafe/handover-policy`); show("handover-policy " + pol.status, pol.json);
+const prods = await api(O, "GET", `/api/products?branchId=${B}`);
+const list = prods.json.products ?? prods.json;
+show("products " + prods.status, (Array.isArray(list) ? list : []).slice(0, 40).map(p => ({ id: p.id, n: p.name, price: p.price, stockMode: p.stockMode, variants: (p.variants||[]).length, recipe: p.recipeStatus ?? p._count })));
+const inv = await api(O, "GET", `/api/inventory?branchId=${B}`);
+const items = inv.json.items ?? inv.json.inventory ?? inv.json;
+show("inventory " + inv.status, (Array.isArray(items) ? items : []).map(i => ({ id: i.id, n: i.name, u: i.unit, st: i.currentStock, cost: i.costPerUnit, crit: i.isCritical })));
+const rc = await api(O, "GET", `/api/reason-codes`); show("reason-codes " + rc.status, rc.json);
+const ec = await api(O, "GET", `/api/expenses/categories`); show("expense-categories " + ec.status, ec.json);
+const sup = await api(O, "GET", `/api/suppliers`); show("suppliers " + sup.status, (sup.json.suppliers||[]).map(s=>({id:s.id,n:s.name})));
+const tab = await api(O, "GET", `/api/tables/config?branchId=${B}`); show("tables " + tab.status, tab.json);
+const ro = await api(O, "GET", `/api/roles`); show("roles", (ro.json.roles||[]).map(r => ({ id: r.id, code: r.code, n: r.name })));

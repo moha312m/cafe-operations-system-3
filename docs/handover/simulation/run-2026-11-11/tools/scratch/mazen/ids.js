@@ -1,0 +1,1 @@
+const s=require("fs").readFileSync(0,"utf8");const r=/"id":"(\w+)","cafeId":"\w+","branchId":"\w+","orderNumber":(\d+)/g;let m,a=[];while(m=r.exec(s))a.push(m[1]+":"+m[2]);console.log(a.reverse().join(" "))

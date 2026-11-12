@@ -1,0 +1,1 @@
+let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s.replace(/^\d+ /,''));for(const o of j.orders)console.log(o.orderNumber,o.id,o.type,o.status,o.paymentStatus,o.source,o.tableNumber||'',(o.items||[]).map(i=>(i.nameSnapshot||i.productNameSnapshot||i.name||'?')+'x'+i.quantity).join('|'))})

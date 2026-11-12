@@ -1,0 +1,44 @@
+{
+ "cashierAM": {
+  "id": "cmwc3amf30003hl54st7tkq9c",
+  "email": "sara.am@sim.test",
+  "name": "سارة - كاشير الصباح",
+  "role": "CASHIER"
+ },
+ "cashierPM": {
+  "id": "cmwc3an6u0009hl5416owrm77",
+  "email": "karim.pm@sim.test",
+  "name": "كريم - كاشير المساء",
+  "role": "CASHIER"
+ },
+ "waiter": {
+  "id": "cmwc3anv0000fhl54xkda63ro",
+  "email": "walid.waiter@sim.test",
+  "name": "وليد - ويتر",
+  "role": "WAITER"
+ },
+ "manager": {
+  "id": "cmwc3aoaq000lhl54lwaus05j",
+  "email": "hala.mgr@sim.test",
+  "name": "هالة - مديرة الفرع",
+  "role": "BRANCH_MANAGER"
+ },
+ "barista": {
+  "id": "cmwc3aopl000rhl54gm3pzi24",
+  "email": "mazen.bar@sim.test",
+  "name": "مازن - باريستا",
+  "role": "BARISTA"
+ },
+ "storekeeper": {
+  "id": "cmwc3ap3h000xhl54lxdkossi",
+  "email": "adel.store@sim.test",
+  "name": "عادل - أمين المخزن",
+  "role": "INVENTORY_MANAGER"
+ },
+ "accountant": {
+  "id": "cmwc3aphl0013hl54jopjlelr",
+  "email": "mona.acct@sim.test",
+  "name": "منى - محاسبة",
+  "role": "CASHIER"
+ }
+}

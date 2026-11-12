@@ -1,0 +1,12 @@
+import { api } from "./api.mjs";
+import { writeFileSync } from "node:fs";
+const O = "owner@demo.com", B = "cmwc33qgt0012hlng6f0q8uz6", label = process.argv[2] || "baseline";
+const inv = await api(O, "GET", `/api/inventory?branchId=${B}`);
+const items = (inv.json.items ?? inv.json).map(i => ({ id: i.id, name: i.name, unit: i.unit, stock: i.currentStock, cost: i.costPerUnit, critical: i.isCritical }));
+const ov = await api(O, "GET", `/api/accounting/overview`);
+const tb = await api(O, "GET", `/api/accounting/trial-balance?branchId=${B}`);
+const sh = await api(O, "GET", `/api/shifts?branchId=${B}`);
+const shifts = (sh.json.shifts ?? []).map(s => ({ id: s.id, n: s.shiftNumber, status: s.status, cashier: s.cashier?.name, opening: s.openingCashAmount, expected: s.expectedCashAmount, actual: s.actualCashAmount, diff: s.cashDifference }));
+const snap = { label, at: new Date().toISOString(), items, shifts, accountingOverview: { status: ov.status, body: ov.json }, trialBalance: { status: tb.status, body: tb.json } };
+writeFileSync(new URL(`../evidence/${label}.json`, import.meta.url), JSON.stringify(snap, null, 2));
+console.log(JSON.stringify({ items: items.map(i => `${i.name}:${i.stock}`), shifts, ov: ov.status, ovKeys: Object.keys(ov.json), tb: tb.status, tbSnippet: JSON.stringify(tb.json).slice(0, 600) }, null, 1));

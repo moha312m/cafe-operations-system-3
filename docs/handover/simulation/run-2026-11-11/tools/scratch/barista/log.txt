@@ -1,0 +1,32 @@
+read1 #34 PREPARING -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":"cmwc8me2n00t7hl54aq8ww1fl","invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc
+read1 #34 READY -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":"cmwc8me2n00t7hl54aq8ww1fl","invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc
+read1 #35 PREPARING -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":null,"invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc9d6q50014hljoojxfqy3k",
+read1 #35 READY -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":null,"invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc9d6q50014hljoojxfqy3k",
+read1 #36 PREPARING -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":"cmwc8me2n00t7hl54aq8ww1fl","invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc
+read1 #36 READY -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":"cmwc8me2n00t7hl54aq8ww1fl","invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc
+read1 #37 PREPARING -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":null,"invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc9d76r001vhljott3688xt",
+read1 #37 READY -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":null,"invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc9d76r001vhljott3688xt",
+read1 #38 PREPARING -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":null,"invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc9d7l6002bhljoxvjg2r4y",
+read1 #38 READY -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":null,"invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc9d7l6002bhljoxvjg2r4y",
+read1 #39 PREPARING -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":null,"invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc9d7wf002rhljogc9s5g47",
+read1 #39 READY -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":null,"invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc9d7wf002rhljogc9s5g47",
+read1 #40 PREPARING -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":null,"invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc9dcaf0036hljocazrc3cb",
+read1 #40 READY -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":null,"invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc9dcaf0036hljocazrc3cb",
+read1 #41 PREPARING -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":"cmwc8me2n00t7hl54aq8ww1fl","invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc
+read1 #41 READY -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":"cmwc8me2n00t7hl54aq8ww1fl","invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc
+read1 #42 PREPARING -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":"cmwc8me2n00t7hl54aq8ww1fl","invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc
+read1 #42 READY -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":"cmwc8me2n00t7hl54aq8ww1fl","invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc
+read1 #43 PREPARING -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":"cmwc8me2n00t7hl54aq8ww1fl","invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc
+read1 #43 READY -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":"cmwc8me2n00t7hl54aq8ww1fl","invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc
+read1 #44 PREPARING -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":"cmwc8me2n00t7hl54aq8ww1fl","invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc
+read1 #44 READY -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":"cmwc8me2n00t7hl54aq8ww1fl","invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc
+read1 #45 PREPARING -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":"cmwc8me2n00t7hl54aq8ww1fl","invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc
+read1 #45 READY -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":"cmwc8me2n00t7hl54aq8ww1fl","invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc
+read1 #46 PREPARING -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":"cmwc8me2n00t7hl54aq8ww1fl","invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc
+read1 #46 READY -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":"cmwc8me2n00t7hl54aq8ww1fl","invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc
+read1 #47 PREPARING -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":"cmwc8me2n00t7hl54aq8ww1fl","invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc
+read1 #47 READY -> 200 {"order":{"revision":0,"activeAmendmentId":null,"saleShiftId":"cmwc8me2n00t7hl54aq8ww1fl","invoiceDiscountType":"NONE","invoiceDiscountValue":"0","id":"cmwc
+read1: 34:CONFIRMED 35:CONFIRMED 36:CONFIRMED 37:CONFIRMED 38:CONFIRMED 39:CONFIRMED 40:CONFIRMED 41:CONFIRMED 42:CONFIRMED 43:CONFIRMED 44:CONFIRMED 45:CONFIRMED 46:CONFIRMED 47:CONFIRMED  
+read2:   
+read3:   
+read4:   

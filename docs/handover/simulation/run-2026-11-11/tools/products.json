@@ -1,0 +1,195 @@
+[
+ {
+  "id": "cmwc33r4s0020hlngdofgvi0q",
+  "name": "إسبريسو",
+  "price": "45",
+  "variants": [
+   {
+    "id": "cmwc33r4s0021hlngqxpr5tte",
+    "name": "سنجل",
+    "price": "45"
+   },
+   {
+    "id": "cmwc33r4s0022hlngglbjekgz",
+    "name": "دبل",
+    "price": "60"
+   }
+  ]
+ },
+ {
+  "id": "cmwc33r77003mhlngmwe0p5sf",
+  "name": "ساندوتش تركي",
+  "price": "120",
+  "variants": []
+ },
+ {
+  "id": "cmwc33r6d002yhlngeip3rlir",
+  "name": "شاي",
+  "price": "25",
+  "variants": []
+ },
+ {
+  "id": "cmwc33r6o0036hlng26cwienr",
+  "name": "عصير برتقال",
+  "price": "60",
+  "variants": []
+ },
+ {
+  "id": "cmwc33r6x003ehlngvvzyqm9g",
+  "name": "كرواسون",
+  "price": "60",
+  "variants": []
+ },
+ {
+  "id": "cmwc33r5f0024hlngjqtoixe6",
+  "name": "أمريكانو",
+  "price": "55",
+  "variants": [
+   {
+    "id": "cmwc33r5f0025hlng5aug5u72",
+    "name": "صغير",
+    "price": "35"
+   },
+   {
+    "id": "cmwc33r5f0026hlng52uc7ewu",
+    "name": "وسط",
+    "price": "55"
+   },
+   {
+    "id": "cmwc33r5f0027hlnggz7s7mq6",
+    "name": "كبير",
+    "price": "75"
+   }
+  ]
+ },
+ {
+  "id": "cmwc33r7a003ohlngo8iwj0ld",
+  "name": "تشيكن بانيني",
+  "price": "130",
+  "variants": []
+ },
+ {
+  "id": "cmwc33r6f0030hlng2xon9ntr",
+  "name": "شاي أخضر",
+  "price": "35",
+  "variants": []
+ },
+ {
+  "id": "cmwc33r6q0038hlng6d0fu4vz",
+  "name": "عصير مانجو",
+  "price": "70",
+  "variants": []
+ },
+ {
+  "id": "cmwc33r71003ghlngm1hh6296",
+  "name": "مافن",
+  "price": "55",
+  "variants": []
+ },
+ {
+  "id": "cmwc33r74003ihlng7bb0k47a",
+  "name": "براوني",
+  "price": "65",
+  "variants": []
+ },
+ {
+  "id": "cmwc33r6k0032hlngzycis52q",
+  "name": "شاي نعناع",
+  "price": "35",
+  "variants": []
+ },
+ {
+  "id": "cmwc33r6t003ahlngwfe6n9tt",
+  "name": "عصير فراولة",
+  "price": "65",
+  "variants": []
+ },
+ {
+  "id": "cmwc33r5l0029hlngzw7i0rng",
+  "name": "كابتشينو",
+  "price": "70",
+  "variants": [
+   {
+    "id": "cmwc33r5l002ahlngb5dqwdd6",
+    "name": "صغير",
+    "price": "50"
+   },
+   {
+    "id": "cmwc33r5l002bhlngg50pzf6x",
+    "name": "وسط",
+    "price": "70"
+   },
+   {
+    "id": "cmwc33r5l002chlngz5dk5i2c",
+    "name": "كبير",
+    "price": "90"
+   }
+  ]
+ },
+ {
+  "id": "cmwc33r5q002ehlng1n5wov7l",
+  "name": "لاتيه",
+  "price": "75",
+  "variants": [
+   {
+    "id": "cmwc33r5q002fhlngtatthmwu",
+    "name": "صغير",
+    "price": "55"
+   },
+   {
+    "id": "cmwc33r5q002ghlngfm6tyz3m",
+    "name": "وسط",
+    "price": "75"
+   },
+   {
+    "id": "cmwc33r5q002hhlngr0wryghr",
+    "name": "كبير",
+    "price": "95"
+   }
+  ]
+ },
+ {
+  "id": "cmwc33r5u002jhlng3zr2z7bq",
+  "name": "سبانش لاتيه",
+  "price": "95",
+  "variants": [
+   {
+    "id": "cmwc33r5u002khlngwud1h0ds",
+    "name": "صغير",
+    "price": "75"
+   },
+   {
+    "id": "cmwc33r5u002lhlnggq3xo8bz",
+    "name": "وسط",
+    "price": "95"
+   },
+   {
+    "id": "cmwc33r5u002mhlngp0dh2zht",
+    "name": "كبير",
+    "price": "115"
+   }
+  ]
+ },
+ {
+  "id": "cmwc33r67002rhlng4miqyozt",
+  "name": "آيس لاتيه",
+  "price": "85",
+  "variants": [
+   {
+    "id": "cmwc33r67002shlngeyva6rhw",
+    "name": "صغير",
+    "price": "65"
+   },
+   {
+    "id": "cmwc33r67002thlngvcbha7ja",
+    "name": "وسط",
+    "price": "85"
+   },
+   {
+    "id": "cmwc33r67002uhlngq7vryyj6",
+    "name": "كبير",
+    "price": "105"
+   }
+  ]
+ }
+]
