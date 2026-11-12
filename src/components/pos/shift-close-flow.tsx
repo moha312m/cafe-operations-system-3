@@ -111,7 +111,33 @@ function Steps({ stage, withMaterials }: { stage: Flow["stage"]; withMaterials: 
   </ol>;
 }
 
-function getBlockerAction(blocker: DetailedBlocker, branchId: string): { label: string; href: string } | null {
+type BlockerAction = { label: string; href: string } | { note: string };
+
+/**
+ * The way out of one close blocker — a link ONLY when this account can act on
+ * the page it opens. A link to a page that hides the very records the close is
+ * waiting on is a dead end (a cashier without QR approval was sent to an empty
+ * approvals queue while two seed QR orders blocked the close); instead the
+ * account is told, by order number, who can clear it.
+ */
+function getBlockerAction(blocker: DetailedBlocker, branchId: string, canKey: (key: string) => boolean): BlockerAction | null {
+  const action = getBlockerLink(blocker, branchId);
+  if (!action) return null;
+  const refs = blocker.refs?.length ? ` (${blocker.refs.join("، ")})` : "";
+  const needs: Record<string, { key: string; who: string }> = {
+    PENDING_APPROVAL_ORDERS: { key: "qr_orders.approve", who: `حسابك مش مسموح له يوافق على طلبات QR — اطلب من الويتر أو المدير يوافق عليها أو يرفضها${refs}.` },
+    UNSERVED_ORDERS: { key: "orders.view", who: `حسابك مش مسموح له يفتح الطلبات — اطلب من الويتر أو المدير يقدّمها أو يلغيها${refs}.` },
+    DRAFT_PURCHASE_INVOICES: { key: "purchases.view", who: "حسابك مش مسموح له يفتح المشتريات — اطلب من مسؤول المشتريات أو المدير." },
+    PENDING_CORRECTIONS: { key: "stock_count.view", who: "حسابك مش مسموح له يفتح الجرد — اطلب من المدير يعتمد التصحيحات." },
+    FOREIGN_ACTIVE_COUNT: { key: "stock_count.view", who: "حسابك مش مسموح له يفتح الجرد — اطلب من المدير يقفل الجرد المفتوح." },
+    EXISTING_ACTIVE_HANDOVER: { key: "handover.view", who: "حسابك مش مسموح له يفتح التسليمات — اطلب من المدير يراجع التسليم المفتوح." },
+  };
+  const need = needs[blocker.code ?? ""];
+  if (need && !canKey(need.key)) return { note: need.who };
+  return action;
+}
+
+function getBlockerLink(blocker: DetailedBlocker, branchId: string): { label: string; href: string } | null {
   const code = blocker.code ?? "";
   const qBranch = encodeURIComponent(branchId);
 
@@ -370,7 +396,7 @@ function MoneyStep({ flow, currency, onCommitted }: {
       {failure.blockers.length > 0 && (
         <div className="space-y-2">
           {failure.blockers.map((b, idx) => {
-            const action = getBlockerAction(b, flow.branch.id);
+            const action = getBlockerAction(b, flow.branch.id, canKey);
             return (
               <div key={idx} className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-lg border border-destructive/20 bg-background/90 p-3 shadow-2xs">
                 <div className="space-y-1">
@@ -385,7 +411,10 @@ function MoneyStep({ flow, currency, onCommitted }: {
                   )}
                 </div>
                 <div className="flex flex-wrap items-center gap-2 shrink-0">
-                  {action && (
+                  {action && "note" in action && (
+                    <span className="max-w-xs text-xs text-muted-foreground" data-testid="close-blocker-note">{action.note}</span>
+                  )}
+                  {action && "href" in action && (
                     <Link href={action.href} className={buttonVariants({ size: "sm", className: "text-xs h-8 gap-1.5 shadow-xs" })}>
                       {action.label}
                       <ArrowLeft className="h-3.5 w-3.5" />
