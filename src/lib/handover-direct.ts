@@ -94,7 +94,7 @@ export type DirectSummary = {
 
 const OPEN_FOR_REVIEW = ["OUTGOING_SUBMITTED", "INCOMING_REVIEW"];
 
-export async function incomingStateFor(client: Client, h: { cafeId: string; branchId: string }, viewerId: string): Promise<IncomingState> {
+export async function incomingStateFor(client: Client, h: { cafeId: string; branchId: string; outgoingShiftId?: string; outgoingStockCustodyId?: string | null }, viewerId: string): Promise<IncomingState> {
   const waiting = await client.shift.findMany({
     where: { cafeId: h.cafeId, branchId: h.branchId, status: "OPEN", custodyGateReason: "AWAITING_CUSTODY_TRANSFER" },
     select: { id: true, shiftNumber: true, cashierId: true, cashier: { select: { name: true } } },
@@ -108,6 +108,13 @@ export async function incomingStateFor(client: Client, h: { cafeId: string; bran
   }
   const own = await client.shift.findFirst({ where: { cafeId: h.cafeId, branchId: h.branchId, cashierId: viewerId, status: "OPEN" }, select: { id: true, shiftNumber: true, custodyGateReason: true } });
   if (own) {
+    // A colleague trading on the same shelf receives through the counted
+    // receiving sheet, never the one-tap path (owner decision 2026-11-11):
+    // the one-tap path would overwrite a drawer they already hold.
+    if (own.custodyGateReason === null && h.outgoingShiftId && h.outgoingStockCustodyId
+      && (await client.shiftCustody.count({ where: { shiftId: own.id, custodyPeriodId: h.outgoingStockCustodyId } })) > 0) {
+      return { state: "UNAVAILABLE", reason: "انت شغال على نفس الدرج والمخزون — استلم من «ورقة الاستلام» بعد ما تعدّ، مش بضغطة واحدة" };
+    }
     return own.custodyGateReason === null
       ? { state: "OPERATIONAL", shiftId: own.id, shiftNumber: own.shiftNumber }
       : { state: "UNAVAILABLE", reason: "شيفتك المفتوح مستني خطوة تانية غير استلام عهدة الشيفت السابق" };
@@ -122,6 +129,7 @@ export async function directHandoverSummary(args: { handoverId: string; viewerId
     where: { id: args.handoverId, cafeId: args.cafeId },
     select: {
       id: true, cafeId: true, branchId: true, status: true, target: true, submittedAt: true, stockCountSessionId: true, outgoingShiftId: true,
+      outgoingStockCustodyId: true,
       directAcknowledgedAt: true, directAcknowledgedBy: { select: { name: true } },
       branch: { select: { name: true } }, outgoingUser: { select: { name: true } },
       outgoingShift: { select: { shiftNumber: true, cashDifference: true, tenderReconciliations: { select: { method: true, varianceAmount: true, reasonNote: true } } } },
@@ -227,7 +235,7 @@ export const acceptDirectHandoverInTransaction = (tx: Prisma.TransactionClient, 
 
 async function directAccept(client: Client, args: DirectAcceptArgs, accept: (a: AcceptHandoverArgs) => Promise<AcceptResult>): Promise<AcceptResult> {
   if (!args.reviewVersion) throw new ApiError(400, "لازم تبعت نسخة الملخص اللي راجعته");
-  const h = await client.handoverSession.findFirst({ where: { id: args.handoverId, cafeId: args.cafeId }, select: { id: true, cafeId: true, branchId: true, status: true } });
+  const h = await client.handoverSession.findFirst({ where: { id: args.handoverId, cafeId: args.cafeId }, select: { id: true, cafeId: true, branchId: true, status: true, outgoingShiftId: true, outgoingStockCustodyId: true } });
   if (!h) throw new ApiError(404, "التسليم مش موجود");
   let incomingShiftId: string | undefined;
   if (h.status !== "COMPLETED") {

@@ -13,6 +13,7 @@ import { PendingCloseBanner } from "@/components/pos/close-guidance-panel";
 import { t } from "@/lib/i18n";
 import { useApp } from "@/components/app-shell";
 import { OpeningCashPanel } from "@/components/handovers/opening-cash-panel";
+import { ManagerHandoverActionDialog, useMayEndHandover } from "@/components/handovers/manager-handover-action";
 import { handoverBlockMessage } from "@/components/handovers/workflow-state";
 import { CarriedOrdersStrip } from "@/components/pos/carried-orders-strip";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -109,6 +110,9 @@ export function ShiftControls({
   const controllerRef=useRef<AbortController|null>(null);
   const [pendingShift, setPendingShift] = useState<Shift | null>(null);
   const [openingBlocker, setOpeningBlocker] = useState<OpeningBlocker | null>(null);
+  const [repairOpen, setRepairOpen] = useState(false);
+  // Owner, or a manager with the exception/cancel key. The server checks again.
+  const mayRepair = useMayEndHandover();
   const [openDialog, setOpenDialog] = useState(false);
   const [openingCash, setOpeningCash] = useState("");
   const [busy, setBusy] = useState(false);
@@ -267,9 +271,18 @@ export function ShiftControls({
 
       {openingBlocker && <section role="alert" className="space-y-2 rounded-lg border border-amber-500/50 bg-amber-500/10 p-3 text-sm" data-testid="shift-opening-blocker">
         <p className="font-semibold">فتح الشيفت متوقف بسبب عهدة الفرع</p>
-        <p>{CUSTODY_BLOCKERS[openingBlocker.code]} اطلب من مدير الفرع أو صاحب الكافيه يراجع العهدة من «التسليم والاستلام» قبل ما تحاول تفتح الشيفت تاني.</p>
-        {canViewHandover && <Link className="text-primary underline" href={handoverHref}>التسليم والاستلام للفرع</Link>}
+        <p>{CUSTODY_BLOCKERS[openingBlocker.code]} {mayRepair
+          ? "تقدر تصلحها من الزرار ده بسبب مكتوب، وبعدها الشيفت يتفتح ويعمل الجرد الافتتاحي قبل البيع."
+          : "اطلب من مدير الفرع أو صاحب الكافيه يضغط «إصلاح عهدة الفرع» من الشاشة دي قبل ما تحاول تفتح الشيفت تاني."}</p>
+        <div className="flex flex-wrap items-center gap-3">
+          {mayRepair && openingBlocker.code !== "INCONSISTENT_CUSTODY" && <Button size="sm" onClick={() => setRepairOpen(true)} data-testid="shift-opening-repair">
+            إصلاح عهدة الفرع
+          </Button>}
+          {canViewHandover && <Link className="text-primary underline" href={handoverHref}>التسليم والاستلام للفرع</Link>}
+        </div>
       </section>}
+      {repairOpen && <ManagerHandoverActionDialog kind="repair" open branchId={branchId} onClose={() => setRepairOpen(false)}
+        onDone={async () => { setOpeningBlocker(null); await load(); }} />}
 
       {pendingDirect && <section role="alert" className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-500/50 bg-amber-500/10 p-3 text-sm" data-testid="carryforward-pending-handover">
         <p className="font-medium">فيه تسليم مباشر منتظر استلامك{pendingDirect.previousShiftNumber ? ` من الشيفت #${pendingDirect.previousShiftNumber}` : ""}{pendingDirect.previousCashierName ? ` (الكاشير: ${pendingDirect.previousCashierName})` : ""}{pendingDirect.expectedOpeningCash != null ? ` · عهدة الدرج ${money(pendingDirect.expectedOpeningCash, currency)}` : ""}. افتح الشيفت واستلم العهدة قبل البيع — مينفعش تبدأ من غيره.</p>

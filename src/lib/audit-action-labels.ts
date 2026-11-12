@@ -86,6 +86,7 @@ const LABELS: Record<string, string> = {
   HANDOVER_ISSUE_RESOLVED: "مراجعة وإقفال بلاغ اختلاف",
   HANDOVER_CANCELLED: "إنهاء التسليم لعهدة الفرع بقرار مدير",
   SHIFT_CUSTODY_RECONCILED: "تسوية عهدة مخزون بلا شيفت لعهدة الفرع",
+  BRANCH_CUSTODY_REPAIRED: "إصلاح عهدة الفرع بقرار مدير",
   STOCK_COUNT_RESYNCED: "مزامنة المتوقع مع المخزن (جرد عادي)",
   CORRECTION_REJECTED: "رفض تصحيح",
   BRANCH_CUSTODY_VERIFIED: "التحقق من العهدة الافتتاحية",

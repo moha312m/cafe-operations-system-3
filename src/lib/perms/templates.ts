@@ -99,7 +99,11 @@ const WAITER_KEYS = [
 
 const BARISTA_KEYS = [
   "kitchen.view", "kitchen.update_status",
-  "orders.view", "orders.request_owner_action",
+  // PATCH /api/orders/:id/status checks the primary key of
+  // "orders:update-status", which is orders.update_status. Without it the
+  // default bar role could not move a single order (simulation F-011).
+  // Existing cafés receive it through ensureCafeRoles' backfill at login.
+  "orders.view", "orders.update_status", "orders.request_owner_action",
   "menu.view",
 ];
 

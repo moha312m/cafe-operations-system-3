@@ -725,12 +725,27 @@ export async function transferCustody(
     },
   });
 
+  // A colleague who shared the outgoing period and now receives it (simulation
+  // F-064) is already linked to THIS predecessor. Their link follows the chain
+  // to the successor — the one case where a shift's custody link may change.
+  // A link to any other period is still refused by linkShiftCustody below.
+  // The link row is moved (updated), never deleted, so the join keeps one row
+  // per shift and scope; the predecessor's participants and the audit row
+  // below keep the record that the colleague shared it.
+  const carriedLink = args.incoming.shiftId
+    ? await tx.shiftCustody.findFirst({
+        where: { shiftId: args.incoming.shiftId, scope: args.scope, custodyPeriodId: outgoing.id },
+        select: { id: true },
+      })
+    : null;
+  const incomingShiftId = carriedLink ? null : args.incoming.shiftId;
+
   const { custodyPeriodId: incomingPeriodId } = await openCustodyPeriod(tx, {
     cafeId: outgoing.cafeId,
     branchId: outgoing.branchId,
     scope: args.scope,
     participants: args.incoming.participants,
-    shiftId: args.incoming.shiftId,
+    shiftId: incomingShiftId,
     previousPeriodId: outgoing.id,
     holderType,
     openedById: args.incoming.openedById ?? null,
@@ -738,6 +753,9 @@ export async function transferCustody(
     // The incoming custodian starts holding what the outgoing one closed at.
     openingCashAmount: args.scope === "CASH" ? args.incoming.openingCashAmount ?? args.closingCashAmount ?? null : null,
   });
+  if (carriedLink) {
+    await tx.shiftCustody.update({ where: { id: carriedLink.id }, data: { custodyPeriodId: incomingPeriodId } });
+  }
 
   // Written through the transaction client rather than the fire-and-forget
   // `audit()` helper, on purpose: a custody transfer recorded when the

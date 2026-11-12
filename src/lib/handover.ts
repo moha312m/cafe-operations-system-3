@@ -2382,21 +2382,60 @@ async function resolveIncomingShift(
   handover: LockedHandover,
   requested: string | null | undefined
 ): Promise<{ id: string; cashierId: string }> {
-  const candidates = await tx.shift.findMany({
+  const candidates = await receivingShiftCandidates(tx, handover, requested);
+  if (candidates.length !== 1) throw new ApiError(409, NO_INCOMING_SHIFT);
+  return candidates[0];
+}
+
+/**
+ * Who may receive this handover: the branch's OPEN shift gated on
+ * `AWAITING_CUSTODY_TRANSFER`, or — when nobody is waiting — an OPEN, already
+ * operational shift that SHARES the outgoing shelf.
+ *
+ * The second case is the colleague who opened while the outgoing cashier was
+ * trading: `ensureCustodyForShift` made them a shared holder of the same
+ * drawer and shelf, so nobody is ever "waiting", and before this the handover
+ * had no possible receiver and no manager exit (simulation F-064). Owner
+ * decision 2026-11-11: the colleague still working receives — counts and signs
+ * the receiving sheet. A gated shift, when there is one, still comes first;
+ * the colleague path never applies to a handover that names no shelf.
+ *
+ * `cashierId` comes back because SH-21 has no arriving custodian in its
+ * session — the manager is the caller — so the shift's own cashier is the
+ * only authoritative answer to who is taking the room.
+ */
+export async function receivingShiftCandidates(
+  client: Prisma.TransactionClient | typeof db,
+  handover: { branchId: string; outgoingShiftId: string; outgoingStockCustodyId: string | null },
+  requested?: string | null,
+): Promise<{ id: string; cashierId: string; shiftNumber: number; sharesOutgoing: boolean }[]> {
+  const gated = await client.shift.findMany({
     where: {
       branchId: handover.branchId,
       status: "OPEN",
       custodyGateReason: "AWAITING_CUSTODY_TRANSFER",
       ...(requested ? { id: requested } : {}),
     },
-    // `cashierId` comes back because SH-21 has no arriving custodian in its
-    // session — the manager is the caller — so the shift's own cashier is the
-    // only authoritative answer to who is taking the room.
-    select: { id: true, cashierId: true },
+    select: { id: true, cashierId: true, shiftNumber: true },
     orderBy: { shiftNumber: "asc" },
   });
-  if (candidates.length !== 1) throw new ApiError(409, NO_INCOMING_SHIFT);
-  return candidates[0];
+  if (gated.length > 0) return gated.map((s) => ({ ...s, sharesOutgoing: false }));
+  if (!handover.outgoingStockCustodyId) return [];
+  const sharing = await client.shift.findMany({
+    where: {
+      branchId: handover.branchId,
+      status: "OPEN",
+      custodyGateReason: null,
+      AND: [
+        { id: { not: handover.outgoingShiftId } },
+        ...(requested ? [{ id: requested }] : []),
+      ],
+      custodyLinks: { some: { custodyPeriodId: handover.outgoingStockCustodyId } },
+    },
+    select: { id: true, cashierId: true, shiftNumber: true },
+    orderBy: { shiftNumber: "asc" },
+  });
+  return sharing.map((s) => ({ ...s, sharesOutgoing: true }));
 }
 
 /**
@@ -2605,9 +2644,13 @@ async function prepareHandoverFinancialLocks(tx: Prisma.TransactionClient, args:
   // Refuse these invalid requests before acquiring any financial row lock.
   if (!ACCEPTABLE_STATUSES.includes(handover.status)) throw new ApiError(409, NOT_ACCEPTABLE);
   const periods = await tx.custodyPeriod.findMany({ where: { ...context.scope, scope: "STOCK", OR: [{ status: "OPEN" }, { id: handover.outgoingStockCustodyId ?? "" }] }, select: { responsibleShiftId: true } });
-  const incoming = handover.target === "SHIFT_TO_SHIFT" ? await tx.shift.findMany({ where: {
-    ...context.scope, ...(args.incomingShiftId ? { id: args.incomingShiftId } : { status: "OPEN", custodyGateReason: "AWAITING_CUSTODY_TRANSFER" }),
-  }, select: { id: true } }) : [];
+  // The same candidates acceptance will resolve, so a colleague who receives
+  // (see receivingShiftCandidates) is locked here like a waiting shift.
+  const incoming = handover.target === "SHIFT_TO_SHIFT"
+    ? (args.incomingShiftId
+        ? await tx.shift.findMany({ where: { ...context.scope, id: args.incomingShiftId }, select: { id: true } })
+        : await receivingShiftCandidates(tx, handover, null))
+    : [];
   const shifts = [handover.outgoingShiftId, ...incoming.map(row => row.id), ...periods.map(row => row.responsibleShiftId).filter((id): id is string => !!id)];
   await lockShifts(tx, shifts);
   const pending = await tx.deferredStockDeduction.findMany({ where: { handoverId: handover.id, appliedAt: null, ...context.scope }, select: { orderId: true } });

@@ -725,13 +725,36 @@ describe("SH-22 Half A · the branch takes the shelf", () => {
     const alpha = await db.inventoryItem.findUniqueOrThrow({ where: { id: items.alpha.id } });
     assert.equal(Number(alpha.currentStock), 110);
 
-    // And a future handover can freeze the branch again.
-    const next = await openOperationalShift(fx.cashier.id);
+    // A shift opening against the branch-held shelf is gated until it verifies
+    // it. Owner decision 2026-11-11 (P1 Q2): a shift that never received the
+    // shelf has nothing to hand over, so its close settles money only — no
+    // handover and no freeze (before P1 this froze the branch with no exit).
     const { closeShiftWithSettlement } = await cashCloseLib();
-    const closed = await closeShiftWithSettlement({
-      shiftId: next.id,
+    const unverified = await openOperationalShift(fx.cashier.id);
+    const moneyOnly = await closeShiftWithSettlement({
+      shiftId: unverified.id,
       actualCash: 100,
       actorId: fx.cashier.id,
+      closedByManager: false,
+      handoverTarget: "SHIFT_TO_SHIFT",
+      grants: GRANTS_FULL,
+    });
+    assert.equal(moneyOnly.freezeId ?? null, null, "a shift that never held the shelf hands nothing over");
+
+    // And a future handover can freeze the branch again — by a shift that
+    // verified the opening and so actually holds the shelf.
+    const holder = await openGatedShift();
+    const stockNow = async (key: ItemKey) =>
+      Number((await db.inventoryItem.findUniqueOrThrow({ where: { id: items[key].id } })).currentStock);
+    const sessionId = await walkOpeningCount(holder.id, {
+      alpha: await stockNow("alpha"), bravo: await stockNow("bravo"), charlie: await stockNow("charlie"),
+    });
+    const verified = await verify(holder.id, sessionId);
+    assert.equal(verified.status, 200, verified.text);
+    const closed = await closeShiftWithSettlement({
+      shiftId: holder.id,
+      actualCash: 50,
+      actorId: opener.id,
       closedByManager: false,
       handoverTarget: "SHIFT_TO_SHIFT",
       grants: GRANTS_FULL,

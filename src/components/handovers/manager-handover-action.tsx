@@ -22,7 +22,17 @@ import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ReasonCodeSelect } from "@/components/stock-counts/reason-code-select";
 
-export type ManagerHandoverActionKind = "cancel" | "approve" | "release";
+//   repair   «إصلاح عهدة الفرع»            POST /api/branches/:id/custody-repair
+//            (a branch no shift can open on, with no handover to act on)
+
+export type ManagerHandoverActionKind = "cancel" | "approve" | "release" | "repair";
+
+/** One key per decision: a repeat after a lost response replays, never repeats. */
+function newRequestKey() {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 const COPY: Record<ManagerHandoverActionKind, { title: string; explain: string; confirm: string; busy: string }> = {
   cancel: {
@@ -42,6 +52,12 @@ const COPY: Record<ManagerHandoverActionKind, { title: string; explain: string; 
     explain: "بيفك أي تجميد مخزون متعلق بتسليم خلص فعلاً، وبيُنهي كل تسليم لسه مسودة أو مرجوع لعهدة الفرع بالسبب ده (نفس «إنهاء التسليم لعهدة الفرع» لكل واحد). التسليمات المقدمة اللي مستنية مستلم مابتتلمسش.",
     confirm: "فك العوائق وإنهاء المسودات",
     busy: "جارٍ التنفيذ…",
+  },
+  repair: {
+    title: "إصلاح عهدة الفرع",
+    explain: "سجلات العهدة في الفرع ناقصة، فمحدش يقدر يفتح شيفت. الإصلاح بيخلي المخزون في عهدة الفرع كما هو بالدفاتر (من غير جرد ومن غير ما حد يتحاسب عليه)، ولو في شيفت مفتوح على الدرج بيفضل درجه ويستنى الجرد الافتتاحي قبل البيع. درج مالوش شيفت مفتوح بيتقفل بالمبلغ اللي اتعدّ عند قفل آخر شيفت. مفيش حاجة بتتمسح، والإجراء بيتسجل باسمك وبالسبب ده.",
+    confirm: "إصلاح عهدة الفرع",
+    busy: "جارٍ الإصلاح…",
   },
 };
 
@@ -71,22 +87,29 @@ export function ManagerHandoverActionDialog({ kind, open, handoverId, branchId, 
   const [reasonCodeId, setReasonCodeId] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  const [requestKey, setRequestKey] = useState(newRequestKey);
   const copy = COPY[kind];
-  const ready = reasonCodeId.trim() !== "" && note.trim() !== "" && (kind === "release" ? !!branchId : !!handoverId);
+  const branchLevel = kind === "release" || kind === "repair";
+  const ready = reasonCodeId.trim() !== "" && note.trim() !== "" && (branchLevel ? !!branchId : !!handoverId);
 
   async function run() {
     if (!ready || busy) return;
     setBusy(true);
     try {
-      const body = { reasonCodeId: reasonCodeId.trim(), note: note.trim() };
+      const body = kind === "repair"
+        ? { reasonCodeId: reasonCodeId.trim(), note: note.trim(), idempotencyKey: requestKey }
+        : { reasonCodeId: reasonCodeId.trim(), note: note.trim() };
       const url = kind === "release"
         ? `/api/branches/${encodeURIComponent(branchId!)}/inventory-freeze/release`
-        : `/api/handovers/${encodeURIComponent(handoverId!)}/${kind}`;
+        : kind === "repair"
+          ? `/api/branches/${encodeURIComponent(branchId!)}/custody-repair`
+          : `/api/handovers/${encodeURIComponent(handoverId!)}/${kind}`;
       const res = await api<{ message?: string }>(url, { method: "POST", body });
       const message = res.message || "تم تنفيذ الإجراء";
       toast.success(message);
       setReasonCodeId("");
       setNote("");
+      setRequestKey(newRequestKey());
       onClose();
       await onDone(message);
     } catch (e) {

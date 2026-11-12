@@ -15,9 +15,14 @@ export async function recordCashHandover(tx: Prisma.TransactionClient, args: {
     select: { id:true,cafeId:true,branchId:true,outgoingShiftId:true,outgoingCashCustodyId:true,
       outgoingShift:{select:{actualCashAmount:true}} } });
   const incoming = await tx.shift.findUniqueOrThrow({where:{id:args.incomingShiftId},
-    select:{cafeId:true,branchId:true,status:true,custodyGateReason:true,openingCashAmount:true}});
+    select:{cafeId:true,branchId:true,status:true,custodyGateReason:true,openingCashAmount:true,expectedCashAmount:true}});
+  // A colleague who is still trading on the SAME drawer receives too (owner
+  // decision 2026-11-11, simulation F-064). They are operational, not gated,
+  // and must already be a holder of the outgoing drawer — nobody else.
+  const colleague = incoming.custodyGateReason === null && !!h.outgoingCashCustodyId
+    && (await tx.shiftCustody.count({where:{shiftId:args.incomingShiftId,custodyPeriodId:h.outgoingCashCustodyId}})) > 0;
   if (incoming.cafeId !== h.cafeId || incoming.branchId !== h.branchId || incoming.status !== 'OPEN'
-      || incoming.custodyGateReason !== 'AWAITING_CUSTODY_TRANSFER') {
+      || (incoming.custodyGateReason !== 'AWAITING_CUSTODY_TRANSFER' && !colleague)) {
     throw new ApiError(409,'الشيفت المستلم مش منتظر استلام العهدة');
   }
   const countedInput = args.countedOpeningCash ?? incoming.openingCashAmount.toString();
@@ -48,8 +53,19 @@ export async function recordCashHandover(tx: Prisma.TransactionClient, args: {
   }
   await tx.handoverSession.update({where:{id:h.id},data:{proposedOpeningCash:proposed,countedOpeningCash:counted,
     cashVarianceAmount:variance,cashVerifiedAt:args.at,cashVerifiedById:actorId}});
-  // Sales are still blocked by the custody gate: this changes the opening, never past collections.
-  await tx.shift.update({where:{id:args.incomingShiftId},data:{openingCashAmount:counted,expectedCashAmount:counted}});
+  if (colleague) {
+    // The colleague's own collections are already in this drawer and in their
+    // expected figure (opening + their net cash). Their opening becomes the
+    // counted drawer less their own net cash so far, so that from now on
+    // "expected" equals what was counted at this moment plus what follows —
+    // never their sales twice. Past collections are not touched.
+    const ownNet = money(incoming.expectedCashAmount).minus(incoming.openingCashAmount);
+    const opening = money(decimal(counted).minus(ownNet));
+    await tx.shift.update({where:{id:args.incomingShiftId},data:{openingCashAmount:opening.toNumber(),expectedCashAmount:counted}});
+  } else {
+    // Sales are still blocked by the custody gate: this changes the opening, never past collections.
+    await tx.shift.update({where:{id:args.incomingShiftId},data:{openingCashAmount:counted,expectedCashAmount:counted}});
+  }
   await auditInTransaction(tx,{cafeId:h.cafeId,userId:actorId,action:'HANDOVER_CASH_VERIFIED',
     entity:'HandoverSession',entityId:h.id,details:{proposed,counted,variance,caseId,incomingShiftId:args.incomingShiftId}});
   return {proposed,counted,variance,caseId};

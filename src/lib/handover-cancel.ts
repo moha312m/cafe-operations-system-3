@@ -42,7 +42,6 @@ export const CANCEL_BY_CUSTODIAN = "مينفعش المُسلّم ينهي تس�
 export const CANCEL_NOT_OPEN = "التسليم ده مش في حالة تسمح بإنهائه";
 export const CANCEL_STOCK_NOT_OPEN = "عهدة المخزن المرتبطة بالتسليم مش مفتوحة — راجع التسليم من صفحة التسليمات قبل إنهائه";
 export const CANCEL_STOCK_SHARED = "فيه شيفت تاني لسه شغال على نفس عهدة المخزن — اقفله أو خليه يستلم بدل الإنهاء";
-export const CANCEL_NO_STOCK_CUSTODY = "مفيش عهدة مخزن مربوطة بالتسليم ده — مفيش حاجة تتحوّل لعهدة الفرع";
 const WAITING_SHIFT_NOT_REDECIDED = "في وردية مستنية العهدة ومقدرتش تتحول للتحقق من العهدة الافتتاحية — راجع حالة العهدة في الفرع";
 
 export type CancelHandoverArgs = {
@@ -117,22 +116,46 @@ export async function cancelHandoverIntoBranchCustody(
 
   // 4. The STOCK custody being ended: named on the handover, OPEN, and not
   //    still in use by another working shift.
-  if (!handover.outgoingStockCustodyId) throw new ApiError(409, CANCEL_NO_STOCK_CUSTODY);
-  const stock = await tx.custodyPeriod.findUnique({
-    where: { id: handover.outgoingStockCustodyId },
-    select: { id: true, branchId: true, scope: true, status: true },
-  });
-  if (!stock || stock.branchId !== handover.branchId || stock.scope !== "STOCK" || stock.status !== "OPEN") {
-    throw new ApiError(409, CANCEL_STOCK_NOT_OPEN);
+  //
+  //    A handover that names NO stock custody was opened by a shift that never
+  //    received the shelf (a morning shift closed before its opening
+  //    verification, before P1 made such a close money-only). There is no
+  //    shelf of the outgoing employee's to carry or transfer, and refusing
+  //    left the branch frozen with no way out. It ends like any other — drawer
+  //    discharged, shift closed, freeze released, exception and audit — with
+  //    the stock custody left exactly as it is.
+  //
+  //    The same holds when the period it names has already moved on — passed
+  //    to someone else or closed — as happens when a cashier who shared a
+  //    colleague's shelf walks away after the colleague handed over (simulation
+  //    F-065). The shelf is with whoever holds it now; this handover can only
+  //    be ended, not used to move it. Owner decision 2026-11-11: end it and
+  //    keep the stock as it is. A period of another branch or scope is still
+  //    refused: that is a broken record, not a stale one.
+  let stockless = !handover.outgoingStockCustodyId;
+  let stock: { id: string } | null = null;
+  if (!stockless) {
+    const period = await tx.custodyPeriod.findUnique({
+      where: { id: handover.outgoingStockCustodyId! },
+      select: { id: true, branchId: true, scope: true, status: true },
+    });
+    if (!period || period.branchId !== handover.branchId || period.scope !== "STOCK") {
+      throw new ApiError(409, CANCEL_STOCK_NOT_OPEN);
+    }
+    if (period.status !== "OPEN") stockless = true;
   }
-  const sharing = await tx.shiftCustody.count({
-    where: {
-      custodyPeriodId: stock.id,
-      shiftId: { not: handover.outgoingShiftId },
-      shift: { status: { in: ["OPEN", "AWAITING_HANDOVER"] } },
-    },
-  });
-  if (sharing > 0) throw new ApiError(409, CANCEL_STOCK_SHARED);
+  if (!stockless) {
+    const period = { id: handover.outgoingStockCustodyId! };
+    const sharing = await tx.shiftCustody.count({
+      where: {
+        custodyPeriodId: period.id,
+        shiftId: { not: handover.outgoingShiftId },
+        shift: { status: { in: ["OPEN", "AWAITING_HANDOVER"] } },
+      },
+    });
+    if (sharing > 0) throw new ApiError(409, CANCEL_STOCK_SHARED);
+    stock = { id: period.id };
+  }
 
   const now = new Date();
 
@@ -153,21 +176,30 @@ export async function cancelHandoverIntoBranchCustody(
 
   // 6. The closing position: the whole shelf, carried. Nothing here was
   //    counted and accepted, so every row is SYSTEM_CARRIED / unverified.
-  const boundary = await buildStockBoundary(tx, {
-    cafeId: handover.cafeId, branchId: handover.branchId, handoverId: handover.id, acceptedSessionId: null,
-  });
-  const written = await persistStockBoundary(tx, { handoverId: handover.id, lines: boundary.lines });
+  //    Not for a stockless handover: it held no shelf, and a boundary in its
+  //    name would become the "last accepted position" of a shelf it never had.
+  const boundary = stockless
+    ? { lines: [], carriedCount: 0 }
+    : await buildStockBoundary(tx, {
+        cafeId: handover.cafeId, branchId: handover.branchId, handoverId: handover.id, acceptedSessionId: null,
+      });
+  const written = stockless
+    ? { written: 0 }
+    : await persistStockBoundary(tx, { handoverId: handover.id, lines: boundary.lines });
 
   // 7. STOCK custody moves to the BRANCH: close + successor + audit, through
   //    the one transfer primitive, never an in-place rewrite.
-  const transfer = await transferCustody(tx, {
-    outgoingPeriodId: stock.id,
-    scope: "STOCK",
-    incoming: { participants: [], shiftId: null, responsibleShiftId: null, holderType: "BRANCH", openedById: args.actorId },
-    actorId: args.actorId,
-    acceptedById: args.actorId,
-    acceptedAt: now,
-  });
+  const transfer = stock
+    ? await transferCustody(tx, {
+        outgoingPeriodId: stock.id,
+        scope: "STOCK",
+        incoming: { participants: [], shiftId: null, responsibleShiftId: null, holderType: "BRANCH", openedById: args.actorId },
+        actorId: args.actorId,
+        acceptedById: args.actorId,
+        acceptedAt: now,
+      })
+    : null;
+  const branchStockId = transfer?.incomingPeriodId ?? null;
 
   // 8. The drawer, discharged at the figure the close counted when nobody
   //    else is still trading on it (the helper keeps a shared drawer open).
@@ -192,7 +224,7 @@ export async function cancelHandoverIntoBranchCustody(
       completedAt: now,
       incomingUserId: null,
       incomingShiftId: null,
-      incomingStockCustodyId: transfer.incomingPeriodId,
+      incomingStockCustodyId: branchStockId,
       incomingCashCustodyId: null,
       exceptionById: args.actorId,
       exceptionReason: note,
@@ -241,11 +273,18 @@ export async function cancelHandoverIntoBranchCustody(
       cafeId: handover.cafeId, branchId: handover.branchId, shiftId: shift.id,
       userId: shift.cashierId, openingCashAmount: Number(shift.openingCashAmount),
     });
-    if (verdict.gate !== "AWAITING_OPENING_VERIFICATION") throw new ApiError(409, WAITING_SHIFT_NOT_REDECIDED);
+    // When this cancel moved the shelf to the branch, the only right verdict is
+    // the opening verification. When it left the shelf where it was (a
+    // stockless or moved-on handover), the waiting shift is decided exactly
+    // as a fresh open would be against whoever holds it now — joining that
+    // custody, a branch opening verification, or still waiting on another
+    // live handover. Refusing those verdicts made the cancel itself a dead end
+    // whenever somebody had opened in the meantime.
+    if (!stockless && verdict.gate !== "AWAITING_OPENING_VERIFICATION") throw new ApiError(409, WAITING_SHIFT_NOT_REDECIDED);
     await auditInTransaction(tx, {
       cafeId: handover.cafeId, userId: args.actorId, action: "SHIFT_CUSTODY_GATE_REDECIDED",
       entity: "Shift", entityId: shift.id,
-      details: { handoverId: handover.id, from: "AWAITING_CUSTODY_TRANSFER", to: verdict.gate, branchCustodyPeriodId: transfer.incomingPeriodId, cashCustodyPeriodId: verdict.cashCustodyPeriodId },
+      details: { handoverId: handover.id, from: "AWAITING_CUSTODY_TRANSFER", to: verdict.gate ?? "OPERATIONAL", stockless, branchCustodyPeriodId: branchStockId, cashCustodyPeriodId: verdict.cashCustodyPeriodId },
     });
     redecidedShiftIds.push(shift.id);
   }
@@ -258,7 +297,7 @@ export async function cancelHandoverIntoBranchCustody(
       branchId: handover.branchId, previousStatus: handover.status, target: handover.target,
       resolvedTarget: "BRANCH_CUSTODY", reasonCodeId: args.reasonCodeId, note,
       outgoingShiftId: handover.outgoingShiftId, outgoingUserId: handover.outgoingUserId,
-      outgoingStockCustodyId: stock.id, incomingStockCustodyId: transfer.incomingPeriodId,
+      outgoingStockCustodyId: stock?.id ?? null, incomingStockCustodyId: branchStockId, stockless,
       boundary: { written: written.written, verified: 0, carried: boundary.carriedCount },
       lockedCountSessionId, freezeReleased, redecidedShiftIds, openingExceptionId: exception.id,
       cancelledAt: now.toISOString(),
@@ -276,7 +315,7 @@ export async function cancelHandoverIntoBranchCustody(
 
   return {
     handoverId: handover.id, status: "COMPLETED", resolvedTarget: "BRANCH_CUSTODY",
-    branchCustodyPeriodId: transfer.incomingPeriodId, boundaryLines: written.written,
+    branchCustodyPeriodId: branchStockId, boundaryLines: written.written,
     lockedCountSessionId, redecidedShiftIds, freezeReleased, alreadyCompleted: false,
   };
 }

@@ -523,7 +523,27 @@ export async function closeShiftWithSettlement(
     const closedAt = new Date();
     const overnightStorage = target === "BRANCH_CUSTODY"
       && (await tx.branchOpeningSettings.findUnique({ where: { branchId: locked.branchId }, select: { overnightCashEnabled: true } }))?.overnightCashEnabled === true;
-    const materials = handoverEnabled && target
+    // A shift that never received the shelf has nothing to hand over. It is a
+    // morning shift that closed before its opening verification (the shelf is
+    // still the BRANCH's, untouched) or one gated mid-handover. Its close
+    // settles the money only: no handover, no freeze, and no materials
+    // decision — claiming the period here would mark a count as owed by
+    // somebody who never held the stock, and let the next close skip it.
+    // Before this, such a close created a handover naming no stock custody,
+    // which froze the branch with no way to end it.
+    //
+    // Narrowed to a shift that is still WAITING for custody (gated): a legacy
+    // shift with no custody link at all keeps its old close, which
+    // cashclose-003 pins ("a legacy shift with no custody link closes honestly
+    // and invents none").
+    const gate = await tx.shift.findUniqueOrThrow({ where: { id: locked.id }, select: { custodyGateReason: true } });
+    const holdsStock = gate.custodyGateReason === null || (await tx.shiftCustody.count({
+      where: { shiftId: locked.id, scope: "STOCK", custodyPeriod: { status: "OPEN" } },
+    })) > 0;
+    if (handoverEnabled && target && !holdsStock && args.cashDisposition) {
+      throw new ApiError(409, "الشيفت ده ما استلمش المخزون، فمفيش تسليم لعهدة الفرع يتسجل عليه تخزين كاش الليل — اقفل الشيفت من غير تخزين كاش الليل");
+    }
+    const materials = handoverEnabled && target && holdsStock
       ? await resolveMaterialsDecision(tx, {
           branchId: locked.branchId,
           at: closedAt,
@@ -855,6 +875,8 @@ export async function closeShiftWithSettlement(
         handoverTarget: target,
         // What the closer stated, even when the schedule made the close uncounted.
         requestedHandoverTarget: args.handoverTarget ?? null,
+        // False when the shift never received the shelf, which is why no handover follows.
+        shiftHeldStock: holdsStock,
         handoverId,
         freezeId,
         requiredItemCount,

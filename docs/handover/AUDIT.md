@@ -138,6 +138,17 @@ What PR #5 fixes (CODE + TEST shift-opening-custody-lifecycle): the reproduced c
 
 Reproduction (for a later phase, on 5434): build the D1a sequence through the HTTP routes, then call POST /api/shifts as a third cashier, and expect 409 with code CASH_WITHOUT_STOCK.
 
+### P1 resolution of D1 (owner decisions 2026-11-11: Q1 manager button, Q2 money-only close, Q3 second opener waits)
+| Path | Change | Proof |
+|---|---|---|
+| D1d preview | `predictOpeningBlocker` shares `orphanedUserStock` with the open | tests/handover-p1-opening-preview.test.ts |
+| D1a / one-sided custody | ADD `POST /api/branches/:id/custody-repair` + `src/lib/branch-custody-repair.ts` + POS button. One transaction under the branch's exclusive inventory lock; refused while any handover is live or when nothing is wrong; idempotency key replays. A drawer in use stays its shift's, and the shift waits on the morning count. A drawer nobody uses closes at its last shift's counted cash. The shelf goes to a BRANCH stock custody, uncounted. OpeningException MANAGER_ADJUSTMENT plus audit `BRANCH_CUSTODY_REPAIRED` | tests/handover-p1-custody-recovery.test.ts (Q1 ×4) |
+| D1b source | CHANGE `closeShiftWithSettlement`: a shift with no open STOCK link closes money-only (no handover, freeze or materials decision; audit `shiftHeldStock:false`) | recovery test Q2 #1 |
+| D1b existing | CHANGE `cancelHandoverIntoBranchCustody`: a stockless handover ends without a boundary or stock transfer; the shelf is left as it was | recovery test Q2 #2 |
+| D1e | CHANGE `POST /api/shifts`: a new shift that would wait on an opening verification is refused while another shift already waits (serialised by the branch allocator lock) | recovery test Q3 |
+
+The existing refusal of one-sided custody at shift open (`shift-opening-custody-lifecycle` "one-sided custody stays blocked") is unchanged.
+
 ### D2. Two dead handover states
 ACCEPTED and MANAGER_EXCEPTION exist in the enum and are read in UI/guards but never written (grep). Harmless today; misleading for reports and for anyone adding a state. (CODE)
 
@@ -159,8 +170,9 @@ With 2+ shifts waiting, the second gets a duplicate `SHIFT_CUSTODY_GATE_REDECIDE
 
 | Stuck state | Why | Recovery today |
 |---|---|---|
-| Shift cannot open: CASH_WITHOUT_STOCK / STOCK_WITHOUT_CASH with no live handover | D1a, D1b | None in the UI. Database fix only |
-| Live handover with no stock custody | Cancel refused (`CANCEL_NO_STOCK_CUSTODY`) | Accept / override-accept if a receiver exists; otherwise none |
+| Shift cannot open: CASH_WITHOUT_STOCK / STOCK_WITHOUT_CASH with no live handover | D1a, D1b | **P1:** «إصلاح عهدة الفرع» on the POS blocker (owner / handover.exception / handover.cancel, reason + note). INCONSISTENT_CUSTODY still needs a developer |
+| Live handover with no stock custody | Cancel refused (`CANCEL_NO_STOCK_CUSTODY`) | **P1:** cancel (and freeze release) end it; P1 also stops the close from creating one |
+| Two cashiers waiting on one branch-morning count | D1e | **P1:** the second opener is refused until the count is done; existing doubles: one closes |
 | Handover whose stock is shared with another trading shift | Cancel refused (`CANCEL_STOCK_SHARED`, handover-cancel.ts:135) | Wait until the other shift closes |
 | Café with no active HANDOVER reason codes | Cancel / approve / release all demand one (`assertHandoverReason`) | Owner creates a reason code first (NOT VERIFIED whether seeds create one) |
 | Shift gated AWAITING_OPENING_VERIFICATION with no branch stock | Reconcile step 3 only re-decides AWAITING_CUSTODY_TRANSFER | None (NOT VERIFIED on data) |
