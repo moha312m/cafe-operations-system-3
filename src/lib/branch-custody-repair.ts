@@ -35,6 +35,7 @@ import {
   LIVE_HANDOVER_STATUSES,
   openCustodyPeriod,
   reconcileStrandedShifts,
+  transferCustody,
 } from "@/lib/custody";
 import { assertHandoverReason } from "@/lib/handover";
 import { acquireInventoryExclusiveLock } from "@/lib/inventory-freeze";
@@ -126,14 +127,11 @@ export async function repairBranchCustody(
     if (users.length > 1) throw new ApiError(409, SHARED_DRAWER);
 
     if (users.length === 1) {
-      // The drawer is in use: it stays that shift's, and the shift waits on
-      // the morning count of the shelf the branch is about to take.
+      // The drawer is in use: it stays that shift's. Stock handover v2: the
+      // shift is not held back by stock — it takes the shelf below (recorded,
+      // uncounted) and keeps working.
       const shift = users[0].shift;
       previousGate = shift.custodyGateReason;
-      await tx.shift.update({
-        where: { id: shift.id },
-        data: { custodyGateReason: "AWAITING_OPENING_VERIFICATION", custodyReadyAt: null },
-      });
       result.waitingShiftId = shift.id;
     } else {
       // Nobody working holds it. Closed at what its last shift counted at
@@ -163,6 +161,17 @@ export async function repairBranchCustody(
       responsibleShiftId: null,
     });
     result.branchStockCustodyId = opened.custodyPeriodId;
+    if (result.waitingShiftId) {
+      const holder = await tx.shift.findUniqueOrThrow({ where: { id: result.waitingShiftId }, select: { cashierId: true } });
+      const taken = await transferCustody(tx, {
+        outgoingPeriodId: opened.custodyPeriodId,
+        scope: "STOCK",
+        incoming: { participants: [{ userId: holder.cashierId, role: "PRIMARY" }], shiftId: result.waitingShiftId, responsibleShiftId: result.waitingShiftId, holderType: "USER", openedById: args.actorId },
+        actorId: args.actorId,
+      });
+      await tx.shift.update({ where: { id: result.waitingShiftId }, data: { custodyGateReason: null, custodyReadyAt: now } });
+      result.branchStockCustodyId = taken.incomingPeriodId;
+    }
   } else {
     // STOCK_WITHOUT_CASH: someone is trading on the shelf with no drawer
     // custody recorded. Reconciliation already moved an orphaned shelf, so a

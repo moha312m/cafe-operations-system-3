@@ -290,7 +290,7 @@ const movement = (email: string, itemId: string, quantity: number) =>
 type Handover = {
   handoverId: string;
   shiftId: string;
-  freezeId: string;
+  freezeId: string | null;
   outgoingStockCustodyId: string | null;
   outgoingCashCustodyId: string | null;
 };
@@ -315,7 +315,7 @@ async function freshBranchHandover(
     handoverTarget: target,
     grants: GRANTS_FULL,
   });
-  if (!closed.handoverId || !closed.freezeId) {
+  if (!closed.handoverId) {
     throw new Error(`close produced no handover (status ${closed.status})`);
   }
   const handover = await db.handoverSession.findUniqueOrThrow({
@@ -462,15 +462,35 @@ const statusIs = (status: number) => (error: unknown) =>
 
 // ────────────────────────── the Half B walk ──────────────────────────────
 
-/** The opening shift: OPEN, holding a drawer, and gated on the shelf. */
-async function openGatedShift() {
-  const shift = await openOperationalShift(opener.id, 50);
+/**
+ * The opening shift as it stood BEFORE stock handover v2: OPEN, holding a
+ * drawer, and gated on the shelf.
+ *
+ * Owner decision 2026-11-12: a shift opening against branch-held stock now
+ * takes the shelf at once and sells (see the v2 test below). Shifts that were
+ * already gated when the change shipped still exist, and SH-22 Half B is
+ * their way out — so this fixture writes that pre-v2 state directly and every
+ * Half B test keeps exercising the real verification path.
+ */
+async function openGatedShift(userId: string = opener.id, openingCash = 50) {
+  const last = await db.shift.aggregate({ where: { branchId: fx.branchId }, _max: { shiftNumber: true } });
+  const shift = await db.shift.create({
+    data: {
+      cafeId: fx.cafeId, branchId: fx.branchId, cashierId: userId,
+      shiftNumber: (last._max.shiftNumber ?? 0) + 1, openingCashAmount: openingCash, expectedCashAmount: openingCash,
+    },
+  });
+  const { openCustodyPeriod } = await import("@/lib/custody");
+  await db.$transaction(async (tx) => {
+    await openCustodyPeriod(tx, {
+      cafeId: fx.cafeId, branchId: fx.branchId, scope: "CASH",
+      participants: [{ userId, role: "PRIMARY" }], shiftId: shift.id,
+      holderType: "USER", openedById: userId, openingCashAmount: openingCash,
+    });
+    await tx.shift.update({ where: { id: shift.id }, data: { custodyGateReason: "AWAITING_OPENING_VERIFICATION" } });
+  });
   const row = await db.shift.findUniqueOrThrow({ where: { id: shift.id } });
-  assert.equal(
-    row.custodyGateReason,
-    "AWAITING_OPENING_VERIFICATION",
-    "a shift opening against branch-held stock holds nothing until it verifies it",
-  );
+  assert.equal(row.custodyGateReason, "AWAITING_OPENING_VERIFICATION", "the legacy gated state");
   return shift;
 }
 
@@ -716,8 +736,9 @@ describe("SH-22 Half A · the branch takes the shelf", () => {
     assert.ok(shift.stockClosedAt, "the shelf became a fact");
     assert.ok(shift.financiallyClosedAt, "the money already had");
 
-    const freeze = await db.inventoryFreeze.findUniqueOrThrow({ where: { id: ready.freezeId } });
-    assert.ok(freeze.releasedAt, "the shelf is open again");
+    // Stock handover v2 (owner decision 2026-11-12): no freeze is taken, so none is held or released.
+    assert.equal(ready.freezeId, null);
+    assert.equal(await db.inventoryFreeze.count({ where: { handoverId: ready.handoverId } }), 0);
 
     // Legitimate movement works, which is what a released freeze MEANS.
     const moved = await movement(fx.manager.email, items.alpha.id, 10);
@@ -725,12 +746,12 @@ describe("SH-22 Half A · the branch takes the shelf", () => {
     const alpha = await db.inventoryItem.findUniqueOrThrow({ where: { id: items.alpha.id } });
     assert.equal(Number(alpha.currentStock), 110);
 
-    // A shift opening against the branch-held shelf is gated until it verifies
-    // it. Owner decision 2026-11-11 (P1 Q2): a shift that never received the
-    // shelf has nothing to hand over, so its close settles money only — no
-    // handover and no freeze (before P1 this froze the branch with no exit).
+    // A shift gated BEFORE stock handover v2 (still possible in data that
+    // predates the change). Owner decision 2026-11-11 (P1 Q2): a shift that
+    // never received the shelf has nothing to hand over, so its close settles
+    // money only — no handover and no freeze.
     const { closeShiftWithSettlement } = await cashCloseLib();
-    const unverified = await openOperationalShift(fx.cashier.id);
+    const unverified = await openGatedShift(fx.cashier.id, 100);
     const moneyOnly = await closeShiftWithSettlement({
       shiftId: unverified.id,
       actualCash: 100,
@@ -759,10 +780,11 @@ describe("SH-22 Half A · the branch takes the shelf", () => {
       handoverTarget: "SHIFT_TO_SHIFT",
       grants: GRANTS_FULL,
     });
-    assert.ok(closed.freezeId, "a later handover acquired its own freeze");
+    assert.ok(closed.handoverId, "a later handover was opened");
+    assert.equal(closed.freezeId, null, "stock handover v2: and it took no freeze");
   });
 
-  test("the accepted evidence is locked, rebased and turned into a boundary", async () => {
+  test("the accepted evidence is locked and turned into a boundary — not rebased (v2)", async () => {
     const ready = await readyForBranchCustody({ alpha: 98 });
     const result = await acceptToBranch(ready.handoverId);
 
@@ -776,9 +798,10 @@ describe("SH-22 Half A · the branch takes the shelf", () => {
       "a handover acceptance still names itself on the lock",
     );
 
-    assert.ok(result.rebase, "the shelf was moved to match the count");
+    // Stock handover v2: the count is a record — the shelf is NOT moved to it.
+    assert.equal(result.rebase, null);
     const alpha = await db.inventoryItem.findUniqueOrThrow({ where: { id: items.alpha.id } });
-    assert.equal(Number(alpha.currentStock), 98);
+    assert.equal(Number(alpha.currentStock), 100, "the book balance stands until an authorised adjustment");
 
     // One boundary row per ACTIVE item, counted or carried.
     const boundaries = await db.handoverStockBoundary.findMany({
@@ -869,7 +892,7 @@ describe("SH-22 Half A · what it refuses", () => {
     await assert.rejects(() => acceptToBranch(closed.handoverId!), statusIs(409));
   });
 
-  test("R-A1 (revised) — a shift already waiting is carried to opening verification, not refused", async () => {
+  test("R-A1 (v2) — a shift already waiting takes the branch shelf and works, not refused", async () => {
     const ready = await readyForBranchCustody();
     // A shift that opened while the handover was live. It is gated on
     // AWAITING_CUSTODY_TRANSFER. Branch custody names nobody, so it is handed
@@ -893,13 +916,16 @@ describe("SH-22 Half A · what it refuses", () => {
     assert.equal(handover.incomingShiftId, null);
     assert.equal(handover.incomingUserId, null);
 
+    // Stock handover v2 (owner decision 2026-11-12): no opening-verification
+    // gate — the waiting shift takes the branch shelf (recorded, uncounted)
+    // and works; its own count is the optional incoming count.
     const after = await db.shift.findUniqueOrThrow({ where: { id: waiting.id } });
-    assert.equal(after.custodyGateReason, "AWAITING_OPENING_VERIFICATION", "now on the gate SH-22 Half B discharges");
-    const stock = await db.custodyPeriod.findUniqueOrThrow({ where: { id: handover.incomingStockCustodyId! } });
-    assert.equal(stock.holderType, "BRANCH");
-    assert.equal(stock.status, "OPEN");
+    assert.equal(after.custodyGateReason, null, "the waiting shift is operational");
+    const branchPeriod = await db.custodyPeriod.findUniqueOrThrow({ where: { id: handover.incomingStockCustodyId! } });
+    assert.equal(branchPeriod.holderType, "BRANCH");
+    assert.notEqual(branchPeriod.status, "OPEN", "the branch handed the shelf on to the shift");
     const links = await db.shiftCustody.findMany({ where: { shiftId: waiting.id } });
-    assert.deepEqual(links.map((l) => l.scope).sort(), ["CASH"], "the waiting shift gets its own drawer, and no stock until it verifies");
+    assert.deepEqual(links.map((l) => l.scope).sort(), ["CASH", "STOCK"], "a drawer and the shelf");
     assert.equal(
       await db.auditLog.count({ where: { entity: "Shift", entityId: waiting.id, action: "SHIFT_CUSTODY_GATE_REDECIDED" } }),
       1,
@@ -908,18 +934,16 @@ describe("SH-22 Half A · what it refuses", () => {
     assert.notEqual(outgoing.status, "OPEN", "the outgoing custodian is discharged");
   });
 
-  test("an uncounted required item refuses without a manager's reason", async () => {
+  test("v2: an uncounted required item is recorded omitted without a manager's reason", async () => {
     const ready = await readyForBranchCustody({}, ["bravo"]);
-    await assert.rejects(() => acceptToBranch(ready.handoverId), statusIs(409));
-
-    const required = await db.handoverRequiredItem.findMany({
-      where: { handoverId: ready.handoverId },
+    const result = await acceptToBranch(ready.handoverId);
+    assert.equal(result.status, "COMPLETED");
+    const bravo = await db.handoverRequiredItem.findFirstOrThrow({
+      where: { handoverId: ready.handoverId, inventoryItemId: items.bravo.id },
       select: { omitted: true, omissionNote: true },
     });
-    assert.ok(
-      required.every((r) => !r.omitted && r.omissionNote === null),
-      "a refused acceptance leaves the omission rows exactly as they were",
-    );
+    assert.equal(bravo.omitted, true, "the gap is recorded by name");
+    assert.equal(bravo.omissionNote, null, "and nobody invented a reason");
   });
 
   test("half an authorisation is refused before the row lock", async () => {
@@ -944,9 +968,11 @@ describe("SH-22 Half A · what it refuses", () => {
         }),
       statusIs(400),
     );
-    // And nothing at all is not an authorisation either — it is the ordinary
-    // refusal, 409, from the settlement gate.
-    await assert.rejects(() => acceptToBranch(ready.handoverId), statusIs(409));
+    // Stock handover v2 (owner decision 2026-11-12): with no authorisation at
+    // all the gap is simply recorded as omitted — no refusal, no claimed reason.
+    const plain = await acceptToBranch(ready.handoverId);
+    assert.equal(plain.status, "COMPLETED");
+    assert.equal(plain.openingExceptionId, null, "no manager authority was recorded");
   });
 
   test("another café's handover is not confirmed to exist", async () => {
@@ -1643,7 +1669,19 @@ describe("SH-22 Half B · replay and refusal", () => {
     const ready = await readyForBranchCustody();
     await acceptToBranch(ready.handoverId);
     const first = await openGatedShift();
-    const second = await openOperationalShift(fx.cashier.id, 40);
+    // The second, also in the pre-v2 gated state, sharing the first's drawer
+    // the way the old shift-open did.
+    const last = await db.shift.aggregate({ where: { branchId: fx.branchId }, _max: { shiftNumber: true } });
+    const second = await db.shift.create({
+      data: { cafeId: fx.cafeId, branchId: fx.branchId, cashierId: fx.cashier.id, shiftNumber: (last._max.shiftNumber ?? 0) + 1, openingCashAmount: 40, expectedCashAmount: 40 },
+    });
+    const drawer = await db.custodyPeriod.findFirstOrThrow({ where: { branchId: fx.branchId, scope: "CASH", status: "OPEN" } });
+    const { linkShiftCustody } = await import("@/lib/custody");
+    await db.$transaction(async (tx) => {
+      await tx.custodyParticipant.create({ data: { custodyPeriodId: drawer.id, userId: fx.cashier.id, role: "SHARED" } });
+      await linkShiftCustody(tx, { shiftId: second.id, custodyPeriodId: drawer.id, scope: "CASH" });
+      await tx.shift.update({ where: { id: second.id }, data: { custodyGateReason: "AWAITING_OPENING_VERIFICATION" } });
+    });
     assert.equal(
       (await db.shift.findUniqueOrThrow({ where: { id: second.id } })).custodyGateReason,
       "AWAITING_OPENING_VERIFICATION",
@@ -1679,8 +1717,8 @@ describe("SH-22 Half B · replay and refusal", () => {
 
 // ═══════════════════════ SERVING DURING THE FREEZE ════════════════════════
 
-describe("Serving while the handover holds the shelf frozen", () => {
-  test("the order is served, its recipe deducted only when the freeze lifts, against the new custody", async () => {
+describe("Serving during a handover (stock handover v2: no freeze)", () => {
+  test("the order is served and its recipe comes off at once; the acceptance moves nothing twice", async () => {
     const h = await freshBranchHandover();
 
     const category = await db.menuCategory.findFirstOrThrow({ where: { cafeId: fx.cafeId } });
@@ -1707,27 +1745,26 @@ describe("Serving while the handover holds the shelf frozen", () => {
       },
     });
 
-    // ── served during the freeze: nothing moves ──
-    const served = await as<{ order?: { status: string }; error?: string }>(
+    // ── served during the handover: the recipe comes off immediately ──
+    const served = await as<{ order?: { status: string }; stockDeferred?: boolean; error?: string }>(
       fx.owner.email, `/api/orders/${order.id}/status`,
       { method: "PATCH", body: JSON.stringify({ status: "SERVED" }) },
     );
     assert.equal(served.status, 200, served.text);
     assert.equal(served.body.order?.status, "SERVED");
-    const whileFrozen = await db.order.findUniqueOrThrow({ where: { id: order.id } });
-    assert.equal(whileFrozen.stockDeductedAt, null, "no deduction while the shelf is frozen");
-    assert.equal(await db.inventoryTransaction.count({ where: { orderId: order.id } }), 0);
+    assert.notEqual(served.body.stockDeferred, true);
+    const afterServe = await db.order.findUniqueOrThrow({ where: { id: order.id } });
+    assert.ok(afterServe.stockDeductedAt, "deducted when served — there is no freeze to wait for");
+    const movements = await db.inventoryTransaction.findMany({ where: { orderId: order.id } });
+    assert.equal(movements.length, 1);
+    assert.equal(Number(movements[0].quantity), -0.5);
     assert.equal(
       Number((await db.inventoryItem.findUniqueOrThrow({ where: { id: items.alpha.id } })).currentStock),
-      100,
+      99.5,
     );
-    const pending = await db.deferredStockDeduction.findUniqueOrThrow({ where: { orderId: order.id } });
-    assert.equal(pending.handoverId, h.handoverId);
-    assert.equal(pending.freezeId, h.freezeId);
-    assert.equal(pending.appliedAt, null);
-    assert.ok(await db.auditLog.findFirst({ where: { action: "STOCK_DEDUCTION_DEFERRED", entityId: order.id } }));
+    assert.equal(await db.deferredStockDeduction.count({ where: { orderId: order.id } }), 0);
 
-    // ── the count runs over an unmoved shelf, and the handover completes ──
+    // ── the count runs while stock moves, and the handover completes ──
     const started = await startCountHttp(h.handoverId);
     assert.equal(started.status, 200, started.text);
     const sessionId = started.body.countSession.id;
@@ -1740,29 +1777,12 @@ describe("Serving while the handover holds the shelf frozen", () => {
     const result = await acceptToBranch(h.handoverId);
     assert.equal(result.status, "COMPLETED");
 
-    // ── the freeze lifted and the deferred recipe came off, once, against the branch ──
-    const applied = await db.deferredStockDeduction.findUniqueOrThrow({ where: { orderId: order.id } });
-    assert.ok(applied.appliedAt);
-    assert.equal(applied.appliedCustodyPeriodId, result.incomingStockCustodyId);
-    assert.equal(applied.appliedShiftId, null, "branch custody answers for it, not a shift");
-    const movements = await db.inventoryTransaction.findMany({ where: { orderId: order.id } });
-    assert.equal(movements.length, 1);
-    assert.equal(Number(movements[0].quantity), -0.5);
-    assert.equal(movements[0].custodyPeriodId, result.incomingStockCustodyId);
+    // The acceptance posts nothing: one movement for one sale, still.
+    assert.equal(await db.inventoryTransaction.count({ where: { orderId: order.id } }), 1);
     assert.equal(
       Number((await db.inventoryItem.findUniqueOrThrow({ where: { id: items.alpha.id } })).currentStock),
       99.5,
     );
-    assert.ok((await db.order.findUniqueOrThrow({ where: { id: order.id } })).stockDeductedAt);
-    assert.ok(await db.auditLog.findFirst({ where: { action: "DEFERRED_STOCK_DEDUCTION_APPLIED", entityId: order.id } }));
-
-    // A replayed release applies nothing twice.
-    const { applyDeferredDeductions } = await import("@/lib/deferred-deduction");
-    const replay = await db.$transaction((tx) =>
-      applyDeferredDeductions(tx, { handoverId: h.handoverId, actorId: fx.manager.id }),
-    );
-    assert.equal(replay.applied, 0);
-    assert.equal(await db.inventoryTransaction.count({ where: { orderId: order.id } }), 1);
   });
 });
 
@@ -1824,29 +1844,20 @@ describe("Step 5 · journey C and E — a waiting shift, partial signing, readin
     assert.equal(done.status, 200, done.text);
     const mid = await detail(ready.handoverId);
     const gated = mid.body.handover.workflow.readiness.find((r) => r.shiftId === waiting.id)!;
+    // Stock handover v2: the handover completing makes the waiting shift
+    // operational at once — no opening verification stands in between.
     assert.equal(mid.body.handover.status, "COMPLETED", "the handover is complete…");
-    assert.equal(gated.operational, false, "…while the next shift is still not operational");
-    assert.equal(gated.gate, "AWAITING_OPENING_VERIFICATION");
-    assert.equal(gated.requirements.find((r) => r.id === "opening-verification")!.state, "pending");
+    assert.equal(gated.operational, true, "…and the next shift is operational");
+    assert.equal(gated.gate, null);
     const labelsMid = mid.body.handover.activity.map((e) => e.label);
-    assert.ok(labelsMid.includes("اكتمال التسليم") && labelsMid.includes("الشيفت المنتظر انتقل للتحقق من العهدة الافتتاحية"));
+    assert.ok(labelsMid.includes("اكتمال التسليم") && labelsMid.includes("الشيفت المنتظر اتحدّد وضعه بعد تحويل العهدة للفرع"));
     assert.ok(mid.body.handover.activity.every((e) => e.actor !== undefined && typeof e.at === "string"));
 
-    // The POS gate really refuses until verification: the displayed status is not the gate.
     const { getActiveShift } = await shiftsLib();
-    assert.equal(await getActiveShift(fx.branchId, opener.id), null, "gated shift is not operational");
-
-    const sessionId = await walkOpeningCount(waiting.id, { alpha: 100, bravo: 100, charlie: 10 });
-    const verified = await verify(waiting.id, sessionId);
-    assert.equal(verified.status, 200, verified.text);
-    const after = await detail(ready.handoverId);
-    const ok = after.body.handover.workflow.readiness.find((r) => r.shiftId === waiting.id)!;
-    assert.equal(ok.operational, true);
-    assert.ok(ok.requirements.every((r) => r.state !== "pending"));
-    assert.equal((await getActiveShift(fx.branchId, opener.id))?.id, waiting.id, "and now the shift may operate");
+    assert.equal((await getActiveShift(fx.branchId, opener.id))?.id, waiting.id, "and the shift may operate");
   });
 
-  test("a half-signed batch recovers: signed lines persist, a duplicate is refused once, conversion waits, no double records", async () => {
+  test("a half-signed batch recovers: signed lines persist, a duplicate is refused once, conversion no longer waits (v2), no double records", async () => {
     const h = await submittedBranchHandover();
     assert.ok(h.lineIds.length >= 2, "needs at least two counted lines to be partial");
     const first = await ackPost(fx.manager.email, h.handoverId, { stockCountLineId: h.lineIds[0] });
@@ -1859,19 +1870,17 @@ describe("Step 5 · journey C and E — a waiting shift, partial signing, readin
 
     const partial = await detail(h.handoverId);
     assert.equal(partial.body.handover.workflow.acknowledgements.length, 1, "the authoritative state shows exactly what was saved");
-    const refusedEarly = await toBranchHttp(h.handoverId, { idempotencyKey: nextKey() });
-    assert.equal(refusedEarly.status, 409, "conversion waits for every counted line");
-    // The first signature opens the review; the handover is still not complete.
+    // The first signature opens the review.
     assert.equal((await db.handoverSession.findUniqueOrThrow({ where: { id: h.handoverId } })).status, "INCOMING_REVIEW");
-
-    for (const id of h.lineIds.slice(1)) assert.equal((await ackPost(fx.manager.email, h.handoverId, { stockCountLineId: id })).status, 200);
+    // Stock handover v2 (owner decision 2026-11-12): the conversion no longer
+    // waits for every counted line to be signed; the signatures saved so far stay.
     const converted = await toBranchHttp(h.handoverId, { idempotencyKey: `${MARKER}-stable-${h.handoverId}` });
     assert.equal(converted.status, 200, converted.text);
     const replay = await toBranchHttp(h.handoverId, { idempotencyKey: `${MARKER}-stable-${h.handoverId}` });
     assert.equal(replay.body.alreadyAccepted, true, "the same intent key replays the first result");
     assert.equal(
       await db.auditLog.count({ where: { cafeId: fx.cafeId, entity: "HandoverStockAcknowledgement", action: "HANDOVER_LINE_ACKNOWLEDGED", details: { path: ["handoverId"], equals: h.handoverId } } }),
-      h.lineIds.length, "exactly one signing record per line",
+      1, "exactly one signing record for the one line that was signed",
     );
     assert.equal(await db.auditLog.count({ where: { cafeId: fx.cafeId, entity: "HandoverSession", entityId: h.handoverId, action: "HANDOVER_ACCEPTED" } }), 1, "and one completion");
   });

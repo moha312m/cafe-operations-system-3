@@ -330,15 +330,57 @@ export async function reconcileStrandedShifts(
       select: { id: true, holderType: true },
     });
     if (stock?.holderType === "BRANCH") {
+      // Stock handover v2: nobody waits on a count. The first stranded shift
+      // takes the branch-held shelf (recorded, uncounted); any others share it.
+      // Their gate is cleared so they can sell; the cash rules still decide
+      // whether a drawer is ready (step 4 below and the opening readiness).
+      const [first, ...rest] = strandedShifts;
+      const taken = await transferCustody(tx, {
+        outgoingPeriodId: stock.id,
+        scope: "STOCK",
+        incoming: {
+          participants: [{ userId: first.cashierId, role: "PRIMARY" }, ...rest.filter((s) => s.cashierId !== first.cashierId).map((s) => ({ userId: s.cashierId, role: "SHARED" as const }))],
+          shiftId: first.id,
+          responsibleShiftId: first.id,
+          holderType: "USER",
+          openedById: first.cashierId,
+        },
+        actorId: first.cashierId,
+      });
+      // A shift that opened mid-handover had its drawer withheld; it needs one
+      // now. The branch's open drawer is joined; with none, the first shift
+      // opens one (carrying any drawer cash the night retained) and the others
+      // share it — the same shapes a fresh open produces.
+      let drawer = await tx.custodyPeriod.findFirst({
+        where: { branchId, scope: "CASH", status: "OPEN" },
+        select: { id: true, participants: { select: { userId: true } } },
+      });
       for (const shift of strandedShifts) {
-        await tx.shift.update({
-          where: { id: shift.id },
-          data: { custodyGateReason: "AWAITING_OPENING_VERIFICATION" },
-        });
+        if (shift.id !== first.id) await linkShiftCustody(tx, { shiftId: shift.id, custodyPeriodId: taken.incomingPeriodId, scope: "STOCK" });
+        const hasDrawer = await tx.shiftCustody.count({ where: { shiftId: shift.id, scope: "CASH" } });
+        if (!hasDrawer) {
+          if (!drawer) {
+            const opened = await openCustodyPeriod(tx, {
+              cafeId: shift.cafeId, branchId, scope: "CASH",
+              participants: [{ userId: shift.cashierId, role: "PRIMARY" }],
+              shiftId: shift.id, holderType: "USER", openedById: shift.cashierId,
+              openingCashAmount: Number(shift.openingCashAmount),
+            });
+            await carryRetainedDrawerCash(tx, { cafeId: shift.cafeId, branchId, shiftId: shift.id, userId: shift.cashierId }, opened.custodyPeriodId);
+            drawer = { id: opened.custodyPeriodId, participants: [{ userId: shift.cashierId }] };
+          } else {
+            if (!drawer.participants.some((p) => p.userId === shift.cashierId)) {
+              await tx.custodyParticipant.create({ data: { custodyPeriodId: drawer.id, userId: shift.cashierId, role: "SHARED" } });
+              drawer.participants.push({ userId: shift.cashierId });
+            }
+            await linkShiftCustody(tx, { shiftId: shift.id, custodyPeriodId: drawer.id, scope: "CASH" });
+          }
+        }
+        await tx.shift.update({ where: { id: shift.id }, data: { custodyGateReason: null, custodyReadyAt: new Date() } });
         await auditInTransaction(tx, {
           cafeId: shift.cafeId, userId: shift.cashierId, action: "SHIFT_CUSTODY_GATE_REDECIDED",
           entity: "Shift", entityId: shift.id,
-          details: { from: "AWAITING_CUSTODY_TRANSFER", to: "AWAITING_OPENING_VERIFICATION", branchCustodyPeriodId: stock.id, reconciled: true },
+          details: { from: "AWAITING_CUSTODY_TRANSFER", to: "OPERATIONAL", branchCustodyPeriodId: stock.id, stockCustodyPeriodId: taken.incomingPeriodId, reconciled: true, stockCounted: false },
         });
       }
     }
@@ -545,8 +587,27 @@ export async function ensureCustodyForShift(
     }
     // The branch-custody morning: the drawer the night left behind is this shift's opening.
     if (shouldCarryCash) await carryRetainedDrawerCash(tx, args, result.cashCustodyPeriodId);
-    result.withheld.push("STOCK");
-    result.gate = "AWAITING_OPENING_VERIFICATION";
+    // Stock handover v2 (owner decision 2026-11-12): the morning shift is not
+    // held back by stock. It takes the branch-held shelf through the one
+    // transfer primitive — recorded, NOT counted and not accepted by anybody —
+    // and may sell at once. The physical morning count, when it happens, is the
+    // incoming count of the night's handover report; it never gates the shift
+    // and never becomes the stock balance by itself.
+    const taken = await transferCustody(tx, {
+      outgoingPeriodId: stock.id,
+      scope: "STOCK",
+      incoming: {
+        participants: [{ userId: args.userId, role: "PRIMARY" }],
+        shiftId: args.shiftId,
+        responsibleShiftId: args.shiftId,
+        holderType: "USER",
+        openedById: args.userId,
+      },
+      actorId: args.userId,
+    });
+    result.stockCustodyPeriodId = taken.incomingPeriodId;
+    result.opened.push("STOCK");
+    result.operational = true;
   } else if (!cash && !stock) {
     const openedCash = await openCustodyPeriod(tx, {
       cafeId: args.cafeId,

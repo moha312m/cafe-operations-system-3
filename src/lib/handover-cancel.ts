@@ -280,7 +280,9 @@ export async function cancelHandoverIntoBranchCustody(
     // custody, a branch opening verification, or still waiting on another
     // live handover. Refusing those verdicts made the cancel itself a dead end
     // whenever somebody had opened in the meantime.
-    if (!stockless && verdict.gate !== "AWAITING_OPENING_VERIFICATION") throw new ApiError(409, WAITING_SHIFT_NOT_REDECIDED);
+    // Stock handover v2: against a branch-held shelf the shift takes it and is
+    // operational; only a shift still waiting for a transfer is wrong here.
+    if (!stockless && verdict.gate === "AWAITING_CUSTODY_TRANSFER") throw new ApiError(409, WAITING_SHIFT_NOT_REDECIDED);
     await auditInTransaction(tx, {
       cafeId: handover.cafeId, userId: args.actorId, action: "SHIFT_CUSTODY_GATE_REDECIDED",
       entity: "Shift", entityId: shift.id,

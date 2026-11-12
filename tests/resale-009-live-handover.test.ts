@@ -22,7 +22,7 @@ describe("Resale real mixed carry, deferred thaw and intake races", { skip: proc
     const carried = mixed ? await h.acceptedOrder(f, "READY", { finished: 3, prepared: preparedQuantity }) : null;
     const { closeShiftWithSettlement } = await import("@/lib/cash-close");
     const closed = await closeShiftWithSettlement({ shiftId: outgoing.id, actualCash: 100, actorId: f.fx.cashier.id, closedByManager: false, handoverTarget: target, grants: { handoverSubmit: true, handoverException: true } });
-    assert.ok(closed.handoverId && closed.freezeId); const id = closed.handoverId;
+    assert.ok(closed.handoverId); assert.equal(closed.freezeId, null, "stock handover v2: no freeze"); const id = closed.handoverId;
     let recipeProcessedAt: Date | null = null;
     if (carried) {
       const before = await db.order.findUniqueOrThrow({ where: { id: carried.id } });

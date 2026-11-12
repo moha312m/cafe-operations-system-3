@@ -186,7 +186,7 @@ async function openOperationalShift(userId: string, openingCash = 100) {
 type Handover = {
   handoverId: string;
   shiftId: string;
-  freezeId: string;
+  freezeId: string | null;
   requiredItemIds: string[];
   outgoingStockCustodyId: string | null;
 };
@@ -200,7 +200,7 @@ async function freshHandover(): Promise<Handover> {
     shiftId: shift.id, actualCash: 100, actorId: fx.cashier.id,
     closedByManager: false, handoverTarget: "SHIFT_TO_SHIFT", grants: GRANTS_FULL,
   });
-  if (!closed.handoverId || !closed.freezeId) {
+  if (!closed.handoverId) {
     throw new Error(`close produced no handover (status ${closed.status})`);
   }
   const handover = await db.handoverSession.findUniqueOrThrow({
@@ -465,8 +465,9 @@ async function assertNothingCommitted(h: Walked) {
   assert.equal(outgoing.status, "AWAITING_HANDOVER", "the outgoing shift is not stock-closed");
   const arriving = await db.shift.findUniqueOrThrow({ where: { id: h.incomingShiftId } });
   assert.equal(arriving.custodyGateReason, "AWAITING_CUSTODY_TRANSFER", "still gated");
-  const freeze = await db.inventoryFreeze.findUniqueOrThrow({ where: { id: h.freezeId } });
-  assert.equal(freeze.releasedAt, null, "the freeze is still on");
+  // Stock handover v2 (owner decision 2026-11-12): no freeze is taken, so none is held or released.
+  assert.equal(h.freezeId, null);
+  assert.equal(await db.inventoryFreeze.count({ where: { handoverId: h.handoverId } }), 0);
 
   for (const action of ["HANDOVER_ACCEPTED", "HANDOVER_MANAGER_EXCEPTION"]) {
     assert.equal(
@@ -583,34 +584,40 @@ describe("HANDOVER-013 twelve items, nine counted, three nobody reached", () => 
   });
 });
 
-describe("HANDOVER-013 the ordinary acceptance refuses, and commits nothing", () => {
-  test("a normal accept is 409 REQUIRED_ITEMS_OMITTED", async () => {
+describe("HANDOVER-013 v2: the ordinary acceptance completes and records the gap", () => {
+  // Stock handover v2 (owner decision 2026-11-12): a count with shelves
+  // nobody reached is reported, never a reason to keep the next shift
+  // waiting. The three are recorded as omitted, by name, with no invented
+  // reason and no manager authority claimed.
+  test("a normal accept completes and names the three as omitted", async () => {
     const h = await walkToTheAcceptance();
-
     const r = await acceptPost(h.handoverId, `${MARKER}-acc-${h.handoverId}`);
-    assert.equal(r.status, 409, `expected the SH-20 refusal, got ${r.status}: ${r.text}`);
-    assert.match(r.body.error ?? "", /ماتعدّتش/);
-
-    // The refusal is a throw inside the acceptance transaction, so the
-    // `omitted: true` rows settlement wrote moments earlier never commit.
-    await assertNothingCommitted(h);
+    assert.equal(r.status, 200, r.text);
+    assert.equal(r.body.status, "COMPLETED");
+    const omitted = await db.handoverRequiredItem.findMany({ where: { handoverId: h.handoverId, omitted: true } });
+    assert.deepEqual(omitted.map((x) => x.inventoryItemId).sort(), unreachedIds());
+    assert.ok(omitted.every((x) => x.omissionNote === null), "nobody invented a reason");
+    const handover = await db.handoverSession.findUniqueOrThrow({ where: { id: h.handoverId } });
+    assert.equal(handover.exceptionById, null, "no manager authority was needed");
+    assert.equal(await db.openingException.count({ where: { handoverId: h.handoverId } }), 0);
   });
 
-  test("a refused accept can be repeated, and still commits nothing", async () => {
+  test("a second accept with a different key is refused once it completed", async () => {
     const h = await walkToTheAcceptance();
-    for (const n of [1, 2, 3]) {
+    assert.equal((await acceptPost(h.handoverId, `${MARKER}-acc-${h.handoverId}-1`)).status, 200);
+    for (const n of [2, 3]) {
       const r = await acceptPost(h.handoverId, `${MARKER}-acc-${h.handoverId}-${n}`);
       assert.equal(r.status, 409, r.text);
     }
-    await assertNothingCommitted(h);
+    assert.equal(await db.handoverRequiredItem.count({ where: { handoverId: h.handoverId, omitted: true } }), 3, "recorded once");
   });
 });
 
 describe("HANDOVER-013 the manager finishes it, and the record says what was skipped", () => {
   test("the override completes the handover and names the three", async () => {
     const h = await walkToTheAcceptance();
-    assert.equal((await acceptPost(h.handoverId, `${MARKER}-pre-${h.handoverId}`)).status, 409);
-
+    // v2: the ordinary accept would complete too; the override remains the
+    // way to record a manager's reason for the gap.
     const r = await overridePost(h.handoverId);
     assert.equal(r.status, 200, `override failed: ${r.text}`);
     assert.equal(r.body.status, "COMPLETED");
@@ -739,37 +746,22 @@ describe("HANDOVER-013 the manager finishes it, and the record says what was ski
     }
   });
 
-  test("the nine that were counted keep SH-17 behaviour exactly", async () => {
+  test("v2: the nine that were counted are recorded, not rebased or auto-charged", async () => {
     const h = await walkToTheAcceptance();
     const r = await overridePost(h.handoverId);
     assert.equal(r.status, 200, r.text);
 
-    // One genuine shortage among the nine, and it is recorded as one — with
-    // an attribution and the outgoing custody it belongs to.
+    // Stock handover v2: the genuine shortage among the nine stays on its line
+    // and goes to the comparison and review — no automatic case, no rebase.
     const shortLine = await db.stockCountLine.findFirstOrThrow({
       where: { sessionId: h.sessionId, inventoryItemId: items[SHORT].id },
     });
-    assert.equal(Number(shortLine.varianceQuantity), -SHORT_BY);
-    const shortCase = await db.varianceCase.findUniqueOrThrow({
-      where: { stockCountLineId: shortLine.id },
-    });
-    assert.equal(Number(shortCase.quantityVariance), -SHORT_BY);
-    assert.equal(shortCase.acceptedHandoverId, h.handoverId);
-    assert.ok(shortCase.attribution !== null, "SH-17 gave it a verdict");
-    assert.deepEqual(r.body.varianceCaseIds, [shortCase.id], "one difference, one case");
-
-    // The eight that matched the book open nothing.
-    assert.equal(
-      await db.varianceCase.count({ where: { stockCountLine: { sessionId: h.sessionId } } }), 1,
-    );
-
-    // The nine were rebased; the shelf now matches what somebody counted.
-    const rebased = await db.stockCountRebase.findMany({
-      where: { sessionId: h.sessionId }, select: { lineId: true },
-    });
-    assert.equal(rebased.length, 9, "one rebase per observation, and nine observations");
+    assert.equal(Number(shortLine.varianceQuantity), -SHORT_BY, "the difference is on record");
+    assert.deepEqual(r.body.varianceCaseIds, [], "no automatic stock case");
+    assert.equal(await db.varianceCase.count({ where: { stockCountLine: { sessionId: h.sessionId } } }), 0);
+    assert.equal(await db.stockCountRebase.count({ where: { sessionId: h.sessionId } }), 0, "nothing rebased");
     const shortItem = await db.inventoryItem.findUniqueOrThrow({ where: { id: items[SHORT].id } });
-    assert.equal(Number(shortItem.currentStock), 10 - SHORT_BY);
+    assert.equal(Number(shortItem.currentStock), 10, "the book balance stands until an authorised adjustment");
 
     // The accepted evidence is immutable now.
     const session = await db.stockCountSession.findUniqueOrThrow({ where: { id: h.sessionId } });
@@ -811,10 +803,10 @@ describe("HANDOVER-013 the manager finishes it, and the record says what was ski
     assert.deepEqual([...(repeat.body.missingItemIds ?? [])].sort(), unreachedIds());
     assert.equal(await db.openingException.count({ where: { handoverId: h.handoverId } }), 1);
     assert.equal(
-      await db.varianceCase.count({ where: { stockCountLine: { sessionId: h.sessionId } } }), 1,
-      "and the shortage is still one investigation, not two",
+      await db.varianceCase.count({ where: { stockCountLine: { sessionId: h.sessionId } } }), 0,
+      "v2: no automatic stock case, on the first call or the retry",
     );
-    assert.equal(await db.stockCountRebase.count({ where: { sessionId: h.sessionId } }), 9);
+    assert.equal(await db.stockCountRebase.count({ where: { sessionId: h.sessionId } }), 0);
     const required = await db.handoverRequiredItem.findMany({
       where: { handoverId: h.handoverId, omitted: true },
     });
@@ -837,8 +829,9 @@ describe("HANDOVER-013 the manager finishes it, and the record says what was ski
     assert.ok(outgoing.stockClosedAt !== null);
     assert.equal(outgoing.closedById, incoming.id, "the custodian closed it, not the manager");
 
-    const freeze = await db.inventoryFreeze.findUniqueOrThrow({ where: { id: h.freezeId } });
-    assert.ok(freeze.releasedAt !== null, "the freeze is lifted");
+    // Stock handover v2 (owner decision 2026-11-12): no freeze is taken, so none is held or released.
+    assert.equal(h.freezeId, null);
+    assert.equal(await db.inventoryFreeze.count({ where: { handoverId: h.handoverId } }), 0);
   });
 });
 
@@ -868,8 +861,8 @@ describe("HANDOVER-013 the recount is still a real alternative", () => {
   test("sending it back reaches an ordinary acceptance, and omits nothing", async () => {
     const h = await walkToTheAcceptance();
 
-    // The refusal that presents the choice.
-    assert.equal((await acceptPost(h.handoverId, `${MARKER}-r1-${h.handoverId}`)).status, 409);
+    // Stock handover v2: no refusal presents the choice any more — sending it
+    // back for a recount is still the receiver's to choose instead of accepting.
 
     // ── the incoming custodian sends it back instead of escalating ──
     const sentBack = await requestRecountPost(h.handoverId);
@@ -891,8 +884,9 @@ describe("HANDOVER-013 the recount is still a real alternative", () => {
     assert.equal(
       await db.openingException.count({ where: { handoverId: h.handoverId } }), 0,
     );
-    const freeze = await db.inventoryFreeze.findUniqueOrThrow({ where: { id: h.freezeId } });
-    assert.equal(freeze.releasedAt, null, "the shelf stays still between the two rounds");
+    // Stock handover v2 (owner decision 2026-11-12): no freeze is taken, so none is held or released.
+    assert.equal(h.freezeId, null);
+    assert.equal(await db.inventoryFreeze.count({ where: { handoverId: h.handoverId } }), 0);
 
     // ── the replacement round ──
     const restarted = await startCountHttp(h.handoverId);
@@ -939,17 +933,9 @@ describe("HANDOVER-013 the recount is still a real alternative", () => {
     assert.ok((await confirmCount(replacementId, `${MARKER}-re-${replacementId}`)).status < 300);
     assert.equal((await submitHandoverHttp(h.handoverId)).status, 200);
 
-    const stale = await acceptPost(h.handoverId, `${MARKER}-stale-${h.handoverId}`);
-    assert.equal(stale.status, 409, `expected the unsigned refusal, got ${stale.text}`);
-    assert.match(
-      stale.body.error ?? "", /ماتسجلش استلامها/,
-      "nine signatures on a superseded round do not sign for this one",
-    );
-
-    // ── signed properly, the ordinary acceptance completes it ──
-    const signed = await acknowledgeWhatExists(h.handoverId, replacementId);
-    assert.equal(signed.length, 12, "every shelf was reached this time, so every line is signed");
-
+    // Stock handover v2 (owner decision 2026-11-12): signatures are no longer
+    // required — the replacement round is received as counted. The superseded
+    // round's nine signatures still never stand in for this one.
     const accepted = await acceptPost(h.handoverId, `${MARKER}-ok-${h.handoverId}`);
     assert.equal(accepted.status, 200, `ordinary accept failed: ${accepted.text}`);
     assert.equal(accepted.body.status, "COMPLETED");

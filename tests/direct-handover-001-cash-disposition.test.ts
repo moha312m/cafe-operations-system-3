@@ -323,8 +323,14 @@ describe("incoming employee: one action opens exactly the retained amount", () =
     assert.equal(before.status, 200, before.text);
     assert.equal(before.body.incoming.state, "NONE", "the viewer has no shift yet");
     assert.equal(before.body.can.acknowledge, true);
-    assert.equal(before.body.stock.disclosed, true, "the approved direct flow shows the quantities being transferred");
-    assert.equal(before.body.stock.lines.length, 2);
+    // Stock handover v2 (owner decision 2026-11-12): the incoming count is
+    // blind — the outgoing figures reach the incoming employee only after
+    // their own count is submitted. The owner still sees them.
+    assert.equal(before.body.stock.disclosed, false, "blind until the incoming employee has counted");
+    assert.equal(before.body.stock.lines.length, 0, "no outgoing quantity in the response");
+    const ownerView = await summaryOf(fx.owner.email, h.handoverId);
+    assert.equal(ownerView.body.stock.disclosed, true, "the owner sees what was handed over");
+    assert.equal(ownerView.body.stock.lines.length, 2);
     assert.equal(before.body.cash.retained, 500);
     assert.equal(before.body.cash.deliveries[0].status, "DECLARED");
     assert.equal(before.body.cash.counted, null, "the incoming employee has no report access, so no counted/expected figure");
@@ -410,7 +416,7 @@ describe("incoming employee: one action opens exactly the retained amount", () =
     assert.equal(ok.body.disposition!.deliveredAmount, 0);
   });
 
-  test("the incoming employee cannot accept before a disposition exists, or before the outgoing side submitted", async () => {
+  test("the incoming employee cannot accept before a disposition exists; an unfinished count no longer blocks (v2)", async () => {
     const h = await outgoingJourney({ actual: 500, disposition: null });
     await incomingOpensShift();
     const s = await summaryOf(incoming.email, h.handoverId);
@@ -422,7 +428,9 @@ describe("incoming employee: one action opens exactly the retained amount", () =
     const draft = await outgoingJourney({ actual: 500, disposition: { deliveries: [], retainedAmount: 500 }, finish: false });
     const early = await summaryOf(incoming.email, draft.handoverId);
     assert.equal(early.body.stock.disclosed, false, "a handover still being counted discloses nothing");
-    assert.equal(early.body.can.acknowledge, false);
+    // Stock handover v2: once the cash disposition exists, an unfinished count
+    // no longer keeps the incoming employee waiting.
+    assert.equal(early.body.can.acknowledge, true, JSON.stringify(early.body.blockers));
   });
 });
 
@@ -755,7 +763,7 @@ describe("independent gates and unchanged paths", () => {
     assert.equal(Number(handover.countedOpeningCash), 480);
   });
 
-  test("a dispute left by the legacy sheet still blocks a direct acceptance", async () => {
+  test("v2: a dispute left by the legacy sheet is recorded, not a block on the direct acceptance", async () => {
     const h = await outgoingJourney({ actual: 500, disposition: { deliveries: [], retainedAmount: 500 } });
     await incomingOpensShift();
     const line = await db.stockCountLine.findFirstOrThrow({ where: { sessionId: h.sessionId!, countedQuantity: { not: null } } });
@@ -764,7 +772,10 @@ describe("independent gates and unchanged paths", () => {
     assert.equal(ack.status, 200, ack.text);
     const s = await summaryOf(incoming.email, h.handoverId);
     const r = await acceptDirect(incoming.email, h.handoverId, s.body.reviewVersion);
-    assert.equal(r.status, 409, r.text);
+    // Stock handover v2: the disagreement is recorded for the review; it no
+    // longer blocks the receipt.
+    assert.equal(r.status, 200, r.text);
+    assert.equal(await db.handoverStockAcknowledgement.count({ where: { handoverId: h.handoverId, decision: "DISPUTED" } }), 1);
   });
 
   test("a branch-custody (overnight) handover cannot be accepted directly", async () => {

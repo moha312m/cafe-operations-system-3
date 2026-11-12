@@ -297,6 +297,11 @@ export function HandoverDetail({
                   {view.target && <Badge className="bg-muted text-foreground hover:bg-muted">{TARGET_LABEL[view.target] ?? view.target}</Badge>}
                   <span className="flex-1" />
                   <Button size="sm" variant="outline" className="min-h-9" disabled={busy} onClick={() => void after()}>تحديث</Button>
+                  {/* Stock handover v2: the arriving employee's own blind count, and the manager's comparison. */}
+                  {view.outgoingUserId !== user.id && (canKey("handover.accept") || canKey("stock_count.submit")) && view.target === "SHIFT_TO_SHIFT" &&
+                    <Link className="inline-flex min-h-9 items-center rounded-lg border border-primary/40 px-3 text-xs font-medium text-primary hover:bg-primary/5" href={`/handovers/incoming-count?handoverId=${encodeURIComponent(view.handoverId)}`} data-testid="handover-incoming-count">جرد الاستلام</Link>}
+                  {canKey("handover.manage") &&
+                    <Link className="inline-flex min-h-9 items-center rounded-lg border px-3 text-xs font-medium hover:bg-muted" href={`/reports/stock-handovers?handoverId=${encodeURIComponent(view.handoverId)}`} data-testid="handover-stock-comparison">مقارنة الجرد</Link>}
                   {canKey("reports.export") && <>
                     <a className="inline-flex min-h-9 items-center rounded-lg border px-3 text-xs font-medium hover:bg-muted" href={reportUrl("xlsx")} data-testid="handover-export-xlsx">تصدير Excel</a>
                     <a className="inline-flex min-h-9 items-center rounded-lg border px-3 text-xs font-medium hover:bg-muted" href={reportUrl("html")} target="_blank" rel="noopener" data-testid="handover-print">طباعة التقرير</a>

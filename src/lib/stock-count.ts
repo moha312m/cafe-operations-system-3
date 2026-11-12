@@ -740,7 +740,7 @@ async function recordHandoverCountLine(args: {
     }
     if(!["DRAFT","REJECTED"].includes(handover.status)) throw new ApiError(409,"التسليم مش مفتوح لتسجيل الجرد");
     const freeze=await activeFreezeFor(tx,line.session.branchId);
-    if(freeze?.handoverId!==handover.id) throw new ApiError(409,"تجميد المخزون مش مفتوح لهذا التسليم");
+    if(freeze && freeze.handoverId!==handover.id) throw new ApiError(409,"تجميد المخزون مش مفتوح لهذا التسليم"); // v2: no freeze is normal
     const point=await captureCountPoint(tx,line.inventoryItemId);
     // Millisecond timestamps are the existing CAS token: allocate a strictly
     // increasing recorded instant even when two captures share a clock tick.

@@ -128,6 +128,9 @@ const NAV: NavItem[] = [
   { href: "/stock-counts", label: "جرد المخزون", icon: "📋", permission: "inventory:read", group: "stock", key: "stock_count.view", feature: (f) => f.inventoryEnabled },
   { href: "/variances", label: "الفروقات", icon: "⚖️", permission: "shifts:read", group: "stock", key: "variance.view", feature: (f) => f.shiftManagementEnabled },
   { href: "/handovers", label: "التسليم والاستلام", icon: "🤝", permission: "shifts:operate", group: "stock", key: "handover.view", feature: (f) => f.shiftManagementEnabled },
+  // Stock handover v2: the comparison report and the alerts it raises — managers and owners.
+  { href: "/reports/stock-handovers", label: "جرد التسليم والاستلام", icon: "🧾", permission: "shifts:read", group: "stock", key: "handover.manage", feature: (f) => f.inventoryEnabled },
+  { href: "/notifications", label: "التنبيهات", icon: "🔔", permission: "shifts:read", group: "stock", key: "handover.manage" },
   { href: "/expenses", label: "مصروفات التشغيل", icon: "💸", permission: "cost:read", group: "finance", key: "expenses.view" },
   { href: "/accounting", label: "الأرباح والخسائر والمحاسبة", icon: "📊", permission: "cost:read", group: "finance", key: "accounting.view" },
   { href: "/settings", label: "الإعدادات", icon: "⚙️", permission: "branches:manage", group: "admin" },

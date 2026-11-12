@@ -22,7 +22,9 @@ const LABELS: Record<string, string> = {
   HANDOVER_MANAGER_EXCEPTION: "استلام استثنائي / استثناء مدير",
   HANDOVER_ACCEPTED: "اكتمال التسليم",
   HANDOVER_ORDERS_CARRIED: "نقل طلبات مفتوحة مع التسليم",
-  SHIFT_CUSTODY_GATE_REDECIDED: "الشيفت المنتظر انتقل للتحقق من العهدة الافتتاحية",
+  // Neutral on purpose: before stock handover v2 the shift moved to the opening
+  // verification; since 2026-11-12 it takes the branch shelf and works.
+  SHIFT_CUSTODY_GATE_REDECIDED: "الشيفت المنتظر اتحدّد وضعه بعد تحويل العهدة للفرع",
   BRANCH_CUSTODY_VERIFIED: "التحقق من العهدة الافتتاحية",
   CASH_DIFFERENCE_DETECTED: "تسجيل فرق نقدية",
   SHIFT_CASH_DISPOSITION_RECORDED: "تحديد مصير نقدية الإقفال",

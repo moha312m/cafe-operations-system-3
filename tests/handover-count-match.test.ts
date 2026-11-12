@@ -20,8 +20,13 @@ describe('matching handover evidence', () => {
       assert.equal(matchingHandoverLine(line(over),BigInt(2)),false,JSON.stringify(over));
     }
   });
-  test('stale versions and unsettled dispositions never match', () => {
-    assert.equal(matchingHandoverLine(line(),BigInt(3)),false);
+  test('stock handover v2: an observation stands at its own cursor; a cursor ahead of the ledger never matches', () => {
+    // Owner decision 2026-11-12: stock keeps moving during a handover, so a later sale
+    // does not make the count stale — the comparison adds the movement instead.
+    assert.equal(matchingHandoverLine(line(),BigInt(3)),true);
+    assert.equal(matchingHandoverLine(line(),BigInt(1)),false);
+  });
+  test('unsettled dispositions never match', () => {
     for (const disposition of ['PENDING','COUNTED','OUTSIDE_TOLERANCE','RECOUNT_REQUIRED']) assert.equal(matchingHandoverLine(line({disposition}),BigInt(2)),false);
   });
   test('unresolved or internally inconsistent recounts never match', () => {

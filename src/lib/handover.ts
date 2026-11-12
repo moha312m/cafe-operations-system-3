@@ -89,7 +89,6 @@ import {
   hasAuthoritativeObservation,
 } from "@/lib/count-evidence";
 import {
-  acquireInventoryFreeze,
   activeFreezeFor,
   releaseInventoryFreeze,
   acquireInventoryExclusiveLock,
@@ -106,6 +105,7 @@ import {
 } from "@/lib/stock-count";
 import { buildStockBoundary, persistStockBoundary } from "@/lib/handover-boundary";
 import { openHandoverVarianceCases } from "@/lib/stock-variance-attribution";
+import { reportOutgoingCountIfMissing } from "@/lib/stock-handover-v2";
 import { ensureCustodyForShift, transferCustody } from "@/lib/custody";
 import { recordCashHandover } from "@/lib/cash-handover";
 import { recordDirectCashOpening } from "@/lib/cash-disposition";
@@ -337,7 +337,7 @@ export async function createHandoverInClose(
     /** See {@link createHandoverSession}. Only meaningful for a SHIFT_TO_SHIFT target. */
     direct?: boolean;
   }
-): Promise<{ handoverId: string; freezeId: string; requiredItemCount: number }> {
+): Promise<{ handoverId: string; freezeId: string | null; requiredItemCount: number }> {
   const plan = await planRequiredItems(tx, {
     cafeId: args.cafeId,
     branchId: args.branchId,
@@ -363,12 +363,12 @@ export async function createHandoverInClose(
     plan,
   });
 
-  const { freezeId } = await acquireInventoryFreeze(tx, {
-    cafeId: args.cafeId,
-    branchId: args.branchId,
-    handoverId,
-    startedById: args.outgoingUserId,
-  });
+  // Stock handover v2 (owner decision 2026-11-12): a handover counts and
+  // reports; it never freezes stock. No InventoryFreeze is acquired, so sales,
+  // recipe consumption, receipts, adjustments and transfers continue while the
+  // counts are taken and compared. The freeze machinery itself is untouched —
+  // it still governs any freeze created before this change until released.
+  const freezeId: string | null = null;
 
   await auditInTransaction(tx, {
     cafeId: args.cafeId,
@@ -596,8 +596,10 @@ export async function startHandoverCount(args: {
     // The freeze is what makes a count of this shelf meaningful. One that
     // names a different handover means the shelf is being held for somebody
     // else, and this count would describe a boundary it does not own.
+    // Stock handover v2: handovers no longer freeze stock. Only a legacy freeze
+    // held by a DIFFERENT handover still refuses; no freeze is the normal case.
     const freeze = await activeFreezeFor(tx, handover.branchId);
-    if (!freeze || freeze.handoverId !== handover.id) {
+    if (freeze && freeze.handoverId !== handover.id) {
       throw new ApiError(409, "تجميد المخزون مش مفتوح لهذا التسليم");
     }
 
@@ -1115,21 +1117,16 @@ async function submitHandoverInTransaction(tx: Prisma.TransactionClient, args: {
       throw new ApiError(409, "التسليم مش في حالة تسمح بالتسليم");
     }
 
-    await assertCurrentHandoverCountValidation(tx, handover.id);
+    // Stock handover v2 (owner decision 2026-11-12): a pending correction or a
+    // count that is not current is reported, never a reason to refuse.
     const position = await deriveClosingPosition(tx, handover.id);
 
     // Every predicate is evaluated. None of them returns early, because the
     // list is the feature.
     const refusals: HandoverSubmitRefusal[] = [];
 
-    if (position.stock.countSessionId === null || position.stock.countStatus !== "CONFIRMED") {
-      refusals.push({
-        code: "COUNT_NOT_CONFIRMED",
-        count: 1,
-        message: "لازم تأكد جرد التسليم الأول",
-        ids: [],
-      });
-    }
+    // v2: a missing or unconfirmed count no longer refuses (COUNT_NOT_CONFIRMED
+    // retired); the comparison reports it and the manager is notified.
 
     // ON `unlinkedItemIds`, NOT ON `missingItemIds`.
     //
@@ -1148,7 +1145,7 @@ async function submitHandoverInTransaction(tx: Prisma.TransactionClient, args: {
     // remains is the one nobody can count their way out of: a required item
     // with no line at all means the bound session is not the count this
     // handover planned.
-    if (position.required.unlinkedItemIds.length > 0) {
+    if (position.stock.countSessionId !== null && position.required.unlinkedItemIds.length > 0) {
       // Named from the immutable snapshot, so a custodian reads the names the
       // handover was planned with rather than whatever the shelf calls them
       // today.
@@ -1264,6 +1261,10 @@ export type FinishOutgoingResult = {
   alreadySubmitted: boolean;
   systemValidated: boolean;
   recordedDifferences: number;
+  /** v2: the count's own status after finishing ("NONE" when nobody counted). */
+  countStatus?: string;
+  /** v2: items left uncounted — a warning, never a refusal. */
+  notCounted?: string[];
 };
 
 const FINISHED_STATUSES: readonly HandoverStatus[] = ["OUTGOING_SUBMITTED", "INCOMING_REVIEW", "ACCEPTED", "COMPLETED"];
@@ -1306,7 +1307,7 @@ export async function finishOutgoingHandover(args: {
       return { status: handover.status, alreadySubmitted: true, ...(await counted()) };
     }
     if (handover.status !== "DRAFT") throw new ApiError(409, "التسليم مش في حالة تسمح بالتسليم");
-    if (!handover.stockCountSessionId) throw new ApiError(409, "ابدأ جرد الخامات الأول");
+    // Stock handover v2: finishing without a count is allowed and reported.
     // A handover opted in to the direct flow is not finished until the outgoing employee has recorded
     // where the counted cash went. Evaluated under the handover lock, so a disposition cannot appear or
     // vanish between this check and the transition. Handovers created before the opt-in existed keep
@@ -1316,26 +1317,30 @@ export async function finishOutgoingHandover(args: {
       if (!recorded) throw new ApiError(409, DISPOSITION_REQUIRED_MESSAGE);
     }
 
-    // Same order as every other handover-bound count write: handover, then count.
-    await tx.$queryRaw`SELECT "id" FROM "StockCountSession" WHERE "id"=${handover.stockCountSessionId} FOR UPDATE`;
-    const lines = await tx.stockCountLine.findMany({
-      where: { sessionId: handover.stockCountSessionId },
-      select: { ...EFFECTIVE_EVIDENCE_SELECT, inventoryItem: { select: { name: true } } },
-      orderBy: { inventoryItem: { name: "asc" } },
-    });
-    const missing = lines.filter((line) => !hasAuthoritativeObservation(line)).map((line) => line.inventoryItem.name);
-    if (missing.length > 0) throw new HandoverCountIncompleteError(missing);
-
-    const submitted = await submitHandoverCountInTransaction(tx, {
-      sessionId: handover.stockCountSessionId,
-      submittedById: args.actorId,
-      cafeId: args.cafeId,
-      viewerBranchId: args.viewerBranchId,
-    });
-    if (submitted.status !== "CONFIRMED") {
-      // Complete but not current — a stale ledger cursor, a pending
-      // correction or an open dispute. Not a numerical difference to wave on.
-      throw new ApiError(409, "الجرد اتغير أو مستني مراجعة — حدّث الصفحة وراجع الكميات");
+    let submitted: { status: string; systemValidated?: boolean; recordedDifferences?: number } = { status: "NONE" };
+    let notCounted: string[] = [];
+    if (handover.stockCountSessionId) {
+      // Same order as every other handover-bound count write: handover, then count.
+      await tx.$queryRaw`SELECT "id" FROM "StockCountSession" WHERE "id"=${handover.stockCountSessionId} FOR UPDATE`;
+      const lines = await tx.stockCountLine.findMany({
+        where: { sessionId: handover.stockCountSessionId },
+        select: { ...EFFECTIVE_EVIDENCE_SELECT, inventoryItem: { select: { name: true } } },
+        orderBy: { inventoryItem: { name: "asc" } },
+      });
+      // v2: items nobody counted are reported, never a refusal.
+      notCounted = lines.filter((line) => !hasAuthoritativeObservation(line)).map((line) => line.inventoryItem.name);
+      void HandoverCountIncompleteError;
+      const session = await tx.stockCountSession.findUniqueOrThrow({ where: { id: handover.stockCountSessionId }, select: { status: true } });
+      submitted = session.status === "DRAFT" || session.status === "IN_PROGRESS"
+        ? await submitHandoverCountInTransaction(tx, {
+            sessionId: handover.stockCountSessionId,
+            submittedById: args.actorId,
+            cafeId: args.cafeId,
+            viewerBranchId: args.viewerBranchId,
+          })
+        : { status: session.status };
+      // v2: a count that did not confirm (recount policy, pending correction,
+      // dispute) stays recorded as it is; the handover still moves on.
     }
     const result = await submitHandoverInTransaction(tx, {
       handoverId: handover.id,
@@ -1344,11 +1349,16 @@ export async function finishOutgoingHandover(args: {
       viewerBranchId: args.viewerBranchId,
       note: args.note ?? null,
     });
+    // Stock handover v2: a missing outgoing count is reported to the manager
+    // and owner, in this transaction, once.
+    await reportOutgoingCountIfMissing(tx, handover.id);
     return {
       status: result.status,
       alreadySubmitted: result.alreadySubmitted,
       systemValidated: submitted.systemValidated === true,
       recordedDifferences: submitted.recordedDifferences ?? 0,
+      countStatus: submitted.status,
+      notCounted,
     };
   }, { timeout: 30000 });
 }
@@ -2185,9 +2195,49 @@ export async function requestRecount(args: {
 
 /** The statuses an acceptance may be performed from. */
 const ACCEPTABLE_STATUSES: readonly HandoverStatus[] = [
+  // Stock handover v2 (owner decision 2026-11-12): a handover the outgoing
+  // never finished counting may still be received — the missing count is
+  // reported, never a reason to keep the next shift waiting.
+  "DRAFT",
   "OUTGOING_SUBMITTED",
   "INCOMING_REVIEW",
 ];
+
+/**
+ * Stock handover v2: the outgoing count as RECORDED evidence, never as a
+ * requirement. Returns the bound session when it is CONFIRMED (so it is
+ * settled, bounded and locked as before), otherwise null. Refuses only a
+ * session that is not this handover's at all — corrupt data, not a missing
+ * step. Signatures, disputes, pending corrections and uncounted lines no
+ * longer refuse; the comparison report shows them instead.
+ */
+async function recordedHandoverCount(
+  tx: Prisma.TransactionClient,
+  handover: LockedHandover,
+): Promise<{ acceptedSessionId: string | null; countedLineIds: string[] }> {
+  if (handover.stockCountSessionId === null) return { acceptedSessionId: null, countedLineIds: [] };
+  const session = await tx.stockCountSession.findUnique({
+    where: { id: handover.stockCountSessionId },
+    select: { id: true, cafeId: true, branchId: true, status: true, accountabilityContext: true, handoverId: true },
+  });
+  if (!session) return { acceptedSessionId: null, countedLineIds: [] };
+  if (session.cafeId !== handover.cafeId || session.branchId !== handover.branchId) {
+    throw new ApiError(409, COUNT_NOT_OURS);
+  }
+  if (session.accountabilityContext !== "HANDOVER" || session.handoverId !== handover.id) {
+    throw new ApiError(409, COUNT_NOT_OURS);
+  }
+  if (session.status !== "CONFIRMED") return { acceptedSessionId: null, countedLineIds: [] };
+  const lines = await tx.stockCountLine.findMany({
+    where: { sessionId: session.id },
+    select: { ...EFFECTIVE_EVIDENCE_SELECT, id: true },
+    orderBy: { id: "asc" },
+  });
+  const counted = lines.filter(
+    (line) => !(line.countedQuantity === null && effectiveCountEvidence(line).recountId === null)
+  );
+  return { acceptedSessionId: session.id, countedLineIds: counted.map((line) => line.id) };
+}
 
 const NOT_ACCEPTABLE = "التسليم مش في حالة تسمح بالاستلام";
 const ALREADY_ACCEPTED = "التسليم ده اتقفل خلاص";
@@ -2247,7 +2297,8 @@ const LOCKED_HANDOVER_SELECT = {
  */
 type AcceptedEvidence = {
   handover: LockedHandover;
-  acceptedSessionId: string;
+  /** v2: null when the outgoing count is missing or not confirmed. */
+  acceptedSessionId: string | null;
   outgoingStockCustodyId: string;
   outgoingCashCustodyId: string | null;
   incomingShiftId: string;
@@ -2277,57 +2328,10 @@ async function resolveAcceptableEvidence(
   if (handover.target !== "SHIFT_TO_SHIFT") {
     throw new ApiError(409, BRANCH_TARGET_ELSEWHERE);
   }
-  if (handover.stockCountSessionId === null) throw new ApiError(409, NO_BOUND_COUNT);
-
-  // Step 4. The pointer names the evidence — never "the newest confirmed
-  // session", which after a recount would silently accept a round the
-  // arriving custodian was never shown.
-  const acceptedSessionId = handover.stockCountSessionId;
-  const session = await tx.stockCountSession.findUnique({
-    where: { id: acceptedSessionId },
-    select: {
-      id: true, cafeId: true, branchId: true, status: true,
-      accountabilityContext: true, handoverId: true,
-    },
-  });
-  if (!session) throw new ApiError(409, NO_BOUND_COUNT);
-  if (session.cafeId !== handover.cafeId || session.branchId !== handover.branchId) {
-    throw new ApiError(409, COUNT_NOT_OURS);
-  }
-  if (session.status !== "CONFIRMED") throw new ApiError(409, COUNT_NOT_CONFIRMED);
-  if (session.accountabilityContext !== "HANDOVER" || session.handoverId !== handover.id) {
-    throw new ApiError(409, COUNT_NOT_OURS);
-  }
-
-  // Step 3's evidence test, against the CURRENT session only.
-  const lines = await tx.stockCountLine.findMany({
-    where: { sessionId: acceptedSessionId },
-    select: { ...EFFECTIVE_EVIDENCE_SELECT, id: true },
-    orderBy: { id: "asc" },
-  });
-  // A line nobody counted has no figure to sign for, and
-  // `acknowledgeStockLine` refuses to sign one. Requiring an acknowledgement
-  // for it would make acceptance unreachable rather than careful.
-  const countedLines = lines.filter(
-    (line) => !(line.countedQuantity === null && effectiveCountEvidence(line).recountId === null)
-  );
-
-  // THE amendment, in one clause. An acknowledgement reaches a session only
-  // through its line, so a row belonging to a superseded round is invisible
-  // here: it can neither satisfy a missing line nor block on a stale dispute.
-  const acknowledgements = await tx.handoverStockAcknowledgement.findMany({
-    where: { handoverId: handover.id, line: { sessionId: acceptedSessionId } },
-    select: { stockCountLineId: true, decision: true },
-  });
-  const acknowledged = new Set(acknowledgements.map((a) => a.stockCountLineId));
-  // A DIRECT acceptance is the owner-approved single acknowledgement of the
-  // displayed handover: it replaces the per-line signatures, never a dispute.
-  if (!args.direct && countedLines.some((line) => !acknowledged.has(line.id))) {
-    throw new ApiError(409, LINES_UNACKNOWLEDGED);
-  }
-  if (acknowledgements.some((a) => a.decision === "DISPUTED")) {
-    throw new ApiError(409, LINES_DISPUTED);
-  }
+  // Step 4. The pointer names the evidence when there is confirmed evidence;
+  // v2 never refuses for a missing, unsigned or disputed count.
+  const { acceptedSessionId, countedLineIds } = await recordedHandoverCount(tx, handover);
+  void args.direct;
 
   // The custody being discharged is the one the CLOSING shift held, named on
   // the handover at close. "Whatever is open at the branch now" is a different
@@ -2352,8 +2356,10 @@ async function resolveAcceptableEvidence(
 
   // Acceptance releases the freeze at step 15, so it must be releasing its
   // own. A branch frozen by a different handover is not this one's to reopen.
+  // Stock handover v2: no freeze is the normal case; a legacy freeze of a
+  // DIFFERENT handover still refuses.
   const freeze = await activeFreezeFor(tx, handover.branchId);
-  if (!freeze || freeze.handoverId !== handover.id) {
+  if (freeze && freeze.handoverId !== handover.id) {
     throw new ApiError(409, FREEZE_NOT_OURS);
   }
 
@@ -2364,7 +2370,7 @@ async function resolveAcceptableEvidence(
     outgoingCashCustodyId: handover.outgoingCashCustodyId,
     incomingShiftId: incomingShift.id,
     incomingShiftCashierId: incomingShift.cashierId,
-    countedLineIds: countedLines.map((line) => line.id),
+    countedLineIds,
   };
 }
 
@@ -2661,23 +2667,26 @@ async function prepareHandoverFinancialLocks(tx: Prisma.TransactionClient, args:
 }
 
 /** Lock only the count/boundary/deferred union; keep their mutation rules. */
-async function prepareHandoverInventoryLocks(tx: Prisma.TransactionClient, handover: LockedHandover, sessionId: string, incomingShiftId?: string) {
+async function prepareHandoverInventoryLocks(tx: Prisma.TransactionClient, handover: LockedHandover, sessionId: string | null, incomingShiftId?: string) {
   const context = protectedContext(tx);
   if (incomingShiftId && !context.held.get("Shift")?.has(incomingShiftId)) throw new ApiError(409, "شيفت الاستلام اتغير — جرّب تاني");
   const periods = await tx.custodyPeriod.findMany({ where: { ...context.scope, scope: "STOCK", OR: [{ status: "OPEN" }, { id: handover.outgoingStockCustodyId ?? "" }] }, select: { responsibleShiftId: true } });
   if (periods.some(row => row.responsibleShiftId && !context.held.get("Shift")?.has(row.responsibleShiftId))) throw new ApiError(409, "عهدة المخزون اتغيرت — جرّب العملية تاني");
   const pending = await tx.deferredStockDeduction.findMany({ where: { handoverId: handover.id, appliedAt: null, ...context.scope }, select: { orderId: true, order: { select: { stockDeductedAt: true } } } });
   assertFinancialLocks(tx, pending.map(row => row.orderId), handover.outgoingShiftId);
-  const session = await tx.$queryRaw<{id:string}[]>`SELECT "id" FROM "StockCountSession" WHERE "id"=${sessionId} AND "cafeId"=${handover.cafeId} AND "branchId"=${handover.branchId} FOR UPDATE`;
-  if (session.length !== 1) throw new ApiError(409, NO_BOUND_COUNT);
-  context.trace.push({ entity: "StockCountSession", ids: session.map(row => row.id), mode: "FOR UPDATE" });
+  // v2: a handover may be received with no confirmed outgoing count.
+  if (sessionId !== null) {
+    const session = await tx.$queryRaw<{id:string}[]>`SELECT "id" FROM "StockCountSession" WHERE "id"=${sessionId} AND "cafeId"=${handover.cafeId} AND "branchId"=${handover.branchId} FOR UPDATE`;
+    if (session.length !== 1) throw new ApiError(409, NO_BOUND_COUNT);
+    context.trace.push({ entity: "StockCountSession", ids: session.map(row => row.id), mode: "FOR UPDATE" });
+  }
   await acquireInventoryExclusiveLock(tx, handover.branchId, { tryOnly: true });
   const currentDeferred = await tx.deferredStockDeduction.findMany({ where: { handoverId: handover.id, appliedAt: null, ...context.scope }, select: { orderId: true } });
   const currentReturns = await tx.finishedGoodsReturn.findMany({ where: { deferredHandoverId: handover.id, appliedAt: null, ...context.scope }, select: { orderId: true, inventoryItemId: true } });
   if ([...currentDeferred, ...currentReturns].some(row => !context.held.get("Order")?.has(row.orderId))) throw new HandoverConsumptionChanged();
   const [boundary, lines, deferredIds] = await Promise.all([
     tx.inventoryItem.findMany({ where: { ...context.scope, isActive: true, archivedAt: null }, select: { id: true } }),
-    tx.stockCountLine.findMany({ where: { sessionId }, select: { inventoryItemId: true } }),
+    sessionId === null ? Promise.resolve([] as { inventoryItemId: string }[]) : tx.stockCountLine.findMany({ where: { sessionId }, select: { inventoryItemId: true } }),
     stockItemIdsForOrders(tx, currentDeferred.map(row => row.orderId), { boundary: "DEFERRED", forceAllowNegative: true }),
   ]);
   const ids = [...new Set([...boundary.map(row => row.id), ...lines.map(row => row.inventoryItemId), ...deferredIds, ...currentReturns.map(row => row.inventoryItemId)])].sort();
@@ -2777,8 +2786,8 @@ async function acceptHandoverWork(tx: Prisma.TransactionClient, args: AcceptHand
       incomingShiftId: args.incomingShiftId,
       direct,
     });
+    // v2: count validity is reported by the comparison, never a refusal here.
     await prepareHandoverInventoryLocks(tx, handover, evidence.acceptedSessionId, evidence.incomingShiftId);
-    await assertCurrentHandoverCountValidation(tx, handover.id);
     evidence = await resolveAcceptableEvidence(tx, handover, { cafeId: args.cafeId, viewerBranchId: args.viewerBranchId, incomingShiftId: args.incomingShiftId, direct });
     if (args.direct) {
       // Only the employee whose own shift is waiting can acknowledge the handover for it.
@@ -2928,8 +2937,8 @@ export async function overrideAcceptHandover(args: {
       cafeId: args.cafeId,
       viewerBranchId: args.viewerBranchId,
     });
+    // v2: count validity is reported by the comparison, never a refusal here.
     await prepareHandoverInventoryLocks(tx, handover, evidence.acceptedSessionId, evidence.incomingShiftId);
-    await assertCurrentHandoverCountValidation(tx, handover.id);
     evidence = await resolveAcceptableEvidence(tx, handover, { cafeId: args.cafeId, viewerBranchId: args.viewerBranchId });
 
     // The recipient is the arriving shift's cashier. When the caller named
@@ -3065,50 +3074,29 @@ async function runAcceptance(
   // the previous session's figure forward as though somebody had looked: step
   // 7 writes those items `SYSTEM_CARRIED` / `verified: false`, which is the
   // truthful statement that nobody counted them.
-  const settled = await settleRequiredItems(tx, {
+  // Stock handover v2 (owner decision 2026-11-12): an uncounted required item
+  // is RECORDED as omitted, never a refusal.
+  const settled = await settleRecordedRequiredItems(tx, {
     handoverId: handover.id,
     acceptedSessionId,
-    ...(exception ? { omissionNote: exception.note } : {}),
+    omissionNote: exception?.note ?? null,
   });
-  if (!exception && settled.omitted.length > 0) {
-    throw new ApiError(409, REQUIRED_ITEMS_OMITTED);
-  }
-  // Ascending by `inventoryItemId`, the order `settleRequiredItems` already
-  // sorted them into, so the result, the audit row and a later replay all
-  // name the same items in the same order.
+  void REQUIRED_ITEMS_OMITTED;
+  // Ascending by `inventoryItemId`, the order settlement already sorted them
+  // into, so the result, the audit row and a later replay all name the same
+  // items in the same order.
   const missingItemIds = settled.omitted.map((entry) => entry.inventoryItemId);
   const missingItemNames = settled.omitted.map((entry) => entry.itemNameSnapshot);
   await checkpoint(5);
 
-  // ── 6. Rebase, under the freeze that protected the count ──
+  // ── 6. No rebase (stock handover v2) ──
   //
-  // The freeze is NOT released first. Releasing it to get the movement
-  // through would reopen the shelf to sales in the middle of the acceptance,
-  // which is the one thing it exists to prevent; the token identifies the
-  // handover the freeze was taken for, and step 15 releases it.
-  const rebase = await rebaseFromCountInTransaction(tx, {
-    sessionId: acceptedSessionId,
-    actorId: args.incomingUserId,
-    idempotencyKey: `${handover.id}:rebase`,
-    freezeToken: handover.id,
-  });
-  // ── 6a. HND-UX-003: the receiver's accepted count becomes the balance ──
-  //
-  // The rebase above set the shelf to the OUTGOING declaration. Where the
-  // receiver independently counted a different quantity and accepted it, the
-  // shelf is moved once more, to what they counted, under the same freeze
-  // token. Both observations stay on record (the count line and the
-  // acknowledgement); this only makes the next handover start from the
-  // receiver's own figure, so a shortage they already recorded at receipt is
-  // not found again and charged to them at their own close. A receipt with
-  // no independent count (NULL) moves nothing.
-  const receivingAdjustments = await applyAcceptedReceivingCounts(tx, {
-    cafeId: handover.cafeId,
-    branchId: handover.branchId,
-    handoverId: handover.id,
-    acceptedSessionId,
-    actorId: args.incomingUserId,
-  });
+  // A handover count is a record, not a posting: neither the outgoing figure
+  // nor the receiver's own count becomes the stock balance here. A difference
+  // is corrected only through the existing authorised adjustment process,
+  // linked back to the comparison.
+  const rebase: RebaseResult | null = null;
+  const receivingAdjustments: never[] = [];
   await checkpoint(6);
 
   // ── 7. The closing position ──
@@ -3142,11 +3130,13 @@ async function runAcceptance(
   // After settle, rebase and boundary, which is the roadmap's order. A
   // superseded session is never the subject: it stays CONFIRMED and unlocked,
   // because it is history rather than the record.
-  await lockCountSession(tx, {
-    sessionId: acceptedSessionId,
-    handoverId: handover.id,
-    actorId: args.incomingUserId,
-  });
+  if (acceptedSessionId) {
+    await lockCountSession(tx, {
+      sessionId: acceptedSessionId,
+      handoverId: handover.id,
+      actorId: args.incomingUserId,
+    });
+  }
   await checkpoint(8);
 
   // ── 9. Accepted variance and its attribution ──
@@ -3156,15 +3146,11 @@ async function runAcceptance(
   // acceptable is still a difference somebody physically observed. SH-17 owns
   // every verdict; none of it is re-derived here, and acceptance never sets
   // `assignedResponsibilityUserId`.
-  const variance = await openHandoverVarianceCases(tx, {
-    cafeId: handover.cafeId,
-    branchId: handover.branchId,
-    handoverId: handover.id,
-    acceptedSessionId,
-    outgoingCustodyPeriodId: evidence.outgoingStockCustodyId,
-    boundaryByItemId,
-    openedById: args.incomingUserId,
-  });
+  // Stock handover v2: no automatic STOCK variance case naming an employee —
+  // the comparison and its manager review replace it. A CASH case from the
+  // drawer verification is unchanged.
+  void boundaryByItemId;
+  const variance: { caseIds: string[]; spanIds: string[] } = { caseIds: [], spanIds: [] };
   if (cashVerification?.caseId) variance.caseIds.push(cashVerification.caseId);
   await checkpoint(9);
 
@@ -3295,6 +3281,7 @@ async function runAcceptance(
     },
   });
   if (completed.count === 0) throw new ApiError(409, NOT_ACCEPTABLE);
+  await reportOutgoingCountIfMissing(tx, handover.id);
   await checkpoint(14);
 
   // ── 14a. The exception becomes a record of its own ──
@@ -3337,10 +3324,13 @@ async function runAcceptance(
   // that conflicts only with locks the same transaction already holds, so the
   // upgrade does not self-deadlock — and `acquireInventoryExclusiveLock`
   // already skips its lock-order assertion for a key it holds SHARED.
-  await releaseInventoryFreeze(tx, {
-    handoverId: handover.id,
-    actorId: args.incomingUserId,
-  });
+  // v2: only a handover created before the change still holds a freeze.
+  if (await tx.inventoryFreeze.findFirst({ where: { handoverId: handover.id, releasedAt: null }, select: { id: true } })) {
+    await releaseInventoryFreeze(tx, {
+      handoverId: handover.id,
+      actorId: args.incomingUserId,
+    });
+  }
   // Orders served while the shelf was frozen come off it now, against the
   // custody step 10 just opened for the incoming shift.
   await applyDeferredDeductions(tx, { handoverId: handover.id, actorId: args.incomingUserId });
@@ -3401,13 +3391,10 @@ async function runAcceptance(
       idempotencyKey: args.idempotencyKey,
       boundary: result.boundary,
       requiredItemsSatisfied: result.requiredItems.satisfied,
-      rebase: {
-        itemsRebased: rebase.itemsRebased,
-        itemsSkipped: rebase.itemsSkipped,
-        alreadyRebased: rebase.alreadyRebased,
-      },
-      // HND-UX-003: receiver-counted quantities applied after the rebase.
+      // Stock handover v2: nothing rebased, nothing applied from a count.
+      rebase,
       receivingAdjustments,
+      stockHandoverMode: "COUNT_AND_REPORT",
       varianceCaseIds: variance.caseIds,
       spanIds: variance.spanIds,
       outgoingStockCustodyId: evidence.outgoingStockCustodyId,
@@ -3469,7 +3456,32 @@ async function runAcceptance(
   return result;
 }
 
-async function applyAcceptedReceivingCounts(
+/**
+ * v2 settlement: with confirmed evidence, SH-14's own settlement (the note is
+ * the omission's record); with none, every required item is reported omitted
+ * WITHOUT writing — there is no accepted evidence to settle against.
+ */
+async function settleRecordedRequiredItems(
+  tx: Prisma.TransactionClient,
+  args: { handoverId: string; acceptedSessionId: string | null; omissionNote: string | null },
+): Promise<{ omitted: Array<{ inventoryItemId: string; itemNameSnapshot: string }> }> {
+  if (args.acceptedSessionId) {
+    return settleRequiredItems(tx, {
+      handoverId: args.handoverId,
+      acceptedSessionId: args.acceptedSessionId,
+      ...(args.omissionNote ? { omissionNote: args.omissionNote } : {}),
+    });
+  }
+  const rows = await tx.handoverRequiredItem.findMany({
+    where: { handoverId: args.handoverId },
+    select: { inventoryItemId: true, itemNameSnapshot: true },
+    orderBy: { inventoryItemId: "asc" },
+  });
+  return { omitted: rows };
+}
+
+/** Retired by stock handover v2 (no count becomes the balance); kept for history. */
+export async function applyAcceptedReceivingCounts(
   tx: Prisma.TransactionClient,
   args: { cafeId: string; branchId: string; handoverId: string; acceptedSessionId: string; actorId: string },
 ): Promise<{ acknowledgementId: string; inventoryItemId: string; quantity: number; transactionId: string }[]> {
@@ -3629,7 +3641,8 @@ export const BRANCH_CUSTODY_ACCEPTED_AUDIT_ACTION = HANDOVER_ACCEPTED_AUDIT_ACTI
 /** Everything Half A's gate resolved, and every refusal it already made. */
 type BranchAcceptedEvidence = {
   handover: LockedHandover;
-  acceptedSessionId: string;
+  /** v2: null when the outgoing count is missing or not confirmed. */
+  acceptedSessionId: string | null;
   outgoingStockCustodyId: string;
   /** The already-discharged drawer, recorded so the audit can name it. */
   outgoingCashCustodyId: string | null;
@@ -3709,55 +3722,8 @@ async function resolveBranchAcceptableEvidence(
   if (handover.target !== "BRANCH_CUSTODY") {
     throw new ApiError(409, NOT_BRANCH_TARGET);
   }
-  if (handover.stockCountSessionId === null) throw new ApiError(409, NO_BOUND_COUNT);
-
-  // The pointer names the evidence — never "the newest confirmed session",
-  // which after a recount would silently accept a round nobody reviewed.
-  const acceptedSessionId = handover.stockCountSessionId;
-  const session = await tx.stockCountSession.findUnique({
-    where: { id: acceptedSessionId },
-    select: {
-      id: true, cafeId: true, branchId: true, status: true,
-      accountabilityContext: true, handoverId: true,
-    },
-  });
-  if (!session) throw new ApiError(409, NO_BOUND_COUNT);
-  if (session.cafeId !== handover.cafeId || session.branchId !== handover.branchId) {
-    throw new ApiError(409, COUNT_NOT_OURS);
-  }
-  if (session.status !== "CONFIRMED") throw new ApiError(409, COUNT_NOT_CONFIRMED);
-  // HANDOVER, and only HANDOVER. A branch OPENING verification's session is
-  // Half B's evidence about a shelf the branch is handing BACK, and accepting
-  // one here would close a handover on a count of the wrong direction.
-  if (session.accountabilityContext !== "HANDOVER" || session.handoverId !== handover.id) {
-    throw new ApiError(409, COUNT_NOT_OURS);
-  }
-
-  const lines = await tx.stockCountLine.findMany({
-    where: { sessionId: acceptedSessionId },
-    select: { ...EFFECTIVE_EVIDENCE_SELECT, id: true },
-    orderBy: { id: "asc" },
-  });
-  // A line nobody counted has no figure to sign for, and
-  // `acknowledgeStockLine` refuses to sign one.
-  const countedLines = lines.filter(
-    (line) => !(line.countedQuantity === null && effectiveCountEvidence(line).recountId === null)
-  );
-
-  // Against the CURRENT session only. An acknowledgement reaches a session
-  // through its line, so a row belonging to a superseded round can neither
-  // satisfy a missing line nor block on a stale dispute.
-  const acknowledgements = await tx.handoverStockAcknowledgement.findMany({
-    where: { handoverId: handover.id, line: { sessionId: acceptedSessionId } },
-    select: { stockCountLineId: true, decision: true },
-  });
-  const acknowledged = new Set(acknowledgements.map((a) => a.stockCountLineId));
-  if (countedLines.some((line) => !acknowledged.has(line.id))) {
-    throw new ApiError(409, LINES_UNACKNOWLEDGED);
-  }
-  if (acknowledgements.some((a) => a.decision === "DISPUTED")) {
-    throw new ApiError(409, LINES_DISPUTED);
-  }
+  // v2: the outgoing count is recorded evidence, never a requirement.
+  const { acceptedSessionId, countedLineIds } = await recordedHandoverCount(tx, handover);
 
   // The custody being discharged is the one the CLOSING shift held, named on
   // the handover at close — not "whatever is open at the branch now".
@@ -3821,8 +3787,10 @@ async function resolveBranchAcceptableEvidence(
 
   // Acceptance releases the freeze at step 17, so it must be releasing its
   // own. A branch frozen by a different handover is not this one's to reopen.
+  // Stock handover v2: no freeze is the normal case; a legacy freeze of a
+  // DIFFERENT handover still refuses.
   const freeze = await activeFreezeFor(tx, handover.branchId);
-  if (!freeze || freeze.handoverId !== handover.id) {
+  if (freeze && freeze.handoverId !== handover.id) {
     throw new ApiError(409, FREEZE_NOT_OURS);
   }
 
@@ -3831,7 +3799,7 @@ async function resolveBranchAcceptableEvidence(
     acceptedSessionId,
     outgoingStockCustodyId: outgoingStock.id,
     outgoingCashCustodyId: handover.outgoingCashCustodyId,
-    countedLineIds: countedLines.map((line) => line.id),
+    countedLineIds,
     waitingShifts,
   };
 }
@@ -3984,8 +3952,8 @@ export async function acceptToBranchCustody(args: {
       cafeId: args.cafeId,
       viewerBranchId: args.viewerBranchId,
     });
+    // v2: count validity is reported by the comparison, never a refusal here.
     await prepareHandoverInventoryLocks(tx, handover, evidence.acceptedSessionId);
-    await assertCurrentHandoverCountValidation(tx, handover.id);
     evidence = await resolveBranchAcceptableEvidence(tx, handover, { cafeId: args.cafeId, viewerBranchId: args.viewerBranchId });
 
     return runBranchAcceptance(tx, evidence, {
@@ -4034,37 +4002,20 @@ async function runBranchAcceptance(
   // ONLY when a manager authorised the omission — a note is the
   // authorisation's evidence, and an acceptance that supplied one without a
   // reason would be an unaudited override.
-  const settled = await settleRequiredItems(tx, {
+  // Stock handover v2: an uncounted required item is recorded, never refused.
+  const settled = await settleRecordedRequiredItems(tx, {
     handoverId: handover.id,
     acceptedSessionId,
-    ...(omission ? { omissionNote: omission.note } : {}),
+    omissionNote: omission?.note ?? null,
   });
   // Ascending by `inventoryItemId`, the order settlement already sorted them
   // into, so the result, the audit row and a later replay agree.
   const missingItemIds = settled.omitted.map((entry) => entry.inventoryItemId);
   const missingItemNames = settled.omitted.map((entry) => entry.itemNameSnapshot);
-  // A `throw` inside the transaction, so the `omitted: true` rows settlement
-  // wrote moments ago never commit.
-  if (!omission && settled.omitted.length > 0) {
-    throw new ApiError(409, BRANCH_OMISSION_REASON_REQUIRED);
-  }
   await checkpoint(6);
 
-  // ── 7. Rebase, under the freeze that protected the count ──
-  //
-  // The freeze is NOT released first. Releasing it to get the movement
-  // through would reopen the shelf in the middle of the acceptance, which is
-  // the one thing it exists to prevent; step 17 releases it.
-  //
-  // The manager is the actor. On this path there is no arriving custodian to
-  // be one, and the rebase is an act performed by whoever authorised the
-  // acceptance rather than by whoever is taking the room — nobody is.
-  const rebase = await rebaseFromCountInTransaction(tx, {
-    sessionId: acceptedSessionId,
-    actorId: args.managerId,
-    idempotencyKey: `${handover.id}:rebase`,
-    freezeToken: handover.id,
-  });
+  // ── 7. No rebase (stock handover v2) ──
+  const rebase: RebaseResult | null = null;
   await checkpoint(7);
 
   // ── 8. The closing position ──
@@ -4088,11 +4039,13 @@ async function runBranchAcceptance(
   await checkpoint(8);
 
   // ── 9. The accepted evidence becomes immutable ──
-  await lockCountSession(tx, {
-    sessionId: acceptedSessionId,
-    handoverId: handover.id,
-    actorId: args.managerId,
-  });
+  if (acceptedSessionId) {
+    await lockCountSession(tx, {
+      sessionId: acceptedSessionId,
+      handoverId: handover.id,
+      actorId: args.managerId,
+    });
+  }
   await checkpoint(9);
 
   // ── 10. Accepted variance and its attribution ──
@@ -4102,15 +4055,9 @@ async function runBranchAcceptance(
   // successor does not exist yet and did not hold anything during the
   // interval being judged, so naming it here would move a shortage onto a
   // custody that began after it.
-  const variance = await openHandoverVarianceCases(tx, {
-    cafeId: handover.cafeId,
-    branchId: handover.branchId,
-    handoverId: handover.id,
-    acceptedSessionId,
-    outgoingCustodyPeriodId: evidence.outgoingStockCustodyId,
-    boundaryByItemId,
-    openedById: args.managerId,
-  });
+  // Stock handover v2: no automatic stock variance case.
+  void boundaryByItemId;
+  const variance: { caseIds: string[]; spanIds: string[] } = { caseIds: [], spanIds: [] };
   await checkpoint(10);
 
   // ── 11. One instant, reused by steps 12, 14 and 15 ──
@@ -4199,6 +4146,7 @@ async function runBranchAcceptance(
     },
   });
   if (completed.count === 0) throw new ApiError(409, NOT_ACCEPTABLE);
+  await reportOutgoingCountIfMissing(tx, handover.id);
   await checkpoint(15);
 
   // ── 16. The omission becomes a record of its own ──
@@ -4229,10 +4177,13 @@ async function runBranchAcceptance(
   await checkpoint(16);
 
   // ── 17. The shelf is unfrozen ──
-  await releaseInventoryFreeze(tx, {
-    handoverId: handover.id,
-    actorId: args.managerId,
-  });
+  // v2: only a handover created before the change still holds a freeze.
+  if (await tx.inventoryFreeze.findFirst({ where: { handoverId: handover.id, releasedAt: null }, select: { id: true } })) {
+    await releaseInventoryFreeze(tx, {
+      handoverId: handover.id,
+      actorId: args.managerId,
+    });
+  }
   // Orders served while the shelf was frozen come off it now, against the
   // branch custody step 12 just opened.
   await applyDeferredDeductions(tx, { handoverId: handover.id, actorId: args.managerId });
@@ -4256,7 +4207,11 @@ async function runBranchAcceptance(
       userId: waiting.cashierId,
       openingCashAmount: Number(waiting.openingCashAmount),
     });
-    if (verdict.gate !== "AWAITING_OPENING_VERIFICATION") throw new ApiError(409, WAITING_SHIFT_NOT_REDECIDED);
+    // Stock handover v2: against the branch-held shelf a shift now takes it
+    // and is operational (no opening-verification gate). Only a shift left
+    // still waiting for a transfer means the branch is not in the state this
+    // path just wrote.
+    if (verdict.gate === "AWAITING_CUSTODY_TRANSFER") throw new ApiError(409, WAITING_SHIFT_NOT_REDECIDED);
     await auditInTransaction(tx, {
       cafeId: handover.cafeId,
       userId: args.managerId,
@@ -4318,11 +4273,8 @@ async function runBranchAcceptance(
       idempotencyKey: args.idempotencyKey,
       boundary: result.boundary,
       requiredItemsSatisfied: result.requiredItems.satisfied,
-      rebase: {
-        itemsRebased: rebase.itemsRebased,
-        itemsSkipped: rebase.itemsSkipped,
-        alreadyRebased: rebase.alreadyRebased,
-      },
+      rebase,
+      stockHandoverMode: "COUNT_AND_REPORT",
       varianceCaseIds: variance.caseIds,
       spanIds: variance.spanIds,
       outgoingStockCustodyId: evidence.outgoingStockCustodyId,

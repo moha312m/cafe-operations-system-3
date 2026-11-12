@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { ApiError, handleApiError, requirePermission, resolveCafeId } from "@/lib/api";
-import { handoverStartBlockers } from "@/lib/handover-blockers";
+import { handoverStartBlockers, STOCK_RECORD_WARNING_CODES } from "@/lib/handover-blockers";
 import { resolveBranchHandoverConfigReadOnly } from "@/lib/handover-config";
 
 type Params = { params: Promise<{ id: string }> };
@@ -28,7 +28,10 @@ export async function GET(request: NextRequest, { params }: Params) {
     const readiness = await db.$transaction(async (tx) => {
       await tx.$executeRawUnsafe("SET TRANSACTION READ ONLY");
       const config = await resolveBranchHandoverConfigReadOnly(tx, cafeId, id);
-      const blockers = config.enabled && config.configError === null ? await handoverStartBlockers(tx, { cafeId, branchId: id }) : [];
+      const all = config.enabled && config.configError === null ? await handoverStartBlockers(tx, { cafeId, branchId: id }) : [];
+      // Stock handover v2: count-related conditions are shown as warnings and never block the close.
+      const blockers = all.filter((b) => !STOCK_RECORD_WARNING_CODES.has(b.code));
+      const warnings = all.filter((b) => STOCK_RECORD_WARNING_CODES.has(b.code));
       const settings = await tx.cafeSettings.findUnique({ where: { cafeId }, select: { carryOpenOrdersOnHandover: true } });
       const requiredItems = config.enabled && config.mode === "SELECTED"
         ? await tx.inventoryItem.findMany({
@@ -39,8 +42,8 @@ export async function GET(request: NextRequest, { params }: Params) {
       // Exact destinations for the two count blockers, resolved HERE, inside the same scoped read-only transaction. Active-count blockers already carry
       // session ids; correction blockers carry CORRECTION ids, which the count screen cannot open, so they are mapped to the session that owns them.
       // Both queries are filtered by cafe and branch, so an id can only be named if it belongs to this branch. Status and type only — no quantities.
-      const activeCountIds = blockers.find((b) => b.code === "FOREIGN_ACTIVE_COUNT")?.ids ?? [];
-      const correctionIds = blockers.find((b) => b.code === "PENDING_CORRECTIONS")?.ids ?? [];
+      const activeCountIds = all.find((b) => b.code === "FOREIGN_ACTIVE_COUNT")?.ids ?? [];
+      const correctionIds = all.find((b) => b.code === "PENDING_CORRECTIONS")?.ids ?? [];
       const scope = { cafeId, branchId: id };
       const [activeSessions, correctionRows] = await Promise.all([
         activeCountIds.length ? tx.stockCountSession.findMany({ where: { ...scope, id: { in: activeCountIds } }, select: { id: true, status: true, type: true } }) : Promise.resolve([]),
@@ -61,6 +64,7 @@ export async function GET(request: NextRequest, { params }: Params) {
         configError: config.configError,
         carryOpenOrders: settings?.carryOpenOrdersOnHandover === true,
         blockers,
+        warnings,
         requiredItems,
         records: { countSessions: [...sessions.values()] },
       };

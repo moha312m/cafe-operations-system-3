@@ -93,6 +93,9 @@ export type DirectSummary = {
 };
 
 const OPEN_FOR_REVIEW = ["OUTGOING_SUBMITTED", "INCOMING_REVIEW"];
+// Stock handover v2: a handover the outgoing never finished counting can still
+// be received once the cash disposition is recorded (the cash rule stays).
+const RECEIVABLE = ["DRAFT", ...OPEN_FOR_REVIEW];
 
 export async function incomingStateFor(client: Client, h: { cafeId: string; branchId: string; outgoingShiftId?: string; outgoingStockCustodyId?: string | null }, viewerId: string): Promise<IncomingState> {
   const waiting = await client.shift.findMany({
@@ -129,7 +132,7 @@ export async function directHandoverSummary(args: { handoverId: string; viewerId
     where: { id: args.handoverId, cafeId: args.cafeId },
     select: {
       id: true, cafeId: true, branchId: true, status: true, target: true, submittedAt: true, stockCountSessionId: true, outgoingShiftId: true,
-      outgoingStockCustodyId: true,
+      outgoingStockCustodyId: true, outgoingUserId: true, incomingStockCount: { select: { submittedAt: true } },
       directAcknowledgedAt: true, directAcknowledgedBy: { select: { name: true } },
       branch: { select: { name: true } }, outgoingUser: { select: { name: true } },
       outgoingShift: { select: { shiftNumber: true, cashDifference: true, tenderReconciliations: { select: { method: true, varianceAmount: true, reasonNote: true } } } },
@@ -164,20 +167,24 @@ export async function directHandoverSummary(args: { handoverId: string; viewerId
         select: { confirmedById: true, lines: { orderBy: { inventoryItem: { name: "asc" } }, select: { id: true, unit: true, disposition: true, countedQuantity: true, effectiveCountedQuantity: true, expectedQuantity: true, varianceQuantity: true, costImpact: true, costImpactAvailable: true, inventoryItem: { select: { name: true } } } } },
       })
     : null;
-  const disclosed = directTarget && canSeeStock && (OPEN_FOR_REVIEW.includes(status) || status === "COMPLETED");
+  // Stock handover v2: the incoming count is blind. The outgoing figures are
+  // shown to the employee who counted them, to managers and report readers,
+  // and to the incoming employee only after submitting their own count.
+  const blindLifted = h.outgoingUserId === args.viewerId || keys.has("handover.manage") || canFinance || !!h.incomingStockCount?.submittedAt;
+  const disclosed = directTarget && canSeeStock && blindLifted && (RECEIVABLE.includes(status) || status === "COMPLETED");
   const lines = (session?.lines ?? []).filter((l) => l.countedQuantity !== null || l.effectiveCountedQuantity !== null);
   const incoming = await incomingStateFor(db, h, args.viewerId);
   const readiness = (await branchReadiness(args.cafeId, h.branchId)).find((r) => (incoming.state === "WAITING" || incoming.state === "OPERATIONAL") && r.shiftId === incoming.shiftId) ?? null;
 
   const blockers: string[] = [];
   if (!directTarget) blockers.push("التسليم ده مش وردية لوردية — الاستلام المباشر مش متاح");
-  else if (!OPEN_FOR_REVIEW.includes(status) && status !== "COMPLETED") blockers.push("الموظف المُسلِّم لسه ما قدّمش التسليم");
+  else if (!RECEIVABLE.includes(status) && status !== "COMPLETED") blockers.push("الموظف المُسلِّم لسه ما قدّمش التسليم");
   if (directTarget && !disposition && !h.directAcknowledgedAt) blockers.push("الموظف المُسلِّم لسه ما حدّدش مصير النقدية");
   if (incoming.state === "AMBIGUOUS") blockers.push(`في أكتر من شيفت مستني العهدة: ${incoming.names.join("، ")} — لازم يفضل شيفت واحد بس`);
   if (incoming.state === "UNAVAILABLE") blockers.push(incoming.reason);
   if (incoming.state === "OPERATIONAL" && status !== "COMPLETED") blockers.push("عندك شيفت مفتوح بالفعل في الفرع ده");
 
-  const canAcknowledge = blockers.length === 0 && OPEN_FOR_REVIEW.includes(status) && keys.has("handover.accept") && (incoming.state === "NONE" || incoming.state === "WAITING");
+  const canAcknowledge = blockers.length === 0 && RECEIVABLE.includes(status) && keys.has("handover.accept") && (incoming.state === "NONE" || incoming.state === "WAITING");
   return {
     handoverId: h.id, status, target: h.target, branchName: h.branch.name, currency: cafe.currency, timezone: reporting?.timezone ?? "Africa/Cairo",
     outgoing: { name: h.outgoingUser.name, shiftNumber: h.outgoingShift.shiftNumber, submittedAt: h.submittedAt?.toISOString() ?? null },

@@ -184,7 +184,7 @@ type Ready = {
   outgoingShiftId: string;
   incomingShiftId: string;
   sessionId: string;
-  freezeId: string;
+  freezeId: string | null;
   outgoingStockCustodyId: string;
   outgoingCashCustodyId: string | null;
   /** The required item nobody counted. */
@@ -227,7 +227,7 @@ async function readyToOverride(): Promise<Ready> {
     shiftId: outgoing.id, actualCash: 100, actorId: fx.cashier.id,
     closedByManager: false, handoverTarget: "SHIFT_TO_SHIFT", grants: GRANTS_FULL,
   });
-  if (!closed.handoverId || !closed.freezeId) {
+  if (!closed.handoverId) {
     throw new Error(`close produced no handover: ${JSON.stringify(closed.handoverConfigIssue)}`);
   }
   const handoverId = closed.handoverId;
@@ -507,13 +507,10 @@ async function assertNothingCommitted(r: Ready, step: number) {
     `${where}: stockClosedAt — only acceptance writes it, so it must still be absent`,
   );
 
-  const freeze = await observer.inventoryFreeze.findUniqueOrThrow({
-    where: { id: r.freezeId },
-  });
-  assert.equal(
-    freeze.releasedAt, null,
-    `${where}: THE FREEZE WAS RELEASED — the shelf was reopened by an override that failed`,
-  );
+  // Stock handover v2 (owner decision 2026-11-12): no freeze exists, and a
+  // failed acceptance must not have left one behind either.
+  assert.equal(r.freezeId, null);
+  assert.equal(await observer.inventoryFreeze.count({ where: { handoverId: r.handoverId } }), 0, `${where}: a freeze appeared`);
 
   for (const action of ["HANDOVER_ACCEPTED", "HANDOVER_MANAGER_EXCEPTION"]) {
     assert.equal(
@@ -542,8 +539,8 @@ async function assertOverriddenExactlyOnce(r: Ready) {
     "one boundary row per active item, written once",
   );
   assert.equal(
-    await observer.stockCountRebase.count({ where: { sessionId: r.sessionId } }), 2,
-    "one rebase per counted line, applied once",
+    await observer.stockCountRebase.count({ where: { sessionId: r.sessionId } }), 0,
+    "stock handover v2: an acceptance posts no rebase, however it was raced",
   );
   assert.equal(
     await observer.auditLog.count({
@@ -662,17 +659,21 @@ describe("SH-21 concurrency", () => {
       override(r.handoverId),
     ]);
 
-    // The ordinary accept CANNOT win: the required set is incomplete, and step
-    // 5 refuses it whether it arrives first, second or simultaneously. Only
-    // the override can finish this handover, and it finishes it once.
-    const acceptOutcome = outcomes[0];
-    assert.equal(
-      acceptOutcome.status, "rejected",
-      "an ordinary accept must never pass an incomplete required set, even in a race",
-    );
-    const overrideOutcome = outcomes[1];
-    assert.equal(overrideOutcome.status, "fulfilled", "the override is the only way through");
-    await assertOverriddenExactlyOnce(r);
+    // Stock handover v2 (owner decision 2026-11-12): an incomplete required
+    // set no longer refuses the ordinary accept, so EITHER may win — but only
+    // one, and the loser leaves nothing behind.
+    const acceptWon = outcomes[0].status === "fulfilled";
+    const overrideWon = outcomes[1].status === "fulfilled";
+    assert.notEqual(acceptWon, overrideWon, "exactly one acceptance completes the handover");
+    if (overrideWon) {
+      await assertOverriddenExactlyOnce(r);
+    } else {
+      const handover = await observer.handoverSession.findUniqueOrThrow({ where: { id: r.handoverId } });
+      assert.equal(handover.status, "COMPLETED");
+      assert.equal(handover.exceptionById, null, "the ordinary accept recorded no manager authority");
+      assert.equal(await observer.openingException.count({ where: { handoverId: r.handoverId } }), 0);
+      assert.equal(await observer.stockCountRebase.count({ where: { sessionId: r.sessionId } }), 0);
+    }
   });
 
   test("an override racing a recount request leaves one winner and no partial state", async () => {

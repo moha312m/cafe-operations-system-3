@@ -268,7 +268,7 @@ async function walkTheCount(
 type Ready = {
   handoverId: string;
   shiftId: string;
-  freezeId: string;
+  freezeId: string | null;
   sessionId: string;
   outgoingStockCustodyId: string;
   outgoingCashCustodyId: string | null;
@@ -448,12 +448,10 @@ async function assertHalfANothingCommitted(r: Ready, step: number) {
   );
   assert.equal(outgoingShift.stockClosedAt, null, `${where}: stockClosedAt was written`);
 
-  const freeze = await observer.inventoryFreeze.findUniqueOrThrow({ where: { id: r.freezeId } });
-  assert.equal(
-    freeze.releasedAt,
-    null,
-    `${where}: THE FREEZE WAS RELEASED — the shelf was reopened by an acceptance that failed`,
-  );
+  // Stock handover v2 (owner decision 2026-11-12): no freeze exists, and a
+  // failed acceptance must not have left one behind either.
+  assert.equal(r.freezeId, null);
+  assert.equal(await observer.inventoryFreeze.count({ where: { handoverId: r.handoverId } }), 0, `${where}: a freeze appeared`);
 
   assert.equal(
     await observer.openingException.count({ where: { handoverId: r.handoverId } }),
@@ -479,12 +477,40 @@ type Verifiable = {
   alphaStockBefore: number;
 };
 
+/**
+ * The opening shift as it stood BEFORE stock handover v2: holding a drawer,
+ * withheld from the shelf, gated AWAITING_OPENING_VERIFICATION. Since the
+ * owner decision of 2026-11-12 a new shift takes the branch shelf at once;
+ * shifts gated before the change still exist and SH-22 Half B is their way
+ * out, so this writes that legacy state and the rollback matrix keeps
+ * exercising the real verification path.
+ */
+async function openLegacyGatedShift(userId: string, openingCash = 50) {
+  const last = await db.shift.aggregate({ where: { branchId: fx.branchId }, _max: { shiftNumber: true } });
+  const shift = await db.shift.create({
+    data: {
+      cafeId: fx.cafeId, branchId: fx.branchId, cashierId: userId,
+      shiftNumber: (last._max.shiftNumber ?? 0) + 1, openingCashAmount: openingCash, expectedCashAmount: openingCash,
+    },
+  });
+  const { openCustodyPeriod } = await import("@/lib/custody");
+  await db.$transaction(async (tx) => {
+    await openCustodyPeriod(tx, {
+      cafeId: fx.cafeId, branchId: fx.branchId, scope: "CASH",
+      participants: [{ userId, role: "PRIMARY" }], shiftId: shift.id,
+      holderType: "USER", openedById: userId, openingCashAmount: openingCash,
+    });
+    await tx.shift.update({ where: { id: shift.id }, data: { custodyGateReason: "AWAITING_OPENING_VERIFICATION" } });
+  });
+  return shift;
+}
+
 /** Branch custody accepted, a gated shift opened, its FULL count confirmed. */
 async function readyToVerify(): Promise<Verifiable> {
   const ready = await readyToAccept();
   const accepted = await acceptToBranch(ready.handoverId);
 
-  const shift = await openOperationalShift(opener.id, 50);
+  const shift = await openLegacyGatedShift(opener.id, 50);
   const gate = await db.shift.findUniqueOrThrow({ where: { id: shift.id } });
   assert.equal(gate.custodyGateReason, "AWAITING_OPENING_VERIFICATION");
 
@@ -888,8 +914,12 @@ describe("SH-22 Half A concurrency", () => {
     );
   });
 
-  test("a stock mutation racing a branch acceptance cannot pass the freeze", async () => {
+  test("v2: a stock movement racing a branch acceptance lands exactly once, and the acceptance posts nothing", async () => {
+    // Stock handover v2 (owner decision 2026-11-12): no freeze, so a purchase
+    // during the acceptance is not refused. It is recorded once; the
+    // acceptance itself moves no stock (no rebase).
     const r = await readyToAccept();
+    const before = Number((await db.inventoryItem.findUniqueOrThrow({ where: { id: items.alpha.id } })).currentStock);
     const outcomes = await Promise.allSettled([
       acceptToBranch(r.handoverId),
       as(fx.manager.email, `/api/inventory/${items.alpha.id}/movement`, {
@@ -898,13 +928,18 @@ describe("SH-22 Half A concurrency", () => {
         body: JSON.stringify({ type: "PURCHASE", quantity: 5, unitCost: 450 }),
       }),
     ]);
-    assert.equal(outcomes[0].status, "fulfilled", "the acceptance won");
+    // Row-lock contention may answer the acceptance with a retryable 409;
+    // a retry with a fresh key must then complete.
+    if (outcomes[0].status === "rejected") {
+      const retried = await acceptToBranch(r.handoverId);
+      assert.equal(retried.status, "COMPLETED");
+    }
+    const purchase = outcomes[1].status === "fulfilled" ? (outcomes[1].value as { status: number }) : null;
+    const landed = purchase !== null && purchase.status < 300;
     const alpha = await db.inventoryItem.findUniqueOrThrow({ where: { id: items.alpha.id } });
-    // The count said 98. A mutation that slipped through the freeze would have
-    // landed either side of the rebase and left a different figure.
-    assert.ok(
-      Number(alpha.currentStock) === 98 || Number(alpha.currentStock) === 103,
-      `the shelf is at a figure the acceptance or a post-release movement produced, not a torn one: ${alpha.currentStock}`,
+    assert.equal(
+      Number(alpha.currentStock), before + (landed ? 5 : 0),
+      `the purchase landed ${landed ? "once" : "not at all"}, and nothing else moved the shelf`,
     );
   });
 
@@ -979,11 +1014,9 @@ describe("SH-22 Half A concurrency", () => {
       "the shift-open finished only after the acceptance committed",
     );
     assert.equal(accepted.status, "COMPLETED");
-    assert.equal(
-      verdict.gate,
-      "AWAITING_OPENING_VERIFICATION",
-      "and it re-evaluated: the branch now holds the stock, so the shift waits for a VERIFICATION",
-    );
+    // Stock handover v2 (owner decision 2026-11-12): it re-evaluated against
+    // the branch-held shelf and TOOK it — no opening-verification gate.
+    assert.equal(verdict.gate, null, "and it re-evaluated: the branch holds the stock, so the shift takes it and works");
 
     // The final invariant, stated as itself.
     assert.equal(
@@ -998,7 +1031,8 @@ describe("SH-22 Half A concurrency", () => {
       "AFTER A COMPLETED BRANCH ACCEPTANCE, NO OPEN SHIFT IS STRANDED ON A TRANSFER GATE",
     );
     const shift = await db.shift.findUniqueOrThrow({ where: { id: verdict.shiftId } });
-    assert.equal(shift.custodyGateReason, "AWAITING_OPENING_VERIFICATION");
+    assert.equal(shift.custodyGateReason, null);
+    assert.equal(await db.shiftCustody.count({ where: { shiftId: verdict.shiftId, scope: "STOCK" } }), 1, "it holds the shelf");
   });
 });
 
@@ -1006,7 +1040,7 @@ describe("SH-22 Half B concurrency", () => {
   test("two opening-count starts produce one count", async () => {
     const r = await readyToAccept();
     await acceptToBranch(r.handoverId);
-    const shift = await openOperationalShift(opener.id, 50);
+    const shift = await openLegacyGatedShift(opener.id, 50);
 
     const [a, b] = await Promise.all([
       openingHttp<{ countSession: { id: string } }>(opener.email, {

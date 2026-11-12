@@ -92,14 +92,21 @@ describe("CUSTODY-004 shift-open bootstrap", () => {
     assert.equal(await db.shiftCustody.count({ where: { shiftId: incoming.id, scope: "STOCK" } }), 0);
   });
 
-  test("BRANCH stock is withheld while ordinary USER cash opens", async () => {
+  test("v2: BRANCH stock is taken by the opening shift while ordinary USER cash opens", async () => {
+    // Stock handover v2 (owner decision 2026-11-12): no opening-verification
+    // gate. The shift takes the branch-held shelf (recorded, uncounted) and
+    // sells; its own count is the optional incoming count.
     const isolated = await db.branch.create({ data: { cafeId, name: `${MARKER}-branch-stock` } });
     branchIds.push(isolated.id);
     await db.$transaction((tx) => openCustodyPeriod(tx, { cafeId, branchId: isolated.id, scope: "STOCK", participants: [{ userId: userA, role: "PRIMARY" }], holderType: "BRANCH" }));
     const opening = await db.shift.create({ data: { cafeId, branchId: isolated.id, cashierId: userB, shiftNumber: 1, openingCashAmount: 10, expectedCashAmount: 10 } });
     const verdict = await db.$transaction((tx) => ensureCustodyForShift(tx, { cafeId, branchId: isolated.id, shiftId: opening.id, userId: userB, openingCashAmount: 10 }));
-    assert.equal(verdict.gate, "AWAITING_OPENING_VERIFICATION");
-    assert.deepEqual(verdict.withheld, ["STOCK"]);
+    assert.equal(verdict.gate, null, "operational at once");
+    assert.ok(!(verdict.withheld ?? []).includes("STOCK"), "nothing withheld");
+    assert.ok(verdict.stockCustodyPeriodId, "the shift holds the shelf");
+    const stock = await db.custodyPeriod.findUniqueOrThrow({ where: { id: verdict.stockCustodyPeriodId! } });
+    assert.equal(stock.holderType, "USER");
+    assert.equal(await db.custodyPeriod.count({ where: { branchId: isolated.id, scope: "STOCK", holderType: "BRANCH", status: "OPEN" } }), 0, "the branch handed it on");
     const cash = await db.custodyPeriod.findUniqueOrThrow({ where: { id: verdict.cashCustodyPeriodId! } });
     assert.equal(cash.holderType, "USER");
     assert.equal(await db.custodyPeriod.count({ where: { branchId: isolated.id, scope: "CASH", holderType: "BRANCH" } }), 0);

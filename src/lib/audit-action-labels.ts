@@ -57,7 +57,9 @@ const LABELS: Record<string, string> = {
   CASH_DELIVERY_CONFIRMED_ON_BEHALF: "تأكيد استلام نقدية نيابةً عن المستلم",
   SHIFT_OPENED: "فتح شيفت",
   SHIFT_CLOSED: "إقفال شيفت",
-  SHIFT_CUSTODY_GATE_REDECIDED: "الشيفت المنتظر انتقل للتحقق من العهدة الافتتاحية",
+  // Neutral on purpose: before stock handover v2 the shift moved to the opening
+  // verification; since 2026-11-12 it takes the branch shelf and works.
+  SHIFT_CUSTODY_GATE_REDECIDED: "الشيفت المنتظر اتحدّد وضعه بعد تحويل العهدة للفرع",
   SHIFT_CASH_DISPOSITION_RECORDED: "تحديد مصير نقدية الإقفال",
   CASH_DIFFERENCE_DETECTED: "تسجيل فرق نقدية",
   CASH_DELIVERY_DECLARED: "إعلان تسليم نقدية للمالك/المدير",

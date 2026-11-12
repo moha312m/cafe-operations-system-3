@@ -196,7 +196,7 @@ async function openOperationalShift(
 export type Handover = {
   handoverId: string;
   shiftId: string;
-  freezeId: string;
+  freezeId: string | null;
   requiredItemIds: string[];
   outgoingStockCustodyId: string | null;
 };
@@ -223,7 +223,7 @@ async function freshHandover(
     handoverTarget: "SHIFT_TO_SHIFT",
     grants: GRANTS_FULL,
   });
-  if (!closed.handoverId || !closed.freezeId) {
+  if (!closed.handoverId) {
     throw new Error(
       `close produced no handover (status ${closed.status}, issue ${JSON.stringify(closed.handoverConfigIssue)})`,
     );
@@ -532,15 +532,8 @@ describe("start_count", () => {
         async () => undefined,
         (h) => db.shift.update({ where: { id: h.shiftId }, data: { stockClosedAt: new Date() } }),
       ],
-      [
-        "freeze released",
-        async () => undefined,
-        (h) =>
-          db.inventoryFreeze.update({
-            where: { id: h.freezeId },
-            data: { releasedAt: new Date(), releasedById: fx.cashier.id },
-          }),
-      ],
+      // "freeze released" is gone: stock handover v2 takes no freeze, so a
+      // missing one is the normal state, not a mismatch to refuse.
     ];
 
     for (const [label, , mutate] of mutations) {
@@ -610,8 +603,9 @@ describe("start_count", () => {
       0,
     );
 
-    const freeze = await db.inventoryFreeze.findUniqueOrThrow({ where: { id: h.freezeId } });
-    assert.equal(freeze.releasedAt, null);
+    // Stock handover v2 (owner decision 2026-11-12): no freeze is taken, so none is held or released.
+    assert.equal(h.freezeId, null);
+    assert.equal(await db.inventoryFreeze.count({ where: { handoverId: h.handoverId } }), 0);
 
     const shift = await db.shift.findUniqueOrThrow({ where: { id: h.shiftId } });
     assert.equal(shift.status, "AWAITING_HANDOVER");
@@ -977,9 +971,10 @@ describe("submit", () => {
     const refused = await refusalFrom(h.handoverId);
     assert.equal(refused.status, 409);
     // HND-UX-004: an unexplained difference is no longer a refusal; it is
-    // still named in the position (`linesMissingReason`).
+    // still named in the position (`linesMissingReason`). Stock handover v2
+    // (owner decision 2026-11-12): an unconfirmed count is not one either —
+    // only the integrity gap (a required item with no line) still refuses.
     assert.deepEqual(codesOf(refused), [
-      "COUNT_NOT_CONFIRMED",
       "REQUIRED_ITEMS_MISSING",
     ]);
     assert.equal(refused.position.stock.linesMissingReason.length, 1);
@@ -1057,23 +1052,25 @@ describe("submit", () => {
     assert.notEqual(outgoing.status, "CLOSED", "the outgoing shift is not stock-closed");
   });
 
-  test("refuses COUNT_NOT_CONFIRMED", async () => {
+  test("stock handover v2: an unconfirmed count no longer refuses the submit (COUNT_NOT_CONFIRMED retired)", async () => {
     const h = await freshHandover();
-    await boundCount(
+    const sessionId = await boundCount(
       h,
       ITEM_KEYS.map((k) => ({ itemId: items[k].id, counted: 6, expected: 6 })),
       "SUBMITTED",
     );
 
-    const refused = await refusalFrom(h.handoverId);
-    assert.deepEqual(codesOf(refused), ["COUNT_NOT_CONFIRMED"]);
+    const result = await submit(h.handoverId);
+    assert.equal(result.status, "OUTGOING_SUBMITTED");
 
     const handover = await db.handoverSession.findUniqueOrThrow({
       where: { id: h.handoverId },
       select: { status: true, submittedAt: true },
     });
-    assert.equal(handover.status, "DRAFT");
-    assert.equal(handover.submittedAt, null);
+    assert.equal(handover.status, "OUTGOING_SUBMITTED");
+    assert.ok(handover.submittedAt);
+    // The count is recorded exactly as it stood — nothing confirmed it on the side.
+    assert.equal((await db.stockCountSession.findUniqueOrThrow({ where: { id: sessionId } })).status, "SUBMITTED");
   });
 
   test("refuses REQUIRED_ITEMS_MISSING and names the items", async () => {
@@ -1265,23 +1262,25 @@ describe("submit", () => {
     const shift = await db.shift.findUniqueOrThrow({ where: { id: h.shiftId } });
     assert.equal(shift.status, "AWAITING_HANDOVER");
     assert.equal(shift.stockClosedAt, null);
-    const freeze = await db.inventoryFreeze.findUniqueOrThrow({ where: { id: h.freezeId } });
-    assert.equal(freeze.releasedAt, null);
+    // Stock handover v2 (owner decision 2026-11-12): no freeze is taken, so none is held or released.
+    assert.equal(h.freezeId, null);
+    assert.equal(await db.inventoryFreeze.count({ where: { handoverId: h.handoverId } }), 0);
   });
 
   test("a refused submit writes nothing", async () => {
     const h = await freshHandover();
-    // Refused because the count is not confirmed (HND-UX-004 made a missing
-    // variance reason a recorded fact, so it can no longer be the trigger).
+    // Refused by the one refusal left: a required item with no line at all
+    // (HND-UX-004 made a missing variance reason a recorded fact, and stock
+    // handover v2 made an unconfirmed count one too).
     const sessionId = await boundCount(
       h,
       [
         { itemId: items.alpha.id, counted: 8, expected: 10 },
         { itemId: items.bravo.id, counted: 4, expected: 4 },
-        { itemId: items.charlie.id, counted: 7, expected: 7 },
       ],
       "SUBMITTED",
     );
+    await unlinkRequiredItem(sessionId, items.charlie.id);
     const handoverBefore = await db.handoverSession.findUniqueOrThrow({
       where: { id: h.handoverId },
     });
@@ -1841,8 +1840,8 @@ describe("routes", () => {
 
     assert.equal(r.status, 409, r.text);
     assert.ok(Array.isArray(r.body.refusals));
+    // Stock handover v2: COUNT_NOT_CONFIRMED is retired; the integrity gap remains.
     assert.deepEqual(r.body.refusals.map((x) => x.code).sort(), [
-      "COUNT_NOT_CONFIRMED",
       "REQUIRED_ITEMS_MISSING",
     ]);
     assert.ok(r.body.error, "the ordinary { error } shape is preserved beside the list");
@@ -2092,8 +2091,9 @@ describe("SH-17 reachability", () => {
       }),
       0,
     );
-    const freeze = await db.inventoryFreeze.findUniqueOrThrow({ where: { id: h.freezeId } });
-    assert.equal(freeze.releasedAt, null);
+    // Stock handover v2 (owner decision 2026-11-12): no freeze is taken, so none is held or released.
+    assert.equal(h.freezeId, null);
+    assert.equal(await db.inventoryFreeze.count({ where: { handoverId: h.handoverId } }), 0);
     const shift = await db.shift.findUniqueOrThrow({ where: { id: h.shiftId } });
     assert.equal(shift.status, "AWAITING_HANDOVER");
     assert.equal(shift.stockClosedAt, null);

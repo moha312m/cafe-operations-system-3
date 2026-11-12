@@ -270,7 +270,7 @@ describe("SHIFT-005 — the atomic close boundary", () => {
     assert.equal(result.handoverRequired, true);
     assert.equal(result.handoverTarget, "SHIFT_TO_SHIFT");
     assert.ok(result.handoverId);
-    assert.ok(result.freezeId);
+    assert.equal(result.freezeId, null, "stock handover v2: no freeze");
     assert.equal(result.handoverConfigIssue, null);
 
     const stored = await db.shift.findUniqueOrThrow({ where: { id: shift.id } });
@@ -299,8 +299,8 @@ describe("SHIFT-005 — the atomic close boundary", () => {
     const freezes = await db.inventoryFreeze.findMany({
       where: { branchId: fx.branchId, releasedAt: null },
     });
-    assert.equal(freezes.length, 1);
-    assert.equal(freezes[0].handoverId, handover.id);
+    // Stock handover v2 (owner decision 2026-11-12): the close never freezes.
+    assert.equal(freezes.length, 0);
 
     // SH-15 stays unwired: no boundary is written by the close.
     assert.equal(
@@ -316,7 +316,7 @@ describe("SHIFT-005 — the atomic close boundary", () => {
     assert.equal(details.handoverRequired, true);
     assert.equal(details.handoverTarget, "SHIFT_TO_SHIFT");
     assert.equal(details.handoverId, handover.id);
-    assert.equal(details.freezeId, freezes[0].id);
+    assert.equal(details.freezeId, null);
     assert.equal(details.requiredItemCount, handover.requiredItems.length);
     assert.equal(details.handoverConfigIssue, null);
   });
@@ -420,7 +420,7 @@ describe("SHIFT-005 — the atomic close boundary", () => {
     );
   });
 
-  test("five concurrent closes produce one winner, one handover and one freeze", async () => {
+  test("five concurrent closes produce one winner, one handover and no freeze (v2)", async () => {
     const shift = await openOperationalShift(fx.cashier.id);
 
     const attempts = await Promise.allSettled(
@@ -438,9 +438,10 @@ describe("SHIFT-005 — the atomic close boundary", () => {
     assert.equal(won.length, 1, "exactly one close may win");
 
     assert.equal(await db.handoverSession.count({ where: { branchId: fx.branchId } }), 1);
+    // Stock handover v2 (owner decision 2026-11-12): and no freeze at all.
     assert.equal(
       await db.inventoryFreeze.count({ where: { branchId: fx.branchId, releasedAt: null } }),
-      1,
+      0,
     );
     const stored = await db.shift.findUniqueOrThrow({ where: { id: shift.id } });
     assert.equal(stored.status, "AWAITING_HANDOVER");
@@ -604,7 +605,7 @@ describe("SHIFT-005 — the atomic close boundary", () => {
 
     const ok = await as<{
       shift: { status: string };
-      handover: { required: boolean; target: string; handoverId: string; freezeId: string };
+      handover: { required: boolean; target: string; handoverId: string; freezeId: string | null };
     }>(fx.cashier.email, `/api/shifts/${shift.id}/close`, {
       method: "POST",
       body: JSON.stringify({
@@ -618,7 +619,7 @@ describe("SHIFT-005 — the atomic close boundary", () => {
     assert.equal(ok.body.handover.required, true);
     assert.equal(ok.body.handover.target, "SHIFT_TO_SHIFT");
     assert.ok(ok.body.handover.handoverId);
-    assert.ok(ok.body.handover.freezeId);
+    assert.equal(ok.body.handover.freezeId, null, "stock handover v2: no freeze");
   });
 
   test("the route serialises every blocker on the 409 without changing the error format", async () => {
@@ -730,7 +731,7 @@ describe("SHIFT-005 — the atomic close boundary", () => {
     // instead of waiting behind the SHARED holder.
     await unservedOrder();
 
-    const { acquireInventorySharedLocks, InventoryFrozenError } = await freezeLib();
+    const { acquireInventorySharedLocks } = await freezeLib();
     const { applyStockMutation } = await ledgerLib();
 
     let releaseHolder: () => void = () => {};
@@ -798,7 +799,8 @@ describe("SHIFT-005 — the atomic close boundary", () => {
     await holder;
     await assert.rejects(close, statusIs(409));
 
-    // 4. with the blocker cleared the close commits its handover and freeze
+    // 4. with the blocker cleared the close commits its handover (stock
+    //    handover v2, owner decision 2026-11-12: no freeze is taken)
     await purgeOrderTracesFor({ branchId: fx.branchId }); await db.order.deleteMany({ where: { branchId: fx.branchId } });
     const result = await closeService({
       shiftId: shift.id,
@@ -807,22 +809,21 @@ describe("SHIFT-005 — the atomic close boundary", () => {
       handoverTarget: "SHIFT_TO_SHIFT",
     });
     assert.ok(result.handoverId);
-    assert.ok(result.freezeId);
+    assert.equal(result.freezeId, null, "stock handover v2: no freeze");
+    assert.equal(await db.inventoryFreeze.count({ where: { handoverId: result.handoverId, releasedAt: null } }), 0);
 
-    // 5. a later stock mutation is refused by the durable freeze
-    await assert.rejects(
-      db.$transaction((tx) =>
-        applyStockMutation(tx, {
-          inventoryItemId: regularId,
-          type: "ADJUSTMENT",
-          quantity: -1,
-          cafeId: fx.cafeId,
-          branchId: fx.branchId,
-          createdById: fx.manager.id,
-          note: `${MARKER} after freeze`,
-        }),
-      ),
-      (error: unknown) => error instanceof InventoryFrozenError,
+    // 5. a later stock movement is NOT refused: the handover only counts and
+    //    reports; the movement lands in the comparison window instead.
+    await db.$transaction((tx) =>
+      applyStockMutation(tx, {
+        inventoryItemId: regularId,
+        type: "ADJUSTMENT",
+        quantity: -1,
+        cafeId: fx.cafeId,
+        branchId: fx.branchId,
+        createdById: fx.manager.id,
+        note: `${MARKER} after close, no freeze`,
+      }),
     );
   });
 });

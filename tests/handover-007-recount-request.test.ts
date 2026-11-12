@@ -196,7 +196,7 @@ async function openOperationalShift(
 type Handover = {
   handoverId: string;
   shiftId: string;
-  freezeId: string;
+  freezeId: string | null;
   requiredItemIds: string[];
   outgoingStockCustodyId: string | null;
   outgoingCashCustodyId: string | null;
@@ -224,7 +224,7 @@ async function freshHandover(
     handoverTarget: "SHIFT_TO_SHIFT",
     grants: GRANTS_FULL,
   });
-  if (!closed.handoverId || !closed.freezeId) {
+  if (!closed.handoverId) {
     throw new Error(
       `close produced no handover (status ${closed.status}, issue ${JSON.stringify(closed.handoverConfigIssue)})`,
     );
@@ -843,10 +843,8 @@ describe("acknowledgeStockLine", () => {
     // takes no freeze token, so it cannot run against a frozen branch. That
     // is a property of the reference call, not of the acknowledgement: the
     // acknowledgement above already committed with the freeze fully in force.
-    await db.inventoryFreeze.update({
-      where: { id: h.freezeId },
-      data: { releasedAt: new Date(), releasedById: fx.manager.id },
-    });
+    // Stock handover v2: no freeze was taken, so there is none to release.
+    assert.equal(h.freezeId, null);
 
     const source = await db.stockCountSession.findUniqueOrThrow({
       where: { id: h.sessionId },
@@ -1748,17 +1746,18 @@ describe("requestRecount", () => {
     }
   });
 
-  test("4.13 the freeze is still held", async () => {
+  test("4.13 v2: no freeze holds the shelf between the disputed count and its replacement", async () => {
+    // Stock handover v2 (owner decision 2026-11-12): stock keeps moving; the
+    // replacement count's own cursors place it in the movement record.
     const h = await submittedHandover();
     await requestRecount({ handoverId: h.handoverId, reasonCodeId: handoverReasonId });
 
     const { activeFreezeFor } = await import("@/lib/inventory-freeze");
-    const freeze = await activeFreezeFor(db, fx.branchId);
-    assert.ok(freeze, "the shelf must stay still between the disputed count and its replacement");
-    assert.equal(freeze.handoverId, h.handoverId);
+    assert.equal(await activeFreezeFor(db, fx.branchId), null);
 
-    const row = await db.inventoryFreeze.findUniqueOrThrow({ where: { id: h.freezeId } });
-    assert.equal(row.releasedAt, null);
+    // Stock handover v2 (owner decision 2026-11-12): no freeze is taken, so none is held or released.
+    assert.equal(h.freezeId, null);
+    assert.equal(await db.inventoryFreeze.count({ where: { handoverId: h.handoverId } }), 0);
   });
 
   test("4.14 neither shift moves, and the arriving one is still gated", async () => {
@@ -2280,15 +2279,13 @@ describe("REJECTED restart", () => {
     );
   });
 
-  test("6.6 the freeze is still held and custody has not moved", async () => {
+  test("6.6 v2: no freeze, and custody has not moved", async () => {
     const h = await rejectedHandover();
     const r = await startCountHttp(h.handoverId);
     assert.equal(r.status, 200, r.text);
 
     const { activeFreezeFor } = await import("@/lib/inventory-freeze");
-    const freeze = await activeFreezeFor(db, fx.branchId);
-    assert.ok(freeze);
-    assert.equal(freeze.handoverId, h.handoverId);
+    assert.equal(await activeFreezeFor(db, fx.branchId), null);
 
     for (const id of [h.outgoingStockCustodyId, h.outgoingCashCustodyId] as string[]) {
       const period = await db.custodyPeriod.findUniqueOrThrow({ where: { id } });

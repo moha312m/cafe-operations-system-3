@@ -242,7 +242,9 @@ describe("bug 2 — the drawer left at close is the next opening", () => {
 
     const morning = await openOperationalShift(fx.cashier.id, 0);
     const opened = await db.shift.findUniqueOrThrow({ where: { id: morning.id } });
-    assert.equal(opened.custodyGateReason, "AWAITING_OPENING_VERIFICATION");
+    // Stock handover v2 (owner decision 2026-11-12): the morning shift takes the
+    // branch-held shelf at once — no opening-verification gate.
+    assert.equal(opened.custodyGateReason, null);
     assert.equal(Number(opened.openingCashAmount), 500);
     assert.equal(Number(opened.expectedCashAmount), 500);
     const cash = await db.custodyPeriod.findFirstOrThrow({ where: { branchId: fx.branchId, scope: "CASH", status: "OPEN" } });

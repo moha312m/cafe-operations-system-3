@@ -1,3 +1,4 @@
+import { reportIncomingCountsMissingForShift } from "@/lib/stock-handover-v2";
 import { decimal, money, moneyMax, type Numeric, sumMoney } from "@/lib/money";
 import { protectedTransaction, protectedContext } from "@/lib/protected-transaction";
 import { resolveReadScope } from "@/lib/api";
@@ -91,7 +92,7 @@ import {
   type PersistedTenderSettlement,
   type TenderSettlementInputs,
 } from "@/lib/tender-settlement";
-import { CARRYABLE_BLOCKER_CODES, handoverStartBlockers } from "@/lib/handover-blockers";
+import { CARRYABLE_BLOCKER_CODES, handoverStartBlockers, STOCK_RECORD_WARNING_CODES } from "@/lib/handover-blockers";
 import { deductStockForOrder, lockStockForOrders, StockError } from "@/lib/stock-deduction";
 import {
   resolveBranchHandoverConfigReadOnly,
@@ -585,9 +586,11 @@ export async function closeShiftWithSettlement(
         select: { carryOpenOrdersOnHandover: true },
       });
       carryEnabled = carrySetting?.carryOpenOrdersOnHandover === true;
-      const standing = carryEnabled
+      const standing = (carryEnabled
         ? blockers.filter((b) => !CARRYABLE_BLOCKER_CODES.has(b.code))
-        : blockers;
+        : blockers
+      // Stock handover v2: count/correction/draft-invoice conditions are warnings.
+      ).filter((b) => !STOCK_RECORD_WARNING_CODES.has(b.code));
       // Nothing has been written yet. A refusal here leaves the shift OPEN
       // and fully operational rather than settled into a state it cannot
       // leave — which is the only ordering that makes "reject BEFORE
@@ -840,6 +843,10 @@ export async function closeShiftWithSettlement(
       cashDifference: variance,
       reason,
     };
+
+    // Stock handover v2: a handover this shift received but never counted is
+    // reported to the manager and owner. It does not stop the close.
+    await reportIncomingCountsMissingForShift(tx, locked.id);
 
     await auditInTransaction(tx, {
       cafeId: locked.cafeId,

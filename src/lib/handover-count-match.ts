@@ -15,7 +15,7 @@ const DECLARABLE = ['WITHIN_TOLERANCE','OUTSIDE_TOLERANCE','RECOUNT_REQUIRED','R
 
 /**
  * The current physical observation of one line, or null when it is not valid
- * evidence (missing, stale ledger cursor, unresolved recount, malformed).
+ * evidence (missing, cursor beyond the ledger, unresolved recount, malformed).
  * The difference is observed minus expected at three decimals.
  */
 export function handoverLineObservation(line: MatchingLineEvidence, currentVersion: bigint): { difference: number } | null {
@@ -30,7 +30,11 @@ export function handoverLineObservation(line: MatchingLineEvidence, currentVersi
   const counterId = recount ? recount.counterId : line.counterId;
   if (quantity == null || expected == null || !Number.isFinite(Number(quantity)) ||
       !Number.isFinite(Number(expected)) || Number(quantity) < 0 || version === null ||
-      version !== currentVersion || !countedAt || !Number.isFinite(countedAt.getTime()) ||
+      // Stock handover v2 (owner decision 2026-11-12): stock keeps moving during
+      // a handover, so an observation stands at its OWN ledger cursor; the
+      // comparison adds the recorded movement after it. Only a cursor from the
+      // future is malformed.
+      version > currentVersion || !countedAt || !Number.isFinite(countedAt.getTime()) ||
       !counterId || (!recount && line.expectedBasis !== 'LOCKED_ITEM_VERSION')) return null;
   const difference = round3(round3(Number(quantity)) - round3(Number(expected)));
   if (recount && (recount.varianceQuantity == null || !Number.isFinite(Number(recount.varianceQuantity)) ||

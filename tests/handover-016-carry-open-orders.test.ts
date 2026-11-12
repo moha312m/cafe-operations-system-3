@@ -173,7 +173,7 @@ describe("HANDOVER-016 — open orders at a handover close", () => {
 
     const result = await close(shift.id, fx.cashier.id);
     assert.equal(result.status, "AWAITING_HANDOVER");
-    assert.ok(result.handoverId && result.freezeId);
+    assert.ok(result.handoverId); assert.equal(result.freezeId, null, "stock handover v2: no freeze");
     assert.deepEqual(
       result.carriedOrders.map((o) => [o.orderNumber, o.stockDeductedAtHandover]),
       [
@@ -299,13 +299,15 @@ describe("HANDOVER-016 — open orders at a handover close", () => {
     assert.equal(await db.inventoryTransaction.count({ where: { orderId: ready.id } }), 1);
   });
 
-  test("a carried CONFIRMED order can be served before acceptance; its stock waits for the freeze to lift", async () => {
+  test("v2: a carried CONFIRMED order can be served before acceptance, and its stock comes off at once", async () => {
+    // Stock handover v2 (owner decision 2026-11-12): no freeze, so nothing waits.
     await setCarry(true);
     const shift = await openOperationalShift(fx.cashier.id);
     const e = await drinkWithRecipe(5, "0.200");
     const confirmed = await openOrder("CONFIRMED", e.product.id);
     const result = await close(shift.id, fx.cashier.id);
     assert.equal(result.status, "AWAITING_HANDOVER");
+    assert.equal(result.freezeId, null);
 
     for (const next of ["PREPARING", "READY", "SERVED"]) {
       const r = await as<{ order?: { status: string }; stockDeferred?: boolean; error?: string }>(
@@ -313,15 +315,13 @@ describe("HANDOVER-016 — open orders at a handover close", () => {
         { method: "PATCH", body: JSON.stringify({ status: next }) },
       );
       assert.equal(r.status, 200, `${next}: ${r.text}`);
-      assert.equal(r.body.stockDeferred, next === "SERVED" ? true : undefined, `${next} tells the till the deduction waited`);
+      assert.notEqual(r.body.stockDeferred, true, `${next}: nothing is deferred without a freeze`);
     }
     const row = await db.order.findUniqueOrThrow({ where: { id: confirmed.id } });
     assert.equal(row.status, "SERVED");
-    assert.equal(row.stockDeductedAt, null);
-    assert.equal(await stockOf(e.item.id), 5, "the frozen shelf did not move");
-    const deferred = await db.deferredStockDeduction.findUniqueOrThrow({ where: { orderId: confirmed.id } });
-    assert.equal(deferred.handoverId, result.handoverId);
-    assert.equal(deferred.appliedAt, null);
+    assert.ok(row.stockDeductedAt, "the recipe came off the shelf when it was served");
+    assert.ok(await stockOf(e.item.id) < 5, "the shelf moved");
+    assert.equal(await db.deferredStockDeduction.count({ where: { orderId: confirmed.id } }), 0);
 
     const listed = await as<{ orders: {
       id: string;
@@ -335,12 +335,13 @@ describe("HANDOVER-016 — open orders at a handover close", () => {
     assert.equal(card.handoverCarries[0].statusAtHandover, "CONFIRMED");
     assert.equal(card.handoverCarries[0].shift.shiftNumber, shift.shiftNumber);
     assert.equal(card.handoverCarries[0].shift.cashier.name, fx.cashier.name);
-    assert.deepEqual(card.deferredStockDeduction?.appliedAt, null);
+    assert.equal(card.deferredStockDeduction, null);
 
-    // Both ways a freeze is released apply what was deferred, in the same transaction.
+    // A LEGACY freeze (taken before v2) is still released with its deferred
+    // deductions applied in the same transaction, on both release paths.
     const source = readFileSync("src/lib/handover.ts", "utf8");
-    const releases = source.match(/await releaseInventoryFreeze\(tx, \{[\s\S]*?\}\);\s*\n(\s*\/\/[^\n]*\n)*\s*await applyDeferredDeductions\(tx,/g) ?? [];
-    assert.equal(releases.length, 2);
+    assert.equal((source.match(/await releaseInventoryFreeze\(tx, \{/g) ?? []).length, 2);
+    assert.equal((source.match(/await applyDeferredDeductions\(tx,/g) ?? []).length, 2);
   });
 
   test("the incoming shift sees what it inherited and what it must still collect", async () => {

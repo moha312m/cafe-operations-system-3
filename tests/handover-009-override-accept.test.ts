@@ -211,7 +211,7 @@ async function openOperationalShift(
 type Handover = {
   handoverId: string;
   shiftId: string;
-  freezeId: string;
+  freezeId: string | null;
   requiredItemIds: string[];
   outgoingStockCustodyId: string | null;
   outgoingCashCustodyId: string | null;
@@ -230,7 +230,7 @@ async function freshHandover(
     shiftId: shift.id, actualCash: 100, actorId: cafe.cashier.id,
     closedByManager: false, handoverTarget: target, grants: GRANTS_FULL,
   });
-  if (!closed.handoverId || !closed.freezeId) {
+  if (!closed.handoverId) {
     throw new Error(`close produced no handover (status ${closed.status})`);
   }
   const handover = await db.handoverSession.findUniqueOrThrow({
@@ -655,7 +655,7 @@ describe("SH-21 the exception gate", () => {
     assert.equal(result.status, "COMPLETED");
   });
 
-  test("an unsigned line of the current round still refuses the override", async () => {
+  test("v2: an unsigned line of the current round no longer refuses the override", async () => {
     const h = await reviewedHandover();
     await openIncomingShift();
     const lines = await db.stockCountLine.findMany({
@@ -666,9 +666,11 @@ describe("SH-21 the exception gate", () => {
       const r = await ackPost(incoming.email, h.handoverId, { stockCountLineId: line.id });
       assert.equal(r.status, 200, r.text);
     }
-    await assert.rejects(() => override(h.handoverId), statusIs(409));
-    assert.equal(await db.openingException.count({ where: { handoverId: h.handoverId } }), 0);
-    assert.equal(await db.stockCountRebase.count({ where: { sessionId: h.sessionId } }), 0);
+    // Stock handover v2 (owner decision 2026-11-12): an unsigned line no longer
+    // refuses — not the ordinary accept and not the override.
+    const result = await override(h.handoverId);
+    assert.equal(result.status, "COMPLETED");
+    assert.equal(await db.stockCountRebase.count({ where: { sessionId: h.sessionId } }), 0, "and nothing is rebased");
   });
 
   test("with no arriving shift the override is refused, not redirected to the branch", async () => {
@@ -687,15 +689,20 @@ describe("SH-21 the exception gate", () => {
 // ═════════════ T3 · omission settlement, and never a fabricated count ═════
 
 describe("SH-21 omission settlement", () => {
-  test("ordinary accept refuses the incomplete set and the override completes it", async () => {
+  test("v2: an ordinary accept records the incomplete set as omitted — no exception needed", async () => {
     const h = await overridableHandover();
-    await assert.rejects(() => accept(h.handoverId), statusIs(409));
-    // The refusal rolled back the settlement it had already written.
-    const before = await db.handoverRequiredItem.findMany({
-      where: { handoverId: h.handoverId }, select: { omitted: true, omissionNote: true },
+    const result = await accept(h.handoverId);
+    assert.equal(result.status, "COMPLETED");
+    const rows = await db.handoverRequiredItem.findMany({
+      where: { handoverId: h.handoverId, omitted: true }, select: { inventoryItemId: true, omissionNote: true },
     });
-    assert.ok(before.every((x) => x.omitted === false && x.omissionNote === null));
+    assert.deepEqual(rows.map((r) => r.inventoryItemId).sort(), droppedIds(), "every uncounted item is named");
+    assert.ok(rows.every((r) => r.omissionNote === null), "and nobody invented a reason");
+    assert.equal(await db.openingException.count({ where: { handoverId: h.handoverId } }), 0, "no manager authority was needed or recorded");
+  });
 
+  test("the override still completes the incomplete set and records the manager's reason", async () => {
+    const h = await overridableHandover();
     const result = await override(h.handoverId);
     assert.equal(result.status, "COMPLETED");
     assert.equal(result.missingItemIds.length, 3);
@@ -819,43 +826,11 @@ describe("SH-21 boundary and variance", () => {
     }
   });
 
-  test("a counted variance still opens its case, attributed and unassigned", async () => {
+  test("v2: a counted variance opens no automatic stock case", async () => {
     const h = await overridableHandover({ [items.alpha.id]: 4 });
     const result = await override(h.handoverId);
-
-    assert.equal(result.varianceCaseIds.length, 1, "one case, for the counted difference");
-    const kase = await db.varianceCase.findUniqueOrThrow({
-      where: { id: result.varianceCaseIds[0] },
-      include: { varianceSpan: true, stockCountLine: true },
-    });
-    assert.equal(kase.stockCountLine?.inventoryItemId, items.alpha.id);
-    assert.equal(kase.acceptedHandoverId, h.handoverId);
-    assert.equal(kase.status, "OPEN");
-    assert.equal(
-      kase.assignedResponsibilityUserId, null,
-      "an override never blames anybody",
-    );
-
-    // The verdict is SH-17's, re-derived by nothing here. An override changes
-    // who may finish the acceptance; it does not change what the evidence
-    // means, so this is exactly the branch `handover-008` pins for an ordinary
-    // accept of the same shape.
-    if (kase.attribution === "VERIFIED_SHIFT") {
-      assert.equal(kase.shiftId, h.shiftId, "the shift that was answerable");
-      assert.equal(kase.varianceSpan, null);
-    } else if (kase.attribution === "PERIOD_UNRESOLVED") {
-      assert.equal(
-        kase.shiftId, null,
-        "an unresolved span must not carry a shift — a reader would take it as the answer",
-      );
-      assert.ok(kase.varianceSpan, "an unresolved verdict is accompanied by its span");
-      assert.deepEqual(result.spanIds, [kase.varianceSpan.id]);
-    } else {
-      assert.ok(
-        ["BRANCH_CUSTODY", "NOT_APPLICABLE"].includes(kase.attribution),
-        `unexpected attribution ${kase.attribution}`,
-      );
-    }
+    assert.deepEqual(result.varianceCaseIds, [], "the comparison and review carry it; nobody is auto-charged");
+    assert.equal(await db.varianceCase.count({ where: { acceptedHandoverId: h.handoverId, type: "STOCK" } }), 0);
 
     // And no case was opened for any of the three nobody looked at.
     for (const id of droppedIds()) {
@@ -987,15 +962,11 @@ describe("SH-21 actor split and custody", () => {
     assert.notEqual(outgoing.closedById, fx.manager.id);
     assert.ok(outgoing.stockClosedAt);
 
-    // The rebase and the count lock are the custodian's acts too.
-    const rebases = await db.stockCountRebase.findMany({
-      where: { sessionId: h.sessionId }, select: { rebasedById: true },
-    });
-    assert.ok(rebases.length > 0);
-    assert.ok(rebases.every((r) => r.rebasedById === incoming.id));
+    // Stock handover v2: nothing is rebased; the count lock is the custodian's act.
+    assert.equal(await db.stockCountRebase.count({ where: { sessionId: h.sessionId } }), 0);
   });
 
-  test("the arriving shift may sell, and the freeze is released last", async () => {
+  test("the arriving shift may sell, and no freeze is involved (v2)", async () => {
     const h = await overridableHandover();
     await override(h.handoverId);
 
@@ -1003,12 +974,9 @@ describe("SH-21 actor split and custody", () => {
     assert.equal(arriving.custodyGateReason, null, "the gate is cleared");
     assert.ok(arriving.custodyReadyAt, "and readiness is evidenced");
 
-    const freeze = await db.inventoryFreeze.findUniqueOrThrow({ where: { id: h.freezeId } });
-    assert.ok(freeze.releasedAt, "the freeze is released, in the same commit");
-    assert.equal(
-      freeze.releasedById, incoming.id,
-      "A3: the freeze release is an operational act of the custodian",
-    );
+    // Stock handover v2 (owner decision 2026-11-12): no freeze is taken, so none is held or released.
+    assert.equal(h.freezeId, null);
+    assert.equal(await db.inventoryFreeze.count({ where: { handoverId: h.handoverId } }), 0);
     // The accepted evidence is now immutable.
     const session = await db.stockCountSession.findUniqueOrThrow({ where: { id: h.sessionId } });
     assert.equal(session.status, "LOCKED");

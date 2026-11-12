@@ -161,29 +161,17 @@ export async function POST(request: NextRequest) {
           },
           include: shiftInclude,
         });
-        const custody = await ensureCustodyForShift(tx, {
+        // Stock handover v2 (owner decision 2026-11-12): no stock-based refusal
+        // here. The P1 rule that made a second opener wait for the branch
+        // morning's count is withdrawn — a count never prevents the next
+        // employee from starting their shift.
+        await ensureCustodyForShift(tx, {
           cafeId,
           branchId,
           shiftId: created.id,
           userId: session.id,
           openingCashAmount: data.openingCashAmount,
         });
-        // One cashier waits on a branch morning's opening count at a time.
-        // The count hands the shelf to exactly one shift and refuses when two
-        // are waiting, so a second opener would strand both. Refused before
-        // commit, so nothing of this shift remains. The allocator lock above
-        // serialises new shifts at the branch, so two openers cannot both
-        // pass. Shifts that already exist (resume, re-decided waiters) are
-        // not affected.
-        if (custody.gate === "AWAITING_OPENING_VERIFICATION") {
-          const waiting = await tx.shift.findFirst({
-            where: { branchId, status: "OPEN", custodyGateReason: "AWAITING_OPENING_VERIFICATION", id: { not: created.id } },
-            select: { cashier: { select: { name: true } } },
-          });
-          if (waiting) {
-            throw new ApiError(409, `${waiting.cashier.name} فاتح شيفت ومستني الجرد الافتتاحي لمخزون الفرع — استنى لحد ما الجرد يخلص ويستلم المخزون، وبعدين افتح شيفتك`);
-          }
-        }
         const placeSettings = await tx.branchOpeningSettings.findUnique({ where: { branchId }, select: { placeAcceptanceRequired: true, placeInspectorId: true } });
         if (placeSettings?.placeAcceptanceRequired) {
           if (!placeSettings.placeInspectorId) throw new ApiError(409, "The branch place inspector is not configured");

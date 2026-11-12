@@ -182,7 +182,7 @@ type Ready = {
   outgoingShiftId: string;
   incomingShiftId: string;
   sessionId: string;
-  freezeId: string;
+  freezeId: string | null;
   outgoingStockCustodyId: string;
   outgoingCashCustodyId: string | null;
   alphaVersionBefore: bigint;
@@ -220,7 +220,7 @@ async function readyToAccept(): Promise<Ready> {
     shiftId: outgoing.id, actualCash: 100, actorId: fx.cashier.id,
     closedByManager: false, handoverTarget: "SHIFT_TO_SHIFT", grants: GRANTS_FULL,
   });
-  if (!closed.handoverId || !closed.freezeId) {
+  if (!closed.handoverId) {
     throw new Error(`close produced no handover: ${JSON.stringify(closed.handoverConfigIssue)}`);
   }
   const handoverId = closed.handoverId;
@@ -510,13 +510,10 @@ async function assertNothingCommitted(r: Ready, step: number) {
   );
   assert.equal(r.outgoingBefore.stockClosedAt, null, `${where}: fixture invariant`);
 
-  const freeze = await observer.inventoryFreeze.findUniqueOrThrow({
-    where: { id: r.freezeId },
-  });
-  assert.equal(
-    freeze.releasedAt, null,
-    `${where}: THE FREEZE WAS RELEASED — the shelf was reopened by an acceptance that failed`,
-  );
+  // Stock handover v2 (owner decision 2026-11-12): no freeze exists, and a
+  // failed acceptance must not have left one behind either.
+  assert.equal(r.freezeId, null);
+  assert.equal(await observer.inventoryFreeze.count({ where: { handoverId: r.handoverId } }), 0, `${where}: a freeze appeared`);
 
   assert.equal(
     await observer.auditLog.count({
@@ -529,15 +526,15 @@ async function assertNothingCommitted(r: Ready, step: number) {
 
 const STEPS: { step: number; what: string }[] = [
   { step: 5, what: "required-item settlement" },
-  { step: 6, what: "the stock rebase" },
+  { step: 6, what: "the (now empty) stock rebase step" },
   { step: 7, what: "boundary persistence" },
   { step: 8, what: "the accepted count lock" },
-  { step: 9, what: "variance-case creation" },
+  { step: 9, what: "the (now cash-only) variance-case step" },
   { step: 10, what: "the STOCK custody transfer" },
   { step: 11, what: "the CASH custody transfer" },
   { step: 12, what: "the incoming gate release" },
   { step: 13, what: "outgoing shift finalization" },
-  { step: 14, what: "handover completion, before the freeze release" },
+  { step: 14, what: "handover completion" },
 ];
 
 describe("SH-20 rollback matrix", () => {
@@ -641,10 +638,9 @@ describe("SH-20 concurrency and idempotency", () => {
         await observer.stockCountRebase.count({ where: { sessionId: r.sessionId } }), 0,
         "a losing accept rebased nothing",
       );
-      const freeze = await observer.inventoryFreeze.findUniqueOrThrow({
-        where: { id: r.freezeId },
-      });
-      assert.equal(freeze.releasedAt, null, "and left the freeze held");
+      // Stock handover v2 (owner decision 2026-11-12): no freeze is taken, so none is held or released.
+      assert.equal(r.freezeId, null);
+      assert.equal(await observer.inventoryFreeze.count({ where: { handoverId: r.handoverId } }), 0);
     }
   });
 
@@ -673,11 +669,13 @@ describe("SH-20 concurrency and idempotency", () => {
     const restarted = await startCountHttp(r.handoverId);
     assert.equal(restarted.status, 200, restarted.text);
 
-    await assert.rejects(
-      () => accept(r.handoverId, { incomingShiftId: r.incomingShiftId }),
-      (e: { status?: number }) => e.status === 409,
-      "the replacement is a DRAFT nobody has counted, let alone signed for",
-    );
+    // Stock handover v2 (owner decision 2026-11-12): an uncounted replacement
+    // no longer keeps the next shift waiting — but it is never presented as
+    // evidence, and the superseded round never becomes it either.
+    const result = await accept(r.handoverId, { incomingShiftId: r.incomingShiftId });
+    assert.equal(result.status, "COMPLETED");
+    assert.equal(result.acceptedStockCountSessionId, null, "neither the DRAFT nor the superseded round is the evidence");
+    assert.notEqual(result.acceptedStockCountSessionId, r.sessionId);
     assert.equal(
       await observer.stockCountRebase.count({ where: { sessionId: r.sessionId } }), 0,
       "and the superseded round was not rebased on the way past",
@@ -765,17 +763,15 @@ async function assertAcceptedExactlyOnce(r: Ready) {
   const rebases = await observer.stockCountRebase.findMany({
     where: { sessionId: r.sessionId }, select: { inventoryItemId: true },
   });
-  assert.equal(
-    new Set(rebases.map((x) => x.inventoryItemId)).size, rebases.length,
-    "one rebase per item",
-  );
+  // Stock handover v2 (owner decision 2026-11-12): the acceptance posts no
+  // stock at all, so "exactly once" means "never": no rebase, no ledger row.
+  assert.equal(rebases.length, 0, "no rebase, however many acceptances raced");
   const alpha = await observer.inventoryItem.findUniqueOrThrow({
     where: { id: items.alpha.id },
   });
-  assert.equal(Number(alpha.currentStock), 9, "one delta, not two");
   assert.equal(
-    alpha.ledgerVersion, r.alphaVersionBefore + BigInt(1),
-    "exactly one ledger version was consumed",
+    alpha.ledgerVersion, r.alphaVersionBefore,
+    "no ledger version was consumed by the acceptance",
   );
 
   const cases = await observer.varianceCase.findMany({

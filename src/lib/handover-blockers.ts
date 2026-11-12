@@ -27,6 +27,18 @@ export const CARRYABLE_BLOCKER_CODES: ReadonlySet<HandoverBlockerCode> = new Set
   "PENDING_APPROVAL_ORDERS",
 ]);
 
+/**
+ * Stock handover v2 (owner decision 2026-11-12): conditions that only ever
+ * mattered because the handover froze the shelf. They are still REPORTED to
+ * whoever closes, but they no longer stop the close — counting never blocks.
+ * Order and handover-in-progress blockers are unchanged.
+ */
+export const STOCK_RECORD_WARNING_CODES: ReadonlySet<HandoverBlockerCode> = new Set([
+  "PENDING_CORRECTIONS",
+  "FOREIGN_ACTIVE_COUNT",
+  "DRAFT_PURCHASE_INVOICES",
+]);
+
 const SAMPLE_LIMIT = 20;
 const UNSERVED_STATUSES: OrderStatus[] = ["CONFIRMED", "PREPARING", "READY"];
 const ACTIVE_COUNT_STATUSES: StockCountStatus[] = ["DRAFT", "IN_PROGRESS", "SUBMITTED", "RECOUNT_REQUIRED"];

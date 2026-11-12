@@ -76,7 +76,8 @@ async function handoverCountEvidence(tx: Prisma.TransactionClient, sessionId: st
   if (await tx.handoverStockAcknowledgement.count({where:{handoverId:handover.id,line:{sessionId},decision:'DISPUTED'}})) return null;
   await acquireInventorySharedLocks(tx,[session.branchId]);
   const freeze = await activeFreezeFor(tx,session.branchId);
-  if (freeze?.handoverId !== handover.id) return null;
+  // v2: no freeze is the normal case; a legacy freeze of ANOTHER handover still disqualifies.
+  if (freeze && freeze.handoverId !== handover.id) return null;
   const observations: {lineId:string;itemVersion:string;countedAt:string;quantity:string;sourceId:string|null}[]=[];
   const differenceLineIds: string[] = [];
   for (const line of [...session.lines].sort((a,b)=>a.inventoryItemId.localeCompare(b.inventoryItemId))) {
@@ -85,7 +86,9 @@ async function handoverCountEvidence(tx: Prisma.TransactionClient, sessionId: st
     if (!observed || (mode === 'MATCH' && !matchingHandoverLine(line,item.ledgerVersion))) return null;
     if (observed.difference !== 0) differenceLineIds.push(line.id);
     const recount=line.recounts[0]; const correction=line.corrections[0];
-    observations.push({lineId:line.id,itemVersion:String(item.ledgerVersion),countedAt:(recount?.countedAt??line.countedAt)!.toISOString(),
+    // The observation's own cursor (v2): later sales do not make a recorded
+    // count stale; only a change to the count's own evidence does.
+    observations.push({lineId:line.id,itemVersion:String(recount?.itemVersion??line.itemVersion),countedAt:(recount?.countedAt??line.countedAt)!.toISOString(),
       quantity:String(recount?.countedQuantity??correction?.newCountedQuantity??line.countedQuantity),sourceId:recount?.id??correction?.id??null});
   }
   return {sessionId:session.id,handoverId:handover.id,branchId:session.branchId,observations,differenceLineIds};

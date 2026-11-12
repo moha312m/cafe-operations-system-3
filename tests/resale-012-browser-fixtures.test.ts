@@ -37,7 +37,7 @@ test("guarded test-owned browser fixture stage", { skip: !phase }, async () => {
     const carried = await h.acceptedOrder(returns, "READY", { finished: 3, prepared: 1 });
     const { closeShiftWithSettlement } = await import("@/lib/cash-close");
     const close = await closeShiftWithSettlement({ shiftId: shift.id, actualCash: 100, actorId: returns.fx.cashier.id, closedByManager: false, handoverTarget: "BRANCH_CUSTODY", grants: { handoverSubmit: true, handoverException: true } });
-    assert.ok(close.handoverId && close.freezeId); await h.serve(returns, carried.id);
+    assert.ok(close.handoverId); assert.equal(close.freezeId, null, "stock handover v2: no freeze"); await h.serve(returns, carried.id);
     const piece = await db.inventoryItem.create({ data: { cafeId: receiving.fx.cafeId, branchId: receiving.fx.branchId, name: receiving.fx.marker + " receiving pieces", unit: "PIECE" } });
     await db.productStockBinding.updateMany({ where: { productId: receiving.finished.id }, data: { inventoryItemId: piece.id } });
     const annex = await db.inventoryItem.create({ data: { cafeId: receiving.fx.cafeId, branchId: receiving.fx.otherBranchId, name: receiving.fx.marker + " excluded annex pieces", unit: "PIECE" } });
