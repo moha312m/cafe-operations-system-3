@@ -1292,12 +1292,20 @@ export async function finishOutgoingHandover(args: {
         where: { id: handover.stockCountSessionId },
         select: { confirmedById: true, lines: { select: { disposition: true } } },
       });
-      const systemValidated = session?.confirmedById === null && !!await tx.auditLog.findFirst({
-        where: { entity: "StockCountSession", entityId: handover.stockCountSessionId, action: COUNT_SYSTEM_VALIDATED },
-        select: { id: true },
-      });
+      // The LATEST unsigned evidence answers (A10): after an approved correction
+      // the earlier automatic validation is superseded by the declaration, and a
+      // declared difference inside tolerance is not a VARIANCE_RECORDED line.
+      const latest = session?.confirmedById === null ? await tx.auditLog.findFirst({
+        where: { entity: "StockCountSession", entityId: handover.stockCountSessionId, action: { in: [COUNT_SYSTEM_VALIDATED, COUNT_OUTGOING_DECLARED] } },
+        orderBy: { createdAt: "desc" },
+        select: { action: true, details: true },
+      }) : null;
+      if (latest?.action === COUNT_OUTGOING_DECLARED) {
+        const differenceLines = Number((latest.details as { differenceLines?: unknown } | null)?.differenceLines ?? 0);
+        return { systemValidated: false, recordedDifferences: Number.isFinite(differenceLines) ? differenceLines : 0 };
+      }
       return {
-        systemValidated,
+        systemValidated: latest?.action === COUNT_SYSTEM_VALIDATED,
         recordedDifferences: session?.lines.filter((l) => l.disposition === "VARIANCE_RECORDED").length ?? 0,
       };
     };
@@ -1331,7 +1339,11 @@ export async function finishOutgoingHandover(args: {
       notCounted = lines.filter((line) => !hasAuthoritativeObservation(line)).map((line) => line.inventoryItem.name);
       void HandoverCountIncompleteError;
       const session = await tx.stockCountSession.findUniqueOrThrow({ where: { id: handover.stockCountSessionId }, select: { status: true } });
-      submitted = session.status === "DRAFT" || session.status === "IN_PROGRESS"
+      // SUBMITTED included (A10): a correction request moves a system-validated
+      // count back to SUBMITTED, and once it is approved this submission is what
+      // declares the corrected difference. Re-submitting is idempotent: the
+      // declaration is written only when the count reaches CONFIRMED here.
+      submitted = session.status === "DRAFT" || session.status === "IN_PROGRESS" || session.status === "SUBMITTED"
         ? await submitHandoverCountInTransaction(tx, {
             sessionId: handover.stockCountSessionId,
             submittedById: args.actorId,
