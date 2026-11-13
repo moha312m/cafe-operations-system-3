@@ -3,17 +3,19 @@
 // awaiting approval, draft purchase invoices — are WARNINGS at close. They are
 // still reported; they no longer refuse the close.
 import { after, before, describe, test } from "node:test";
+import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { db, teardownTaggedCafe } from "./helpers/db";
 import { countCafe, countItem, type CountCafe } from "./helpers/count";
 import { as, requireServer } from "./helpers/http";
 
 let fx: CountCafe;
+let milkId: string;
 
 before(async () => {
   await requireServer();
   fx = await countCafe("SHV2003");
-  await countItem(fx, "milk", { stock: 10, isCritical: true });
+  milkId = (await countItem(fx, "milk", { stock: 10, isCritical: true })).id;
   await db.cafeSettings.update({
     where: { cafeId: fx.cafeId },
     data: { stockCountPolicy: "HYBRID", handoverCountType: "CRITICAL", periodicFullCountSchedule: "MANUAL_ONLY", periodicFullCountWeekday: null, varianceBlocksHandover: false, varianceHardBlockAmount: null },
@@ -25,7 +27,7 @@ after(async () => {
 });
 
 describe("stock handover v2: count conditions warn, never block the close", () => {
-  test("an open stock count in the branch is a warning in readiness and does not refuse the close", async () => {
+  test("an open count warns at close and the new handover leaves purchases, transfers and waste operational", async () => {
     const open = await db.stockCountSession.create({
       data: {
         cafeId: fx.cafeId, branchId: fx.branchId, type: "CRITICAL", scopeDerivation: "CRITICAL_ONLY",
@@ -56,7 +58,33 @@ describe("stock handover v2: count conditions warn, never block the close", () =
     assert.equal(closed.status, "AWAITING_HANDOVER", "the close went through");
     assert.ok(closed.handoverId);
     assert.equal(closed.freezeId, null);
+    assert.equal(await db.inventoryFreeze.count({ where: { handoverId: closed.handoverId } }), 0);
+
+    const draft = await as<{ id: string }>(fx.owner.email, "/api/purchases", {
+      method: "POST",
+      body: JSON.stringify({ branchId: fx.branchId, items: [{ inventoryItemId: milkId, quantity: 2, unitCost: 450 }] }),
+    });
+    assert.equal(draft.status, 201, draft.text);
+    const purchase = await as(fx.owner.email, `/api/purchases/${draft.body.id}/confirm`, { method: "POST", body: "{}" });
+    assert.equal(purchase.status, 200, purchase.text);
+
+    const transfer = await as(fx.owner.email, "/api/inventory/transfer", {
+      method: "POST", headers: { "Idempotency-Key": randomUUID() },
+      body: JSON.stringify({ inventoryItemId: milkId, toBranchId: fx.otherBranchId, quantity: 1 }),
+    });
+    assert.equal(transfer.status, 200, transfer.text);
+
+    const waste = await as(fx.owner.email, `/api/inventory/${milkId}/movement`, {
+      method: "POST", headers: { "Idempotency-Key": randomUUID() },
+      body: JSON.stringify({ type: "WASTE", quantity: 1 }),
+    });
+    assert.equal(waste.status, 200, waste.text);
+    const transactions = await db.inventoryTransaction.findMany({ where: { inventoryItemId: milkId }, orderBy: { itemVersion: "asc" } });
+    assert.deepEqual(transactions.map((row) => [row.type, Number(row.quantity)]), [["PURCHASE", 2], ["TRANSFER_OUT", -1], ["WASTE", -1]]);
+    assert.equal(Number((await db.inventoryItem.findUniqueOrThrow({ where: { id: milkId } })).currentStock), 10);
+
     // The open count is untouched — it is somebody's record, not the close's to discard.
     assert.equal((await db.stockCountSession.findUniqueOrThrow({ where: { id: open.id } })).status, "IN_PROGRESS");
+    assert.equal((await db.handoverSession.findUniqueOrThrow({ where: { id: closed.handoverId } })).status, "DRAFT");
   });
 });

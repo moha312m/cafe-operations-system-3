@@ -25,8 +25,9 @@ export async function GET(request: NextRequest, { params }: Params) {
     await requireFeature(session, "inventoryEnabled");
     const { handoverId } = await params;
     const cafeId = resolveCafeId(session, request.nextUrl.searchParams.get("cafeId"));
-    const detail = await stockHandoverReportDetail(db, { cafeId, viewerBranchId: session.branchId, handoverId });
-    return NextResponse.json({ ...detail, can: { review: keys.has("handover.manage") } });
+    const canAdjust = keys.has("handover.manage") && keys.has("inventory.transactions");
+    const detail = await stockHandoverReportDetail(db, { cafeId, viewerBranchId: session.branchId, handoverId, canAdjust });
+    return NextResponse.json({ ...detail, can: { review: keys.has("handover.manage"), adjust: canAdjust } });
   } catch (error) {
     return handleApiError(error);
   }

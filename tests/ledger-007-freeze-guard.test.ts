@@ -41,7 +41,7 @@ async function makeHandover(branchId: string, n: number) {
     data: {
       cafeId: fx.cafeId, branchId, cashierId: ownerId,
       shiftNumber: Math.max(920000 + n, (latest?.shiftNumber ?? 0) + 1),
-      // A completed handover is historical, even while an operating drawer is open.
+      // This fixture does not open another drawer.
       status: "CLOSED", closedAt: new Date(),
       openingCashAmount: 0, expectedCashAmount: 0,
     },
@@ -50,7 +50,7 @@ async function makeHandover(branchId: string, n: number) {
   const h = await db.handoverSession.create({
     data: {
       cafeId: fx.cafeId, branchId, outgoingShiftId: shift.id, outgoingUserId: ownerId,
-      status: "COMPLETED", completedAt: new Date(),
+      status: "DRAFT",
     },
   });
   handoverIds.push(h.id);
@@ -78,7 +78,7 @@ before(async () => {
   OWNER = fx.owner.email;
   ownerId = fx.owner.id;
   secondBranchId = fx.otherBranchId;
-  // A completed handover fixture must coexist with a valid operating drawer.
+  // The legacy freeze fixture must coexist with a valid operating drawer.
   // This drawer belongs to this suite; never close an inherited owner's shift.
   const open = await db.shift.create({
     data: {

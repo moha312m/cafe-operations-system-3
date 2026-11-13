@@ -210,6 +210,73 @@ describe("stock handover v2 journey", () => {
     assert.equal(cashierList.status, 403);
   });
 
+  test("a reviewed shortage can be adjusted once at a fresh physical count with explicit cost evidence", async () => {
+    const itemId = items[0].id;
+    const reportPath = `/api/stock-handover-reports/${handoverId}`;
+    const movementPath = `/api/inventory/${itemId}/movement`;
+    const opening = await db.inventoryTransaction.count({ where: { inventoryItemId: itemId } });
+    const classification = await reviewPost(fx.manager.email, handoverId, { text: "تم التحقق من عجز اللبن", status: "REVIEWED", classification: "LOSS_UNEXPLAINED" });
+    assert.equal(classification.status, 201, classification.text);
+
+    const detail = await as<{ adjustmentOptions: Record<string, { token: string; bookQuantity: number }> }>(fx.manager.email, reportPath);
+    assert.equal(detail.status, 200, detail.text);
+    const option = detail.body.adjustmentOptions?.[itemId];
+    assert.ok(option, "the review exposes an adjustment for the independently counted shortage");
+    assert.equal(option.bookQuantity, 7);
+
+    const body = { type: "ADJUSTMENT", quantity: -1, unitCost: 12.34, note: "تم التحقق من التكلفة من فاتورة المورد", handoverAdjustment: { handoverId, token: option.token, physicalQuantity: 6 } };
+    const request = (email: string, data = body, idem = key("adjust")) => as<{ adjustment?: { transactionId: string } }>(email, movementPath, {
+      method: "POST", body: JSON.stringify(data), headers: { "Idempotency-Key": idem },
+    });
+    assert.equal((await request(fx.cashier.email)).status, 403);
+    assert.equal((await request(fx.manager.email, { ...body, quantity: -2 })).status, 409);
+    assert.equal(await db.inventoryTransaction.count({ where: { inventoryItemId: itemId } }), opening);
+
+    await sell(itemId, 1);
+    assert.equal((await request(fx.manager.email)).status, 409, "a movement invalidates the observed book balance");
+    const refreshed = await as<typeof detail.body>(fx.manager.email, reportPath);
+    const refreshedOption = refreshed.body.adjustmentOptions[itemId];
+    assert.equal(refreshedOption.bookQuantity, 6);
+    const approved = { ...body, handoverAdjustment: { handoverId, token: refreshedOption.token, physicalQuantity: 5 } };
+    // Missing cost evidence or reason is refused before anything is written.
+    assert.equal((await request(fx.manager.email, { ...approved, unitCost: undefined as unknown as number })).status, 400);
+    assert.equal((await request(fx.manager.email, { ...approved, unitCost: 0 })).status, 400);
+    assert.equal((await request(fx.manager.email, { ...approved, note: "  " })).status, 400);
+    assert.equal((await request(fx.manager.email, { ...approved, type: "WASTE", quantity: 1 })).status, 400);
+    // Two devices submit the same approval at once with different keys: one movement.
+    const idemA = key("approve-shortage-a"), idemB = key("approve-shortage-b");
+    const raced = await Promise.all([request(fx.manager.email, approved, idemA), request(fx.manager.email, approved, idemB)]);
+    assert.deepEqual(raced.map((r) => r.status).sort(), [200, 409], raced.map((r) => r.text).join(" | "));
+    const winner = raced.find((r) => r.status === 200)!;
+    const idem = winner === raced[0] ? idemA : idemB;
+    const transactionId = winner.body.adjustment?.transactionId;
+    assert.ok(transactionId);
+    const replayed = await request(fx.manager.email, approved, idem);
+    assert.equal(replayed.headers.get("Idempotency-Replayed"), "true");
+    assert.equal(replayed.body.adjustment?.transactionId, transactionId);
+    assert.equal((await request(fx.manager.email, approved)).status, 409);
+
+    const movement = await db.inventoryTransaction.findUniqueOrThrow({ where: { id: transactionId } });
+    assert.equal(movement.type, "ADJUSTMENT");
+    assert.equal(movement.quantity.toFixed(3), "-1.000");
+    assert.equal(movement.totalCost?.toFixed(2), "12.34");
+    assert.equal(movement.createdById, fx.manager.id);
+    assert.equal(Number((await db.inventoryItem.findUniqueOrThrow({ where: { id: itemId } })).currentStock), 5);
+    assert.equal(await db.inventoryTransaction.count({ where: { inventoryItemId: itemId } }), opening + 2);
+    const audit = await db.auditLog.findMany({ where: { action: "STOCK_HANDOVER_ADJUSTMENT", entityId: handoverId } });
+    assert.equal(audit.length, 1, "exactly one link row");
+    assert.equal((audit[0].details as { transactionId: string }).transactionId, transactionId);
+    // The original count evidence is untouched by the adjustment.
+    assert.equal(await db.stockHandoverIncomingLine.count({ where: { count: { handoverId } } }), 4);
+    const linked = await as<{ adjustments: { transactionId: string }[]; adjustmentOptions: Record<string, unknown> }>(fx.manager.email, reportPath);
+    assert.deepEqual(linked.body.adjustments.map((row) => row.transactionId), [transactionId]);
+    assert.equal(linked.body.adjustmentOptions[itemId], undefined);
+    // The owner reads the same evidence and link.
+    const ownerView = await as<{ adjustments: { transactionId: string }[]; comparison: { lines: unknown[] } }>(fx.owner.email, reportPath);
+    assert.equal(ownerView.status, 200, ownerView.text);
+    assert.deepEqual(ownerView.body.adjustments.map((row) => row.transactionId), [transactionId]);
+  });
+
   test("the incoming shift was never held back by the stock handover", async () => {
     const accepted = await db.handoverSession.findUniqueOrThrow({ where: { id: handoverId }, select: { status: true } });
     assert.notEqual(accepted.status, "COMPLETED", "this journey never accepted; counting did not need it");

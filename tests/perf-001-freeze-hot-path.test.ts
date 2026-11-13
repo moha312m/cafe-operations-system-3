@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { PrismaClient } from "@prisma/client";
-import { db, closeOpenShifts, tag, teardownTaggedCafe } from "./helpers/db";
+import { db, tag, teardownTaggedCafe } from "./helpers/db";
 import { applyStockMutation } from "@/lib/ledger";
 import { deductStockForOrder } from "@/lib/stock-deduction";
 import {
@@ -29,6 +29,7 @@ let cafeId: string;
 let branchId: string;
 let actorId: string;
 let handoverSequence = 0;
+let legacyHandoverId: string | undefined;
 
 type QueryCounts = { total: number; sharedLocks: number; activeFreezes: number };
 type QueryClient = PrismaClient & {
@@ -60,27 +61,30 @@ async function item(label: string, stock = 100) {
   });
 }
 
-async function handover(label: string) {
+async function handover() {
   handoverSequence += 1;
-  // One drawer per cashier: close the one a previous test left open rather
-  // than deleting it, so its evidence survives.
-  await closeOpenShifts(branchId, actorId);
   const shift = await db.shift.create({
     data: {
       cafeId, branchId, cashierId: actorId, shiftNumber: 980000 + handoverSequence,
-      openingCashAmount: 0, expectedCashAmount: 0,
+      openingCashAmount: 0, expectedCashAmount: 0, status: "CLOSED", closedAt: new Date(),
     },
   });
-  return db.handoverSession.create({
+  const created = await db.handoverSession.create({
     data: {
       cafeId, branchId, outgoingShiftId: shift.id, outgoingUserId: actorId,
-      status: "COMPLETED", completedAt: new Date(),
+      status: "DRAFT",
     },
   });
+  legacyHandoverId = created.id;
+  return created;
 }
 
 async function clearFreezes() {
   await db.$executeRawUnsafe('DELETE FROM "InventoryFreeze" WHERE "cafeId" = $1', cafeId);
+  if (legacyHandoverId) {
+    await db.handoverSession.update({ where: { id: legacyHandoverId }, data: { status: "COMPLETED", completedAt: new Date() } });
+    legacyHandoverId = undefined;
+  }
 }
 
 async function guardedCalls(client: QueryClient, n: number) {
@@ -163,7 +167,7 @@ describe("PERF-001 freeze hot path", () => {
   test("does not inherit cached null across transactions after an exclusive freezer commits", async () => {
     await clearFreezes();
     const inventory = await item("isolation");
-    const h = await handover("isolation");
+    const h = await handover();
     await db.$transaction(async (tx) => {
       await acquireInventorySharedLocks(tx, [branchId]);
       assert.equal(await activeFreezeFor(tx, branchId), null);
@@ -181,7 +185,7 @@ describe("PERF-001 freeze hot path", () => {
 
   test("invalidates a cached active freeze after release and rereads durable state", async () => {
     await clearFreezes();
-    const h = await handover("release");
+    const h = await handover();
     await db.$transaction((tx) => acquireInventoryFreeze(tx, {
       cafeId, branchId, handoverId: h.id, startedById: actorId,
     }));
@@ -203,7 +207,7 @@ describe("PERF-001 freeze hot path", () => {
 
   test("replaces cached null with the exact new freeze after same-transaction upgrade", async () => {
     await clearFreezes();
-    const h = await handover("acquire");
+    const h = await handover();
     await db.$transaction(async (tx) => {
       await acquireInventorySharedLocks(tx, [branchId]);
       assert.equal(await activeFreezeFor(tx, branchId), null);
@@ -217,7 +221,7 @@ describe("PERF-001 freeze hot path", () => {
     await clearFreezes();
     const first = await item("atomic-first");
     const second = await item("atomic-second");
-    const h = await handover("atomic");
+    const h = await handover();
     await db.$transaction((tx) => acquireInventoryFreeze(tx, { cafeId, branchId, handoverId: h.id, startedById: actorId }));
     await assert.rejects(() => db.$transaction(async (tx) => {
       await applyStockMutation(tx, { inventoryItemId: first.id, cafeId, branchId, type: "USAGE", quantity: -1 });

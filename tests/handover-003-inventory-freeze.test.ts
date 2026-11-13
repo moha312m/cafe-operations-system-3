@@ -95,10 +95,8 @@ before(async () => {
   });
   otherCafeActorId = foreignActor.id;
 
-  // Both of these exist only to be the outgoing shift of a COMPLETED
-  // handover below, so they are history, not live drawers. Saying so
-  // explicitly is truer to what they represent — and one cashier cannot hold
-  // two open drawers at one branch.
+  // These shifts only supply the outgoing side of the legacy handover
+  // fixtures. Neither is a live drawer.
   const shift = await db.shift.create({
     data: {
       cafeId, branchId, cashierId: actorId, shiftNumber: 910001,
@@ -116,12 +114,15 @@ before(async () => {
   handoverId = (await db.handoverSession.create({
     data: {
       cafeId, branchId, outgoingShiftId: shift.id, outgoingUserId: actorId,
-      status: "COMPLETED", completedAt: new Date(),
+      // A genuine pre-v2 freeze remains active only while its handover is open.
+      status: "DRAFT",
     },
   })).id;
   competingHandoverId = (await db.handoverSession.create({
     data: {
       cafeId, branchId, outgoingShiftId: otherShift.id, outgoingUserId: actorId,
+      // The one-active-handover index prevents a second DRAFT. This historical
+      // id exercises the freeze guard's rejection of a different owner.
       status: "COMPLETED", completedAt: new Date(),
     },
   })).id;

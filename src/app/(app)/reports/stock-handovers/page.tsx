@@ -29,7 +29,9 @@ type Detail = {
   history: { id: string; reliability: string; rawDifferenceCount: number; adjustedDifferenceCount: number; computedAt: string }[];
   movements: Record<string, { type: string; quantity: string; at: string; note: string | null; by: string | null }[]>;
   review: { status: ReviewStatus; classification: string; notes: { id: string; text: string; statusFrom: string | null; statusTo: string | null; classificationFrom: string | null; classificationTo: string | null; createdAt: string; authorName: string }[] } | null;
-  can: { review: boolean };
+  adjustments: { transactionId: string; inventoryItemId: string; quantity: number; physicalQuantity: number; bookQuantity: number; unitCost: number | null; totalCost: number | null; reason: string; createdAt: string; actorName: string | null }[];
+  adjustmentOptions: Record<string, { token: string; bookQuantity: number; referenceCost: number | null }>;
+  can: { review: boolean; adjust?: boolean };
 };
 
 const RESULT_LABEL: Record<Result, string> = { UNEXPLAINED: "فرق غير مفسَّر", EXPLAINED: "فرق مفسَّر بحركات", MISSING: "جرد ناقص", NONE: "مطابق" };
@@ -290,10 +292,97 @@ function DetailView({ handoverId, onChanged }: { handoverId: string; onChanged: 
               </select>
               <Button disabled={saving || !text.trim()} onClick={() => void save()}>{saving ? "بيتسجل…" : "سجّل الملاحظة"}</Button>
             </div>
-            <p className="text-xs text-muted-foreground">الملاحظات مابتتمسحش ومابتتعدلش. أي تسوية للمخزن بتتعمل من «تسوية المخزون» العادية.</p>
+            <p className="text-xs text-muted-foreground">الملاحظات مابتتمسحش ومابتتعدلش. الفرق نفسه مابيعدّلش المخزون؛ التسوية خطوة منفصلة تحت.</p>
           </div>
         )}
       </section>
+
+      <AdjustmentSection detail={detail} onDone={async () => { await load(); onChanged(); }} />
+    </div>
+  );
+}
+
+// A reviewed, independently counted shortage can be applied to stock once,
+// at a fresh physical count, with cost evidence and a reason. The server
+// re-checks everything on the locked balance; this form only collects input.
+function AdjustmentSection({ detail, onDone }: { detail: Detail; onDone: () => Promise<void> }) {
+  const lines = detail.comparison.lines;
+  const adjustments = detail.adjustments ?? [];
+  const options = Object.entries(detail.adjustmentOptions ?? {});
+  if (!adjustments.length && !(detail.can.adjust && options.length)) {
+    if (!detail.can.adjust || !detail.review) return null;
+    return (
+      <section className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground">
+        تسوية المخزون من هنا متاحة بس لما المراجعة تبقى «اتراجع» والتصنيف «عجز غير مفسَّر»، وللأصناف اللي فيها عجز مؤكد من جردين لشخصين مختلفين.
+      </section>
+    );
+  }
+  const name = (itemId: string) => lines.find((l) => l.inventoryItemId === itemId)?.itemName ?? itemId;
+  return (
+    <section className="space-y-2 rounded-lg border p-3">
+      <h3 className="text-sm font-semibold">تسوية العجز في المخزون</h3>
+      {adjustments.length > 0 && (
+        <ul className="space-y-1 text-sm">
+          {adjustments.map((a) => (
+            <li key={a.transactionId} className="rounded-md bg-muted/40 p-2">
+              {name(a.inventoryItemId)} · {qty(String(a.quantity))} (الرصيد {qty(String(a.bookQuantity))} ← الجرد الفعلي {qty(String(a.physicalQuantity))})
+              {a.totalCost !== null && ` · ${a.totalCost.toLocaleString("ar-EG", { minimumFractionDigits: 2 })} ج.م`}
+              <span className="block text-xs text-muted-foreground">{a.reason} · {a.actorName ?? "—"} · {fmtDate(a.createdAt)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {detail.can.adjust && options.map(([itemId, option]) => (
+        <AdjustmentForm key={`${itemId}:${option.token}`} itemId={itemId} itemName={name(itemId)} unit={lines.find((l) => l.inventoryItemId === itemId)?.unit ?? ""}
+          handoverId={detail.handover.id} option={option} onDone={onDone} />
+      ))}
+    </section>
+  );
+}
+
+function AdjustmentForm({ itemId, itemName, unit, handoverId, option, onDone }: {
+  itemId: string; itemName: string; unit: string; handoverId: string;
+  option: { token: string; bookQuantity: number; referenceCost: number | null }; onDone: () => Promise<void>;
+}) {
+  const [physical, setPhysical] = useState("");
+  const [cost, setCost] = useState(option.referenceCost === null ? "" : option.referenceCost.toFixed(2));
+  const [reason, setReason] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [key] = useState(newKey);
+  const counted = physical.trim() === "" ? NaN : Number(physical);
+  const delta = Number.isFinite(counted) ? Math.round((counted - option.bookQuantity) * 1000) / 1000 : NaN;
+  const unitCost = Number(cost);
+  const ready = Number.isFinite(delta) && delta < 0 && counted >= 0 && unitCost > 0 && reason.trim().length > 0;
+
+  const submit = async () => {
+    setSaving(true);
+    try {
+      // One key per form instance: a retry after an unknown outcome replays, never doubles.
+      await api(`/api/inventory/${itemId}/movement`, {
+        method: "POST", idempotencyKey: key,
+        body: { type: "ADJUSTMENT", quantity: delta, unitCost, note: reason.trim(), handoverAdjustment: { handoverId, token: option.token, physicalQuantity: counted } },
+      });
+      toast.success("اتسجلت التسوية واتربطت بالمراجعة");
+      await onDone();
+    } catch (error) {
+      toast.error((error as Error).message);
+      await onDone();
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="space-y-2 rounded-md border p-2">
+      <p className="text-sm font-medium">{itemName} <span className="text-xs text-muted-foreground">({unit}) · الرصيد الحالي في السيستم {qty(String(option.bookQuantity))}</span></p>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+        <Input inputMode="decimal" placeholder="الجرد الفعلي دلوقتي" value={physical} onChange={(e) => setPhysical(e.target.value)} />
+        <Input inputMode="decimal" placeholder="تكلفة الوحدة (ج.م)" value={cost} onChange={(e) => setCost(e.target.value)} />
+        <Input placeholder="سبب التسوية ومستند التكلفة (مطلوب)" value={reason} maxLength={500} onChange={(e) => setReason(e.target.value)} />
+      </div>
+      <p className="text-xs text-muted-foreground">
+        {Number.isFinite(delta) ? (delta < 0 ? `هيتسجل عجز ${qty(String(-delta))} في المخزون` : "الجرد الفعلي مش أقل من الرصيد — مفيش عجز يتسوّى") : "عدّ الصنف دلوقتي واكتب الكمية. التسوية مايصحش تزيد عن فرق التسليم المؤكد."}
+        {option.referenceCost === null && " · الصنف مالوش تكلفة مسجلة، اكتب التكلفة من مستند."}
+      </p>
+      <Button disabled={!ready || saving} onClick={() => void submit()}>{saving ? "بيتسجل…" : "سجّل التسوية"}</Button>
     </div>
   );
 }

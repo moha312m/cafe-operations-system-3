@@ -1,6 +1,6 @@
 // ── Stock count variances workbook ───────────────────────────────────
 // One download for "what did the counts find, and what did it cost":
-//   الملخص       the period in a few figures, with the effect on profit
+//   الملخص       the period in a few figures, with the value of count differences
 //   الفروقات     every counted line that differed, one row each
 //   حسب الصنف    the same lines added up per item, biggest loss first
 //
@@ -8,11 +8,10 @@
 // figure is hidden from the person counting (blind count), and a file must
 // not become the way around that.
 //
-// Value: what the books posted for the line's stock movement when there is
-// one (the COUNT_REBASE row's own cost), otherwise the cost the line captured
-// when it was judged. A line with neither is listed as unvalued, never as
-// zero. A shortage is negative: it lowers profit. Totals live on the summary
-// sheet, so sorting or filtering a list cannot carry a total row with it.
+// Value comes from the stock movement's recorded cost or the captured count
+// cost. The workbook reports stock application separately from journal
+// posting. A line with neither cost is unvalued. A shortage is negative and
+// a surplus is positive. Totals are kept on the summary sheet.
 import type { InventoryUnit, Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { buildXlsx, type XlsxSheetCell } from "@/lib/xlsx";
@@ -155,20 +154,25 @@ export function varianceSheetXlsx(sheet: VarianceSheet): Buffer {
     ["قيمة العجز" + c, money(t.shortageValue)],
     ["أصناف فيها زيادة", int(t.surplusItems)],
     ["قيمة الزيادة" + c, money(t.surplusValue)],
-    [bold("صافي الأثر على الأرباح" + c), money(t.net, true)],
-    [bold("النتيجة"), bold(t.net < 0 ? "خسارة" : t.net > 0 ? "مكسب" : "مفيش أثر")],
+    [bold("صافي قيمة الفروقات" + c), money(t.net, true)],
     ["", ""],
-    ["سطور من غير تكلفة", int(t.unvalued), t.unvalued ? "حدد تكلفة الصنف في المخزون عشان الفرق يتحسب" : ""],
-    ["سطور لسه ما اتسجلتش في المخزون", int(t.notPosted), t.notPosted ? "افتح الجرد واضغط «تطبيق الفروقات على المخزون»" : ""],
+    ["سطور من غير تكلفة", int(t.unvalued), t.unvalued ? "راجع مستندات التكلفة" : ""],
+    ["سطور من غير حركة جرد في المخزون", int(t.notPosted), t.notPosted ? "راجع الخطوة التالية حسب نوع الجرد" : ""],
     ["", ""],
-    ["ملحوظة", "العجز بالسالب ويقلل الربح، والزيادة بالموجب. القيمة هي اللي اترحّلت في الحسابات (حساب هالك وفروقات مخزون)، ولو السطر لسه ما اتسجلش في المخزون فهي بتكلفة وقت الجرد."],
+    ["ملحوظة", "العجز بالسالب والزيادة بالموجب. القيمة بتكلفة الحركة أو بتكلفة الجرد المسجلة. تسجيل الحركة في المخزون لا يؤكد الترحيل للحسابات. راجع قيود اليومية لمعرفة الأثر على الربح."],
   ];
 
-  const detailHeader = ["التاريخ", "الفرع", "الجرد", "نوع الجرد", "الصنف", "الوحدة", "المتوقع", "المعدود", "الفرق", "النوع", "تكلفة الوحدة" + c, "قيمة الفرق" + c, "الحالة", "السبب", "ملاحظة", "اتعد بواسطة", "اتسجل في المخزون"];
+  const detailHeader = ["التاريخ", "الفرع", "الجرد", "نوع الجرد", "الصنف", "الوحدة", "المتوقع", "المعدود", "الفرق", "النوع", "تكلفة الوحدة" + c, "قيمة الفرق" + c, "الحالة", "السبب", "ملاحظة", "اتعد بواسطة", "اتسجل في المخزون", "الخطوة التالية"];
+  const nextStep = (line: VarianceSheetLine) => {
+    if (line.posted) return "راجع قيود اليومية لمعرفة حالة الترحيل";
+    if (line.context === CONTEXT_LABEL.HANDOVER) return "مراجعة التسليم، وتسوية مخزون بصلاحية إذا لزم";
+    if (line.context === CONTEXT_LABEL.BRANCH_OPENING_VERIFICATION) return "راجع التحقق الافتتاحي من العهدة";
+    return "راجع الجرد العادي واستخدم «تطبيق الفروقات على المخزون» لو محتاج تعدّل الرصيد";
+  };
   const detail: XlsxSheetCell[][] = [detailHeader, ...sheet.lines.map((l) => [
     { value: excelSerial(l.confirmedAt), format: "datetime" as const }, l.branch, l.count, l.context, l.item, UNIT_LABEL[l.unit] ?? l.unit,
     qty(l.expected), qty(l.counted), qty(l.difference), l.difference < 0 ? "عجز" : "زيادة",
-    l.unitCost === null ? "من غير تكلفة" : money(l.unitCost), money(l.value), l.status, l.reason, l.note, l.counter, l.posted ? "نعم" : "لسه",
+    l.unitCost === null ? "من غير تكلفة" : money(l.unitCost), money(l.value), l.status, l.reason, l.note, l.counter, l.posted ? "نعم" : "—", nextStep(l),
   ])];
 
   const byItem = new Map<string, { item: string; unit: InventoryUnit; times: number; short: number; surplus: number; value: number; unvalued: number }>();

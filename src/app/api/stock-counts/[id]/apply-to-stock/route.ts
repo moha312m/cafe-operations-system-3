@@ -15,8 +15,8 @@ type Params = { params: Promise<{ id: string }> };
 // are skipped, and a second call moves nothing: one count rebases one item
 // once.
 //
-// A handover or opening count is refused here: its acceptance applies it,
-// inside the transaction that decides who answers for the difference.
+// This action is for ordinary counts. Handover discrepancies go to review,
+// and legacy opening verification has its own workflow.
 export async function POST(request: NextRequest, { params }: Params) {
   try {
     const session = await requireKey("stock_count.confirm");
@@ -30,8 +30,11 @@ export async function POST(request: NextRequest, { params }: Params) {
     });
     if (!count || count.cafeId !== cafeId) throw new ApiError(404, "جلسة الجرد غير موجودة");
     if (session.branchId && count.branchId !== session.branchId) throw new ApiError(403, "ليس لديك صلاحية على فرع تاني");
-    if (count.accountabilityContext !== "NONE" || count.handoverId || count.openingBranchCustodyPeriodId) {
-      throw new ApiError(409, "جرد التسليم أو فتح الفرع بيتطبق على المخزون لما التسليم يتقبل — مش من هنا");
+    if (count.accountabilityContext === "HANDOVER" || count.handoverId) {
+      throw new ApiError(409, "راجع الفرق في تقرير جرد التسليم والاستلام من مراجعة فروق جرد التسليم. استلام العهدة بيسجّل الفرق، وأي تسوية للمخزون بتحتاج إجراء معتمد منفصل.");
+    }
+    if (count.accountabilityContext !== "NONE" || count.openingBranchCustodyPeriodId) {
+      throw new ApiError(409, "جرد فتح الفرع له إجراء التحقق من العهدة الافتتاحية.");
     }
     if (count.status !== "CONFIRMED") throw new ApiError(409, "أكّد الجرد الأول، وبعدين طبّق الفروقات على المخزون");
 

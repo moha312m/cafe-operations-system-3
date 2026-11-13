@@ -86,7 +86,7 @@ async function countRebaseCosts(client: Prisma.TransactionClient | typeof db, ro
   return costs;
 }
 
-export async function purchaseAndStockCandidates(client: Prisma.TransactionClient | typeof db, cafeId: string, window: { gte: Date; lt: Date }): Promise<Candidate[]> {
+export async function purchaseAndStockCandidates(client: Prisma.TransactionClient | typeof db, cafeId: string, window: { gte: Date; lt: Date }, valueLegacyCountRebases = false): Promise<Candidate[]> {
   const invoiceSelect = { id: true, invoiceNumber: true, branchId: true, confirmedAt: true, subtotalAmount: true, discountAmount: true, taxAmount: true, totalAmount: true, payments: { select: { amount: true, paidAt: true } } } as const;
   const [confirmed, cancelled, payments, moves] = await Promise.all([
     client.purchaseInvoice.findMany({ where: { cafeId, confirmedAt: window }, select: invoiceSelect }),
@@ -108,7 +108,9 @@ export async function purchaseAndStockCandidates(client: Prisma.TransactionClien
     out.push({ sourceType: "SUPPLIER_PAYMENT", sourceId: p.id, sourceKey: `supplier-payment:${p.id}`, at: p.paidAt, description: `دفعة لمورد — فاتورة ${p.invoice.invoiceNumber}`,
       branchId: p.branchId, lines: credit ? pair(debit, credit, decimal(p.amount), p.branchId) : "دفعة قديمة مصدرها مش متسجل (درج ولا خزنة ولا بنك)" });
   }
-  const countCost = await countRebaseCosts(client, moves.filter((m) => m.type === "COUNT_REBASE" && m.totalCost === null));
+  const countCost = valueLegacyCountRebases
+    ? await countRebaseCosts(client, moves.filter((m) => m.type === "COUNT_REBASE" && m.totalCost === null))
+    : new Map<string, Decimal>();
   for (const m of moves) {
     const quantity = decimal(m.quantity);
     if (quantity.isZero()) continue;
@@ -118,7 +120,12 @@ export async function purchaseAndStockCandidates(client: Prisma.TransactionClien
       out.push({ sourceType: "STOCK_MOVEMENT", sourceId: m.id, sourceKey: `stock:${m.id}`, at: m.createdAt, branchId: m.branchId, description, lines: pair("INVENTORY", "INVENTORY_LOSS", money(quantity.abs().times(snapshot)).times(quantity.isPositive() ? 1 : -1), m.branchId) });
       continue;
     }
-    if (m.totalCost === null) { out.push({ sourceType: "STOCK_MOVEMENT", sourceId: m.id, sourceKey: `stock:${m.id}`, at: m.createdAt, branchId: m.branchId, description, lines: m.type === "COUNT_REBASE" ? "فرق جرد من غير تكلفة — الصنف ماكانش له تكلفة وقت الجرد" : "حركة مخزون من غير تكلفة" }); continue; }
+    // Ordinary sync never looks at count evidence, so it can only say the
+    // movement carries no cost; the diagnostic looked and found none.
+    const uncosted = m.type !== "COUNT_REBASE" ? "حركة مخزون من غير تكلفة"
+      : valueLegacyCountRebases ? "فرق جرد من غير تكلفة — الصنف ماكانش له تكلفة وقت الجرد"
+      : "فرق جرد من غير تكلفة مسجلة على حركة المخزون";
+    if (m.totalCost === null) { out.push({ sourceType: "STOCK_MOVEMENT", sourceId: m.id, sourceKey: `stock:${m.id}`, at: m.createdAt, branchId: m.branchId, description, lines: uncosted }); continue; }
     const signed = money(m.totalCost).abs().times(quantity.isPositive() ? 1 : -1);
     const counter = m.type === "PURCHASE" && m.note === OPENING_STOCK_NOTE ? "OPENING_BALANCE" : STOCK_COUNTER[m.type];
     out.push({ sourceType: "STOCK_MOVEMENT", sourceId: m.id, sourceKey: `stock:${m.id}`, at: m.createdAt, branchId: m.branchId, description, lines: pair("INVENTORY", counter, signed, m.branchId) });

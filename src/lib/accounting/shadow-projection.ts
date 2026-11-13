@@ -80,7 +80,7 @@ function billLines(bill: Bill, branchId: string, base?: Bill): PostingLine[] | s
 /** The instant an order was served, from evidence; null if it never was. */
 const servedInstant = (o: { status: string; servedAt: Date | null; createdAt: Date }) => o.servedAt ?? (o.status === "SERVED" ? o.createdAt : null);
 
-export async function candidates(client: Client, cafeId: string, window: { gte: Date; lt: Date }): Promise<Candidate[]> {
+export async function candidates(client: Client, cafeId: string, window: { gte: Date; lt: Date }, valueLegacyCountRebases = false): Promise<Candidate[]> {
   const [orders, revisions, payments, storages, movements, shifts] = await Promise.all([
     client.order.findMany({ where: { cafeId, status: "SERVED", OR: [{ servedAt: window }, { servedAt: null, createdAt: window }] }, select: {
       id: true, orderNumber: true, branchId: true, status: true, createdAt: true, servedAt: true, subtotal: true, discountAmount: true, taxAmount: true, serviceChargeAmount: true, total: true,
@@ -152,7 +152,7 @@ export async function candidates(client: Client, cafeId: string, window: { gte: 
   // Immutable operational evidence only. No CashStorage or supplier source is imported.
   const treasury = await client.moneyMovement.findMany({ where:{cafeId,occurredAt:window},include:{account:{select:{branchId:true}}} });
   for(const m of treasury) out.push({sourceType:m.kind==="OPENING"?"TREASURY_OPENING":m.kind==="TRANSFER_OUT"?"TREASURY_TRANSFER_DISPATCH":"TREASURY_TRANSFER_RECEIVE",sourceId:m.id,sourceKey:m.sourceKey,at:m.occurredAt,branchId:m.account.branchId,description:"حركة أموال تشغيلية مسجلة",lines:"ترحيل حسابات الأموال غير معتمد؛ مصدر تشغيلي غير قابل للترحيل: "+JSON.stringify({kind:m.kind,accountId:m.accountId,transferId:m.transferId,amount:m.signedAmount.toFixed(2),actorId:m.actorId,openingReference:m.openingReference})});
-  out.push(...await purchaseAndStockCandidates(client, cafeId, window));
+  out.push(...await purchaseAndStockCandidates(client, cafeId, window, valueLegacyCountRebases));
   return out.sort((a, b) => a.at.getTime() - b.at.getTime() || a.sourceKey.localeCompare(b.sourceKey));
 }
 
@@ -183,13 +183,17 @@ const WARNING_KINDS = new Set(["ASSUMED_DATE"]);
  * period for a date no period covers — for shadow books only; real periods
  * are the accountant's call. Reprojection never edits a posted entry.
  */
-export async function projectShadowLedger(args: { cafeId: string; from: Date; to: Date; actorId?: string | null; openMissingPeriods?: boolean }): Promise<ShadowReport> {
+export async function projectShadowLedger(args: {
+  cafeId: string; from: Date; to: Date; actorId?: string | null; openMissingPeriods?: boolean;
+  /** Internal disposable diagnostics. HTTP projection and P&L leave historical valuation on hold. */
+  valueLegacyCountRebases?: true;
+}): Promise<ShadowReport> {
   const entity = await db.$transaction((tx) => ensureAccountingEntity(tx, args.cafeId));
   const window = { gte: args.from, lt: args.to };
   const run = await db.accountingProjectionRun.create({ data: { cafeId: args.cafeId, entityId: entity.id, windowFrom: args.from, windowTo: args.to, actorId: args.actorId ?? null } });
   const report: ShadowReport = { runId: run.id, posted: 0, replayed: 0, skipped: 0, exceptions: [], warnings: [], bySource: {} };
   const issues: IssueInput[] = [];
-  const all = await candidates(db, args.cafeId, window);
+  const all = await candidates(db, args.cafeId, window, args.valueLegacyCountRebases);
   for (const c of all) {
     const issue = (kind: IssueInput["kind"], reason: string) => issues.push({ sourceKey: c.sourceKey, sourceType: c.sourceType, sourceId: c.sourceId, kind, reason, eventAt: c.at, branchId: c.branchId });
     if (typeof c.lines === "string") { issue("UNPOSTABLE", c.lines); continue; }

@@ -11,18 +11,40 @@ import { acquireInventorySharedLocks } from "@/lib/inventory-freeze";
 import { publicInventoryItem } from "@/lib/public-shape";
 import { round3 } from "@/lib/costing";
 import { findScopedItem } from "@/lib/inventory-scope";
+import { resolvePermissions } from "@/lib/perms/effective";
+import { recordHandoverAdjustment, validateHandoverAdjustment } from "@/lib/stock-handover-review";
+import type { SessionUser } from "@/lib/auth";
 
 type Params = { params: Promise<{ id: string }> };
 
 // Manual stock movements. TRANSFER_IN/OUT are excluded here — those only
 // happen through /api/inventory/transfer so both branches stay in sync.
+//
+// `handoverAdjustment` links an ADJUSTMENT to a reviewed stock-handover
+// shortage. It is the only way a handover discrepancy reaches the stock
+// balance, and it never happens automatically: a manager states a fresh
+// physical count, explicit cost evidence and a reason, and the review gate in
+// validateHandoverAdjustment decides on the locked balance.
 const movementSchema = z.object({
   orderItemId: z.string().optional(),
   type: z.enum(["PURCHASE", "USAGE", "WASTE", "ADJUSTMENT", "RETURN"]),
   quantity: z.number({ message: "الكمية يجب أن تكون رقم" }),
   unitCost: z.number().min(0).optional(),
   note: z.string().max(500).optional(),
+  handoverAdjustment: z.object({
+    handoverId: z.string().min(1).max(64),
+    token: z.string().regex(/^[0-9a-f]{64}$/, "رمز التسوية غير صالح"),
+    physicalQuantity: z.number().min(0, "الجرد الفعلي مايصحش يكون بالسالب"),
+  }).strict().optional(),
 });
+
+/** A linked handover adjustment needs both stock-movement and handover-review rights. */
+async function requireHandoverAdjuster(): Promise<SessionUser> {
+  const session = await requireKey("inventory.transactions");
+  const { keys } = await resolvePermissions(session);
+  if (!keys.has("handover.manage")) throw new ApiError(403, "تسوية فرق التسليم للمدير أو المالك");
+  return session;
+}
 
 export async function POST(request: NextRequest, { params }: Params) {
   try {
@@ -47,6 +69,15 @@ export async function POST(request: NextRequest, { params }: Params) {
       return response;
     }
     if (data.orderItemId) throw new ApiError(400, "ربط الطلب متاح للمرتجع المادي فقط");
+    const linked = data.handoverAdjustment ?? null;
+    if (linked) {
+      if (data.type !== "ADJUSTMENT" || data.quantity >= 0) throw new ApiError(400, "تسوية فرق التسليم بتكون تسوية بالنقص بس");
+      // Cost evidence is required: a shortage is never posted at zero or at an assumed cost.
+      if (data.unitCost === undefined || data.unitCost <= 0) throw new ApiError(400, "سجّل تكلفة الوحدة من مستند معتمد قبل التسوية");
+      if (Math.round(data.unitCost * 100) / 100 !== data.unitCost) throw new ApiError(400, "تكلفة الوحدة بحد أقصى رقمين عشريين");
+      if (!data.note?.trim()) throw new ApiError(400, "اكتب سبب التسوية");
+      session = await requireHandoverAdjuster();
+    }
     const item = await findScopedItem(id, session);
 
     // ADJUSTMENT may be ±; everything else must be a positive amount.
@@ -65,11 +96,20 @@ export async function POST(request: NextRequest, { params }: Params) {
       const scoped = await findScopedItem(id, session);
       return requestScope({ ...session, cafeId: scoped.cafeId, branchId: scoped.branchId }, movementOperation);
     };
-    const effective = { inventoryItemId: id, type: data.type, quantity: delta, unitCost: data.unitCost ?? null, note: data.note ?? null };
+    const effective = { inventoryItemId: id, type: data.type, quantity: delta, unitCost: data.unitCost ?? null, note: data.note ?? null, handoverAdjustment: linked };
 
     // The balance, ledger row, audit row and stored response commit together.
     return await withIdempotency(request, movementScope, effective, async (tx) => {
       if (data.type === "RETURN" && (await tx.productStockBinding.count({ where: { inventoryItemId: id } }) || await tx.orderItem.count({ where: { finishedStockItemId: id } }))) throw new ApiError(409, "مرتجع المنتج الجاهز لازم يرتبط بصنف الطلب الأصلي؛ رد الأموال لا يعيد المخزون");
+      // A linked handover adjustment locks the handover row first, then the
+      // branch gate and the item (validateHandoverAdjustment), so it cannot
+      // deadlock with a handover cancellation.
+      const gate = linked
+        ? await validateHandoverAdjustment(tx, {
+            cafeId: item.cafeId, branchId: item.branchId, handoverId: linked.handoverId, itemId: id,
+            token: linked.token, physicalQuantity: linked.physicalQuantity, delta,
+          })
+        : null;
       // Decide on the locked balance, never on the one read before the
       // transaction: a replay must not depend on what the movement consumed.
       await acquireInventorySharedLocks(tx, [item.branchId]);
@@ -121,9 +161,22 @@ export async function POST(request: NextRequest, { params }: Params) {
         },
       });
 
+      if (linked && gate) {
+        // The link between the review and the movement, in the same transaction.
+        await recordHandoverAdjustment(tx, {
+          cafeId: item.cafeId, actorId: session.id, handoverId: linked.handoverId, inventoryItemId: id,
+          transactionId: moved.transactionId, comparisonVersion: gate.comparisonVersion, quantity: delta,
+          physicalQuantity: linked.physicalQuantity, bookQuantity: gate.bookQuantity,
+          unitCost: unitCost ?? null, totalCost, reason: data.note!.trim(),
+        });
+      }
+
       const updated = await tx.inventoryItem.findUniqueOrThrow({ where: { id } });
-      return NextResponse.json({ item: publicInventoryItem(updated) });
-    }, { scope: { cafeId: item.cafeId, branchId: item.branchId }, authorize: async () => { session = await requireKey("inventory.transactions"); } });
+      return NextResponse.json({
+        item: publicInventoryItem(updated),
+        ...(linked ? { adjustment: { transactionId: moved.transactionId, handoverId: linked.handoverId } } : {}),
+      });
+    }, { scope: { cafeId: item.cafeId, branchId: item.branchId }, authorize: async () => { session = linked ? await requireHandoverAdjuster() : await requireKey("inventory.transactions"); } });
   } catch (error) {
     return handleApiError(error);
   }

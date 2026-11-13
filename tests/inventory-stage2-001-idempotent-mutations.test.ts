@@ -118,17 +118,21 @@ async function handover(branchId: string) {
   return (await db.handoverSession.create({
     data: {
       cafeId: fx.cafeId, branchId, outgoingShiftId: shift.id, outgoingUserId: fx.owner.id,
-      status: "COMPLETED", completedAt: new Date(),
+      status: "DRAFT",
     },
   })).id;
 }
 
 async function frozen<T>(branchId: string, run: () => Promise<T>) {
   const { acquireInventoryFreeze, releaseInventoryFreeze } = await import("@/lib/inventory-freeze");
+  // Only simulate an active legacy freeze. A v2 handover never acquires one.
   const handoverId = await handover(branchId);
   await db.$transaction((tx) => acquireInventoryFreeze(tx, { cafeId: fx.cafeId, branchId, handoverId, startedById: fx.owner.id }));
   try { return await run(); } finally {
-    await db.$transaction((tx) => releaseInventoryFreeze(tx, { handoverId, actorId: fx.owner.id }));
+    await db.$transaction(async (tx) => {
+      await releaseInventoryFreeze(tx, { handoverId, actorId: fx.owner.id });
+      await tx.handoverSession.update({ where: { id: handoverId }, data: { status: "COMPLETED", completedAt: new Date() } });
+    });
   }
 }
 

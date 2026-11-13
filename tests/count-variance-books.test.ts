@@ -11,15 +11,18 @@
 // agree on what the counts cost.
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
+import * as XLSX from "xlsx";
 import { db, teardownTaggedCafe } from "./helpers/db";
 import { countCafe, countItem, type CountCafe } from "./helpers/count";
 import { as, jarFor, requireServer, BASE } from "./helpers/http";
 import { addDays, dateStrInTz, zonedDayStart } from "@/lib/date-range";
-import { trialBalance } from "@/lib/accounting/ledger";
+import { closePeriod, openPeriod, reverseEntry, trialBalance } from "@/lib/accounting/ledger";
+import { ensureAccountingEntity } from "@/lib/accounting/chart";
 import { applyStockMutation } from "@/lib/ledger";
 import { projectShadowLedger } from "@/lib/accounting/shadow-projection";
 import { getExecutivePnl } from "@/lib/accounting/pnl";
-import { loadVarianceSheet, varianceSheetTotals } from "@/lib/reports/stock-variance-sheet";
+import { inventoryReconciliation } from "@/lib/accounting/subledgers";
+import { loadVarianceSheet, varianceSheetTotals, varianceSheetXlsx, type VarianceSheetLine } from "@/lib/reports/stock-variance-sheet";
 
 after(async () => { await db.$disconnect(); });
 
@@ -121,7 +124,9 @@ test("apply-to-stock is refused for unconfirmed and handover counts and without 
     const ordinary = await confirmedCount(fx, [{ itemId: milk.id, counted: 9, snapshot: 50 }]);
 
     assert.equal((await apply(fx, submitted.id)).status, 409);
-    assert.equal((await apply(fx, handover.id)).status, 409);
+    const handoverRefusal = await apply(fx, handover.id);
+    assert.equal(handoverRefusal.status, 409);
+    assert.match(handoverRefusal.body.error ?? "", /مراجعة فروق جرد التسليم/);
     assert.equal((await apply(fx, ordinary.id, fx.cashier.email)).status, 403, "counting is not signing off the shelf");
     assert.equal((await apply(fx, ordinary.id, fx.waiter.email)).status, 403);
     assert.equal((await as(fx.waiter.email, "/api/stock-counts/variances/export")).status, 403);
@@ -135,26 +140,156 @@ test("apply-to-stock is refused for unconfirmed and handover counts and without 
   }
 });
 
-test("an older cost-less count rebase is valued from its line's captured cost; with none it stays an exception", { timeout: 60000 }, async () => {
+test("the variance workbook guides each count and separates stock application from journal posting", () => {
+  const date = "2026-11-11";
+  const line: VarianceSheetLine = {
+    confirmedAt: zonedDayStart(date), branch: "Main", count: "Count", context: "جرد عادي",
+    item: "Milk", itemId: "milk", unit: "KG", expected: 4, counted: 3, difference: -1,
+    unitCost: 30, value: -30, status: "فرق معتمد", reason: null, note: null, counter: null, posted: false,
+  };
+  const workbook = XLSX.read(varianceSheetXlsx({
+    from: date, to: date, branch: "Main", currency: "EGP", counts: 3,
+    lines: [
+      line,
+      { ...line, count: "Handover", context: "جرد تسليم" },
+      { ...line, count: "Opening", context: "جرد فتح فرع" },
+      { ...line, count: "Historical", posted: true },
+    ],
+  }), { type: "buffer" });
+  const details = XLSX.utils.sheet_to_json<Record<string, string>>(workbook.Sheets["الفروقات"]);
+  assert.match(details[0]["الخطوة التالية"], /تطبيق الفروقات على المخزون/);
+  assert.match(details[1]["الخطوة التالية"], /مراجعة التسليم/);
+  assert.doesNotMatch(details[1]["الخطوة التالية"], /تطبيق الفروقات/);
+  assert.match(details[2]["الخطوة التالية"], /التحقق الافتتاحي/);
+  assert.equal(details[3]["اتسجل في المخزون"], "نعم");
+  assert.match(details[3]["الخطوة التالية"], /راجع قيود اليومية/);
+  const summary = XLSX.utils.sheet_to_json<Array<string | number>>(workbook.Sheets["الملخص"], { header: 1 });
+  assert.equal(summary.find(([label]) => label === "صافي قيمة الفروقات (EGP)")?.[1], -120);
+  assert.match(String(summary.find(([label]) => label === "ملحوظة")?.[1]), /لا يؤكد الترحيل للحسابات/);
+});
+
+/** A fixture in an earlier business period, as the old writer left it. */
+async function legacyRebase(fx: CountCafe, itemId: string, quantity: number, snapshot: number | null, date: string) {
+  const count = await confirmedCount(fx, [{ itemId, counted: 4 + quantity, snapshot }]);
+  return db.$transaction(async (tx) => {
+    const movement = await applyStockMutation(tx, {
+      inventoryItemId: itemId, type: "COUNT_REBASE", quantity, cafeId: fx.cafeId,
+      branchId: fx.branchId, createdById: fx.manager.id, note: `COUNT_REBASE session=${count.id}`,
+    });
+    // The fixture writer uses today's timestamp. Move this fixture to the period under test.
+    await tx.inventoryTransaction.update({ where: { id: movement.transactionId }, data: { createdAt: zonedDayStart(date) } });
+    await tx.stockCountRebase.create({
+      data: {
+        sessionId: count.id, lineId: count.lines[0].id, inventoryItemId: itemId,
+        countedQuantity: movement.stockAfter, stockBefore: movement.stockBefore,
+        replayedDelta: 0, replayedMovementCount: 0, stockAfter: movement.stockAfter,
+        rebaseItemVersion: movement.itemVersion, ledgerTransactionId: movement.transactionId, rebasedById: fx.manager.id,
+      },
+    });
+    return movement.transactionId;
+  });
+}
+
+test("default P&L sync holds past cost-less rebases even when count cost evidence exists", { timeout: 60000 }, async () => {
+  await requireServer();
+  const fx = await countCafe("CVB-HELD");
+  try {
+    const date = addDays(today(), -2);
+    const eggs = await countItem(fx, "eggs", { stock: 4, costPerUnit: 100 });
+    const movementId = await legacyRebase(fx, eggs.id, -1, 30, date);
+    await db.$transaction(async (tx) => {
+      await ensureAccountingEntity(tx, fx.cafeId);
+      await openPeriod(tx, { cafeId: fx.cafeId, startsOn: date, endsOn: date });
+    });
+
+    const response = await as<{ kpis: { variances: number; netProfit: number } }>(
+      fx.owner.email, `/api/accounting/pnl?from=${date}&to=${date}&branchId=${fx.branchId}`,
+    );
+    assert.equal(response.status, 200, response.text);
+    assert.equal(response.body.kpis.variances, 0);
+    assert.equal(response.body.kpis.netProfit, 0);
+    const source = { cafeId: fx.cafeId, sourceKey: `stock:${movementId}` };
+    assert.equal(await db.journalEntry.count({ where: source }), 0);
+    assert.equal(await db.accountingProjectionIssue.count({ where: { ...source, kind: "UNPOSTABLE", resolvedAt: null } }), 1);
+  } finally {
+    await teardownTaggedCafe(fx.cafeId);
+  }
+});
+
+test("open-period diagnostics use the historical snapshot once and keep a missing cost explicit", { timeout: 60000 }, async () => {
   await requireServer();
   const fx = await countCafe("CVB-LEGACY");
   try {
-    const eggs = await countItem(fx, "eggs", { stock: 4, costPerUnit: 0 });
+    const date = addDays(today(), -2);
+    const eggs = await countItem(fx, "eggs", { stock: 4, costPerUnit: 100 });
     const salt = await countItem(fx, "salt", { stock: 4, costPerUnit: 0 });
-    // As the old writer left it: the movement and its rebase row, no cost on the movement.
-    const legacy = await confirmedCount(fx, [{ itemId: eggs.id, counted: 3, snapshot: 30 }]);
-    const moved = await db.$transaction((tx) => applyStockMutation(tx, { inventoryItemId: eggs.id, type: "COUNT_REBASE", quantity: -1, cafeId: fx.cafeId, branchId: fx.branchId, createdById: fx.manager.id, note: `COUNT_REBASE session=${legacy.id}`, allowNegative: true }));
-    await db.stockCountRebase.create({ data: { sessionId: legacy.id, lineId: legacy.lines[0].id, inventoryItemId: eggs.id, countedQuantity: 3, stockBefore: 4, replayedDelta: 0, replayedMovementCount: 0, stockAfter: 3, rebaseItemVersion: moved.itemVersion, ledgerTransactionId: moved.transactionId, rebasedById: fx.manager.id } });
-    // An item that had no cost when counted and has none now.
-    const unvalued = await confirmedCount(fx, [{ itemId: salt.id, counted: 2, snapshot: null }]);
-    assert.equal((await apply(fx, unvalued.id)).status, 200);
+    const legacyId = await legacyRebase(fx, eggs.id, -1, 30, date);
+    const unvaluedId = await legacyRebase(fx, salt.id, -2, null, date);
+    const originalMovement = await db.inventoryTransaction.findUniqueOrThrow({ where: { id: legacyId } });
+    const diagnostic = { cafeId: fx.cafeId, ...span(date), openMissingPeriods: true, valueLegacyCountRebases: true } as const;
 
-    const report = await projectShadowLedger({ cafeId: fx.cafeId, ...span(today()), openMissingPeriods: true });
-    assert.deepEqual(report.exceptions.map((e) => e.reason), ["فرق جرد من غير تكلفة — الصنف ماكانش له تكلفة وقت الجرد"]);
-    assert.equal((await gl(fx.cafeId))("5200"), 30, "1 egg at the 30 captured when it was counted");
+    const report = await projectShadowLedger(diagnostic);
+    assert.equal(report.posted, 1);
+    assert.deepEqual(report.exceptions.map((e) => [e.sourceId, e.reason]), [[unvaluedId, "فرق جرد من غير تكلفة — الصنف ماكانش له تكلفة وقت الجرد"]]);
+    const replay = await projectShadowLedger(diagnostic);
+    assert.equal(replay.posted, 0);
+    assert.equal(replay.replayed, 1);
+    const balance = await gl(fx.cafeId);
+    assert.equal(balance("5200"), 30, "the loss uses the captured 30 even though today's cost is 100");
+    assert.equal(balance("1200"), -30);
+
+    const pnl = await getExecutivePnl({ cafeId: fx.cafeId, from: date, to: date, branchId: fx.branchId });
+    assert.equal(pnl.sections.variances.lines.find((line) => line.systemKey === "INVENTORY_LOSS")?.amount, 30);
+    assert.equal(pnl.kpis.operatingProfit, 0);
+    assert.equal(pnl.kpis.netProfit, -30);
+    const reconciliation = await inventoryReconciliation({ cafeId: fx.cafeId, asOf: date, branchId: fx.branchId });
+    assert.equal(reconciliation.glInventory, -30);
+    assert.equal(reconciliation.ledgerValue, 0);
+    assert.equal(reconciliation.uncostedRows, 2, "the diagnostic does not rewrite either stock movement");
 
     const sheet = await loadVarianceSheet({ cafeId: fx.cafeId, branchId: fx.branchId, from: today(), to: today() });
     assert.equal(varianceSheetTotals(sheet).unvalued, 1, "the salt line is listed as unvalued, not as zero");
+
+    const entry = await db.journalEntry.findFirstOrThrow({ where: { cafeId: fx.cafeId, sourceKey: `stock:${legacyId}` } });
+    const originalLines = await db.journalLine.findMany({ where: { entryId: entry.id }, orderBy: { id: "asc" } });
+    const reversal = await db.$transaction((tx) => reverseEntry(tx, { cafeId: fx.cafeId, entryId: entry.id, entryDate: date, actorId: fx.owner.id }));
+    const repeatedReversal = await db.$transaction((tx) => reverseEntry(tx, { cafeId: fx.cafeId, entryId: entry.id, entryDate: date, actorId: fx.owner.id }));
+    assert.equal(repeatedReversal.replayed, true);
+    assert.equal(repeatedReversal.entry.id, reversal.entry.id);
+    assert.equal(reversal.entry.reversalOfId, entry.id);
+    assert.equal(reversal.entry.createdById, fx.owner.id);
+    assert.deepEqual(await db.journalLine.findMany({ where: { entryId: entry.id }, orderBy: { id: "asc" } }), originalLines);
+    assert.deepEqual(await db.inventoryTransaction.findUniqueOrThrow({ where: { id: legacyId } }), originalMovement);
+    assert.equal((await gl(fx.cafeId))("5200"), 0);
+  } finally {
+    await teardownTaggedCafe(fx.cafeId);
+  }
+});
+
+test("closed-period diagnostics report a late legacy event without changing its P&L", { timeout: 60000 }, async () => {
+  await requireServer();
+  const fx = await countCafe("CVB-CLOSED");
+  try {
+    const date = addDays(today(), -2);
+    const eggs = await countItem(fx, "eggs", { stock: 4, costPerUnit: 100 });
+    const movementId = await legacyRebase(fx, eggs.id, -1, 30, date);
+    await db.$transaction(async (tx) => {
+      await ensureAccountingEntity(tx, fx.cafeId);
+      const period = await openPeriod(tx, { cafeId: fx.cafeId, startsOn: date, endsOn: date });
+      await closePeriod(tx, { cafeId: fx.cafeId, periodId: period.id, actorId: fx.owner.id });
+    });
+    const scope = { cafeId: fx.cafeId, sourceKey: `stock:${movementId}` };
+    const pnlArgs = { cafeId: fx.cafeId, from: date, to: date, branchId: fx.branchId };
+    const before = await getExecutivePnl(pnlArgs);
+    const diagnostic = { cafeId: fx.cafeId, ...span(date), openMissingPeriods: true, valueLegacyCountRebases: true } as const;
+    const report = await projectShadowLedger(diagnostic);
+    assert.equal(report.posted, 0);
+    assert.equal(report.exceptions.length, 1);
+    assert.equal(report.exceptions[0].sourceKey, scope.sourceKey);
+    assert.equal(await db.accountingProjectionIssue.count({ where: { ...scope, kind: "LATE_EVENT", resolvedAt: null } }), 1);
+    assert.equal(await db.journalEntry.count({ where: scope }), 0);
+    assert.deepEqual((await getExecutivePnl(pnlArgs)).sections.variances, before.sections.variances);
+    assert.equal((await getExecutivePnl(pnlArgs)).kpis.netProfit, before.kpis.netProfit);
   } finally {
     await teardownTaggedCafe(fx.cafeId);
   }

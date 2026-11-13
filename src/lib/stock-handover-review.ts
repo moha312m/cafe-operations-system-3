@@ -5,14 +5,93 @@
 // notes. A stock correction, when one is warranted, goes through the existing
 // authorised adjustment process — this module only links the conclusion to it.
 
+import { createHash } from "node:crypto";
 import type { Prisma, StockHandoverClassification, StockHandoverReviewStatus } from "@prisma/client";
 import { ApiError } from "@/lib/api";
 import { auditInTransaction } from "@/lib/audit";
 import { db } from "@/lib/db";
-import { buildComparison, LABEL_AR, type ComparisonLineRecord } from "@/lib/stock-handover-v2";
+import { acquireInventorySharedLocks } from "@/lib/inventory-freeze";
+import { lockItemForUpdate } from "@/lib/ledger";
+import { buildComparison, LABEL_AR, toMilli, type ComparisonLineRecord, type ComparisonSnapshot } from "@/lib/stock-handover-v2";
 import { buildXlsx, type XlsxSheetCell } from "@/lib/xlsx";
 
 type Client = Prisma.TransactionClient | typeof db;
+
+const ADJUSTMENT_ACTION = "STOCK_HANDOVER_ADJUSTMENT";
+
+function shortage(snapshot: ComparisonSnapshot, itemId: string) {
+  const line = snapshot.lines.find((row) => row.inventoryItemId === itemId);
+  if (!line || !line.outgoing?.counterId || !line.incoming?.counterId || line.outgoing.counterId === line.incoming.counterId ||
+      line.reliability !== "CONFIRMED" || line.disputed || line.adjusted === null) return null;
+  const difference = toMilli(line.adjusted);
+  return difference < BigInt(0) ? { line, difference } : null;
+}
+
+function adjustmentToken(snapshot: ComparisonSnapshot, itemId: string, ledgerVersion: bigint, cost: string) {
+  return createHash("sha256").update(JSON.stringify([snapshot.handoverId, snapshot.version, itemId, String(ledgerVersion), cost])).digest("hex");
+}
+
+function reviewedShortage(review: { status: string; classification: string } | null) {
+  return review?.status === "REVIEWED" && review.classification === "LOSS_UNEXPLAINED";
+}
+
+async function linkedAdjustments(client: Client, cafeId: string, handoverId: string) {
+  const rows = await client.auditLog.findMany({
+    where: { cafeId, action: ADJUSTMENT_ACTION, entity: "HandoverSession", entityId: handoverId },
+    orderBy: { createdAt: "asc" },
+    select: { details: true, createdAt: true, user: { select: { name: true } } },
+  });
+  return rows.map((row) => ({
+    ...row.details as { transactionId: string; inventoryItemId: string; comparisonVersion: string; quantity: number; unitCost: number | null; totalCost: number | null; reason: string },
+    createdAt: row.createdAt.toISOString(), actorName: row.user?.name ?? null,
+  }));
+}
+
+/**
+ * Server-side gate for a linked handover shortage adjustment. Requires: a
+ * review classified LOSS_UNEXPLAINED and marked REVIEWED; a confirmed shortage
+ * from two different counters; no adjustment already linked for the item; a
+ * token minted against the current comparison version, ledger version and
+ * reference cost (any movement or cost change makes it stale); and a fresh
+ * physical count whose shortfall against the locked book balance is exactly
+ * the requested delta and never larger than the confirmed handover shortage.
+ */
+export async function validateHandoverAdjustment(tx: Prisma.TransactionClient, args: {
+  cafeId: string; branchId: string; handoverId: string; itemId: string; token: string; physicalQuantity: number; delta: number;
+}) {
+  const [handover] = await tx.$queryRaw<{ id: string }[]>`
+    SELECT "id" FROM "HandoverSession"
+    WHERE "id"=${args.handoverId} AND "cafeId"=${args.cafeId} AND "branchId"=${args.branchId} FOR UPDATE
+  `;
+  if (!handover) throw new ApiError(404, "التسليم مش موجود في نفس الفرع");
+  const review = await tx.stockHandoverReview.findUnique({ where: { handoverId: handover.id } });
+  if (!reviewedShortage(review)) throw new ApiError(409, "راجع الحالة وصنّفها عجز غير مفسّر قبل التسوية");
+  const snapshot = await buildComparison(tx, handover.id);
+  const evidence = shortage(snapshot, args.itemId);
+  if (!evidence) throw new ApiError(409, "الصنف مافيش له عجز مؤكد من جردين مستقلين");
+  const existing = await linkedAdjustments(tx, args.cafeId, handover.id);
+  if (existing.some((row) => row.inventoryItemId === args.itemId)) throw new ApiError(409, "العجز ده له تسوية مسجّلة بالفعل");
+  // Lock order: handover row (above), then the branch gate, then the item —
+  // the same order as handover cancellation and every ordinary movement.
+  await acquireInventorySharedLocks(tx, [args.branchId]);
+  const locked = await lockItemForUpdate(tx, args.itemId);
+  if (locked.unit !== evidence.line.unit || adjustmentToken(snapshot, args.itemId, locked.ledgerVersion, locked.costPerUnitExact.toFixed(2)) !== args.token) {
+    throw new ApiError(409, "الرصيد أو المقارنة اتغيروا. افتح التقرير من جديد وعدّ الصنف تاني");
+  }
+  const observedDelta = toMilli(args.physicalQuantity) - toMilli(locked.currentStock);
+  if (observedDelta >= BigInt(0) || observedDelta < evidence.difference || observedDelta !== toMilli(args.delta)) {
+    throw new ApiError(409, "سجّل بس العجز المتبقي بين الجرد الفعلي والرصيد الحالي، في حدود فرق التسليم المؤكد");
+  }
+  return { comparisonVersion: snapshot.version, bookQuantity: locked.currentStock };
+}
+
+export async function recordHandoverAdjustment(tx: Prisma.TransactionClient, args: {
+  cafeId: string; actorId: string; handoverId: string; inventoryItemId: string; transactionId: string; comparisonVersion: string;
+  quantity: number; physicalQuantity: number; bookQuantity: number; unitCost: number | null; totalCost: number | null; reason: string;
+}) {
+  const { cafeId, actorId, handoverId, ...details } = args;
+  await auditInTransaction(tx, { cafeId, userId: actorId, action: ADJUSTMENT_ACTION, entity: "HandoverSession", entityId: handoverId, details });
+}
 
 /** Managers review; owners and report readers read. */
 export const mayReadStockHandoverReports = (keys: Set<string>) => keys.has("handover.manage") || keys.has("shifts.view_reports");
@@ -144,7 +223,7 @@ export async function listStockHandoverReports(client: Client, filter: ReportFil
 }
 
 /** One handover in full: the live comparison, its history, the movements behind it and the review trail. */
-export async function stockHandoverReportDetail(client: Client, args: { cafeId: string; viewerBranchId: string | null; handoverId: string }) {
+export async function stockHandoverReportDetail(client: Client, args: { cafeId: string; viewerBranchId: string | null; handoverId: string; canAdjust?: boolean }) {
   const h = await client.handoverSession.findFirst({
     where: { id: args.handoverId, cafeId: args.cafeId },
     select: {
@@ -163,6 +242,23 @@ export async function stockHandoverReportDetail(client: Client, args: { cafeId: 
   if (!h) throw new ApiError(404, "التسليم مش موجود");
   if (args.viewerBranchId !== null && h.branchId !== args.viewerBranchId) throw new ApiError(403, "ليس لديك صلاحية على فرع تاني");
   const comparison = await buildComparison(client as Prisma.TransactionClient, h.id);
+  const adjustments = await linkedAdjustments(client, args.cafeId, h.id);
+  const adjustmentOptions: Record<string, { token: string; bookQuantity: number; referenceCost: number | null }> = {};
+  if (args.canAdjust && reviewedShortage(h.stockReview)) {
+    const linkedItems = new Set(adjustments.map((row) => row.inventoryItemId));
+    const ids = comparison.lines.filter((line) => !linkedItems.has(line.inventoryItemId) && shortage(comparison, line.inventoryItemId)).map((line) => line.inventoryItemId);
+    const items = ids.length ? await client.inventoryItem.findMany({
+      where: { id: { in: ids }, cafeId: args.cafeId, branchId: h.branchId, isActive: true },
+      select: { id: true, currentStock: true, costPerUnit: true, ledgerVersion: true },
+    }) : [];
+    for (const item of items) {
+      adjustmentOptions[item.id] = {
+        token: adjustmentToken(comparison, item.id, item.ledgerVersion, item.costPerUnit.toFixed(2)),
+        bookQuantity: item.currentStock.toNumber(),
+        referenceCost: item.costPerUnit.gt(0) ? item.costPerUnit.toNumber() : null,
+      };
+    }
+  }
 
   // The recorded movements behind every non-zero figure, so a reader can see
   // what explained (or did not explain) it.
@@ -190,6 +286,8 @@ export async function stockHandoverReportDetail(client: Client, args: { cafeId: 
     comparison: { ...comparison, lines: comparison.lines.map((l) => ({ ...l, labelText: LABEL_AR[l.label] })) },
     history: h.stockComparisons.map((c) => ({ ...c, computedAt: c.computedAt.toISOString() })),
     movements,
+    adjustments,
+    adjustmentOptions,
     review: h.stockReview
       ? {
           status: h.stockReview.status, classification: h.stockReview.classification,
