@@ -16,16 +16,16 @@ type ReviewStatus = "OPEN" | "IN_REVIEW" | "REVIEWED" | "RESOLVED";
 type Row = {
   handoverId: string; branchName: string; closedAt: string | null; status: string; outgoingName: string; incomingName: string | null;
   outgoingCounted: boolean; incomingCounted: boolean; reliability: string; rawDifferenceCount: number; adjustedDifferenceCount: number;
-  unavailableCount: number; result: Result; reviewStatus: ReviewStatus | null; classification: string | null; notes: number;
+  unavailableCount: number; disputedCount: number; result: Result; reviewStatus: ReviewStatus | null; classification: string | null; notes: number;
 };
-type Side = { quantity: string; unit: string; countedAt: string; itemVersion: string | null } | null;
+type Side = { quantity: string; unit: string; countedAt: string; itemVersion: string | null; source?: string } | null;
 type Line = {
   inventoryItemId: string; itemName: string; unit: string; outgoing: Side; incoming: Side; raw: string | null; netMovement: string | null;
-  expected: string | null; adjusted: string | null; movementCount: number; reliability: string; label: string; labelText: string; note: string | null;
+  expected: string | null; adjusted: string | null; movementCount: number; reliability: string; label: string; labelText: string; note: string | null; disputed: boolean;
 };
 type Detail = {
   handover: { id: string; status: string; branchName: string; closedAt: string; acceptedAt: string | null; outgoingName: string; incomingName: string | null; incomingCount: { startedAt: string; submittedAt: string | null } | null };
-  comparison: { reliability: string; sameCounter: boolean; outgoingCounted: boolean; incomingCounted: boolean; lines: Line[]; rawDifferenceCount: number; adjustedDifferenceCount: number; unavailableCount: number };
+  comparison: { reliability: string; sameCounter: boolean; outgoingCounted: boolean; incomingCounted: boolean; lines: Line[]; rawDifferenceCount: number; adjustedDifferenceCount: number; unavailableCount: number; disputedCount: number };
   history: { id: string; reliability: string; rawDifferenceCount: number; adjustedDifferenceCount: number; computedAt: string }[];
   movements: Record<string, { type: string; quantity: string; at: string; note: string | null; by: string | null }[]>;
   review: { status: ReviewStatus; classification: string; notes: { id: string; text: string; statusFrom: string | null; statusTo: string | null; classificationFrom: string | null; classificationTo: string | null; createdAt: string; authorName: string }[] } | null;
@@ -152,6 +152,7 @@ export default function StockHandoverReportPage() {
                   <span>فرق خام: {r.rawDifferenceCount}</span>
                   <span>غير مفسَّر: {r.adjustedDifferenceCount}</span>
                   <span>غير متاح: {r.unavailableCount}</span>
+                  {r.disputedCount > 0 && <span className="font-semibold text-red-700">اعتراض المُستلِم: {r.disputedCount}</span>}
                   <span>الموثوقية: {RELIABILITY_LABEL[r.reliability] ?? r.reliability}</span>
                   <span>المراجعة: {r.reviewStatus ? STATUS_LABEL[r.reviewStatus] : "—"}</span>
                   {r.classification && <span>التصنيف: {CLASS_LABEL[r.classification]}</span>}
@@ -225,12 +226,12 @@ function DetailView({ handoverId, onChanged }: { handoverId: string; onChanged: 
               <tr key={l.inventoryItemId} className="border-t align-top">
                 <td className="p-2">{l.itemName} <span className="text-xs text-muted-foreground">({l.unit})</span></td>
                 <td className="p-2 text-center tabular-nums">{qty(l.outgoing?.quantity)}</td>
-                <td className="p-2 text-center tabular-nums">{qty(l.incoming?.quantity)}</td>
+                <td className="p-2 text-center tabular-nums">{qty(l.incoming?.quantity)}{l.incoming?.source === "LEGACY_SHEET" && <span className="block text-xs text-muted-foreground">من ورقة الاستلام</span>}</td>
                 <td className="p-2 text-center tabular-nums">{qty(l.raw)}</td>
                 <td className="p-2 text-center tabular-nums">{qty(l.netMovement)}{l.movementCount ? <span className="block text-xs text-muted-foreground">{l.movementCount} حركة</span> : null}</td>
                 <td className="p-2 text-center tabular-nums">{qty(l.expected)}</td>
                 <td className={`p-2 text-center font-semibold tabular-nums ${l.adjusted && Number(l.adjusted) !== 0 ? "text-red-700" : ""}`}>{qty(l.adjusted)}</td>
-                <td className="p-2">{l.labelText}{l.note && <span className="block text-xs text-muted-foreground">{l.note}</span>}</td>
+                <td className="p-2">{l.labelText}{l.disputed && <span className="block text-xs font-semibold text-red-700">المُستلِم اعترض على السطر ده</span>}{l.note && <span className="block text-xs text-muted-foreground">{l.note}</span>}</td>
               </tr>
             ))}
           </tbody>

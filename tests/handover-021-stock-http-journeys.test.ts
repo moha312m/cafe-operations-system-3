@@ -18,6 +18,8 @@ after(async()=>{for(const id of cafes){
  await db.varianceCase.deleteMany({where:{cafeId:id}});
  await db.stockCountSession.deleteMany({where:{cafeId:id}});
  await db.inventoryFreeze.deleteMany({where:{cafeId:id}});
+ // v2 (C1): a sheet dispute opens a review row, which must go before its handover.
+ await db.stockHandoverReview.deleteMany({where:{cafeId:id}});
  await db.handoverSession.deleteMany({where:{cafeId:id}});
  await teardownTaggedCafe(id);
 }await db.$disconnect();});
@@ -53,7 +55,15 @@ for(const scenario of ["match","outgoing-difference","receiving-difference"]){
  if(incomingDifference){const reason=await db.reasonCode.create({data:{cafeId:fx.cafeId,domain:'HANDOVER',code:'RECEIVING',label:'Synthetic receiving difference'}});for(const line of decisions)Object.assign(line,{disputeReasonCodeId:reason.id});}
  const body={countSessionId:sid,countVersion:count.countVersion,lines:decisions,idempotencyKey:crypto.randomUUID()};
  await post(incoming.email,`/api/handovers/${hid}/acknowledge`,body);await post(incoming.email,`/api/handovers/${hid}/acknowledge`,body);
- if(incomingDifference){const refused=await as(incoming.email,`/api/handovers/${hid}/accept`,{method:'POST',body:JSON.stringify({idempotencyKey:crypto.randomUUID(),countedOpeningCash:100})});assert.equal(refused.status,409,refused.text);assert.notEqual((await db.handoverSession.findUniqueOrThrow({where:{id:hid}})).status,'COMPLETED');console.log(`HTTP DISPUTE PASS: initially matching stock ${hid}`);continue;}
+ // v2 (Plan: "no signature / dispute ... refusal"): the disputed handover completes,
+ // and the dispute itself reaches the v2 comparison, the notifications and the review.
+ if(incomingDifference){const done=await post<{status:string}>(incoming.email,`/api/handovers/${hid}/accept`,{idempotencyKey:crypto.randomUUID(),countedOpeningCash:100});assert.equal(done.status,'COMPLETED');
+  assert.equal((await db.handoverStockAcknowledgement.findMany({where:{handoverId:hid}})).filter(a=>a.decision==='DISPUTED').length,1,'the refusal is still recorded as a refusal');
+  const cmp=await db.stockHandoverComparison.findFirst({where:{handoverId:hid},orderBy:{computedAt:'desc'}});assert.equal((cmp?.lines as {disputedCount?:number}|null)?.disputedCount,1,'the dispute reaches the v2 comparison');
+  const told=await db.notification.findMany({where:{handoverId:hid,kind:'STOCK_HANDOVER_DISCREPANCY'}});assert.ok(told.some(n=>n.recipientId===fx.owner.id)&&told.some(n=>n.recipientId===fx.manager.id),'the owner and the manager are notified');
+  assert.ok(await db.stockHandoverReview.findUnique({where:{handoverId:hid}}),'the dispute opens a review');
+  assert.equal(Number((await db.inventoryItem.findFirstOrThrow({where:{branchId:fx.branchId,name:{endsWith:'Alpha'}}})).currentStock),10,'the disputed figure is never posted');
+  console.log(`HTTP DISPUTE PASS: dispute reported, handover completed ${hid}`);continue;}
  const accepted=await post<{status:string}>(incoming.email,`/api/handovers/${hid}/accept`,{idempotencyKey:crypto.randomUUID(),countedOpeningCash:100});assert.equal(accepted.status,'COMPLETED');
  const end=await db.handoverSession.findUniqueOrThrow({where:{id:hid}});assert.equal(end.incomingUserId,incoming.id);assert.equal(await db.inventoryFreeze.count({where:{handoverId:hid,releasedAt:null}}),0);
  console.log(`HTTP JOURNEY PASS: ${difference?'recorded shortage':'system-validated match'} ${hid}`);

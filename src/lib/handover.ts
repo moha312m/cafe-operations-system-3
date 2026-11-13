@@ -105,7 +105,7 @@ import {
 } from "@/lib/stock-count";
 import { buildStockBoundary, persistStockBoundary } from "@/lib/handover-boundary";
 import { openHandoverVarianceCases } from "@/lib/stock-variance-attribution";
-import { reportOutgoingCountIfMissing } from "@/lib/stock-handover-v2";
+import { recordLegacySheetDisputes, reportOutgoingCountIfMissing } from "@/lib/stock-handover-v2";
 import { ensureCustodyForShift, transferCustody } from "@/lib/custody";
 import { recordCashHandover } from "@/lib/cash-handover";
 import { recordDirectCashOpening } from "@/lib/cash-disposition";
@@ -1727,7 +1727,13 @@ type StockLineAcknowledgementArgs = {
 };
 
 export async function acknowledgeStockLine(args: StockLineAcknowledgementArgs): Promise<AcknowledgeStockLineResult> {
-  return db.$transaction(tx => acknowledgeStockLineInTransaction(tx,args));
+  return db.$transaction(async tx => {
+    const result = await acknowledgeStockLineInTransaction(tx,args);
+    // C1: a refusal or a different figure reaches the v2 comparison, the
+    // manager/owner notifications and the review in this same transaction.
+    await recordLegacySheetDisputes(tx, args.handoverId, args.acknowledgedById);
+    return result;
+  });
 }
 
 async function acknowledgeStockLineInTransaction(tx: Prisma.TransactionClient, args: StockLineAcknowledgementArgs): Promise<AcknowledgeStockLineResult> {
@@ -2006,6 +2012,8 @@ export async function acknowledgeStockSheet(args: {
       results.push({...result,stockCountLineId:decision.stockCountLineId});
     }
     const result:StockSheetResult={lines:results,alreadyAcknowledged:false};
+    // C1: once per sheet, after every line is written, so one consent is one comparison.
+    await recordLegacySheetDisputes(tx,h.id,args.acknowledgedById);
     await auditInTransaction(tx,{cafeId:h.cafeId,userId:args.acknowledgedById,action:'HANDOVER_SHEET_ACKNOWLEDGED',entity:'HandoverSession',entityId:h.id,
       details:{branchId:h.branchId,countSessionId:args.countSessionId,countVersion:args.countVersion,idempotencyKey:args.idempotencyKey,requestHash,decisions,result,consentedAt:new Date().toISOString()}});
     return result;
@@ -3294,6 +3302,9 @@ async function runAcceptance(
   });
   if (completed.count === 0) throw new ApiError(409, NOT_ACCEPTABLE);
   await reportOutgoingCountIfMissing(tx, handover.id);
+  // C1: a sheet dispute already on file (also one written before v2 read the
+  // sheet) is recorded and notified before the handover leaves review.
+  await recordLegacySheetDisputes(tx, handover.id, args.incomingUserId);
   await checkpoint(14);
 
   // ── 14a. The exception becomes a record of its own ──
@@ -4159,6 +4170,7 @@ async function runBranchAcceptance(
   });
   if (completed.count === 0) throw new ApiError(409, NOT_ACCEPTABLE);
   await reportOutgoingCountIfMissing(tx, handover.id);
+  await recordLegacySheetDisputes(tx, handover.id, args.managerId);
   await checkpoint(15);
 
   // ── 16. The omission becomes a record of its own ──

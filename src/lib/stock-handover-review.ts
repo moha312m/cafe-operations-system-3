@@ -61,6 +61,8 @@ export type ReportRow = {
   rawDifferenceCount: number;
   adjustedDifferenceCount: number;
   unavailableCount: number;
+  /** C1: lines the incoming employee refused on the legacy receiving sheet. */
+  disputedCount: number;
   result: "UNEXPLAINED" | "EXPLAINED" | "MISSING" | "NONE";
   reviewStatus: StockHandoverReviewStatus | null;
   classification: StockHandoverClassification | null;
@@ -68,7 +70,9 @@ export type ReportRow = {
   comparedAt: string | null;
 };
 
-const resultOf = (c: { rawDifferenceCount: number; adjustedDifferenceCount: number } | null, outgoingCounted: boolean, incomingCounted: boolean): ReportRow["result"] => {
+const resultOf = (c: { rawDifferenceCount: number; adjustedDifferenceCount: number } | null, outgoingCounted: boolean, incomingCounted: boolean, disputedCount = 0): ReportRow["result"] => {
+  // A refusal is a disagreement nobody has explained yet, with or without figures (C1).
+  if (disputedCount > 0) return "UNEXPLAINED";
   if (!outgoingCounted || !incomingCounted || !c) return "MISSING";
   if (c.adjustedDifferenceCount > 0) return "UNEXPLAINED";
   if (c.rawDifferenceCount > 0) return "EXPLAINED";
@@ -96,11 +100,16 @@ export async function listStockHandoverReports(client: Client, filter: ReportFil
       incomingStockCount: { select: { submittedAt: true, counter: { select: { name: true } } } },
       stockComparisons: { orderBy: { computedAt: "desc" }, take: 1, select: { reliability: true, rawDifferenceCount: true, adjustedDifferenceCount: true, unavailableCount: true, computedAt: true, lines: true } },
       stockReview: { select: { status: true, classification: true, _count: { select: { notes: true } } } },
+      stockAcknowledgements: { where: { decision: "DISPUTED" }, select: { line: { select: { sessionId: true } } } },
     },
   });
   const rows = handovers.map((h): ReportRow => {
     const c = h.stockComparisons[0] ?? null;
-    const recorded = (c?.lines ?? null) as { outgoingCounted?: boolean; incomingCounted?: boolean } | null;
+    const recorded = (c?.lines ?? null) as { outgoingCounted?: boolean; incomingCounted?: boolean; disputedCount?: number } | null;
+    // The live sheet (current count only) or the recorded comparison, whichever
+    // names more: a later correction may clear a sheet row, the record stays.
+    const liveDisputes = h.stockAcknowledgements.filter((a) => a.line.sessionId === h.stockCountSessionId).length;
+    const disputedCount = Math.max(liveDisputes, Number(recorded?.disputedCount ?? 0));
     const outgoingCounted = recorded?.outgoingCounted ?? !!h.stockCountSessionId;
     const incomingCounted = recorded?.incomingCounted ?? !!h.incomingStockCount?.submittedAt;
     return {
@@ -117,7 +126,8 @@ export async function listStockHandoverReports(client: Client, filter: ReportFil
       rawDifferenceCount: c?.rawDifferenceCount ?? 0,
       adjustedDifferenceCount: c?.adjustedDifferenceCount ?? 0,
       unavailableCount: c?.unavailableCount ?? 0,
-      result: resultOf(c, outgoingCounted, incomingCounted),
+      disputedCount,
+      result: resultOf(c, outgoingCounted, incomingCounted, disputedCount),
       reviewStatus: h.stockReview?.status ?? null,
       classification: h.stockReview?.classification ?? null,
       notes: h.stockReview?._count.notes ?? 0,
@@ -236,20 +246,21 @@ export async function stockHandoverReportXlsx(client: Client, filter: ReportFilt
   const rows = await listStockHandoverReports(client, filter);
   const RESULT_AR = { UNEXPLAINED: "فرق غير مفسَّر", EXPLAINED: "فرق مفسَّر بحركات", MISSING: "جرد ناقص", NONE: "مطابق" } as const;
   const listSheet: XlsxSheetCell[][] = [
-    ["الفرع", "تاريخ التسليم", "المُسلِّم", "المُستلِم", "جرد المُسلِّم", "جرد المُستلِم", "الموثوقية", "أصناف بفرق خام", "أصناف بفرق غير مفسَّر", "غير متاح", "النتيجة", "حالة المراجعة", "التصنيف", "عدد الملاحظات"],
+    ["الفرع", "تاريخ التسليم", "المُسلِّم", "المُستلِم", "جرد المُسلِّم", "جرد المُستلِم", "الموثوقية", "أصناف بفرق خام", "أصناف بفرق غير مفسَّر", "غير متاح", "النتيجة", "حالة المراجعة", "التصنيف", "عدد الملاحظات", "أصناف عليها اعتراض"],
     ...rows.map((r) => [
       r.branchName, { value: r.closedAt, format: "datetime" as const }, r.outgoingName, r.incomingName ?? "—",
       r.outgoingCounted ? "اتعدّ" : "ناقص", r.incomingCounted ? "اتعدّ" : "ناقص", r.reliability,
       { value: r.rawDifferenceCount, format: "int" as const }, { value: r.adjustedDifferenceCount, format: "int" as const }, { value: r.unavailableCount, format: "int" as const },
       RESULT_AR[r.result], r.reviewStatus ? STATUS_AR[r.reviewStatus] : "—", r.classification ? CLASSIFICATION_AR[r.classification] : "—", { value: r.notes, format: "int" as const },
+      { value: r.disputedCount, format: "int" as const },
     ]),
   ];
-  const lineSheet: XlsxSheetCell[][] = [["الفرع", "تاريخ التسليم", "الصنف", "الوحدة", "عدّ المُسلِّم", "عدّ المُستلِم", "الفرق الخام", "صافي الحركات", "المتوقع", "الفرق بعد الحركات", "الموثوقية", "النتيجة", "ملاحظة"]];
+  const lineSheet: XlsxSheetCell[][] = [["الفرع", "تاريخ التسليم", "الصنف", "الوحدة", "عدّ المُسلِّم", "عدّ المُستلِم", "الفرق الخام", "صافي الحركات", "المتوقع", "الفرق بعد الحركات", "الموثوقية", "النتيجة", "ملاحظة", "اعتراض المُستلِم"]];
   for (const r of rows.slice(0, 200)) {
     const c = await buildComparison(client as Prisma.TransactionClient, r.handoverId);
     for (const l of c.lines as ComparisonLineRecord[]) {
       const q = (v: string | null | undefined) => (v === null || v === undefined ? null : { value: Number(v), format: "qty" as const });
-      lineSheet.push([r.branchName, { value: r.closedAt, format: "datetime" as const }, l.itemName, l.unit, q(l.outgoing?.quantity), q(l.incoming?.quantity), q(l.raw), q(l.netMovement), q(l.expected), q(l.adjusted), l.reliability, LABEL_AR[l.label], l.note ?? ""]);
+      lineSheet.push([r.branchName, { value: r.closedAt, format: "datetime" as const }, l.itemName, l.unit, q(l.outgoing?.quantity), q(l.incoming?.quantity), q(l.raw), q(l.netMovement), q(l.expected), q(l.adjusted), l.reliability, LABEL_AR[l.label], l.note ?? "", l.disputed ? "اعترض" : ""]);
     }
   }
   return buildXlsx([

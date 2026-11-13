@@ -47,7 +47,10 @@ export type ComparisonLineRecord = {
   itemName: string;
   unit: InventoryUnit;
   outgoing: { quantity: string; unit: InventoryUnit; countedAt: string; itemVersion: string | null; counterId: string | null } | null;
-  incoming: { quantity: string; unit: InventoryUnit; countedAt: string; itemVersion: string | null; counterId: string | null; revision: number } | null;
+  /** `source`: the v2 blind count, or the legacy line-by-line receiving sheet (C1). */
+  incoming: { quantity: string; unit: InventoryUnit; countedAt: string; itemVersion: string | null; counterId: string | null; revision: number; source: IncomingSource } | null;
+  /** The incoming employee refused this line on the legacy receiving sheet. */
+  disputed: boolean;
   raw: string | null;
   netMovement: string | null;
   expected: string | null;
@@ -71,7 +74,11 @@ export type ComparisonSnapshot = {
   rawDifferenceCount: number;
   adjustedDifferenceCount: number;
   unavailableCount: number;
+  /** Lines the incoming employee refused on the legacy receiving sheet. */
+  disputedCount: number;
 };
+
+export type IncomingSource = "INCOMING_COUNT" | "LEGACY_SHEET";
 
 const observationJson = (o: CountObservation) => ({
   quantity: fromMilli(o.quantityMilli), unit: o.unit, countedAt: o.countedAt.toISOString(),
@@ -128,6 +135,41 @@ async function incomingObservations(tx: Client, handoverId: string) {
   return { map, counted: map.size > 0, counterIds, countId: count.id };
 }
 
+/**
+ * C1. The legacy line-by-line receiving sheet (`HandoverStockAcknowledgement`)
+ * of the CURRENT outgoing count. v2 completes a handover whatever the sheet
+ * says, so the sheet's figures and refusals must be read here or they reach
+ * nobody. A figure has no ledger cursor of its own (the sheet never stored
+ * one), so it compares PROVISIONAL, by time. A refusal is kept as a refusal
+ * even when it carries no figure: a missing count is never a zero.
+ */
+async function legacySheetEvidence(tx: Client, handoverId: string, sessionId: string | null) {
+  const map = new Map<string, CountObservation & { revision: number }>();
+  const disputed = new Set<string>();
+  if (!sessionId) return { map, disputed, differing: 0 };
+  const acks = await tx.handoverStockAcknowledgement.findMany({
+    where: { handoverId, line: { sessionId } },
+    select: { incomingCountedQuantity: true, varianceQuantity: true, decision: true, acknowledgedAt: true, acknowledgedById: true,
+      line: { select: { inventoryItemId: true, unit: true } } },
+  });
+  let differing = 0;
+  for (const ack of acks) {
+    const itemId = ack.line.inventoryItemId;
+    if (ack.decision === "DISPUTED") disputed.add(itemId);
+    if (ack.varianceQuantity !== null && !ack.varianceQuantity.isZero()) differing += 1;
+    if (ack.incomingCountedQuantity === null) continue;
+    map.set(itemId, {
+      quantityMilli: toMilli(ack.incomingCountedQuantity.toFixed(3)),
+      unit: ack.line.unit,
+      countedAt: ack.acknowledgedAt,
+      itemVersion: null,
+      counterId: ack.acknowledgedById,
+      revision: 1,
+    });
+  }
+  return { map, disputed, differing };
+}
+
 /** Build the comparison from the database. Read-only. */
 export async function buildComparison(tx: Client, handoverId: string): Promise<ComparisonSnapshot> {
   const handover = await tx.handoverSession.findUnique({
@@ -135,11 +177,19 @@ export async function buildComparison(tx: Client, handoverId: string): Promise<C
     select: { id: true, cafeId: true, branchId: true, stockCountSessionId: true },
   });
   if (!handover) throw new ApiError(404, "التسليم مش موجود");
-  const [out, inc] = await Promise.all([
+  const [out, v2inc, sheet] = await Promise.all([
     outgoingObservations(tx, handover.stockCountSessionId),
     incomingObservations(tx, handover.id),
+    legacySheetEvidence(tx, handover.id, handover.stockCountSessionId),
   ]);
-  const itemIds = [...new Set([...out.map.keys(), ...inc.map.keys()])].sort();
+  // The v2 blind count wins per item; the legacy sheet fills only what it did not count.
+  const source = new Map<string, IncomingSource>();
+  const incMap = new Map(v2inc.map);
+  for (const id of incMap.keys()) source.set(id, "INCOMING_COUNT");
+  for (const [id, o] of sheet.map) if (!incMap.has(id)) { incMap.set(id, o); source.set(id, "LEGACY_SHEET"); }
+  const sheetCounters = [...sheet.map.values()].map((o) => o.counterId).filter((id): id is string => !!id);
+  const inc = { map: incMap, counted: incMap.size > 0, counterIds: new Set([...v2inc.counterIds, ...sheetCounters]) };
+  const itemIds = [...new Set([...out.map.keys(), ...inc.map.keys(), ...sheet.disputed])].sort();
   const items = itemIds.length
     ? await tx.inventoryItem.findMany({ where: { id: { in: itemIds } }, select: { id: true, name: true, unit: true } })
     : [];
@@ -179,7 +229,8 @@ export async function buildComparison(tx: Client, handoverId: string): Promise<C
       itemName: item?.name ?? id,
       unit: item?.unit ?? (o?.unit ?? i!.unit),
       outgoing: o ? observationJson(o) : null,
-      incoming: i ? { ...observationJson(i), revision: i.revision } : null,
+      incoming: i ? { ...observationJson(i), revision: i.revision, source: source.get(id) ?? "INCOMING_COUNT" } : null,
+      disputed: sheet.disputed.has(id),
       raw: c.rawMilli === null ? null : fromMilli(c.rawMilli),
       netMovement: c.netMilli === null ? null : fromMilli(c.netMilli),
       expected: c.expectedMilli === null ? null : fromMilli(c.expectedMilli),
@@ -201,7 +252,12 @@ export async function buildComparison(tx: Client, handoverId: string): Promise<C
         : "CONFIRMED";
   const sameCounter = [...inc.counterIds].some((id) => out.counterIds.has(id));
   const version = createHash("sha256").update(JSON.stringify(lines.map((l) => [
-    l.inventoryItemId, l.outgoing, l.incoming, l.raw, l.netMovement, l.adjusted, l.reliability,
+    // A v2-count line hashes exactly as before C1 (no `source` key), so an
+    // existing comparison keeps its version and is never re-notified.
+    l.inventoryItemId, l.outgoing, l.incoming?.source === "INCOMING_COUNT" ? (({ source: _s, ...rest }) => rest)(l.incoming) : l.incoming,
+    l.raw, l.netMovement, l.adjusted, l.reliability,
+    // Appended only when set, so a line with no sheet refusal hashes as before.
+    ...(l.disputed ? ["DISPUTED"] : []),
   ]))).digest("hex");
 
   return {
@@ -217,6 +273,7 @@ export async function buildComparison(tx: Client, handoverId: string): Promise<C
     rawDifferenceCount: lines.filter((l) => l.raw !== null && toMilli(l.raw) !== BigInt(0)).length,
     adjustedDifferenceCount: lines.filter((l) => l.adjusted !== null && toMilli(l.adjusted) !== BigInt(0)).length,
     unavailableCount: lines.filter((l) => l.reliability === "UNAVAILABLE").length,
+    disputedCount: lines.filter((l) => l.disputed).length,
   };
 }
 
@@ -257,17 +314,18 @@ export async function recordComparison(tx: Client, handoverId: string, actorId: 
         reliability: snapshot.reliability, itemCount: snapshot.lines.length,
         rawDifferenceCount: snapshot.rawDifferenceCount, adjustedDifferenceCount: snapshot.adjustedDifferenceCount,
         unavailableCount: snapshot.unavailableCount,
-        lines: JSON.parse(JSON.stringify({ lines: snapshot.lines, sameCounter: snapshot.sameCounter, outgoingCounted: snapshot.outgoingCounted, incomingCounted: snapshot.incomingCounted })),
+        lines: JSON.parse(JSON.stringify({ lines: snapshot.lines, sameCounter: snapshot.sameCounter, outgoingCounted: snapshot.outgoingCounted, incomingCounted: snapshot.incomingCounted, disputedCount: snapshot.disputedCount })),
       },
       select: { id: true },
     });
     await auditInTransaction(tx, {
       cafeId: snapshot.cafeId, userId: actorId, action: "STOCK_HANDOVER_COMPARED", entity: "HandoverSession", entityId: handoverId,
-      details: { comparisonId: comparison.id, version: snapshot.version, reliability: snapshot.reliability, rawDifferenceCount: snapshot.rawDifferenceCount, adjustedDifferenceCount: snapshot.adjustedDifferenceCount, unavailableCount: snapshot.unavailableCount },
+      details: { comparisonId: comparison.id, version: snapshot.version, reliability: snapshot.reliability, rawDifferenceCount: snapshot.rawDifferenceCount, adjustedDifferenceCount: snapshot.adjustedDifferenceCount, unavailableCount: snapshot.unavailableCount, disputedCount: snapshot.disputedCount },
     });
   }
 
-  const hasDifference = snapshot.rawDifferenceCount > 0 || snapshot.adjustedDifferenceCount > 0;
+  // A refusal on the legacy sheet is a disagreement even with no figure (C1).
+  const hasDifference = snapshot.rawDifferenceCount > 0 || snapshot.adjustedDifferenceCount > 0 || snapshot.disputedCount > 0;
   let notified = 0;
   if (hasDifference) {
     await ensureReview(tx, snapshot.cafeId, snapshot.branchId, handoverId);
@@ -279,9 +337,9 @@ export async function recordComparison(tx: Client, handoverId: string, actorId: 
         cafeId: snapshot.cafeId, branchId: snapshot.branchId, recipientId, kind: "STOCK_HANDOVER_DISCREPANCY" as const,
         handoverId, comparisonId: comparison!.id,
         dedupeKey: `shv2:discrepancy:${comparison!.id}:${recipientId}`,
-        title: unexplained > 0 ? `فرق غير مفسَّر في جرد التسليم — ${branch?.name ?? ""}` : `فرق في جرد التسليم مفسَّر بحركات — ${branch?.name ?? ""}`,
-        body: `أصناف بفرق خام: ${snapshot.rawDifferenceCount} · أصناف بفرق غير مفسَّر: ${unexplained} · غير متاح: ${snapshot.unavailableCount}`,
-        payload: { comparisonId: comparison!.id, version: snapshot.version, rawDifferenceCount: snapshot.rawDifferenceCount, adjustedDifferenceCount: unexplained, reliability: snapshot.reliability },
+        title: snapshot.disputedCount > 0 ? `المُستلِم اعترض على جرد التسليم — ${branch?.name ?? ""}` : unexplained > 0 ? `فرق غير مفسَّر في جرد التسليم — ${branch?.name ?? ""}` : `فرق في جرد التسليم مفسَّر بحركات — ${branch?.name ?? ""}`,
+        body: `أصناف بفرق خام: ${snapshot.rawDifferenceCount} · أصناف بفرق غير مفسَّر: ${unexplained} · غير متاح: ${snapshot.unavailableCount}${snapshot.disputedCount > 0 ? ` · أصناف عليها اعتراض: ${snapshot.disputedCount}` : ""}`,
+        payload: { comparisonId: comparison!.id, version: snapshot.version, rawDifferenceCount: snapshot.rawDifferenceCount, adjustedDifferenceCount: unexplained, reliability: snapshot.reliability, disputedCount: snapshot.disputedCount },
       })),
       skipDuplicates: true,
     });
@@ -453,6 +511,21 @@ export async function incomingCountView(tx: Client, args: Actor & { handoverId: 
 export async function outgoingCountRecorded(tx: Client, handoverId: string): Promise<boolean> {
   const h = await tx.handoverSession.findUnique({ where: { id: handoverId }, select: { stockCountSessionId: true } });
   return (await outgoingObservations(tx, h?.stockCountSessionId ?? null)).counted;
+}
+
+/**
+ * C1. Record the comparison when the legacy receiving sheet of the current
+ * count holds a refusal or a figure that differs from what was handed over.
+ * Called on the sheet's own transaction, and again at acceptance so a dispute
+ * written before v2 read the sheet still reaches the manager and owner. A
+ * sheet that only signed matching figures records nothing new. Idempotent:
+ * the comparison is per version and notifications are deduplicated.
+ */
+export async function recordLegacySheetDisputes(tx: Client, handoverId: string, actorId: string) {
+  const h = await tx.handoverSession.findUnique({ where: { id: handoverId }, select: { stockCountSessionId: true } });
+  const sheet = await legacySheetEvidence(tx, handoverId, h?.stockCountSessionId ?? null);
+  if (sheet.disputed.size === 0 && sheet.differing === 0) return null;
+  return recordComparison(tx, handoverId, actorId);
 }
 
 /** Report a missing outgoing count — called by the outgoing finish and by acceptance. Never refuses. */
