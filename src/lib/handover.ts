@@ -105,7 +105,7 @@ import {
 } from "@/lib/stock-count";
 import { buildStockBoundary, persistStockBoundary } from "@/lib/handover-boundary";
 import { openHandoverVarianceCases } from "@/lib/stock-variance-attribution";
-import { recordLegacySheetDisputes, reportOutgoingCountIfMissing } from "@/lib/stock-handover-v2";
+import { recordLegacySheetDisputes, recordUncountedAcceptance, reportOutgoingCountIfMissing } from "@/lib/stock-handover-v2";
 import { ensureCustodyForShift, transferCustody } from "@/lib/custody";
 import { recordCashHandover } from "@/lib/cash-handover";
 import { recordDirectCashOpening } from "@/lib/cash-disposition";
@@ -690,27 +690,13 @@ export async function startHandoverCount(args: {
         select: { id: true },
       });
     } catch (e) {
-      // Somebody else's count claimed the branch's partial unique index. If
-      // it was this handover's, the pointer now names it, and that is the
-      // answer this caller asked for.
+      // Another count holds the branch's partial unique index. This handover's
+      // own racer cannot be it: the handover row lock above serialises them and
+      // the loser returns the pointer before reaching the insert. Nothing can be
+      // re-read here either, because the failed insert has aborted the
+      // transaction (C2: it used to try, and answered 500).
       if (isUniqueViolation(e)) {
-        const raced = await tx.handoverSession.findUniqueOrThrow({
-          where: { id: handover.id },
-          select: { stockCountSessionId: true },
-        });
-        if (raced.stockCountSessionId) {
-          const session = await tx.stockCountSession.findUniqueOrThrow({
-            where: { id: raced.stockCountSessionId },
-            select: { id: true, type: true },
-          });
-          return {
-            countSessionId: session.id,
-            type: session.type,
-            scopeItemIds,
-            reused: true,
-            started: null,
-          };
-        }
+        throw new ApiError(409, "في جرد تاني مفتوح في الفرع — لازم يخلص أو يتقفل الأول");
       }
       throw e;
     }
@@ -3301,6 +3287,8 @@ async function runAcceptance(
     },
   });
   if (completed.count === 0) throw new ApiError(409, NOT_ACCEPTABLE);
+  // C2: no confirmed outgoing count — recorded as an uncounted handover, never silent.
+  await recordUncountedAcceptance(tx, handover.id, args.incomingUserId, acceptedSessionId);
   await reportOutgoingCountIfMissing(tx, handover.id);
   // C1: a sheet dispute already on file (also one written before v2 read the
   // sheet) is recorded and notified before the handover leaves review.
@@ -4169,6 +4157,7 @@ async function runBranchAcceptance(
     },
   });
   if (completed.count === 0) throw new ApiError(409, NOT_ACCEPTABLE);
+  await recordUncountedAcceptance(tx, handover.id, args.managerId, acceptedSessionId);
   await reportOutgoingCountIfMissing(tx, handover.id);
   await recordLegacySheetDisputes(tx, handover.id, args.managerId);
   await checkpoint(15);

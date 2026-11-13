@@ -349,7 +349,7 @@ export async function recordComparison(tx: Client, handoverId: string, actorId: 
 }
 
 /** Notify that one side's count is missing — once per handover, side and recipient. */
-export async function notifyMissingCount(tx: Client, handoverId: string, side: "OUTGOING" | "INCOMING") {
+export async function notifyMissingCount(tx: Client, handoverId: string, side: "OUTGOING" | "INCOMING", body?: string) {
   const handover = await tx.handoverSession.findUniqueOrThrow({ where: { id: handoverId }, select: { cafeId: true, branchId: true, branch: { select: { name: true } } } });
   const recipients = await stockHandoverRecipients(tx, handover.cafeId, handover.branchId);
   const created = await tx.notification.createMany({
@@ -357,7 +357,7 @@ export async function notifyMissingCount(tx: Client, handoverId: string, side: "
       cafeId: handover.cafeId, branchId: handover.branchId, recipientId, kind: "STOCK_HANDOVER_MISSING_COUNT" as const, handoverId,
       dedupeKey: `shv2:missing:${handoverId}:${side}:${recipientId}`,
       title: `جرد تسليم ناقص — ${handover.branch.name}`,
-      body: side === "OUTGOING" ? "الموظف المُسلِّم قفل من غير ما يعدّ الخامات" : "الموظف المُستلِم استلم من غير ما يعدّ الخامات",
+      body: body ?? (side === "OUTGOING" ? "الموظف المُسلِّم قفل من غير ما يعدّ الخامات" : "الموظف المُستلِم استلم من غير ما يعدّ الخامات"),
       payload: { side },
     })),
     skipDuplicates: true,
@@ -526,6 +526,64 @@ export async function recordLegacySheetDisputes(tx: Client, handoverId: string, 
   const sheet = await legacySheetEvidence(tx, handoverId, h?.stockCountSessionId ?? null);
   if (sheet.disputed.size === 0 && sheet.differing === 0) return null;
   return recordComparison(tx, handoverId, actorId);
+}
+
+export const STOCK_HANDOVER_ACCEPTED_UNCOUNTED = "STOCK_HANDOVER_ACCEPTED_UNCOUNTED";
+const UNCOUNTED_BODY = "التسليم اتستلم من غير جرد مُسلِّم مؤكد — الخامات اتنقلت بأرقام الدفتر من غير عدّ";
+
+/**
+ * C2. A handover received with no CONFIRMED outgoing count (the outgoing
+ * employee never finished, or the count never confirmed) is recorded as an
+ * UNCOUNTED handover, never completed silently: one audit row stating what
+ * the outgoing count was and what the snapshot holds, and a missing-count
+ * notification to every branch manager and owner; the report flags it as
+ * received without a confirmed count. The stock snapshot is the boundary the
+ * acceptance has just written (every item carried at the book figure,
+ * `verified = false`). Runs on the acceptance's transaction, once.
+ */
+export async function recordUncountedAcceptance(tx: Client, handoverId: string, actorId: string, acceptedSessionId: string | null) {
+  if (acceptedSessionId) return false;
+  const h = await tx.handoverSession.findUniqueOrThrow({
+    where: { id: handoverId },
+    select: { cafeId: true, branchId: true, status: true, target: true, stockCountSessionId: true },
+  });
+  if (await tx.auditLog.findFirst({ where: { entity: "HandoverSession", entityId: handoverId, action: STOCK_HANDOVER_ACCEPTED_UNCOUNTED }, select: { id: true } })) return false;
+  const session = h.stockCountSessionId
+    ? await tx.stockCountSession.findUnique({ where: { id: h.stockCountSessionId }, select: { status: true, lines: { select: EFFECTIVE_EVIDENCE_SELECT } } })
+    : null;
+  const [boundaryRows, verifiedRows] = await Promise.all([
+    tx.handoverStockBoundary.count({ where: { handoverId } }),
+    tx.handoverStockBoundary.count({ where: { handoverId, verified: true } }),
+  ]);
+  // The unfinished outgoing count is closed as history, exactly as the
+  // owner-approved cancel of an unfinished handover closes it (handover-cancel
+  // step 5): LOCKED by this handover, figures untouched, pending corrections
+  // rejected with the reason. Left open it would hold the branch's single
+  // active-count slot forever, and the next shift could never count.
+  let lockedUnfinishedCountSessionId: string | null = null;
+  if (h.stockCountSessionId && session && session.status !== "LOCKED" && session.status !== "CONFIRMED") {
+    const locked = await tx.stockCountSession.updateMany({
+      where: { id: h.stockCountSessionId, status: { notIn: ["LOCKED", "CONFIRMED"] } },
+      data: { status: "LOCKED", lockedAt: new Date(), lockedByHandoverId: handoverId },
+    });
+    if (locked.count > 0) lockedUnfinishedCountSessionId = h.stockCountSessionId;
+    await tx.stockCountCorrection.updateMany({
+      where: { line: { sessionId: h.stockCountSessionId }, status: "PENDING_APPROVAL" },
+      data: { status: "REJECTED", rejectedReason: "التسليم اتستلم من غير جرد مُسلِّم مؤكد" },
+    });
+  }
+  await auditInTransaction(tx, {
+    cafeId: h.cafeId, userId: actorId, action: STOCK_HANDOVER_ACCEPTED_UNCOUNTED, entity: "HandoverSession", entityId: handoverId,
+    details: {
+      branchId: h.branchId, target: h.target, handoverStatus: h.status,
+      outgoingCountSessionId: h.stockCountSessionId, outgoingCountStatus: session?.status ?? null,
+      outgoingLines: session?.lines.length ?? 0,
+      outgoingLinesObserved: session?.lines.filter((l) => hasAuthoritativeObservation(l)).length ?? 0,
+      boundaryRows, verifiedBoundaryRows: verifiedRows, lockedUnfinishedCountSessionId,
+    },
+  });
+  await notifyMissingCount(tx, handoverId, "OUTGOING", UNCOUNTED_BODY);
+  return true;
 }
 
 /** Report a missing outgoing count — called by the outgoing finish and by acceptance. Never refuses. */

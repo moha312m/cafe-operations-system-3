@@ -63,6 +63,8 @@ export type ReportRow = {
   unavailableCount: number;
   /** C1: lines the incoming employee refused on the legacy receiving sheet. */
   disputedCount: number;
+  /** C2: received with no confirmed outgoing count; the shelf moved at book figures. */
+  uncountedAcceptance: boolean;
   result: "UNEXPLAINED" | "EXPLAINED" | "MISSING" | "NONE";
   reviewStatus: StockHandoverReviewStatus | null;
   classification: StockHandoverClassification | null;
@@ -70,9 +72,11 @@ export type ReportRow = {
   comparedAt: string | null;
 };
 
-const resultOf = (c: { rawDifferenceCount: number; adjustedDifferenceCount: number } | null, outgoingCounted: boolean, incomingCounted: boolean, disputedCount = 0): ReportRow["result"] => {
+const resultOf = (c: { rawDifferenceCount: number; adjustedDifferenceCount: number } | null, outgoingCounted: boolean, incomingCounted: boolean, disputedCount = 0, uncounted = false): ReportRow["result"] => {
   // A refusal is a disagreement nobody has explained yet, with or without figures (C1).
   if (disputedCount > 0) return "UNEXPLAINED";
+  // Received with no confirmed outgoing count: never "matching" (C2).
+  if (uncounted) return "MISSING";
   if (!outgoingCounted || !incomingCounted || !c) return "MISSING";
   if (c.adjustedDifferenceCount > 0) return "UNEXPLAINED";
   if (c.rawDifferenceCount > 0) return "EXPLAINED";
@@ -93,7 +97,7 @@ export async function listStockHandoverReports(client: Client, filter: ReportFil
     orderBy: { createdAt: "desc" },
     take: Math.min(filter.take ?? 200, 1000),
     select: {
-      id: true, branchId: true, status: true, createdAt: true, stockCountSessionId: true,
+      id: true, branchId: true, status: true, createdAt: true, stockCountSessionId: true, acceptedStockCountSessionId: true,
       branch: { select: { name: true } },
       outgoingUser: { select: { name: true } },
       incomingUser: { select: { name: true } },
@@ -110,6 +114,7 @@ export async function listStockHandoverReports(client: Client, filter: ReportFil
     // names more: a later correction may clear a sheet row, the record stays.
     const liveDisputes = h.stockAcknowledgements.filter((a) => a.line.sessionId === h.stockCountSessionId).length;
     const disputedCount = Math.max(liveDisputes, Number(recorded?.disputedCount ?? 0));
+    const uncountedAcceptance = h.status === "COMPLETED" && h.acceptedStockCountSessionId === null;
     const outgoingCounted = recorded?.outgoingCounted ?? !!h.stockCountSessionId;
     const incomingCounted = recorded?.incomingCounted ?? !!h.incomingStockCount?.submittedAt;
     return {
@@ -127,7 +132,8 @@ export async function listStockHandoverReports(client: Client, filter: ReportFil
       adjustedDifferenceCount: c?.adjustedDifferenceCount ?? 0,
       unavailableCount: c?.unavailableCount ?? 0,
       disputedCount,
-      result: resultOf(c, outgoingCounted, incomingCounted, disputedCount),
+      uncountedAcceptance,
+      result: resultOf(c, outgoingCounted, incomingCounted, disputedCount, uncountedAcceptance),
       reviewStatus: h.stockReview?.status ?? null,
       classification: h.stockReview?.classification ?? null,
       notes: h.stockReview?._count.notes ?? 0,
@@ -246,13 +252,14 @@ export async function stockHandoverReportXlsx(client: Client, filter: ReportFilt
   const rows = await listStockHandoverReports(client, filter);
   const RESULT_AR = { UNEXPLAINED: "فرق غير مفسَّر", EXPLAINED: "فرق مفسَّر بحركات", MISSING: "جرد ناقص", NONE: "مطابق" } as const;
   const listSheet: XlsxSheetCell[][] = [
-    ["الفرع", "تاريخ التسليم", "المُسلِّم", "المُستلِم", "جرد المُسلِّم", "جرد المُستلِم", "الموثوقية", "أصناف بفرق خام", "أصناف بفرق غير مفسَّر", "غير متاح", "النتيجة", "حالة المراجعة", "التصنيف", "عدد الملاحظات", "أصناف عليها اعتراض"],
+    ["الفرع", "تاريخ التسليم", "المُسلِّم", "المُستلِم", "جرد المُسلِّم", "جرد المُستلِم", "الموثوقية", "أصناف بفرق خام", "أصناف بفرق غير مفسَّر", "غير متاح", "النتيجة", "حالة المراجعة", "التصنيف", "عدد الملاحظات", "أصناف عليها اعتراض", "استلام من غير جرد مؤكد"],
     ...rows.map((r) => [
       r.branchName, { value: r.closedAt, format: "datetime" as const }, r.outgoingName, r.incomingName ?? "—",
       r.outgoingCounted ? "اتعدّ" : "ناقص", r.incomingCounted ? "اتعدّ" : "ناقص", r.reliability,
       { value: r.rawDifferenceCount, format: "int" as const }, { value: r.adjustedDifferenceCount, format: "int" as const }, { value: r.unavailableCount, format: "int" as const },
       RESULT_AR[r.result], r.reviewStatus ? STATUS_AR[r.reviewStatus] : "—", r.classification ? CLASSIFICATION_AR[r.classification] : "—", { value: r.notes, format: "int" as const },
       { value: r.disputedCount, format: "int" as const },
+      r.uncountedAcceptance ? "نعم" : "",
     ]),
   ];
   const lineSheet: XlsxSheetCell[][] = [["الفرع", "تاريخ التسليم", "الصنف", "الوحدة", "عدّ المُسلِّم", "عدّ المُستلِم", "الفرق الخام", "صافي الحركات", "المتوقع", "الفرق بعد الحركات", "الموثوقية", "النتيجة", "ملاحظة", "اعتراض المُستلِم"]];

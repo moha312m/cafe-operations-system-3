@@ -16,7 +16,7 @@ type ReviewStatus = "OPEN" | "IN_REVIEW" | "REVIEWED" | "RESOLVED";
 type Row = {
   handoverId: string; branchName: string; closedAt: string | null; status: string; outgoingName: string; incomingName: string | null;
   outgoingCounted: boolean; incomingCounted: boolean; reliability: string; rawDifferenceCount: number; adjustedDifferenceCount: number;
-  unavailableCount: number; disputedCount: number; result: Result; reviewStatus: ReviewStatus | null; classification: string | null; notes: number;
+  unavailableCount: number; disputedCount: number; uncountedAcceptance: boolean; result: Result; reviewStatus: ReviewStatus | null; classification: string | null; notes: number;
 };
 type Side = { quantity: string; unit: string; countedAt: string; itemVersion: string | null; source?: string } | null;
 type Line = {
@@ -153,6 +153,7 @@ export default function StockHandoverReportPage() {
                   <span>غير مفسَّر: {r.adjustedDifferenceCount}</span>
                   <span>غير متاح: {r.unavailableCount}</span>
                   {r.disputedCount > 0 && <span className="font-semibold text-red-700">اعتراض المُستلِم: {r.disputedCount}</span>}
+                  {r.uncountedAcceptance && <span className="font-semibold text-red-700">اتستلم من غير جرد مُسلِّم مؤكد</span>}
                   <span>الموثوقية: {RELIABILITY_LABEL[r.reliability] ?? r.reliability}</span>
                   <span>المراجعة: {r.reviewStatus ? STATUS_LABEL[r.reviewStatus] : "—"}</span>
                   {r.classification && <span>التصنيف: {CLASS_LABEL[r.classification]}</span>}

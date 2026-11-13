@@ -380,12 +380,22 @@ test("acceptance refuses a busy Handover immediately instead of waiting while ho
   assert.notEqual((await db.handoverSession.findUniqueOrThrow({ where: {id:ready.handoverId} })).status, "COMPLETED");
 });
 
-test("invalid DRAFT acceptance refuses before locking a Shift used by count start", async () => {
+test("DRAFT acceptance takes Shift and then Handover NOWAIT, so it cannot cycle with count start", async () => {
   const ready = await readyToAccept();
   await db.handoverSession.update({ where: { id: ready.handoverId }, data: { status: "DRAFT" } });
-  const { result, sql } = await observeTransactionSql(() => accept(ready.handoverId, { incomingShiftId: ready.incomingShiftId }).then(() => null, (error: unknown) => error));
-  assert.equal((result as { status?: number })?.status, 409);
-  assert.equal(sql.some(q => /FROM "Shift"/.test(q) && /FOR UPDATE/.test(q)), false, "invalid acceptance must not create Shift -> Handover vs count-start's Handover -> Shift FK cycle");
+  const { result, sql } = await observeTransactionSql(() => accept(ready.handoverId, { incomingShiftId: ready.incomingShiftId }));
+  // v2 (Plan: "Acceptance (shift and branch): DRAFT accepted"): the handover is received.
+  assert.equal((result as { status?: string }).status, "COMPLETED");
+  // This test used to prove the Shift -> Handover vs count-start's Handover -> Shift FK
+  // cycle could not form because a DRAFT acceptance refused before taking Shift. DRAFT
+  // acceptance is now legal and takes Shift, so the cycle is broken by the order and
+  // mode instead: Shift first, then Handover with NOWAIT, and never a waiting Handover
+  // lock while Shift is held. A count start holding Handover makes acceptance refuse at
+  // once (the NOWAIT test above); shv2-006 races the two 32 times with no deadlock.
+  const shift = sql.findIndex(q => /FROM "Shift"/.test(q) && /FOR UPDATE/.test(q));
+  const handover = sql.findIndex(q => /FROM "HandoverSession"/.test(q) && /FOR UPDATE/.test(q));
+  assert.ok(shift >= 0 && handover > shift, JSON.stringify(sql));
+  assert.ok(sql.filter(q => /FROM "HandoverSession"/.test(q) && /FOR UPDATE/.test(q)).every(q => /NOWAIT/.test(q)), `every Handover lock taken while holding Shift is NOWAIT: ${JSON.stringify(sql)}`);
 });
 
 test("acceptance initializes timeouts and locks Shift before handover and inventory", async () => {
