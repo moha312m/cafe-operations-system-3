@@ -6,7 +6,8 @@ import { toast } from "sonner";
 import { RotateCw, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { api } from "@/lib/client";
 import { useApp } from "@/components/app-shell";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { varianceSheetHref } from "@/components/stock-counts/variance-sheet-download";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -55,6 +56,8 @@ type SessionDetail = {
   confirmedAt: string | null;
   notes: string | null;
   blind: boolean;
+  /** Lines whose count has already moved the shelf (and the books). */
+  appliedLines?: number;
   lines: CountLine[];
 };
 
@@ -91,7 +94,7 @@ export function StockCountDetail({
   const [reasonCodeId, setReasonCodeId] = useState("");
   const [note, setNote] = useState("");
   const inFlight = useRef(false);
-  const [confirmation, setConfirmation] = useState<"submit" | "confirm" | null>(null);
+  const [confirmation, setConfirmation] = useState<"submit" | "confirm" | "apply" | null>(null);
   const [, redrawEntries] = useState(0);
   const loadRevision = useRef(0);
   const queue = useMemo(() => new CountEntryQueue(async (lineId, value, expectedCountedAt) => {
@@ -212,6 +215,24 @@ export function StockCountDetail({
       await after();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "تعذّر تأكيد الجرد");
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+    }
+  }
+
+  // Confirming agrees the figures; this moves the shelf to them, which is
+  // what books the shortage or surplus against profit.
+  async function applyToStock() {
+    if (!detail || inFlight.current) return;
+    inFlight.current = true;
+    setBusy(true);
+    try {
+      const res = await api<{ itemsApplied: number; alreadyApplied: boolean }>(`/api/stock-counts/${detail.id}/apply-to-stock`, { method: "POST", body: {} });
+      toast.success(res.alreadyApplied ? "الفروقات كانت اتطبقت قبل كده" : `اتطبقت الفروقات على المخزون (${res.itemsApplied} صنف) واتسجلت في الحسابات`);
+      await after();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "تعذّر تطبيق الفروقات");
     } finally {
       inFlight.current = false;
       setBusy(false);
@@ -376,6 +397,19 @@ export function StockCountDetail({
                   </Badge>
                 )}
                 <div className="ms-auto flex flex-wrap gap-2">
+                  {detail.status === "CONFIRMED" && detail.accountabilityContext === "NONE" && !detail.handoverId && (detail.appliedLines ?? 0) === 0 && canKey("stock_count.confirm") && (
+                    <Button size="sm" disabled={busy} onClick={() => setConfirmation("apply")} data-testid="count-apply-to-stock">
+                      تطبيق الفروقات على المخزون
+                    </Button>
+                  )}
+                  {detail.accountabilityContext === "NONE" && (detail.appliedLines ?? 0) > 0 && (
+                    <Badge variant="outline" data-testid="count-applied-badge">اتطبق على المخزون والحسابات</Badge>
+                  )}
+                  {(detail.status === "CONFIRMED" || detail.status === "LOCKED") && (
+                    <a href={varianceSheetHref({ sessionId: detail.id })} className={buttonVariants({ size: "sm", variant: "outline" })} data-testid="count-variance-sheet">
+                      تنزيل فروقات الجرد ده
+                    </a>
+                  )}
                   {canResync && ["DRAFT", "IN_PROGRESS", "SUBMITTED", "RECOUNT_REQUIRED"].includes(detail.status) && (
                     <Button
                       size="sm"
@@ -551,7 +585,9 @@ export function StockCountDetail({
             </div>
           )}
       </DetailFrame>
-      <ConfirmHandoverAction title={confirmation === "submit" ? "تسليم الجرد للمراجعة" : "اعتماد الجرد"} open={confirmation !== null} busy={busy} onCancel={() => setConfirmation(null)} onConfirm={() => { const action = confirmation; setConfirmation(null); if (action === "submit") void submit(); else if (action === "confirm") void confirm(); }} />
+      <ConfirmHandoverAction title={confirmation === "submit" ? "تسليم الجرد للمراجعة" : confirmation === "apply" ? "تطبيق الفروقات على المخزون" : "اعتماد الجرد"} open={confirmation !== null} busy={busy} onCancel={() => setConfirmation(null)} onConfirm={() => { const action = confirmation; setConfirmation(null); if (action === "submit") void submit(); else if (action === "confirm") void confirm(); else if (action === "apply") void applyToStock(); }}>
+        {confirmation === "apply" ? "رصيد كل صنف هيتعدّل للكمية اللي اتعدّت، والعجز أو الزيادة هيتسجل في الحسابات بتكلفة الصنف (هالك وفروقات مخزون) ويظهر في الأرباح والخسائر. الخطوة دي مبتترجعش." : undefined}
+      </ConfirmHandoverAction>
 
       {/* Line actions use the active reasons configured for this cafe. */}
       <Dialog open={pending !== null} onOpenChange={(o) => !o && !busy && setPending(null)}>

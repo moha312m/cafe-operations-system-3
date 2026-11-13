@@ -6,6 +6,7 @@ import {
   handleApiError,
 } from "@/lib/api";
 import { getCountSessionForViewer } from "@/lib/stock-count";
+import { db } from "@/lib/db";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -27,7 +28,10 @@ export async function GET(request: NextRequest, { params }: Params) {
       viewerId: session.id,
       viewerBranchId: session.branchId,
     });
-    return NextResponse.json({ session: found });
+    // How many lines have already moved the shelf, so the screen knows
+    // whether "apply to stock" is still to do.
+    const appliedLines = await db.stockCountRebase.count({ where: { sessionId: id } });
+    return NextResponse.json({ session: { ...found, appliedLines } });
   } catch (error) {
     return handleApiError(error);
   }

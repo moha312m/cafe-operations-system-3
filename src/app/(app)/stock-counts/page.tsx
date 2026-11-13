@@ -18,6 +18,7 @@ import {
   type CountSessionRow,
 } from "@/components/stock-counts/stock-count-list";
 import { StockCountDetail } from "@/components/stock-counts/stock-count-detail";
+import { VarianceSheetDownload } from "@/components/stock-counts/variance-sheet-download";
 import {
   COUNT_STATUSES,
   COUNT_STATUS_LABEL,
@@ -157,6 +158,8 @@ export default function StockCountsPage() {
           )}
         </div>
       </header>
+
+      {branchId && <VarianceSheetDownload branchId={branchId} />}
 
       {loading ? (
         <div className="h-40 animate-pulse rounded-xl border border-dashed bg-muted/30" />

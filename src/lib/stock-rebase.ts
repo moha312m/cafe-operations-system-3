@@ -96,7 +96,7 @@ import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import { ApiError } from "@/lib/api";
 import { auditInTransaction } from "@/lib/audit";
-import { round3 } from "@/lib/costing";
+import { round2, round3 } from "@/lib/costing";
 import { isTerminal } from "@/lib/count-disposition";
 import { applyStockMutation, ledgerDeltaAbove, lockItemForUpdate } from "@/lib/ledger";
 import { acquireInventorySharedLocks } from "@/lib/inventory-freeze";
@@ -178,6 +178,20 @@ type RebaseExecutor = {
  * Lines not in a terminal disposition are skipped and counted, never guessed
  * at — an unsettled line has no figure anybody has agreed to act on.
  */
+/**
+ * What a count difference is worth, so the movement reaches the books.
+ *
+ * A stock row without a cost cannot be posted (purchase-posting.ts), which
+ * left every count shortage and surplus out of the P&L. The value is the cost
+ * captured when the line was judged; failing that, the item's cost at the
+ * moment the stock moved — the rule waste and usage already follow. With
+ * neither, the row stays unvalued and the books report it rather than guess.
+ */
+export function countMovementValue(quantity: number, unitCostSnapshot: number | null, costPerUnit: number | null): { unitCost: number | null; totalCost: number | null } {
+  const unitCost = [unitCostSnapshot, costPerUnit].find((c): c is number => c !== null && Number.isFinite(c) && c > 0) ?? null;
+  return { unitCost, totalCost: unitCost === null ? null : round2(Math.abs(quantity) * unitCost) };
+}
+
 export async function rebaseFromCount(args: {
   sessionId: string;
   actorId: string;
@@ -231,7 +245,7 @@ async function runRebase(
       id: true, cafeId: true, branchId: true, status: true,
       lines: {
         select: {
-          inventoryItemId: true, disposition: true,
+          inventoryItemId: true, disposition: true, unitCostSnapshot: true,
           ...EFFECTIVE_EVIDENCE_SELECT,
         },
       },
@@ -297,6 +311,7 @@ async function runRebase(
       originalCounted: line.countedQuantity === null ? null : Number(line.countedQuantity),
       countCursor: evidence.itemVersion ?? BigInt(0),
       evidenceSource: evidence.source,
+      unitCostSnapshot: line.unitCostSnapshot === null ? null : Number(line.unitCostSnapshot),
       actorId: args.actorId,
       freezeToken: args.freezeToken,
     });
@@ -344,6 +359,8 @@ async function applyOneLine(executor: RebaseExecutor, args: {
   countCursor: bigint;
   /** Which observation supplied the figure AND the cursor above. */
   evidenceSource: EffectiveEvidenceSource;
+  /** The cost captured when the line was judged; NULL if it had none. */
+  unitCostSnapshot: number | null;
   actorId: string;
   freezeToken?: string | null;
 }): Promise<
@@ -390,6 +407,7 @@ async function applyOneLine(executor: RebaseExecutor, args: {
       const stockAfter = round3(args.effectiveCounted + replay.delta);
       const stockBefore = round3(locked.currentStock);
       const appliedDelta = round3(stockAfter - stockBefore);
+      const value = countMovementValue(appliedDelta, args.unitCostSnapshot, locked.costPerUnit);
 
       const mutation = await applyStockMutation(tx, {
         inventoryItemId: args.inventoryItemId,
@@ -399,6 +417,8 @@ async function applyOneLine(executor: RebaseExecutor, args: {
         branchId: args.branchId,
         createdById: args.actorId,
         note: `COUNT_REBASE session=${args.sessionId}`,
+        unitCost: value.unitCost,
+        totalCost: value.totalCost,
         // A confirmed physical count is what is actually on the shelf. If it
         // says zero, refusing to record zero would keep a figure everyone
         // knows is wrong.

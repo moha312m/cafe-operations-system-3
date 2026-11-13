@@ -76,7 +76,7 @@ import { protectedTransaction, protectedContext, optionalProtectedContext } from
 import { lockShifts, lockOrders, lockOrderPayments, assertFinancialLocks } from "@/lib/transaction-locks";
 import { isBranchStaff, resolveStaffBranchInTransaction } from "@/lib/staff-branch";
 import { applyStockMutation, ledgerDeltaAbove, lockItemForUpdate } from "@/lib/ledger";
-import { rebaseFromCountInTransaction, type RebaseResult } from "@/lib/stock-rebase";
+import { countMovementValue, rebaseFromCountInTransaction, type RebaseResult } from "@/lib/stock-rebase";
 import type { HandoverBlocker } from "@/lib/handover-blockers";
 import {
   persistRequiredItems,
@@ -3504,12 +3504,13 @@ export async function applyAcceptedReceivingCounts(
       varianceQuantity: { not: 0 },
       line: { sessionId: args.acceptedSessionId },
     },
-    select: { id: true, varianceQuantity: true, line: { select: { inventoryItemId: true } } },
+    select: { id: true, varianceQuantity: true, line: { select: { inventoryItemId: true, unitCostSnapshot: true, inventoryItem: { select: { costPerUnit: true } } } } },
   });
   const applied: { acknowledgementId: string; inventoryItemId: string; quantity: number; transactionId: string }[] = [];
   for (const row of [...rows].sort((a, b) => a.line.inventoryItemId.localeCompare(b.line.inventoryItemId))) {
     const quantity = round3(Number(row.varianceQuantity));
     if (quantity === 0) continue;
+    const value = countMovementValue(quantity, row.line.unitCostSnapshot === null ? null : Number(row.line.unitCostSnapshot), Number(row.line.inventoryItem.costPerUnit));
     const mutation = await applyStockMutation(tx, {
       inventoryItemId: row.line.inventoryItemId,
       // A physical count becoming the baseline, which is what COUNT_REBASE
@@ -3520,6 +3521,8 @@ export async function applyAcceptedReceivingCounts(
       branchId: args.branchId,
       createdById: args.actorId,
       note: `HANDOVER_RECEIVING_COUNT handover=${args.handoverId} acknowledgement=${row.id}`,
+      unitCost: value.unitCost,
+      totalCost: value.totalCost,
       allowNegative: true,
       freezeToken: args.handoverId,
     });
