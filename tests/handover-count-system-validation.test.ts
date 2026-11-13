@@ -43,9 +43,13 @@ test('shortage, surplus and opposite differences are recorded, never validated a
   assert.equal(await db.auditLog.count({where:{entityId:fx.session.id,action:'COUNT_OUTGOING_DECLARED'}}),1);
   assert.deepEqual(session.lines.map(l=>Number(l.varianceQuantity)).sort((a,b)=>a-b),counts.map(c=>Math.round((c-10)*1000)/1000).sort((a,b)=>a-b),'each difference stays its own');}
 });
-test('missing count, stale cursor and pending corrections cannot be automatically validated',async()=>{
+// v2 (Plan l.31): a count is judged at its own ledger cursor, so a movement after the
+// count no longer makes it stale; only a cursor AHEAD of the ledger is malformed.
+test('missing count and pending corrections cannot be automatically validated; a later movement does not make a count stale',async()=>{
  const missing=await fixture([10,10]);await missing.capture(0,10,null);assert.notEqual((await missing.submit()).status,'CONFIRMED');
- const stale=await fixture();await stale.capture(0,10,null);await db.inventoryItem.update({where:{id:stale.items[0].id},data:{ledgerVersion:{increment:1}}});assert.notEqual((await stale.submit()).status,'CONFIRMED');
+ const moved=await fixture();await moved.capture(0,10,null);await db.inventoryItem.update({where:{id:moved.items[0].id},data:{ledgerVersion:{increment:1}}});
+ const movedResult=await moved.submit();assert.equal(movedResult.status,'CONFIRMED');assert.equal(movedResult.systemValidated,true,'matched at its own cursor');
+ const ahead=await fixture();await ahead.capture(0,10,null);await db.stockCountLine.update({where:{id:ahead.session.lines[0].id},data:{itemVersion:{increment:5}}});assert.notEqual((await ahead.submit()).status,'CONFIRMED','a cursor ahead of the ledger is still refused as evidence');
  const pending=await fixture();await pending.capture(0,10,null);const reason=await db.reasonCode.create({data:{cafeId:pending.cafe.id,domain:'STOCK',code:'TEST',label:'synthetic'}});
  await createCountCorrection({lineId:pending.session.lines[0].id,newCountedQuantity:11,reasonCodeId:reason.id,actorId:pending.actor.id,cafeId:pending.cafe.id});assert.notEqual((await pending.submit()).status,'CONFIRMED');
 });
@@ -104,8 +108,12 @@ test('a recorded quantity difference carries no manager signature, and a later c
  const gap=await fixture([10,10]);await gap.capture(0,9,null);assert.notEqual((await gap.submit()).status,'CONFIRMED','a count with a gap is not a declaration');
 });
 
-test('submission replay rejects system evidence made stale after validation',async()=>{
+// v2 (Plan l.31): recorded evidence keeps the line's own cursor, so a replay after a
+// later movement answers the recorded validation instead of refusing — once, unchanged.
+test('a submission replay after a later ledger movement answers the recorded validation, once',async()=>{
  const fx=await fixture();await fx.capture(0,10,null);assert.equal((await fx.submit()).status,'CONFIRMED');
  await db.inventoryItem.update({where:{id:fx.items[0].id},data:{ledgerVersion:{increment:1}}});
- await assert.rejects(fx.submit(),e=>(e as {status:number}).status===409);
+ const replay=await fx.submit();assert.equal(replay.status,'CONFIRMED');assert.equal(replay.systemValidated,true);
+ assert.equal(await db.auditLog.count({where:{entityId:fx.session.id,action:'COUNT_SYSTEM_VALIDATED'}}),1,'no second validation is written');
+ assert.equal((await db.stockCountSession.findUniqueOrThrow({where:{id:fx.session.id}})).confirmedById,null);
 });

@@ -46,7 +46,8 @@ test("an orphaned employee stock custody is not announced as a blocker the open 
   assert.equal(await db.custodyPeriod.count({ where: { branchId: fx.branchId, status: "OPEN", holderType: "USER" } }), 1);
   const opened = await open(fx, fx.cashier);
   assert.equal(opened.status, 201, opened.text);
-  assert.equal(opened.body.shift.custodyGateReason, "AWAITING_OPENING_VERIFICATION");
+  // v2 (Plan l.10): the open repairs the orphan and the shift takes the shelf ungated.
+  assert.equal(opened.body.shift.custodyGateReason, null);
 });
 
 test("an employee stock custody someone is still trading on is not orphaned", async () => {

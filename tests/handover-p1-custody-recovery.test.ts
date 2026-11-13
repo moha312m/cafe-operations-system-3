@@ -4,7 +4,14 @@
 //      branch uncounted and the waiting cashier does the morning count;
 //   Q2 a shift that never received the shelf closes money-only, and a
 //      handover already stuck that way can be ended by the manager's cancel;
-//   Q3 on an unverified branch morning a second cashier waits.
+//   Q3 on an unverified branch morning a second cashier waits — RETIRED by the
+//      stock handover v2 decision (2026-11-12); see docs/handover/V2-TEST-CHANGES.md.
+//
+// Stock handover v2: a shift no longer opens gated on the opening count (Plan:
+// "the shift takes the shelf (recorded, uncounted) and sells"). The Q1/Q2
+// recoveries exist for shifts already in the pre-v2 gated state when v2 ships,
+// so those tests write that state directly (`openLegacyGated`, the same shape
+// as handover-010's `openGatedShift`).
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { countCafe, countItem, type CountActor, type CountCafe } from "./helpers/count";
@@ -51,6 +58,29 @@ const repair = (fx: CountCafe, a: CountActor, body: Record<string, unknown>) =>
 const openPeriods = (fx: CountCafe) =>
   db.custodyPeriod.findMany({ where: { branchId: fx.branchId, status: "OPEN" }, include: { shiftLinks: true } });
 
+/**
+ * The pre-v2 gated opening, written directly: the shift holds only its drawer
+ * and waits for the morning count; the shelf stays the branch's. v2 never
+ * creates it, but shifts left in it when v2 ships still need these ways out.
+ */
+async function openLegacyGated(fx: CountCafe, a: CountActor, openingCash = 1000) {
+  const last = await db.shift.aggregate({ where: { branchId: fx.branchId }, _max: { shiftNumber: true } });
+  const shift = await db.shift.create({ data: {
+    cafeId: fx.cafeId, branchId: fx.branchId, cashierId: a.id,
+    shiftNumber: (last._max.shiftNumber ?? 0) + 1, openingCashAmount: openingCash, expectedCashAmount: openingCash,
+  } });
+  const { openCustodyPeriod } = await import("@/lib/custody");
+  await db.$transaction(async (tx) => {
+    await openCustodyPeriod(tx, {
+      cafeId: fx.cafeId, branchId: fx.branchId, scope: "CASH", participants: [{ userId: a.id, role: "PRIMARY" }],
+      shiftId: shift.id, holderType: "USER", openedById: a.id, openingCashAmount: openingCash,
+    });
+    await tx.shift.update({ where: { id: shift.id }, data: { custodyGateReason: "AWAITING_OPENING_VERIFICATION" } });
+  });
+  const row = await db.shift.findUniqueOrThrow({ where: { id: shift.id } });
+  return { body: { shift: { id: row.id, custodyGateReason: row.custodyGateReason } } };
+}
+
 /** A branch-custody morning: last night's handover ended into the branch. */
 async function branchMorning(fx: CountCafe) {
   const night = await open(fx, fx.manager);
@@ -65,7 +95,7 @@ async function branchMorning(fx: CountCafe) {
 test("Q2: a morning cashier who never received the shelf closes money-only — no handover, no freeze", async () => {
   const fx = await fixture();
   await branchMorning(fx);
-  const morning = await open(fx, fx.cashier);
+  const morning = await openLegacyGated(fx, fx.cashier);
   assert.equal(morning.body.shift.custodyGateReason, "AWAITING_OPENING_VERIFICATION");
   const handoversBefore = await db.handoverSession.count({ where: { branchId: fx.branchId } });
 
@@ -82,10 +112,11 @@ test("Q2: a morning cashier who never received the shelf closes money-only — n
   const periods = await openPeriods(fx);
   assert.deepEqual(periods.map((p) => `${p.scope}:${p.holderType}`), ["STOCK:BRANCH"]);
 
-  // The next cashier opens onto the same morning count with a drawer of their own.
+  // The next cashier opens with a drawer of their own. Under v2 they are not
+  // gated: they take the branch's shelf, recorded and uncounted (Plan l.10).
   const next = await open(fx, fx.storekeeper);
   assert.equal(next.status, 201, next.text);
-  assert.equal(next.body.shift.custodyGateReason, "AWAITING_OPENING_VERIFICATION");
+  assert.equal(next.body.shift.custodyGateReason, null);
   const drawer = (await openPeriods(fx)).find((p) => p.scope === "CASH")!;
   assert.deepEqual(drawer.shiftLinks.map((l) => l.shiftId), [next.body.shift.id]);
 });
@@ -93,7 +124,7 @@ test("Q2: a morning cashier who never received the shelf closes money-only — n
 test("Q2: a handover already stuck without stock custody can be ended by the manager's cancel", async () => {
   const fx = await fixture();
   await branchMorning(fx);
-  const morning = await open(fx, fx.cashier);
+  const morning = await openLegacyGated(fx, fx.cashier);
   const branchStock = (await openPeriods(fx)).find((p) => p.scope === "STOCK")!;
   // The shape the old close left: money settled, a handover naming no stock, a freeze.
   await db.shift.update({ where: { id: morning.body.shift.id }, data: { status: "AWAITING_HANDOVER", actualCashAmount: 1000, financiallyClosedAt: new Date(), handoverRequired: true } });
@@ -101,6 +132,10 @@ test("Q2: a handover already stuck without stock custody can be ended by the man
     cafeId: fx.cafeId, branchId: fx.branchId, outgoingShiftId: morning.body.shift.id,
     outgoingUserId: fx.cashier.id, at: new Date(), target: "SHIFT_TO_SHIFT",
   }));
+  // v2's close takes no freeze (Plan: "No freeze at close ... legacy freezes still
+  // release through acceptance/cancel"), so the legacy freeze is written directly.
+  const { acquireInventoryFreeze } = await import("@/lib/inventory-freeze");
+  await db.$transaction((tx) => acquireInventoryFreeze(tx, { cafeId: fx.cafeId, branchId: fx.branchId, handoverId, startedById: fx.cashier.id }));
   assert.equal((await db.handoverSession.findUniqueOrThrow({ where: { id: handoverId } })).outgoingStockCustodyId, null);
 
   const r = await reason(fx, "STUCK");
@@ -127,27 +162,15 @@ test("Q2: a handover already stuck without stock custody can be ended by the man
   assert.equal(again.body.alreadyCompleted, true);
 });
 
-test("Q3: on an unverified branch morning the second cashier waits, and nothing of their shift remains", async () => {
-  const fx = await fixture();
-  await branchMorning(fx);
-  const first = await open(fx, fx.cashier);
-  assert.equal(first.status, 201, first.text);
-  const shiftsBefore = await db.shift.count({ where: { branchId: fx.branchId } });
-  const second = await open(fx, fx.storekeeper);
-  assert.equal(second.status, 409, second.text);
-  assert.match(second.text, /مستني الجرد الافتتاحي/);
-  assert.equal(await db.shift.count({ where: { branchId: fx.branchId } }), shiftsBefore);
-  // The first cashier's drawer has no second holder, and their count can start.
-  const drawer = (await openPeriods(fx)).find((p) => p.scope === "CASH")!;
-  assert.equal(drawer.shiftLinks.length, 1);
-  const start = await post(fx.manager, "/api/custody/opening-verification", { action: "start_count", branchId: fx.branchId, shiftId: first.body.shift.id });
-  assert.equal(start.status, 200, start.text);
-});
+// RETIRED (v2, decision A3): "Q3: on an unverified branch morning the second
+// cashier waits" — the rule was withdrawn by the 2026-11-12 decision (Plan l.11:
+// "P1 'second opener waits' ... Removed (contradicts v2)"). Reason on record in
+// docs/handover/V2-TEST-CHANGES.md.
 
-test("Q1: a waiting shift whose branch lost its shelf is repaired onto the morning count, on the record and once", async () => {
+test("Q1: a waiting shift whose branch lost its shelf is repaired — the shelf recorded to that shift, on the record and once", async () => {
   const fx = await fixture();
   await branchMorning(fx);
-  const waiting = await open(fx, fx.cashier);
+  const waiting = await openLegacyGated(fx, fx.cashier);
   // The 5434 demo-branch shape: the branch's shelf period gone, the waiter's drawer still open.
   await db.custodyPeriod.updateMany({ where: { branchId: fx.branchId, scope: "STOCK", status: "OPEN" }, data: { status: "CLOSED", endedAt: new Date() } });
   const blocked = await open(fx, fx.storekeeper);
@@ -166,10 +189,14 @@ test("Q1: a waiting shift whose branch lost its shelf is repaired onto the morni
   assert.equal(fixed.body.repaired, "CASH_WITHOUT_STOCK");
   assert.equal(fixed.body.waitingShiftId, waiting.body.shift.id);
   assert.equal(fixed.body.closedCashCustodyId, null);
+  // v2 (Plan l.10; 8b18d1a branch-custody-repair): the waiting shift is not held
+  // back by stock — it takes the repaired shelf, recorded and uncounted, and sells.
   const periods = await openPeriods(fx);
-  assert.deepEqual(periods.map((p) => `${p.scope}:${p.holderType}`).sort(), ["CASH:USER", "STOCK:BRANCH"]);
-  assert.equal(periods.find((p) => p.scope === "STOCK")!.id, fixed.body.branchStockCustodyId);
-  assert.equal((await db.shift.findUniqueOrThrow({ where: { id: waiting.body.shift.id } })).custodyGateReason, "AWAITING_OPENING_VERIFICATION");
+  assert.deepEqual(periods.map((p) => `${p.scope}:${p.holderType}`).sort(), ["CASH:USER", "STOCK:USER"]);
+  const shelf = periods.find((p) => p.scope === "STOCK")!;
+  assert.equal(shelf.id, fixed.body.branchStockCustodyId);
+  assert.equal(shelf.responsibleShiftId, waiting.body.shift.id);
+  assert.equal((await db.shift.findUniqueOrThrow({ where: { id: waiting.body.shift.id } })).custodyGateReason, null);
   const exception = await db.openingException.findFirstOrThrow({ where: { branchId: fx.branchId, kind: "MANAGER_ADJUSTMENT" } });
   assert.equal(exception.authorizedById, fx.owner.id);
   assert.equal(exception.reasonCodeId, r.id);
@@ -186,9 +213,9 @@ test("Q1: a waiting shift whose branch lost its shelf is repaired onto the morni
   assert.equal(await db.custodyPeriod.count({ where: { branchId: fx.branchId, scope: "STOCK", status: "OPEN" } }), 1);
   assert.equal(await db.auditLog.count({ where: { entityId: fx.branchId, action: "BRANCH_CUSTODY_REPAIRED" } }), 1);
 
-  // The waiting cashier's morning count can now start.
-  const start = await post(fx.manager, "/api/custody/opening-verification", { action: "start_count", branchId: fx.branchId, shiftId: waiting.body.shift.id });
-  assert.equal(start.status, 200, start.text);
+  // v2: there is no morning verification left to start (Plan l.10: "the morning count
+  // becomes the optional incoming count"); the repaired shift is ready to sell.
+  assert.ok((await db.shift.findUniqueOrThrow({ where: { id: waiting.body.shift.id } })).custodyReadyAt, "the repaired shift is operational");
 });
 
 test("Q1: a drawer nobody's open shift uses is closed at its last counted figure, and the next shift opens", async () => {
@@ -210,7 +237,8 @@ test("Q1: a drawer nobody's open shift uses is closed at its last counted figure
   assert.equal(drawer.closingCashAmount?.toString(), "750");
   const next = await open(fx, fx.cashier);
   assert.equal(next.status, 201, next.text);
-  assert.equal(next.body.shift.custodyGateReason, "AWAITING_OPENING_VERIFICATION");
+  // v2: the next shift opens ungated (Plan l.10); the drawer repair above is the point.
+  assert.equal(next.body.shift.custodyGateReason, null);
 });
 
 test("Q1: a trading shift with no drawer custody gets one at its own opening amount", async () => {

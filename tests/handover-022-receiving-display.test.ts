@@ -62,6 +62,8 @@ after(async () => {
     await db.varianceCase.deleteMany({ where: { cafeId: id } });
     await db.stockCountSession.deleteMany({ where: { cafeId: id } });
     await db.inventoryFreeze.deleteMany({ where: { cafeId: id } });
+    // v2 (C1): a sheet difference/dispute opens a review row, which must go before its handover.
+    await db.stockHandoverReview.deleteMany({ where: { cafeId: id } });
     await db.handoverSession.deleteMany({ where: { cafeId: id } });
     await teardownTaggedCafe(id);
   }

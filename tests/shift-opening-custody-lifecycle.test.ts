@@ -124,10 +124,10 @@ test("an owner ends an unfinished night handover into branch custody, carried an
   assert.equal((await db.custodyPeriod.findUniqueOrThrow({ where: { id: handover.outgoingStockCustodyId! } })).status, "TRANSFERRED");
   assert.equal(await db.openingException.count({ where: { handoverId, kind: "NO_INCOMING" } }), 1);
   assert.equal(await db.auditLog.count({ where: { entityId: handoverId, action: "HANDOVER_CANCELLED" } }), 1);
-  // The morning opens onto the opening verification.
+  // v2 (Plan l.10): the morning opens ungated and takes the branch's shelf.
   const next = await open(fx, fx.cashier);
   assert.equal(next.status, 201, next.text);
-  assert.equal(next.body.shift.custodyGateReason, "AWAITING_OPENING_VERIFICATION");
+  assert.equal(next.body.shift.custodyGateReason, null);
 });
 
 test("a night handover returned for recount still gates the next shift", async () => {
@@ -184,7 +184,7 @@ test("concurrent retries carry a settled drawer into the new shift only once", a
   assert.equal(await db.auditLog.count({ where: { cafeId: fx.cafeId, action: "HANDOVER_DIRECT_CASH_OPENING" } }), 1);
 });
 
-test("an orphaned employee stock custody passes to the branch on the record, and the opener verifies it", async () => {
+test("an orphaned employee stock custody passes to the branch on the record, and the opener takes it", async () => {
   const fx = await fixture();
   // Historical fixture: stock held by somebody with no open shift, and no drawer.
   const orphan = await db.custodyPeriod.create({ data: {
@@ -193,7 +193,8 @@ test("an orphaned employee stock custody passes to the branch on the record, and
   } });
   const opened = await open(fx, fx.cashier);
   assert.equal(opened.status, 201, opened.text);
-  assert.equal(opened.body.shift.custodyGateReason, "AWAITING_OPENING_VERIFICATION");
+  // v2 (Plan l.10): no opening verification; the opener takes the shelf, recorded uncounted.
+  assert.equal(opened.body.shift.custodyGateReason, null);
   // Transferred, never rewritten: the holder stays on the closed period.
   const old = await db.custodyPeriod.findUniqueOrThrow({ where: { id: orphan.id }, include: { participants: true } });
   assert.equal(old.status, "TRANSFERRED");
@@ -202,6 +203,11 @@ test("an orphaned employee stock custody passes to the branch on the record, and
   const successor = await db.custodyPeriod.findFirstOrThrow({ where: { previousPeriodId: orphan.id } });
   assert.equal(successor.holderType, "BRANCH");
   assert.equal(await db.auditLog.count({ where: { entityId: orphan.id, action: "SHIFT_CUSTODY_RECONCILED" } }), 1);
+  // ...and from the branch to the opener, again by transfer.
+  const shelf = await db.custodyPeriod.findFirstOrThrow({ where: { branchId: fx.branchId, scope: "STOCK", status: "OPEN" } });
+  assert.equal(shelf.holderType, "USER");
+  assert.equal(shelf.responsibleShiftId, opened.body.shift.id);
+  assert.equal(shelf.previousPeriodId, successor.id);
 });
 
 test("one-sided custody stays blocked and the personal shift stays empty", async () => {
@@ -322,7 +328,8 @@ test("manager approval finishes a night handover through branch custody, never a
   assert.ok((await db.handoverStockBoundary.count({ where: { handoverId, verified: true } })) > 0);
   const next = await open(fx, fx.cashier);
   assert.equal(next.status, 201, next.text);
-  assert.equal(next.body.shift.custodyGateReason, "AWAITING_OPENING_VERIFICATION");
+  // v2 (Plan l.10): the next shift opens ungated onto the branch's shelf.
+  assert.equal(next.body.shift.custodyGateReason, null);
 
   // A retry replays rather than claiming a second acceptance.
   const again = await post<{ alreadyApproved: boolean }>(fx.owner, `/api/handovers/${handoverId}/approve`, { reasonCodeId: reason.id, note: "retry" });

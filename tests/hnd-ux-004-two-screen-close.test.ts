@@ -40,6 +40,7 @@ after(async () => {
     await db.varianceCase.deleteMany({ where: { cafeId: id } });
     await db.stockCountSession.deleteMany({ where: { cafeId: id } });
     await db.inventoryFreeze.deleteMany({ where: { cafeId: id } });
+    await db.stockHandoverReview.deleteMany({ where: { cafeId: id } });
     await db.handoverSession.deleteMany({ where: { cafeId: id } });
     await teardownTaggedCafe(id);
   }
@@ -140,7 +141,7 @@ describe("pure rules", () => {
   });
 });
 
-test("every shift: money then materials, both with differences, no manager; receiving difference becomes the balance", async () => {
+test("every shift: money then materials, both with differences, no manager; receiving difference recorded, book balance unchanged", async () => {
   const fx = await countCafe("HNDUX4ES"); cafes.push(fx.cafeId);
   await handoverPolicy(fx);
   const alpha = await countItem(fx, "Alpha", { stock: 10, isCritical: true });
@@ -204,12 +205,9 @@ test("every shift: money then materials, both with differences, no manager; rece
   const save = (itemId: string, q: number) => as(fx.cashier.email, `/api/stock-counts/${sid}/lines/${lineOf(itemId)}`, { method: "PATCH", body: JSON.stringify({ countedQuantity: q, expectedCountedAt: null }) });
 
   assert.equal((await save(alpha.id, 9)).status, 200);
-  // Missing evidence still fails clearly, by item name.
-  const incomplete = await as<{ missingItems: string[] }>(fx.cashier.email, "/api/handovers", { method: "POST", body: JSON.stringify({ action: "finish_outgoing", handoverId: hid }) });
-  assert.equal(incomplete.status, 409, incomplete.text);
-  assert.deepEqual(incomplete.body.missingItems, [`${fx.marker} Beta`]);
-  assert.equal((await db.handoverSession.findUniqueOrThrow({ where: { id: hid } })).status, "DRAFT");
-
+  // v2 (Plan l.32): an uncounted item is reported by name at finish, never refused —
+  // and finishing completes the outgoing side. Finishing here would end this journey
+  // with Beta uncounted, so that check runs on its own handover in the next test.
   assert.equal((await save(beta.id, 6)).status, 200);
   const finished = await post<{ status: string; recordedDifferences: number; systemValidated: boolean; alreadySubmitted: boolean }>(fx.cashier.email, "/api/handovers", { action: "finish_outgoing", handoverId: hid, note: "علبة مفتوحة" });
   assert.deepEqual([finished.status, finished.recordedDifferences, finished.systemValidated, finished.alreadySubmitted], ["OUTGOING_SUBMITTED", 2, false, false]);
@@ -252,6 +250,11 @@ test("every shift: money then materials, both with differences, no manager; rece
     { countSessionId: sid, countVersion: view.body.handover.count.countVersion, lines: decisions, idempotencyKey: crypto.randomUUID() });
   assert.ok(signed.lines.every((l) => l.decision === "ACCEPTED"), "a different quantity alone is not a dispute");
   assert.deepEqual(signed.lines.map((l) => l.varianceQuantity).sort(), [-1, null].sort());
+  // The book before receipt: v2 never posts a handover count (Plan l.14).
+  const bookBefore = {
+    alpha: Number((await db.inventoryItem.findUniqueOrThrow({ where: { id: alpha.id } })).currentStock),
+    beta: Number((await db.inventoryItem.findUniqueOrThrow({ where: { id: beta.id } })).currentStock),
+  };
   // A -20 cash receipt difference also records and continues with no reason/note.
   const receiptKey = crypto.randomUUID();
   const receiptBody = { idempotencyKey: receiptKey, countedOpeningCash: 1580 };
@@ -261,8 +264,11 @@ test("every shift: money then materials, both with differences, no manager; rece
   assert.equal(await db.varianceCase.count({ where: { acceptedHandoverId: hid, type: "OPENING_EXCEPTION" } }), 1, "receipt retry must not duplicate the cash difference");
   const receivedCash = await db.handoverSession.findUniqueOrThrow({ where: { id: hid } });
   assert.deepEqual([Number(receivedCash.proposedOpeningCash), Number(receivedCash.countedOpeningCash), Number(receivedCash.cashVarianceAmount)], [1600, 1580, -20]);
-  assert.equal(Number((await db.inventoryItem.findUniqueOrThrow({ where: { id: alpha.id } })).currentStock), 8, "the receiver's accepted count is the new balance");
-  assert.equal(Number((await db.inventoryItem.findUniqueOrThrow({ where: { id: beta.id } })).currentStock), 6, "no independent count: the outgoing declaration stands");
+  // v2 (Plan l.14: rebase "Removed for handover counts"): neither the receiver's 8 nor
+  // the outgoing declaration becomes the balance; the differences are on the record.
+  assert.equal(Number((await db.inventoryItem.findUniqueOrThrow({ where: { id: alpha.id } })).currentStock), bookBefore.alpha, "the receiver's count is recorded, not posted");
+  assert.equal(Number((await db.inventoryItem.findUniqueOrThrow({ where: { id: beta.id } })).currentStock), bookBefore.beta, "the outgoing declaration is recorded, not posted");
+  assert.notEqual(bookBefore.alpha, 8);
   assert.equal(await db.inventoryFreeze.count({ where: { handoverId: hid, releasedAt: null } }), 0);
 
   // The next close by the receiver counts what they received: it matches,
@@ -276,10 +282,38 @@ test("every shift: money then materials, both with differences, no manager; rece
   const lines2 = (await as<{ session: { lines: { id: string; inventoryItemId: string }[] } }>(incoming.email, `/api/stock-counts/${sid2}`)).body.session.lines;
   for (const l of lines2) assert.equal((await as(incoming.email, `/api/stock-counts/${sid2}/lines/${l.id}`, { method: "PATCH", body: JSON.stringify({ countedQuantity: l.inventoryItemId === alpha.id ? 8 : 6, expectedCountedAt: null }) })).status, 200);
   const done2 = await post<{ systemValidated: boolean; recordedDifferences: number }>(incoming.email, "/api/handovers", { action: "finish_outgoing", handoverId: hid2 });
-  assert.deepEqual([done2.systemValidated, done2.recordedDifferences], [true, 0]);
+  // v2: the book was not rebased at receipt, so the same shelf (8 / 6) still differs from
+  // the book on both items and is declared again, never a system match. The book stays
+  // as it is until an authorised adjustment (Plan l.14; v2-test-decisions S2).
+  assert.deepEqual([done2.systemValidated, done2.recordedDifferences], [false, 2]);
 });
 
-test("explicit refusal is still a dispute that blocks completion", async () => {
+test("finishing with an item uncounted names it and moves on (v2: reported, never refused)", async () => {
+  const fx = await countCafe("HNDUX4NC"); cafes.push(fx.cafeId);
+  await handoverPolicy(fx);
+  const alpha = await countItem(fx, "Alpha", { stock: 10, isCritical: true });
+  const beta = await countItem(fx, "Beta", { stock: 5, isCritical: true });
+  const s = await openShift(fx, fx.cashier.id, 1, 100);
+  const closed = await closeShiftWithSettlement({ shiftId: s.id, actualCash: 100, actorId: fx.cashier.id, closedByManager: false, handoverTarget: "SHIFT_TO_SHIFT", grants: { handoverSubmit: true, handoverException: false } });
+  const hid = closed.handoverId!;
+  const sid = (await post<{ countSession: { id: string } }>(fx.cashier.email, "/api/handovers", { action: "start_count", handoverId: hid })).countSession.id;
+  const lines = (await as<{ session: { lines: { id: string; inventoryItemId: string }[] } }>(fx.cashier.email, `/api/stock-counts/${sid}`)).body.session.lines;
+  const alphaLine = lines.find((l) => l.inventoryItemId === alpha.id)!;
+  assert.equal((await as(fx.cashier.email, `/api/stock-counts/${sid}/lines/${alphaLine.id}`, { method: "PATCH", body: JSON.stringify({ countedQuantity: 9, expectedCountedAt: null }) })).status, 200);
+  // Missing evidence is still stated clearly, by item name (Plan l.32: notCounted).
+  const finished = await as<{ status: string; notCounted: string[] }>(fx.cashier.email, "/api/handovers", { method: "POST", body: JSON.stringify({ action: "finish_outgoing", handoverId: hid }) });
+  assert.equal(finished.status, 200, finished.text);
+  assert.equal(finished.body.status, "OUTGOING_SUBMITTED");
+  assert.deepEqual(finished.body.notCounted, [`${fx.marker} Beta`]);
+  assert.equal((await db.handoverSession.findUniqueOrThrow({ where: { id: hid } })).status, "OUTGOING_SUBMITTED");
+  // The gap stays a gap: never a zero, never declared, nothing posted.
+  const betaLine = await db.stockCountLine.findFirstOrThrow({ where: { sessionId: sid, inventoryItemId: beta.id } });
+  assert.equal(betaLine.countedQuantity, null);
+  assert.equal(await db.auditLog.count({ where: { entity: "StockCountSession", entityId: sid, action: "COUNT_OUTGOING_DECLARED" } }), 0, "an incomplete count is not a declaration");
+  assert.equal(Number((await db.inventoryItem.findUniqueOrThrow({ where: { id: beta.id } })).currentStock), 5);
+});
+
+test("explicit refusal is still a dispute: recorded and reported, and it no longer blocks completion", async () => {
   const fx = await countCafe("HNDUX4RF"); cafes.push(fx.cafeId);
   await handoverPolicy(fx);
   await countItem(fx, "Alpha", { stock: 10, isCritical: true });
@@ -299,8 +333,15 @@ test("explicit refusal is still a dispute that blocks completion", async () => {
   const reason = await db.reasonCode.create({ data: { cafeId: fx.cafeId, domain: "HANDOVER", code: "REFUSE", label: "Synthetic refusal" } });
   const refused = await post<{ lines: { decision: string }[] }>(incoming.email, `/api/handovers/${hid}/acknowledge`, { countSessionId: sid, countVersion: view.body.handover.count.countVersion, lines: [{ stockCountLineId: line.id, incomingCountedQuantity: 7, refuse: true, disputeReasonCodeId: reason.id }], idempotencyKey: crypto.randomUUID() });
   assert.equal(refused.lines[0].decision, "DISPUTED");
-  const blocked = await as(incoming.email, `/api/handovers/${hid}/accept`, { method: "POST", body: JSON.stringify({ idempotencyKey: crypto.randomUUID(), countedOpeningCash: 100 }) });
-  assert.equal(blocked.status, 409, blocked.text);
+  // v2 (Plan l.33: "no signature / dispute ... refusal"): the handover completes, and
+  // the dispute reaches the v2 comparison and the managers/owners (C1).
+  const accepted = await as<{ status: string }>(incoming.email, `/api/handovers/${hid}/accept`, { method: "POST", body: JSON.stringify({ idempotencyKey: crypto.randomUUID(), countedOpeningCash: 100 }) });
+  assert.equal(accepted.status, 200, accepted.text);
+  assert.equal(accepted.body.status, "COMPLETED");
+  assert.equal((await db.handoverStockAcknowledgement.findFirstOrThrow({ where: { handoverId: hid } })).decision, "DISPUTED", "the refusal stays a refusal");
+  const cmp = await db.stockHandoverComparison.findFirst({ where: { handoverId: hid }, orderBy: { computedAt: "desc" } });
+  assert.equal((cmp?.lines as { disputedCount?: number } | null)?.disputedCount, 1);
+  assert.ok(await db.notification.count({ where: { handoverId: hid, kind: "STOCK_HANDOVER_DISCREPANCY", recipientId: fx.owner.id } }) > 0);
 });
 
 test("an explicit refusal is never recorded as acceptance, even of a matching quantity or without a count", async () => {
@@ -341,8 +382,15 @@ test("an explicit refusal is never recorded as acceptance, even of a matching qu
   assert.equal(by.get(l3.id)!.decision, "ACCEPTED");
   const rows = await db.handoverStockAcknowledgement.findMany({ where: { handoverId: hid } });
   assert.equal(rows.filter((r) => r.decision === "ACCEPTED").length, 1, "no acceptance signature for the refused lines");
-  const blocked = await as(incoming.email, `/api/handovers/${hid}/accept`, { method: "POST", body: JSON.stringify({ idempotencyKey: crypto.randomUUID(), countedOpeningCash: 100 }) });
-  assert.equal(blocked.status, 409, "a refusal still blocks completion");
+  // v2 (Plan l.33): the refusal no longer blocks completion; it is still never an acceptance.
+  const accepted = await as<{ status: string }>(incoming.email, `/api/handovers/${hid}/accept`, { method: "POST", body: JSON.stringify({ idempotencyKey: crypto.randomUUID(), countedOpeningCash: 100 }) });
+  assert.equal(accepted.status, 200, accepted.text);
+  assert.equal(accepted.body.status, "COMPLETED");
+  const after = await db.handoverStockAcknowledgement.findMany({ where: { handoverId: hid } });
+  assert.equal(after.filter((r) => r.decision === "ACCEPTED").length, 1, "completing never turns a refusal into an acceptance signature");
+  assert.equal(after.filter((r) => r.decision === "DISPUTED").length, 2);
+  const cmp = await db.stockHandoverComparison.findFirst({ where: { handoverId: hid }, orderBy: { computedAt: "desc" } });
+  assert.equal((cmp?.lines as { disputedCount?: number } | null)?.disputedCount, 2, "both refusals reach the v2 comparison");
 });
 
 test("branch custody: a non-due weekly night closes without a count; the grant still applies; a due full count still counts", async () => {
@@ -408,7 +456,8 @@ test("daily schedule: one claim per period under concurrent closes, not-due clos
   const decisions = await db.shiftMaterialsDecision.findMany({ where: { branchId: fx.branchId }, orderBy: { decidedAt: "asc" } });
   assert.equal(decisions.length, 2);
   assert.equal(decisions.filter((d) => d.periodTo !== null).length, 1);
-  assert.equal(await db.inventoryFreeze.count({ where: { cafeId: fx.cafeId, releasedAt: null } }), 1, "only the counted handover holds a freeze");
+  // v2 (Plan l.9: "No new freezes"): not even the counted handover freezes stock.
+  assert.equal(await db.inventoryFreeze.count({ where: { cafeId: fx.cafeId, releasedAt: null } }), 0, "no handover holds a freeze");
 
   // Changing the schedule while that count is open does not move its scope.
   const hid = due[0].handoverId!;

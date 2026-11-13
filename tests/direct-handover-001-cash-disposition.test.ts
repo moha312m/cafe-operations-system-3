@@ -97,6 +97,8 @@ async function resetBranch(branchId: string) {
   await db.openingException.deleteMany({ where: { branchId } });
   await db.handoverCarriedOrder.deleteMany({ where: { branchId } });
   await db.shiftMaterialsDecision.deleteMany({ where: { branchId } });
+  // v2 (C1): a sheet difference/dispute opens a review row, which must go before its handover.
+  await db.stockHandoverReview.deleteMany({ where: { branchId } });
   await db.handoverSession.deleteMany({ where: { branchId } });
   await db.tenderReconciliation.deleteMany({ where: { branchId } });
   await db.payment.deleteMany({ where: { branchId } });

@@ -8,6 +8,8 @@ after(async()=>{for(const id of cafes) {
  await db.handoverStockAcknowledgement.deleteMany({where:{handover:{cafeId:id}}});
  await db.handoverSession.updateMany({where:{cafeId:id},data:{stockCountSessionId:null}});
  await db.stockCountSession.deleteMany({where:{cafeId:id}});
+ // v2 (C1): a sheet difference/dispute opens a review row, which must go before its handover.
+ await db.stockHandoverReview.deleteMany({where:{cafeId:id}});
  await db.handoverSession.deleteMany({where:{cafeId:id}});
  await teardownTaggedCafe(id);
 }await db.$disconnect();});
