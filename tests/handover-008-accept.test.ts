@@ -554,9 +554,19 @@ describe("SH-20 acceptance gate", () => {
     const result = await accept(h.handoverId);
     assert.equal(result.status, "COMPLETED");
     assert.equal(result.acceptedStockCountSessionId, null, "an unconfirmed count is not presented as accepted evidence");
+    // Owner decision 2026-11-13 (C2): the unfinished count is closed as history,
+    // as the owner-approved cancel closes one — LOCKED by this handover, never
+    // confirmed, its figures untouched — so the branch can count again; and the
+    // handover is recorded as received without a confirmed count.
+    const before = await db.stockCountLine.findMany({ where: { sessionId: h.sessionId }, orderBy: { id: "asc" }, select: { id: true, countedQuantity: true, effectiveCountedQuantity: true, disposition: true } });
     const session = await db.stockCountSession.findUniqueOrThrow({ where: { id: h.sessionId } });
-    assert.equal(session.status, "SUBMITTED", "and it is left exactly as it was");
-    assert.equal(session.lockedByHandoverId, null);
+    assert.equal(session.status, "LOCKED", "closed as history, so it no longer holds the branch's open-count slot");
+    assert.equal(session.lockedByHandoverId, h.handoverId);
+    assert.equal(session.confirmedById, null, "never presented as confirmed");
+    assert.deepEqual(
+      await db.stockCountLine.findMany({ where: { sessionId: h.sessionId }, orderBy: { id: "asc" }, select: { id: true, countedQuantity: true, effectiveCountedQuantity: true, disposition: true } }),
+      before, "its figures are left exactly as they were");
+    assert.equal(await db.auditLog.count({ where: { entity: "HandoverSession", entityId: h.handoverId, action: "STOCK_HANDOVER_ACCEPTED_UNCOUNTED" } }), 1);
   });
 
   test("a count bound to a different handover is refused", async () => {

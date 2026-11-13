@@ -72,6 +72,6 @@ See `STATUS.md` for the final counts of the last run.
   - Tests for the old opening-verification path were kept. Their setup now writes the old "waiting for verification" state directly, because shifts already in that state when this ships still need that way out.
 
 ## Not done / known limits
-- If the outgoing employee is still counting when the handover is received, that unfinished count stays as it is. It cannot be finished after the shift has closed.
+- If the outgoing employee is still counting when the handover is received, that unfinished count is closed as history (owner decision 2026-11-13, C2): its figures stay exactly as they were, it is never shown as confirmed, and it cannot be finished afterwards. Left open, it would stop the branch from ever starting another count. The handover is recorded as received without a confirmed count.
 - The legacy line-by-line signing sheet and "send back for recount" still exist as options. They no longer block anything.
 - The demo seed has one cashier. For a browser check of the blind count, use a second cashier account (or a manager, who is allowed to see both counts).

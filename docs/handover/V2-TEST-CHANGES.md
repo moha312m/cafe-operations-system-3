@@ -4,7 +4,7 @@ Source of the decisions: `C:/Dev/_test-evidence/2026-11-12/v2-test-decisions.md`
 
 Rules followed:
 - No assertion was loosened. Each updated test still proves the behaviour that matters under v2. Where the test's subject is the pre-v2 path, the fixture now writes the pre-v2 gated state directly (as `handover-010` does in `openGatedShift`).
-- Every line that changed beyond the line the decision table quoted is listed below, with the written v2 rule behind it. One failure is NOT tied to a written v2 rule and is recorded below as a possible regression (owner decision needed).
+- Every line that changed beyond the line the decision table quoted is listed below, with the written v2 rule behind it. One failure was not tied to a written v2 rule; the owner decided it on 2026-11-13 (see the end of this file).
 - The three escalated items were fixed in code first, each in its own commit with its own tests:
   - A10: commit b1c27f4, test `shv2-004`.
   - C1: commit c75eb9a, test `shv2-005`, plus the `handover-021` update.
@@ -49,13 +49,11 @@ Rules followed:
 
 - `handover-count-system-validation` › "a signed current count must use a new recount round before correction" fails with "Missing expected rejection.". It fails the same way on the unchanged base 65993e3 and at e0be1c9 (2026-11-12 evidence, row 31 of `classification.md`), so it is one of the 57 baseline failures and was not touched.
 
-## Possible regression — needs an owner decision
+## Resolved by owner decision (2026-11-13)
 
-- **`handover-008-accept` › "v2: a bound count that is not CONFIRMED is accepted and recorded as it stands"** fails at `session.status === "SUBMITTED"` ("and it is left exactly as it was"). It failed twice alone on 3102 on 2026-11-13 (66/67).
-  - Cause: the C2 fix (commit 0c517b6). When a handover is received with no confirmed outgoing count, the fix closes the unfinished count as history (LOCKED by the handover, figures untouched), the same way the owner-approved cancel of an unfinished handover does.
-  - The test, and STOCK-HANDOVER-V2-REPORT l.75 ("that unfinished count stays as it is"), say the count must be left open.
-  - Why C2 closes it: an open count holds the branch's single active-count slot (`StockCountSession_one_active_per_branch`). Left open, no later count at that branch, handover or ordinary, can ever start. `shv2-006` showed this in round 1 (it was a 500; it is a plain 409 now).
-  - Not changed: the test, and the behaviour. The owner chooses:
-    - (a) keep closing it, and update this test and the report line; or
-    - (b) leave it open as written, and accept that the branch cannot count again (`shv2-006`'s last step then fails), or decide another way out.
-
+- **`handover-008-accept` › "v2: a bound count that is not CONFIRMED is accepted and recorded as it stands"** failed after the C2 fix (0c517b6), at `session.status === "SUBMITTED"` ("left exactly as it was"). The fix closes the unfinished outgoing count as history. Left open, that count holds the branch's single active-count slot (`StockCountSession_one_active_per_branch`) and no later count at the branch can start (`shv2-006`, round 1).
+- The owner chose to keep closing it (2026-11-13). The test now asserts:
+  - the count is LOCKED by this handover, never confirmed;
+  - its line figures are byte-identical to before;
+  - one `STOCK_HANDOVER_ACCEPTED_UNCOUNTED` record exists.
+- STOCK-HANDOVER-V2-REPORT ("Not done / known limits") was updated to match.
