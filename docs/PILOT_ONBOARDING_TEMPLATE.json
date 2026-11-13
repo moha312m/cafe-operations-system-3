@@ -1,0 +1,130 @@
+{
+  "cafe": {
+    "name": "",
+    "slug": "",
+    "currency": "",
+    "taxRate": null,
+    "inventoryEnforcementMode": ""
+  },
+  "branch": {
+    "name": "",
+    "address": "",
+    "phone": "",
+    "reportingHours": {
+      "effectiveDate": "",
+      "startTime": "",
+      "endTime": "",
+      "timezone": "",
+      "is24Hours": null
+    }
+  },
+  "owner": {
+    "name": "",
+    "email": "",
+    "credentialsProvisioning": ""
+  },
+  "staff": [
+    {
+      "name": "",
+      "email": "",
+      "role": "",
+      "branch": "",
+      "permissionGrants": [],
+      "permissionDenials": [],
+      "discountLimitType": "",
+      "discountLimitValue": null
+    }
+  ],
+  "inventory": [
+    {
+      "name": "",
+      "branch": "",
+      "unit": "",
+      "costPerUnit": null,
+      "countedOpeningQuantity": null,
+      "countedBy": "",
+      "countedAt": ""
+    }
+  ],
+  "menu": [
+    {
+      "category": "",
+      "productName": "",
+      "price": null,
+      "costPrice": null,
+      "isAvailable": null,
+      "showInPOS": null,
+      "showInCustomerMenu": null,
+      "sortOrder": null,
+      "variants": [
+        {
+          "variantName": "",
+          "variantPrice": null
+        }
+      ],
+      "addOns": [
+        {
+          "addonName": "",
+          "addonPrice": null
+        }
+      ]
+    }
+  ],
+  "recipes": [
+    {
+      "scope": "",
+      "productName": "",
+      "variantName": "",
+      "addOnName": "",
+      "appliesToAllVariants": null,
+      "notApplicable": null,
+      "notApplicableReason": "",
+      "ingredients": [
+        {
+          "ingredientName": "",
+          "ingredientBranchName": "",
+          "quantity": null,
+          "unit": "",
+          "wastePercentage": null
+        }
+      ],
+      "verifiedBy": ""
+    }
+  ],
+  "suppliers": [
+    {
+      "name": "",
+      "openingBalance": null,
+      "balanceAsOf": "",
+      "sourceDocument": ""
+    }
+  ],
+  "openingCash": {
+    "branch": "",
+    "amount": null,
+    "countedBy": "",
+    "countedAt": ""
+  },
+  "handover": {
+    "mode": "",
+    "selectedInventoryNames": [],
+    "schedule": "",
+    "responsibleRoles": []
+  },
+  "refundApproval": {
+    "activeOwnerEmail": "",
+    "mode": ""
+  },
+  "operations": {
+    "internetReliabilityConfirmed": null,
+    "devices": [],
+    "printingRequirement": "",
+    "backupRPO": "",
+    "backupRTO": ""
+  },
+  "ownerApproval": {
+    "previewVersion": "",
+    "approvedBy": "",
+    "approvedAt": ""
+  }
+}
