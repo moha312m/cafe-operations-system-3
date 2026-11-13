@@ -12,6 +12,7 @@ Integration branch: `handover/integration` (worktree `C:/Dev/cafe-ops-handover-i
 | Audit (read-only) | handover/integration | none | docs/handover/AUDIT.md written | None (code reading only) | Owner's problem statement still blank; findings D1–D6 to prioritise |
 
 ## Notes
+- Owner browser acceptance of stock handover v2 on 3102 (2026-11-13): finished, no problems raised.
 - v2 test environment: server 3102 (P1 tree, own Prisma client) serves the fresh DB `cafe_ops_test_evp1` (5434); `cafe_ops_test_shv2` is the earlier v2 DB. Baseline tree for comparisons: worktree `C:/Dev/cafe-ops-p1-baseline-65993e3` (merge-base with handover/integration; contains PR #5 head 30c40cc) on `cafe_ops_test_evbase`. Clean seeded copies: `cafe_ops_test_evp1tpl`, `cafe_ops_test_evbasetpl`.
 - Leftover data (proved 2026-11-12): on freshly seeded DBs ledger-003, ledger-004 and shift-003 pass on both trees; ledger-002 still fails on both, but on a source scan ("every stock write must go through applyStockMutation"), not a data refusal. The earlier "inventory frozen" / "shift waiting for custody" refusals in `cafe_ops_test` were leftover stuck data.
 - Next dev on 3100/3102 restarts itself near its memory threshold during a full run; files caught by a restart are interrupted (rerun), not failures.
