@@ -7,7 +7,7 @@ import { journalList, parseDate, SHADOW_NOTICE } from "@/lib/accounting/queries"
 // GET /api/accounting/journal?from=&to=&sourceType=&page= — journal entries.
 export async function GET(request: NextRequest) {
   try {
-    const { scope } = await accountingScope(request);
+    const { scope } = await accountingScope(request, "accounting.view", { readOnly: true });
     const params = request.nextUrl.searchParams;
     const today = dateStrInTz(new Date());
     const page = Math.max(1, Number(params.get("page") ?? 1) || 1);

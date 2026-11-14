@@ -9,7 +9,7 @@ import { db } from "@/lib/db";
 
 export async function GET(request: NextRequest) {
   try {
-    const { scope } = await accountingScope(request);
+    const { scope } = await accountingScope(request, "accounting.view", { readOnly: true });
     const searchParams = request.nextUrl.searchParams;
 
     const today = dateStrInTz(new Date());

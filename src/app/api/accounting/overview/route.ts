@@ -7,7 +7,7 @@ import { accountingOverview } from "@/lib/accounting/queries";
 // current period's checklist. Never creates books.
 export async function GET(request: NextRequest) {
   try {
-    const { scope } = await accountingScope(request);
+    const { scope } = await accountingScope(request, "accounting.view", { readOnly: true });
     return NextResponse.json(await accountingOverview(scope));
   } catch (error) {
     return handleApiError(error);

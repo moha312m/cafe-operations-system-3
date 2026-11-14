@@ -19,7 +19,7 @@ const createPeriodInput = z
 // GET /api/accounting/periods — list accounting periods with entry counts.
 export async function GET(request: NextRequest) {
   try {
-    const { scope } = await accountingScope(request, "accounting.view");
+    const { scope } = await accountingScope(request, "accounting.view", { readOnly: true });
     const entity = await db.accountingEntity.findUnique({ where: { cafeId: scope.cafeId }, select: { id: true } });
     if (!entity) return NextResponse.json({ configured: false, periods: [] });
 

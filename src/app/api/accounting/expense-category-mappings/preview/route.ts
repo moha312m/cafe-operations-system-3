@@ -7,7 +7,7 @@ import { mappingPreviewQuery, previewMapping, setupScope } from "@/lib/accountin
 // touch: expenses on or after it, and how many already have a journal entry. Read-only.
 export async function GET(request: NextRequest) {
   try {
-    const { cafeId } = await setupScope(request);
+    const { cafeId } = await setupScope(request, { readOnly: true });
     const q = mappingPreviewQuery.parse(Object.fromEntries(["categoryId", "effectiveFrom", "accountId"].map((k) => [k, request.nextUrl.searchParams.get(k) ?? undefined])));
     return NextResponse.json(await db.$transaction((tx) => previewMapping(tx, cafeId, q)));
   } catch (error) {

@@ -11,8 +11,8 @@ import { chartExportFile } from "@/lib/accounting/chart-export-queries";
 // Needs accounting.export; the mapping sheet also needs expenses.view — both checked here, not in the UI.
 export async function GET(request: NextRequest) {
   try {
-    const { session, scope } = await accountingScope(request);
-    const { keys } = await resolvePermissions(session);
+    const { session, scope } = await accountingScope(request, "accounting.view", { readOnly: true });
+    const { keys } = await resolvePermissions(session, undefined, { readOnly: true });
     if (!keys.has("accounting.export")) throw new ApiError(403, "ليس لديك صلاحية تصدير المحاسبة");
     const params = Object.fromEntries(["format", "scope", "q", "dataset", "includeMapping"].flatMap((k) => { const v = request.nextUrl.searchParams.get(k); return v === null ? [] : [[k, v]]; }));
     const query = exportQuery.parse(params);

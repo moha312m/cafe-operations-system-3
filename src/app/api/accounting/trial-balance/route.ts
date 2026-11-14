@@ -10,12 +10,12 @@ import { parseDate, trialBalanceView, SHADOW_NOTICE } from "@/lib/accounting/que
 // movement and closing per account, with a signed snapshot for print/CSV/XLSX.
 export async function GET(request: NextRequest) {
   try {
-    const { session, scope } = await accountingScope(request);
+    const { session, scope } = await accountingScope(request, "accounting.view", { readOnly: true });
     const params = request.nextUrl.searchParams;
     const today = dateStrInTz(new Date());
     const tb = await trialBalanceView(scope, parseDate(params.get("from"), `${today.slice(0, 7)}-01`), parseDate(params.get("to"), today));
     // The export snapshot is issued only to readers who may export the books.
-    const canExport = (await resolvePermissions(session)).keys.has("accounting.export");
+    const canExport = (await resolvePermissions(session, undefined, { readOnly: true })).keys.has("accounting.export");
     const outputSnapshot = canExport ? signReportOutput(session.id, {
       title: "ميزان المراجعة — تجريبي غير معتمد",
       reporting: { mode: "accounting", from: tb.from, to: tb.to, branchId: tb.branchId, notice: SHADOW_NOTICE },

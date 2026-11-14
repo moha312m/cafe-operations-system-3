@@ -7,7 +7,7 @@ import { accountCreateInput, createAccount, setupWrite } from "@/lib/accounting/
 // GET /api/accounting/accounts — postable accounts, for filters.
 export async function GET(request: NextRequest) {
   try {
-    const { scope } = await accountingScope(request);
+    const { scope } = await accountingScope(request, "accounting.view", { readOnly: true });
     return NextResponse.json({ accounts: await accountList(scope) });
   } catch (error) {
     return handleApiError(error);

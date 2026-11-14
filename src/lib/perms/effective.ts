@@ -7,7 +7,7 @@
 import type { Prisma } from "@prisma/client";
 import { db } from "@/lib/db";
 import type { SessionUser } from "@/lib/auth";
-import { getCafeSettings } from "@/lib/cafe-settings";
+import { getCafeSettings, readCafeFeatures, type CafeFeatures } from "@/lib/cafe-settings";
 import { CAFE_KEYS, MODULES, PERMISSION_KEYS } from "./catalog";
 import { defaultKeysForRole } from "./templates";
 
@@ -17,7 +17,7 @@ export type EffectivePermissions = {
 };
 
 // Which permission keys a disabled feature flag removes.
-function featureBlockedKeys(settings: Record<string, unknown>): Set<string> {
+function featureBlockedKeys(settings: CafeFeatures): Set<string> {
   const disabledModules = new Set(
     MODULES.filter((m) => m.feature && settings[m.feature] === false).map((m) => m.code)
   );
@@ -31,7 +31,8 @@ function featureBlockedKeys(settings: Record<string, unknown>): Set<string> {
 // Resolve the acting user's final permission-key set.
 export async function resolvePermissions(
   session: SessionUser,
-  client: Prisma.TransactionClient | typeof db = db
+  client: Prisma.TransactionClient = db,
+  { readOnly = false }: { readOnly?: boolean } = {},
 ): Promise<EffectivePermissions> {
   // Super admin operates cross-tenant with every capability.
   if (session.role === "SUPER_ADMIN") {
@@ -83,7 +84,9 @@ export async function resolvePermissions(
   // Feature-flag gate (Super-Admin controlled) — applies to everyone.
   base.delete("inventory.finished_returns"); // Derived below; never a stored role/override grant.
   if (session.cafeId) {
-    const settings = await getCafeSettings(session.cafeId, client);
+    const settings = readOnly
+      ? await readCafeFeatures(session.cafeId, client)
+      : await getCafeSettings(session.cafeId, client);
     // Derived capability for linked physical receipts only. Preserve underlying
     // role/override grants, never general stock administration when disabled.
     const history = settings.inventoryEnabled === false && (base.has("inventory.view") || base.has("inventory.transactions"))
@@ -91,7 +94,7 @@ export async function resolvePermissions(
       : false;
     const historicalView = history && base.has("inventory.view");
     const finishedReturns = (settings.inventoryEnabled !== false || history) && base.has("inventory.transactions");
-    const blocked = featureBlockedKeys(settings as unknown as Record<string, unknown>);
+    const blocked = featureBlockedKeys(settings);
     for (const k of blocked) base.delete(k);
     if (historicalView) base.add("inventory.view");
     if (finishedReturns) base.add("inventory.finished_returns");

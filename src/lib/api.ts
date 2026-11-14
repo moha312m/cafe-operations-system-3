@@ -4,12 +4,13 @@ import { ZodError, z } from "zod";
 import { Prisma } from "@prisma/client";
 import { getSession, type SessionUser } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { resolveStaffBranchInTransaction } from "@/lib/staff-branch";
+import { projectStaffBranch, resolveStaffBranchInTransaction, staffBranchSelect } from "@/lib/staff-branch";
 import { type Permission } from "@/lib/permissions";
 import { resolvePermissions } from "@/lib/perms/effective";
 import { primaryKey } from "@/lib/perms/catalog";
 import {
   getCafeSettings,
+  readCafeFeatures,
   FEATURE_DISABLED_MESSAGE,
   type FeatureFlag,
   type WorkflowSwitch,
@@ -57,48 +58,61 @@ const DENIED = "ليس لديك صلاحية لتنفيذ هذا الإجراء"
  * into that bundle. `@/lib/api` is server-only, and is the door every
  * guarded route already comes through.
  */
+async function checkActiveSession(session: SessionUser, tx: Prisma.TransactionClient, readOnly: boolean): Promise<SessionUser> {
+  await tx.$executeRaw`SET LOCAL lock_timeout = '2s'`;
+  await tx.$executeRaw`SET LOCAL statement_timeout = '5s'`;
+  if (!readOnly) {
+    await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${session.id} FOR NO KEY UPDATE`;
+  }
+  const account = await tx.user.findUnique({
+    where: { id: session.id },
+    select: {
+      ...staffBranchSelect,
+      email: true,
+      name: true,
+      isActive: true,
+      archivedAt: true,
+      cafe: { select: { isActive: true } },
+    },
+  });
+
+  if (!account || !session.tokenId || await tx.sessionRevocation.findUnique({
+    where: { tokenId: session.tokenId },
+    select: { id: true },
+  })) throw new ApiError(401, "سجّل دخولك الأول");
+  if (!account.isActive || account.archivedAt) {
+    throw new ApiError(403, "الحساب موقوف — كلم المدير");
+  }
+  if (account.cafe && !account.cafe.isActive) {
+    throw new ApiError(403, "تم إيقاف حساب الكافيه، برجاء التواصل مع إدارة المنصة");
+  }
+
+  const branch = readOnly
+    ? await projectStaffBranch(tx, account)
+    : await resolveStaffBranchInTransaction(tx, session.id);
+  if (!branch) throw new ApiError(401, "سجّل دخولك الأول");
+  return { ...session, email: account.email, name: account.name, role: account.role,
+    cafeId: account.cafeId, ...branch };
+}
+
 export async function requireActiveSession(client?: Prisma.TransactionClient): Promise<SessionUser> {
   const session = await getSession();
   if (!session) throw new ApiError(401, "سجّل دخولك الأول");
-
-  const check = async (tx: Prisma.TransactionClient) => {
-    await tx.$executeRaw`SET LOCAL lock_timeout = '2s'`;
-    await tx.$executeRaw`SET LOCAL statement_timeout = '5s'`;
-    await tx.$queryRaw`SELECT "id" FROM "User" WHERE "id" = ${session.id} FOR NO KEY UPDATE`;
-    const account = await tx.user.findUnique({
-      where: { id: session.id },
-      select: {
-        email: true,
-        name: true,
-        role: true,
-        cafeId: true,
-        branchId: true,
-        isActive: true,
-        archivedAt: true,
-        cafe: { select: { isActive: true } },
-      },
-    });
-
-    // A token for a user who no longer exists is not a session.
-    if (!account) throw new ApiError(401, "سجّل دخولك الأول");
-    if (!session.tokenId || await tx.sessionRevocation.findUnique({
-      where: { tokenId: session.tokenId },
-      select: { id: true },
-    })) throw new ApiError(401, "سجّل دخولك الأول");
-    if (!account.isActive || account.archivedAt) {
-      throw new ApiError(403, "الحساب موقوف — كلم المدير");
-    }
-    if (account.cafe && !account.cafe.isActive) {
-      throw new ApiError(403, "تم إيقاف حساب الكافيه، برجاء التواصل مع إدارة المنصة");
-    }
-    // Account identity, authority and branch are read under the same User lock.
-    // Activity refusals above run before the resolver can write assignment state.
-    const branch = await resolveStaffBranchInTransaction(tx, session.id);
-    if (!branch) throw new ApiError(401, "سجّل دخولك الأول");
-    return { ...session, email: account.email, name: account.name, role: account.role,
-      cafeId: account.cafeId, ...branch };
-  };
+  const check = (tx: Prisma.TransactionClient) => checkActiveSession(session, tx, false);
   return client ? check(client) : db.$transaction(check);
+}
+
+/** Authorize a read using the effective scope without persisting guard state. */
+export async function requireReadKey(key: string): Promise<SessionUser> {
+  const session = await getSession();
+  if (!session) throw new ApiError(401, "سجّل دخولك الأول");
+  return db.$transaction(async (tx) => {
+    await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+    const actor = await checkActiveSession(session, tx, true);
+    const { keys } = await resolvePermissions(actor, tx, { readOnly: true });
+    if (!keys.has(key)) throw new ApiError(403, DENIED);
+    return actor;
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
 }
 
 export async function requirePermission(
@@ -189,11 +203,14 @@ export function resolveReadScope(session: SessionUser): { cafeId?: string; branc
 // requirePermission so role checks run first.
 export async function requireFeature(
   session: SessionUser,
-  feature: FeatureFlag | WorkflowSwitch
+  feature: FeatureFlag | WorkflowSwitch,
+  { readOnly = false }: { readOnly?: boolean } = {},
 ): Promise<void> {
   if (session.role === "SUPER_ADMIN") return;
   if (!session.cafeId) throw new ApiError(403, "الحساب مش مرتبط بكافيه");
-  const settings = await getCafeSettings(session.cafeId);
+  const settings = readOnly
+    ? await readCafeFeatures(session.cafeId)
+    : await getCafeSettings(session.cafeId);
   if (!settings[feature]) {
     throw new ApiError(403, FEATURE_DISABLED_MESSAGE);
   }

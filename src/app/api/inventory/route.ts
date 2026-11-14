@@ -3,6 +3,7 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import {
   requirePermission,
+  requireReadKey,
   resolveCafeId,
   handleApiError,
   ApiError,
@@ -56,7 +57,7 @@ function scopeBranch(
 //   ?branchId= ?category= ?status=(ok|low|out) ?q= ?includeArchived=1
 export async function GET(request: NextRequest) {
   try {
-    const session = await requirePermission("inventory:read");
+    const session = await requireReadKey("inventory.view");
     const params = request.nextUrl.searchParams;
     const cafeId = resolveCafeId(session, params.get("cafeId"));
     const branchId = scopeBranch(session, params.get("branchId"));
@@ -68,7 +69,7 @@ export async function GET(request: NextRequest) {
           order: { cafeId, ...(branchId ? { branchId } : {}) },
         },
       })) > 0;
-    if (!hasFinishedHistory) await requireFeature(session, "inventoryEnabled");
+    if (!hasFinishedHistory) await requireFeature(session, "inventoryEnabled", { readOnly: true });
 
     const where: Prisma.InventoryItemWhereInput = {
       cafeId,

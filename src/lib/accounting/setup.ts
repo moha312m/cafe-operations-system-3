@@ -71,8 +71,8 @@ function guardError(error: unknown): never {
 }
 
 /** Writes need the setup key and a café-wide reader; a branch-pinned user is refused whatever their keys say. */
-export async function setupScope(request: NextRequest) {
-  const { session, scope } = await accountingScope(request, "accounting.setup");
+export async function setupScope(request: NextRequest, { readOnly = false }: { readOnly?: boolean } = {}) {
+  const { session, scope } = await accountingScope(request, "accounting.setup", { readOnly });
   if (resolveReadScope(session).branchId) throw new ApiError(403, "إعداد الدفاتر لصاحب الكافيه على مستوى الكافيه كله، مش لفرع");
   return { session, cafeId: scope.cafeId };
 }

@@ -209,3 +209,97 @@ test("a legacy read-side adjustment is held for reconciliation before applying t
     await teardownTaggedCafe(fx.cafeId);
   }
 });
+
+test("P&L and inventory GETs preserve missing settings and use the feature defaults", { timeout: 30_000 }, async (t) => {
+  await requireServer();
+  const fx = await countCafe("ACC016SETTINGS");
+  try {
+    for (const path of ["/api/accounting/pnl", "/api/inventory"]) {
+      await t.test(path, async () => {
+        await db.cafeSettings.deleteMany({ where: { cafeId: fx.cafeId } });
+        const result = await as(fx.owner.email, path);
+        assert.equal(result.status, 200, result.text);
+        assert.equal(await db.cafeSettings.count({ where: { cafeId: fx.cafeId } }), 0);
+      });
+    }
+    await db.cafeSettings.upsert({
+      where: { cafeId: fx.cafeId },
+      create: { cafeId: fx.cafeId, inventoryEnabled: false },
+      update: { inventoryEnabled: false },
+    });
+    assert.equal((await as(fx.owner.email, "/api/inventory")).status, 403);
+    assert.equal((await as(fx.owner.email, "/api/accounting/pnl")).status, 200);
+  } finally {
+    await teardownTaggedCafe(fx.cafeId);
+  }
+});
+
+test("P&L and inventory GETs enforce projected branch scope without changing assignments", { timeout: 30_000 }, async (t) => {
+  await requireServer();
+  const fx = await countCafe("ACC016ASSIGN");
+  try {
+    await db.userPermissionOverride.createMany({
+      data: ["accounting.view", "inventory.view"].map((permissionKey) => ({ userId: fx.manager.id, permissionKey, allowed: true })),
+    });
+    const main = await countItem(fx, "home branch");
+    const annex = await countItem(fx, "temporary branch", { branchId: fx.otherBranchId });
+    const where = { id: fx.manager.id };
+    const select = {
+      temporaryBranchId: true, temporaryBranchUntil: true,
+      temporaryBranchStartedAt: true, temporaryBranchCancelledAt: true, updatedAt: true,
+    } as const;
+
+    for (const expired of [false, true]) {
+      const expectedBranch = expired ? fx.branchId : fx.otherBranchId;
+      const expectedItem = expired ? main : annex;
+      const otherBranch = expired ? fx.otherBranchId : fx.branchId;
+      for (const path of ["/api/accounting/pnl", "/api/inventory"]) {
+        await t.test(`${path} with ${expired ? "expired" : "pending"} assignment`, async () => {
+          const before = await db.user.update({
+            where,
+            data: {
+              temporaryBranchId: fx.otherBranchId,
+              temporaryBranchUntil: new Date(Date.now() + (expired ? -60_000 : 3_600_000)),
+              temporaryBranchStartedAt: expired ? new Date(Date.now() - 3_600_000) : null,
+              temporaryBranchCancelledAt: null,
+            },
+            select,
+          });
+          const result = await as<{ branchId?: string; items?: { id: string }[] }>(
+            fx.manager.email, `${path}?branchId=${otherBranch}`,
+          );
+          assert.equal(result.status, 200, result.text);
+          if (path.endsWith("/pnl")) assert.equal(result.body.branchId, expectedBranch);
+          else assert.deepEqual(result.body.items?.map((item) => item.id), [expectedItem.id]);
+          assert.deepEqual(await db.user.findUniqueOrThrow({ where, select }), before);
+        });
+      }
+    }
+
+    await db.user.update({ where, data: { isActive: false } });
+    for (const path of ["/api/accounting/pnl", "/api/inventory"]) {
+      assert.equal((await as(fx.manager.email, path)).status, 403);
+      assert.equal((await as("missing-session", path)).status, 401);
+    }
+  } finally {
+    await teardownTaggedCafe(fx.cafeId);
+  }
+});
+
+
+test("periods and reconciliation GETs preserve missing café settings", { timeout: 30_000 }, async (t) => {
+  await requireServer();
+  const fx = await countCafe("ACC016LIFECYCLEREAD");
+  try {
+    for (const path of ["/api/accounting/periods", "/api/accounting/reconciliation"]) {
+      await t.test(path, async () => {
+        await db.cafeSettings.deleteMany({ where: { cafeId: fx.cafeId } });
+        const result = await as(fx.owner.email, path);
+        assert.equal(result.status, 200, result.text);
+        assert.equal(await db.cafeSettings.count({ where: { cafeId: fx.cafeId } }), 0);
+      });
+    }
+  } finally {
+    await teardownTaggedCafe(fx.cafeId);
+  }
+});

@@ -8,7 +8,7 @@ import { generalLedger, parseDate, SHADOW_NOTICE } from "@/lib/accounting/querie
 // with opening and running balances; totals cover every page.
 export async function GET(request: NextRequest) {
   try {
-    const { scope } = await accountingScope(request);
+    const { scope } = await accountingScope(request, "accounting.view", { readOnly: true });
     const params = request.nextUrl.searchParams;
     const accountId = params.get("accountId");
     if (!accountId) throw new ApiError(400, "اختار الحساب");

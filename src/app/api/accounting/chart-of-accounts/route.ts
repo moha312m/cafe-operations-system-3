@@ -11,9 +11,9 @@ import { chartOfAccountsView } from "@/lib/accounting/chart-view-queries";
 // /api/accounting/accounts keeps serving postable accounts for filters.
 export async function GET(request: NextRequest) {
   try {
-    const { session, scope } = await accountingScope(request);
+    const { session, scope } = await accountingScope(request, "accounting.view", { readOnly: true });
     const { q } = chartQuery.parse({ q: request.nextUrl.searchParams.get("q") ?? undefined });
-    const { keys } = await resolvePermissions(session);
+    const { keys } = await resolvePermissions(session, undefined, { readOnly: true });
     return NextResponse.json(await chartOfAccountsView(scope, { q, includeMapping: keys.has("expenses.view"), canSetup: keys.has("accounting.setup") && !resolveReadScope(session).branchId, canExport: keys.has("accounting.export") }));
   } catch (error) {
     return handleApiError(error);

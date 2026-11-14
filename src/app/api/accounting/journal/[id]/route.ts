@@ -9,7 +9,7 @@ type Params = { params: Promise<{ id: string }> };
 // the operational record behind it.
 export async function GET(request: NextRequest, { params }: Params) {
   try {
-    const { scope } = await accountingScope(request);
+    const { scope } = await accountingScope(request, "accounting.view", { readOnly: true });
     const { id } = await params;
     return NextResponse.json({ ...(await journalEntryDetail(scope, id)), notice: SHADOW_NOTICE });
   } catch (error) {

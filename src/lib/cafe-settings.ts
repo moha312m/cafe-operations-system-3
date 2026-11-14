@@ -80,6 +80,35 @@ export type CafeFeatures = Record<FeatureFlag, boolean> &
     qrOrderRoutingMode: QrOrderRoutingMode;
   };
 
+// Match the Prisma defaults for cafés created before the settings row existed.
+const DEFAULT_CAFE_FEATURES: CafeFeatures = {
+  aiAssistantEnabled: false,
+  qrMenuEnabled: true,
+  waiterApprovalEnabled: true,
+  kitchenScreenEnabled: true,
+  inventoryEnabled: true,
+  finishedGoodsSalesEnabled: false,
+  shiftManagementEnabled: true,
+  advancedReportsEnabled: false,
+  excelImportEnabled: true,
+  recipeCostingEnabled: true,
+  staffManagementEnabled: true,
+  branchManagementEnabled: true,
+  purchasesEnabled: true,
+  requireShiftForQrOrders: false,
+  allowCashierToPrepareOrders: false,
+  allowCashierToServeOrders: false,
+  enableTables: true,
+  allowCustomTables: true,
+  workflowMode: "FULL_SERVICE",
+  qrOrderRoutingMode: "WAITER_APPROVAL",
+};
+
+export async function readCafeFeatures(cafeId: string, client: Prisma.TransactionClient = db): Promise<CafeFeatures> {
+  const settings = await client.cafeSettings.findUnique({ where: { cafeId } });
+  return settings ? toFeatureMap(settings) : { ...DEFAULT_CAFE_FEATURES };
+}
+
 export function toFeatureMap(s: CafeSettings): CafeFeatures {
   return {
     aiAssistantEnabled: s.aiAssistantEnabled,

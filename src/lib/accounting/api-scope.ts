@@ -3,12 +3,16 @@
 // and a branch-assigned reader is always narrowed to their own branch —
 // whatever the request asks for.
 import type { NextRequest } from "next/server";
-import { ApiError, requireKey, resolveCafeId, resolveReadScope } from "@/lib/api";
+import { ApiError, requireKey, requireReadKey, resolveCafeId, resolveReadScope } from "@/lib/api";
 import { db } from "@/lib/db";
 import type { Scope } from "@/lib/accounting/queries";
 
-export async function accountingScope(request: NextRequest, key = "accounting.view") {
-  const session = await requireKey(key);
+export async function accountingScope(
+  request: NextRequest,
+  key = "accounting.view",
+  { readOnly = false }: { readOnly?: boolean } = {},
+) {
+  const session = readOnly ? await requireReadKey(key) : await requireKey(key);
   const readScope = resolveReadScope(session);
   const cafeId = resolveCafeId(session, request.nextUrl.searchParams.get("cafeId"));
   const requestedBranch = request.nextUrl.searchParams.get("branchId");

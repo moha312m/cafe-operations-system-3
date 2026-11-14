@@ -9,7 +9,7 @@ import { accountingBridgeReadiness, inventoryReconciliation, supplierPosition } 
 // GET /api/accounting/reconciliation — read-only subledger vs GL reconciliation & F&B bridge readiness.
 export async function GET(request: NextRequest) {
   try {
-    const { scope } = await accountingScope(request, "accounting.reconcile");
+    const { scope } = await accountingScope(request, "accounting.reconcile", { readOnly: true });
     const today = dateStrInTz(new Date());
     const asOf = parseDate(request.nextUrl.searchParams.get("asOf"), today);
 
