@@ -200,12 +200,16 @@ export async function projectShadowLedger(args: {
     if (c.lines.length === 0) { report.skipped++; continue; } // a zero-value event moves nothing
     const input = toInput(args.cafeId, c, args.actorId ?? null);
     try {
-      if (args.openMissingPeriods) {
-        const day = new Date(`${input.entryDate}T00:00:00Z`);
-        const covered = await db.accountingPeriod.count({ where: { cafeId: args.cafeId, startsOn: { lte: day }, endsOn: { gte: day } } });
-        if (!covered) await db.$transaction((tx) => openPeriod(tx, { cafeId: args.cafeId, ...monthOf(input.entryDate) }));
-      }
-      const result = await db.$transaction((tx) => postEntry(tx, input));
+      const result = await db.$transaction(async (tx) => {
+        if (args.openMissingPeriods) {
+          // The posting lock also serializes the check and creation of a missing period.
+          await tx.$queryRaw`SELECT "id" FROM "AccountingEntity" WHERE "id" = ${entity.id} FOR UPDATE`;
+          const day = new Date(`${input.entryDate}T00:00:00Z`);
+          const covered = await tx.accountingPeriod.count({ where: { entityId: entity.id, startsOn: { lte: day }, endsOn: { gte: day } } });
+          if (!covered) await openPeriod(tx, { cafeId: args.cafeId, ...monthOf(input.entryDate) });
+        }
+        return postEntry(tx, input);
+      });
       if (result.replayed) report.replayed++; else report.posted++;
       report.bySource[c.sourceType] = (report.bySource[c.sourceType] ?? 0) + 1;
       if (c.warning) issue("ASSUMED_DATE", c.warning);

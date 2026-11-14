@@ -10,8 +10,7 @@ import {
 } from "@/lib/api";
 import { audit } from "@/lib/audit";
 import { round2 } from "@/lib/inventory";
-import { applyStockMutation, lockItemForUpdate } from "@/lib/ledger";
-import { round3 } from "@/lib/costing";
+import { applyStockMutation } from "@/lib/ledger";
 import { withStockAlerts } from "@/lib/low-stock";
 import { syncDirectSale } from "@/lib/inventory-pricing-linkage";
 import type { Prisma } from "@prisma/client";
@@ -81,65 +80,8 @@ export async function GET(request: NextRequest) {
         : {}),
     };
 
-    // Self-healing: synchronize any owner-approved count corrections into physical stock:
-    try {
-      const pendingApproved = await db.stockCountCorrection.findMany({
-        where: {
-          status: "APPROVED",
-          line: {
-            session: {
-              cafeId,
-              ...(branchId ? { branchId } : {}),
-              status: { in: ["DRAFT", "IN_PROGRESS", "SUBMITTED", "CONFIRMED"] },
-            },
-          },
-        },
-        select: {
-          id: true,
-          newCountedQuantity: true,
-          line: {
-            select: {
-              inventoryItemId: true,
-              session: { select: { branchId: true, handoverId: true } },
-              inventoryItem: { select: { currentStock: true } },
-            },
-          },
-        },
-        orderBy: { approvedAt: "desc" },
-        take: 10,
-      });
-
-      for (const corr of pendingApproved) {
-        const targetQty = Number(corr.newCountedQuantity);
-        const currentQty = Number(corr.line.inventoryItem.currentStock);
-        if (Math.abs(targetQty - currentQty) > 0.0001) {
-          try {
-            await db.$transaction(async (tx) => {
-              const locked = await lockItemForUpdate(tx, corr.line.inventoryItemId);
-              const delta = round3(targetQty - Number(locked.currentStock));
-              if (Math.abs(delta) > 0.0001) {
-                await applyStockMutation(tx, {
-                  inventoryItemId: corr.line.inventoryItemId,
-                  type: "ADJUSTMENT",
-                  quantity: delta,
-                  cafeId,
-                  branchId: corr.line.session.branchId,
-                  createdById: session.id,
-                  note: "مزامنة رصيد المخزن مع تصحيح الجرد المعتمد من المالك",
-                  allowNegative: true,
-                  freezeToken: corr.line.session.handoverId ?? undefined,
-                });
-              }
-            });
-          } catch {
-            // Keep serving even if individual lock/freeze is in transit
-          }
-        }
-      }
-    } catch {
-      // Non-blocking fallback
-    }
-
+    // Approved corrections update count evidence. The authorized count or
+    // handover workflow applies any resulting movement with its own audit.
     const items = await db.inventoryItem.findMany({
       where,
       select: itemSelect,

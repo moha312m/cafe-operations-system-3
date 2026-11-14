@@ -90,19 +90,21 @@ export async function closeChecklist(args: { cafeId: string; periodId: string },
  * blocking. Returns the checklist the decision was made on.
  * `beforeCommit` exists for tests that inject a concurrent writer.
  */
+export async function closeCheckedPeriodTx(tx: Prisma.TransactionClient, args: { cafeId: string; periodId: string; actorId: string; beforeCommit?: () => Promise<void> }) {
+  const [period] = await tx.$queryRaw<{ id: string; status: string }[]>`SELECT "id", "status"::text AS "status" FROM "AccountingPeriod" WHERE "id" = ${args.periodId} AND "cafeId" = ${args.cafeId} FOR UPDATE`;
+  if (!period) throw new ApiError(404, "الفترة مش موجودة");
+  if (period.status !== "OPEN") throw new ApiError(409, "الفترة مقفولة بالفعل");
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock("accounting_close_key"(${args.cafeId}))`;
+  const checklist = await closeChecklist(args, tx);
+  if (!checklist.canClose) {
+    const blocking = checklist.items.filter((i) => i.status === "blocking").map((i) => i.label).join("، ");
+    throw Object.assign(new ApiError(409, `مينفعش تقفل الفترة: ${blocking}`), { checklist });
+  }
+  await args.beforeCommit?.();
+  await tx.accountingPeriod.update({ where: { id: period.id }, data: { status: "CLOSED", closedAt: new Date(), closedById: args.actorId } });
+  return checklist;
+}
+
 export async function closeCheckedPeriod(args: { cafeId: string; periodId: string; actorId: string; beforeCommit?: () => Promise<void> }) {
-  return db.$transaction(async (tx) => {
-    const [period] = await tx.$queryRaw<{ id: string; status: string }[]>`SELECT "id", "status"::text AS "status" FROM "AccountingPeriod" WHERE "id" = ${args.periodId} AND "cafeId" = ${args.cafeId} FOR UPDATE`;
-    if (!period) throw new ApiError(404, "الفترة مش موجودة");
-    if (period.status !== "OPEN") throw new ApiError(409, "الفترة مقفولة بالفعل");
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock("accounting_close_key"(${args.cafeId}))`;
-    const checklist = await closeChecklist(args, tx);
-    if (!checklist.canClose) {
-      const blocking = checklist.items.filter((i) => i.status === "blocking").map((i) => i.label).join("، ");
-      throw Object.assign(new ApiError(409, `مينفعش تقفل الفترة: ${blocking}`), { checklist });
-    }
-    await args.beforeCommit?.();
-    await tx.accountingPeriod.update({ where: { id: period.id }, data: { status: "CLOSED", closedAt: new Date(), closedById: args.actorId } });
-    return checklist;
-  }, { timeout: 120000, maxWait: 30000 });
+  return db.$transaction((tx) => closeCheckedPeriodTx(tx, args), { timeout: 120000, maxWait: 30000 });
 }

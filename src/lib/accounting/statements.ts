@@ -51,9 +51,17 @@ export async function balanceSheet(args: { cafeId: string; asOf: string }) {
 const CASH_KEYS = ["CASH_DRAWER", "CASH_SAFE", "BANK"];
 const FLOW: Record<string, string> = {
   COLLECTION: "مقبوضات من العملاء",
-  REFUND: "مرتجعات للعملاء", LEGACY_REFUND: "مرتجعات للعملاء",
+  REFUND: "مرتجعات للعملاء",
+  LEGACY_REFUND: "مرتجعات للعملاء",
   SUPPLIER_PAYMENT: "مدفوعات للموردين",
   CASH_VARIANCE: "فروقات الكاش",
+  OPERATING_EXPENSE: "مدفوعات مصروفات تشغيلية",
+  OPERATING_EXPENSE_RETURN: "رد مصروفات تشغيلية",
+  CASH_TO_SAFE: "ترحيل نقدية للخزينة",
+  TREASURY_TRANSFER_DISPATCH: "تحويل مالي صادر",
+  TREASURY_TRANSFER_RECEIVE: "تحويل مالي وارد",
+  OPENING_BALANCE: "أرصدة افتتاحية",
+  REVERSAL: "قيود عكسية",
 };
 
 /** Direct-method cash flow over [from, to]: each entry's net effect on cash, by what produced it. */

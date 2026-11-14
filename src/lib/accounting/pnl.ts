@@ -11,9 +11,6 @@
 import { db } from "@/lib/db";
 import { money, sumMoney } from "@/lib/money";
 import { trialBalance, type TrialBalanceRow } from "@/lib/accounting/ledger";
-import { addDays, dateStrInTz, zonedDayStart } from "@/lib/date-range";
-import { ensureAccountingEntity } from "@/lib/accounting/chart";
-import { projectShadowLedger } from "@/lib/accounting/shadow-projection";
 
 export type PnlLine = {
   accountId: string;
@@ -137,10 +134,27 @@ async function computePeriodMetrics(cafeId: string, from: string, to: string, br
     })),
   ];
 
-  // 2. Cost of Goods Sold (COGS) (Normal DEBIT, systemKey COST_OF_SALES or purchase discounts)
-  const cogsRows = rows.filter(
-    (r) => r.type === "EXPENSE" && (r.systemKey === "COST_OF_SALES" || r.systemKey === "PURCHASE_DISCOUNTS")
+  // 2. Cost of Goods Sold (COGS) (systemKey COST_OF_SALES / PURCHASE_DISCOUNTS,
+  // or non-variance children placed under a non-postable "تكلفة المبيعات" header)
+  const cogsHeaderChildren = await db.accountingAccount.findMany({
+    where: {
+      cafeId,
+      type: "EXPENSE",
+      OR: [
+        { parent: { cafeId, name: "تكلفة المبيعات", isPostable: false, type: "EXPENSE" } },
+        { parent: { parent: { cafeId, name: "تكلفة المبيعات", isPostable: false, type: "EXPENSE" } } },
+      ],
+    },
+    select: { id: true, systemKey: true },
+  });
+  const cogsUnderHeader = new Set(
+    cogsHeaderChildren
+      .filter((a) => !a.systemKey || (a.systemKey !== "INVENTORY_LOSS" && a.systemKey !== "CASH_OVER_SHORT"))
+      .map((a) => a.id),
   );
+  const isCogsAccount = (r: TrialBalanceRow) =>
+    r.type === "EXPENSE" && (r.systemKey === "COST_OF_SALES" || r.systemKey === "PURCHASE_DISCOUNTS" || cogsUnderHeader.has(r.accountId));
+  const cogsRows = rows.filter(isCogsAccount);
   const cogsLines: PnlLine[] = cogsRows.map((r) => {
     const amt = r.normalBalance === "DEBIT" ? r.balance : -r.balance;
     return {
@@ -157,7 +171,7 @@ async function computePeriodMetrics(cafeId: string, from: string, to: string, br
 
   // 3. Operating Expenses (Normal DEBIT, excluding COGS and Variances)
   const nonOpKeys = new Set(["COST_OF_SALES", "PURCHASE_DISCOUNTS", "INVENTORY_LOSS", "CASH_OVER_SHORT"]);
-  const expenseRows = rows.filter((r) => r.type === "EXPENSE" && (!r.systemKey || !nonOpKeys.has(r.systemKey)));
+  const expenseRows = rows.filter((r) => r.type === "EXPENSE" && !isCogsAccount(r) && (!r.systemKey || !nonOpKeys.has(r.systemKey)));
   const expenseLines: PnlLine[] = expenseRows.map((r) => {
     const amt = r.normalBalance === "DEBIT" ? r.balance : -r.balance;
     return {
@@ -218,14 +232,8 @@ export async function getExecutivePnl(args: {
   branchId?: string;
   compareFrom?: string;
   compareTo?: string;
-  autoSync?: boolean;
 }): Promise<ExecutivePnlResult> {
-  // Check if books entity exists
-  let entity = await db.accountingEntity.findUnique({ where: { cafeId: args.cafeId } });
-  if (!entity && args.autoSync) {
-    // Auto-initialize standard cafe books
-    entity = await db.$transaction((tx) => ensureAccountingEntity(tx, args.cafeId));
-  }
+  const entity = await db.accountingEntity.findUnique({ where: { cafeId: args.cafeId }, select: { id: true } });
 
   const cafe = await db.cafe.findUnique({
     where: { id: args.cafeId },
@@ -260,22 +268,11 @@ export async function getExecutivePnl(args: {
       },
       sections: {
         revenue: { id: "revenue", title: "الإيرادات والمبيعات", lines: [], total: 0, percentOfRevenue: 0 },
-        cogs: { id: "cogs", title: "تكلفة البضاعة المباعة (COGS)", lines: [], total: 0, percentOfRevenue: 0 },
-        expenses: { id: "expenses", title: "المصروفات التشغيلية (OpEx)", lines: [], total: 0, percentOfRevenue: 0 },
+        cogs: { id: "cogs", title: "تكلفة البضاعة المباعة", lines: [], total: 0, percentOfRevenue: 0 },
+        expenses: { id: "expenses", title: "المصروفات التشغيلية", lines: [], total: 0, percentOfRevenue: 0 },
         variances: { id: "variances", title: "الفروقات والتسويات", lines: [], total: 0, percentOfRevenue: 0 },
       },
     };
-  }
-
-  // If autoSync requested, project operational transactions up to date
-  if (args.autoSync) {
-    try {
-      const fromDate = zonedDayStart(args.from);
-      const toDate = zonedDayStart(addDays(args.to, 1));
-      await projectShadowLedger({ cafeId: args.cafeId, from: fromDate, to: toDate, openMissingPeriods: true });
-    } catch {
-      // Non-blocking projection fallback
-    }
   }
 
   // 1. Current Period Metrics
@@ -368,7 +365,7 @@ export async function getExecutivePnl(args: {
     sections: {
       revenue: {
         id: "revenue",
-        title: "الإيرادات والمبيعات (Revenue)",
+        title: "الإيرادات والمبيعات",
         lines: revMerged,
         total: curRaw.netRevenue,
         percentOfRevenue: 100,
@@ -379,7 +376,7 @@ export async function getExecutivePnl(args: {
       },
       cogs: {
         id: "cogs",
-        title: "تكلفة البضاعة المباعة (COGS)",
+        title: "تكلفة البضاعة المباعة",
         lines: cogsMerged,
         total: curRaw.cogs,
         percentOfRevenue: pct(curRaw.cogs, curRaw.netRevenue),
@@ -390,7 +387,7 @@ export async function getExecutivePnl(args: {
       },
       expenses: {
         id: "expenses",
-        title: "المصروفات التشغيلية (Operating Expenses)",
+        title: "المصروفات التشغيلية",
         lines: expMerged,
         total: curRaw.operatingExpenses,
         percentOfRevenue: pct(curRaw.operatingExpenses, curRaw.netRevenue),
@@ -401,7 +398,7 @@ export async function getExecutivePnl(args: {
       },
       variances: {
         id: "variances",
-        title: "الفروقات والتسويات (Variances)",
+        title: "الفروقات والتسويات",
         lines: varMerged,
         total: curRaw.variances,
         percentOfRevenue: pct(curRaw.variances, curRaw.netRevenue),

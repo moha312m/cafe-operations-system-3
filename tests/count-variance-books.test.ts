@@ -190,7 +190,7 @@ async function legacyRebase(fx: CountCafe, itemId: string, quantity: number, sna
   });
 }
 
-test("default P&L sync holds past cost-less rebases even when count cost evidence exists", { timeout: 60000 }, async () => {
+test("P&L reads record nothing and explicit projection holds past cost-less rebases", { timeout: 60000 }, async () => {
   await requireServer();
   const fx = await countCafe("CVB-HELD");
   try {
@@ -209,6 +209,18 @@ test("default P&L sync holds past cost-less rebases even when count cost evidenc
     assert.equal(response.body.kpis.variances, 0);
     assert.equal(response.body.kpis.netProfit, 0);
     const source = { cafeId: fx.cafeId, sourceKey: `stock:${movementId}` };
+    assert.equal(await db.journalEntry.count({ where: source }), 0);
+    assert.equal(await db.accountingProjectionIssue.count({ where: source }), 0);
+
+    const body = { from: date, to: date };
+    const project = (options: object) => as<{ posted: number; exceptions: unknown[] }>(fx.owner.email, "/api/accounting/projection", {
+      method: "POST", body: JSON.stringify(options),
+    });
+    assert.equal((await project({ ...body, valueLegacyCountRebases: true })).status, 400);
+    const projected = await project(body);
+    assert.equal(projected.status, 200, projected.text);
+    assert.equal(projected.body.posted, 0);
+    assert.equal(projected.body.exceptions.length, 1);
     assert.equal(await db.journalEntry.count({ where: source }), 0);
     assert.equal(await db.accountingProjectionIssue.count({ where: { ...source, kind: "UNPOSTABLE", resolvedAt: null } }), 1);
   } finally {

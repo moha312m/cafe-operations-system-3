@@ -9,9 +9,8 @@ type Params = { params: Promise<{ id: string }> };
 // ordinary confirmed count found (COUNT_REBASE, T23).
 //
 // Confirming agrees the figures; this acts on them, as its own step, so the
-// numbers can be looked at before the stock moves. Each movement carries the
-// line's cost, which is what puts the shortage or surplus into the books
-// (هالك وفروقات مخزون) and from there into the P&L. Lines still in dispute
+// numbers can be looked at before the stock moves. The stock movement is
+// evidence for separate accounting projection. Lines still in dispute
 // are skipped, and a second call moves nothing: one count rebases one item
 // once.
 //

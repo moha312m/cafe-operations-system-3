@@ -130,6 +130,9 @@ export type RebaseResult = {
  */
 export const REBASE_AUDIT_ACTION = "STOCK_REBASED";
 
+// Older inventory reads wrote unlinked adjustments with this exact note.
+const LEGACY_CORRECTION_NOTE = "مزامنة رصيد المخزن مع تصحيح الجرد المعتمد من المالك";
+
 /** Postgres unique-violation, however it reaches us. */
 function isUniqueViolation(e: unknown): boolean {
   const code = (e as { code?: string }).code;
@@ -401,6 +404,16 @@ async function applyOneLine(executor: RebaseExecutor, args: {
       // `applyStockMutation` re-reads it under the same lock, in the same
       // transaction.
       const locked = await lockItemForUpdate(tx, args.inventoryItemId);
+      const legacyAdjustment = await tx.inventoryTransaction.findFirst({
+        where: {
+          cafeId: args.cafeId, branchId: args.branchId, inventoryItemId: args.inventoryItemId,
+          itemVersion: { gt: args.countCursor }, type: "ADJUSTMENT", note: LEGACY_CORRECTION_NOTE,
+        },
+        select: { id: true },
+      });
+      if (legacyAdjustment) {
+        throw new ApiError(409, "في تسوية سابقة للمخزون بعد الجرد ده. راجع سجل الحركات قبل تطبيق الفرق.");
+      }
       // A movement can commit while this lock is waiting. Read its replay
       // only after acquiring the item, or the rebase would erase that movement.
       const replay = await ledgerDeltaAbove(tx, args.inventoryItemId, args.countCursor);

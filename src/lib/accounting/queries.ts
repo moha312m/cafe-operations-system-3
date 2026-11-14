@@ -143,6 +143,9 @@ function sourceLink(sourceType: string, sourceId: string | null) {
   if (["PURCHASE_INVOICE", "PURCHASE_CANCEL", "SUPPLIER_PAYMENT"].includes(sourceType)) return { label: "المشتريات", href: "/purchases" };
   if (sourceType === "STOCK_MOVEMENT") return { label: "المخزون", href: "/inventory" };
   if (["CASH_TO_SAFE", "STORED_CASH_MOVEMENT", "CASH_VARIANCE"].includes(sourceType)) return { label: "الشيفتات", href: "/shifts" };
+  if (["OPERATING_EXPENSE", "OPERATING_EXPENSE_RETURN"].includes(sourceType)) return { label: "المصروفات", href: "/expenses" };
+  if (["TREASURY_OPENING", "TREASURY_TRANSFER_DISPATCH", "TREASURY_TRANSFER_RECEIVE"].includes(sourceType)) return { label: "الخزينة والتحويلات", href: "/treasury" };
+  if (sourceType === "REVERSAL") return { label: "القيد الأصلي", href: `/accounting/journal/${sourceId}` };
   return null;
 }
 
@@ -172,6 +175,55 @@ async function sourceEvidence(cafeId: string, sourceType: string, sourceId: stri
   if (sourceType === "STOCK_MOVEMENT") {
     const m = await db.inventoryTransaction.findFirst({ where: { id: sourceId, cafeId }, select: { type: true, quantity: true, totalCost: true, note: true, createdAt: true, inventoryItem: { select: { name: true, unit: true } } } });
     return m && { kind: "حركة مخزون", reference: m.inventoryItem.name, type: m.type, quantity: Number(m.quantity), unit: m.inventoryItem.unit, note: m.note, createdAt: m.createdAt, amount: m.totalCost === null ? null : money(m.totalCost).toNumber() };
+  }
+  if (sourceType === "OPERATING_EXPENSE") {
+    const e = await db.operatingExpense.findFirst({
+      where: { id: sourceId, cafeId },
+      select: { categoryCodeSnapshot: true, categoryNameSnapshot: true, description: true, documentReference: true, actorNameSnapshot: true, amount: true, occurredAt: true },
+    });
+    return e && {
+      kind: "مصروف تشغيلي",
+      reference: e.documentReference ?? `${e.categoryCodeSnapshot} — ${e.categoryNameSnapshot}`,
+      category: `${e.categoryCodeSnapshot} — ${e.categoryNameSnapshot}`,
+      description: e.description,
+      actor: e.actorNameSnapshot,
+      createdAt: e.occurredAt,
+      amount: money(e.amount).toNumber(),
+    };
+  }
+  if (sourceType === "OPERATING_EXPENSE_RETURN") {
+    const r = await db.operatingExpenseReturn.findFirst({
+      where: { id: sourceId, cafeId },
+      select: { reason: true, documentReference: true, actorNameSnapshot: true, amount: true, occurredAt: true, expense: { select: { categoryCodeSnapshot: true, categoryNameSnapshot: true } } },
+    });
+    return r && {
+      kind: "رد مصروف تشغيلي",
+      reference: r.documentReference ?? `${r.expense.categoryCodeSnapshot} — ${r.expense.categoryNameSnapshot}`,
+      reason: r.reason,
+      actor: r.actorNameSnapshot,
+      createdAt: r.occurredAt,
+      amount: money(r.amount).toNumber(),
+    };
+  }
+  if (["TREASURY_OPENING", "TREASURY_TRANSFER_DISPATCH", "TREASURY_TRANSFER_RECEIVE"].includes(sourceType)) {
+    const m = await db.moneyMovement.findFirst({
+      where: { id: sourceId, cafeId },
+      select: { kind: true, signedAmount: true, occurredAt: true, openingReference: true, account: { select: { name: true, kind: true } }, transfer: { select: { reference: true, fromNameSnapshot: true, toNameSnapshot: true, status: true } } },
+    });
+    return m && {
+      kind: m.kind === "OPENING" ? "رصيد افتتاحي لحساب مال" : "حركة تحويل مالي",
+      reference: m.transfer?.reference ?? m.openingReference ?? m.account.name,
+      account: m.account.name,
+      from: m.transfer?.fromNameSnapshot ?? null,
+      to: m.transfer?.toNameSnapshot ?? null,
+      status: m.transfer?.status ?? null,
+      createdAt: m.occurredAt,
+      amount: money(m.signedAmount).abs().toNumber(),
+    };
+  }
+  if (sourceType === "REVERSAL") {
+    const orig = await db.journalEntry.findFirst({ where: { id: sourceId, cafeId }, select: { number: true, entryDate: true, description: true, sourceType: true } });
+    return orig && { kind: "عكس قيد", reference: `قيد #${orig.number}`, entryDate: day(orig.entryDate), description: orig.description, sourceType: orig.sourceType };
   }
   return null;
 }

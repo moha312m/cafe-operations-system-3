@@ -1,37 +1,32 @@
 "use client";
 
-import { Suspense, useState, useMemo } from "react";
+import { Suspense, useMemo, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useApp } from "@/components/app-shell";
-import { useAccountingData } from "@/components/accounting/use-accounting-data";
-import { money } from "@/lib/client";
-import { dateStrInTz } from "@/lib/date-range";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
-  TrendingUp,
-  TrendingDown,
-  DollarSign,
-  PieChart,
-  Percent,
-  Wallet,
-  Building2,
-  Calendar,
-  Printer,
   ChevronDown,
   ChevronRight,
   ExternalLink,
+  Percent,
+  PieChart,
+  Printer,
+  TrendingDown,
+  TrendingUp,
+  Wallet,
 } from "lucide-react";
-import type { ExecutivePnlResult, PnlSection, PnlLine } from "@/lib/accounting/pnl";
+import { toast } from "sonner";
+import { useApp } from "@/components/app-shell";
+import { useAccountingData } from "@/components/accounting/use-accounting-data";
+import { EmptyState, LoadingState, Panel, StatCard } from "@/components/cafe/ui";
+import { Button } from "@/components/ui/button";
+import { nativeFieldClassName } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { api, money } from "@/lib/client";
+import { dateStrInTz } from "@/lib/date-range";
+import { cn } from "@/lib/utils";
+import type { ExecutivePnlResult, PnlSection } from "@/lib/accounting/pnl";
+import type { ShadowReport } from "@/lib/accounting/shadow-projection";
 
 function getMonthDates(offset: number = 0) {
   const d = new Date();
@@ -46,7 +41,7 @@ function getMonthDates(offset: number = 0) {
 }
 
 function PnlContent() {
-  const { cafe, user } = useApp();
+  const { cafe, user, canKey } = useApp();
   const currency = cafe?.currency ?? "EGP";
   const searchParams = useSearchParams();
 
@@ -60,7 +55,6 @@ function PnlContent() {
   const [compareFrom, setCompareFrom] = useState(lastMonth.from);
   const [compareTo, setCompareTo] = useState(lastMonth.to);
 
-  // Collapse state for sections
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
     revenue: true,
     cogs: true,
@@ -80,19 +74,41 @@ function PnlContent() {
   });
 
   const { data, error, loading, reload } = useAccountingData<ExecutivePnlResult>(
-    `/api/accounting/pnl?${queryParams.toString()}`
+    `/api/accounting/pnl?${queryParams.toString()}`,
   );
 
   const [initializing, setInitializing] = useState(false);
+  const [projecting, setProjecting] = useState(false);
+
   const handleInitializeBooks = async () => {
     setInitializing(true);
     try {
-      const res = await fetch("/api/accounting/pnl", { method: "POST" });
-      if (res.ok) {
-        await reload();
-      }
+      await api("/api/accounting/pnl", { method: "POST" });
+      toast.success("تم تهيئة الدفاتر المحاسبية بنجاح");
+      await reload();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "تعذّر تهيئة الدفاتر");
     } finally {
       setInitializing(false);
+    }
+  };
+
+  const handleProject = async () => {
+    if (!window.confirm(`ترحيل تجريبي لكل الفروع من ${from} إلى ${to}؟`)) return;
+    setProjecting(true);
+    try {
+      const result = await api<ShadowReport>("/api/accounting/projection", { method: "POST", body: { from, to } });
+      const summary = `تم ترحيل ${result.posted} قيد، و${result.replayed} سبق ترحيلها`;
+      if (result.exceptions.length) {
+        toast.warning(`${summary}. ${result.exceptions.length} حالة تحتاج مراجعة في صفحة التحكم والمطابقة.`);
+      } else {
+        toast.success(summary);
+      }
+      await reload();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "تعذّر تشغيل الترحيل التجريبي");
+    } finally {
+      setProjecting(false);
     }
   };
 
@@ -109,7 +125,7 @@ function PnlContent() {
       const twoMonthsAgo = getMonthDates(-2);
       setCompareFrom(twoMonthsAgo.from);
       setCompareTo(twoMonthsAgo.to);
-    } else if (type === "today") {
+    } else {
       setFrom(today);
       setTo(today);
       const yesterday = new Date();
@@ -123,19 +139,14 @@ function PnlContent() {
   const fmt = (n: number | undefined) => (n === undefined ? "—" : money(n, currency));
 
   if (loading) {
-    return (
-      <div className="space-y-4 py-8 text-center">
-        <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-        <p className="text-sm text-muted-foreground">جارٍ تحميل قائمة الأرباح والخسائر وحساب المؤشرات المالية…</p>
-      </div>
-    );
+    return <LoadingState label="جارٍ تحميل قائمة الأرباح والخسائر وحساب المؤشرات المالية…" />;
   }
 
   if (error) {
     return (
-      <div className="rounded-xl border border-destructive/20 bg-destructive/10 p-6 text-center text-destructive">
+      <div role="alert" className="workspace-state text-destructive">
         <p className="font-semibold">{error}</p>
-        <Button variant="outline" className="mt-3" onClick={() => void reload()}>
+        <Button variant="outline" onClick={() => void reload()}>
           إعادة المحاولة
         </Button>
       </div>
@@ -144,325 +155,319 @@ function PnlContent() {
 
   if (data && !data.configured) {
     return (
-      <Card className="border-caramel-line bg-caramel-soft/40 p-8 text-center">
-        <CardHeader>
-          <CardTitle className="text-xl">الدفاتر المحاسبية غير مهيأة بعد</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <p className="mx-auto max-w-md text-sm text-muted-foreground">
-            تعتمد قائمة الأرباح والخسائر وميزان المراجعة على شجرة حسابات قياسية وقيد مزدوج. يمكنك تهيئة دفاتر الكافيه تلقائياً بنقرة واحدة للبدء فوراً.
-          </p>
-          <Button onClick={handleInitializeBooks} disabled={initializing} className="px-6">
-            {initializing ? "جارٍ التهيئة…" : "تهيئة شجرة حسابات الكافيه والبدء"}
-          </Button>
-        </CardContent>
-      </Card>
+      <Panel title="الدفاتر المحاسبية غير مهيأة بعد">
+        <div className="space-y-4">
+          <EmptyState
+            icon="📊"
+            message="يلزم تهيئة دفاتر الكافيه أولًا قبل عرض قائمة الأرباح والخسائر وميزان المراجعة."
+          />
+          {!user.branchId && canKey("accounting.setup") && (
+            <div className="flex justify-center">
+              <Button onClick={handleInitializeBooks} disabled={initializing}>
+                {initializing ? "جارٍ التهيئة…" : "تهيئة شجرة حسابات الكافيه"}
+              </Button>
+            </div>
+          )}
+        </div>
+      </Panel>
     );
   }
 
   const kpis = data?.kpis;
   const compareKpis = data?.compareKpis;
+  const primeCostPercent =
+    kpis && kpis.netRevenue > 0
+      ? Number((((kpis.cogs + kpis.operatingExpenses) / kpis.netRevenue) * 100).toFixed(1))
+      : 0;
+  const revenueDelta =
+    kpis && compareKpis
+      ? Number((((kpis.netRevenue - compareKpis.netRevenue) / (Math.abs(compareKpis.netRevenue) || 1)) * 100).toFixed(1))
+      : null;
 
   return (
-    <div className="space-y-6">
-      {/* Top Filter and Controls Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border bg-card p-4">
-        {/* Preset Buttons */}
-        <div className="flex flex-wrap items-center gap-1.5">
-          <Button
-            size="sm"
-            variant={from === thisMonth.from && to === thisMonth.to ? "default" : "outline"}
-            onClick={() => handlePreset("thisMonth")}
-          >
-            الشهر الحالي
-          </Button>
-          <Button
-            size="sm"
-            variant={from === lastMonth.from && to === lastMonth.to ? "default" : "outline"}
-            onClick={() => handlePreset("lastMonth")}
-          >
-            الشهر الماضي
-          </Button>
-          <Button size="sm" variant="outline" onClick={() => handlePreset("today")}>
-            اليوم
-          </Button>
+    <div className="space-y-5">
+      <div className="workspace-toolbar space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button
+              size="sm"
+              variant={from === thisMonth.from && to === thisMonth.to ? "default" : "outline"}
+              onClick={() => handlePreset("thisMonth")}
+            >
+              الشهر الحالي
+            </Button>
+            <Button
+              size="sm"
+              variant={from === lastMonth.from && to === lastMonth.to ? "default" : "outline"}
+              onClick={() => handlePreset("lastMonth")}
+            >
+              الشهر الماضي
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => handlePreset("today")}>
+              اليوم
+            </Button>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-input bg-card px-3 py-2 text-sm text-foreground hover:bg-muted/50">
+              <input
+                type="checkbox"
+                checked={compare}
+                onChange={(e) => setCompare(e.target.checked)}
+                className="size-4 rounded accent-primary"
+              />
+              <span>مقارنة بالفترة السابقة</span>
+            </label>
+
+            <Button size="sm" variant="outline" onClick={() => window.print()} title="طباعة القائمة">
+              <Printer className="size-4" />
+              <span>طباعة</span>
+            </Button>
+
+            {!user.branchId && !branchId && canKey("accounting.project") && (
+              <Button size="sm" variant="outline" onClick={handleProject} disabled={projecting || !from || !to || from > to}>
+                {projecting ? "جارٍ الترحيل…" : "تشغيل الترحيل التجريبي"}
+              </Button>
+            )}
+          </div>
         </div>
 
-        {/* Date Pickers */}
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-1.5">
-            <span className="text-xs text-muted-foreground">من:</span>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="space-y-1">
+            <Label htmlFor="pnl-from">من تاريخ</Label>
             <input
+              id="pnl-from"
               type="date"
-              className="rounded-lg border bg-background px-2.5 py-1 text-sm"
+              dir="ltr"
+              className={nativeFieldClassName}
               value={from}
               onChange={(e) => setFrom(e.target.value)}
             />
           </div>
-          <div className="flex items-center gap-1.5">
-            <span className="text-xs text-muted-foreground">إلى:</span>
+          <div className="space-y-1">
+            <Label htmlFor="pnl-to">إلى تاريخ</Label>
             <input
+              id="pnl-to"
               type="date"
-              className="rounded-lg border bg-background px-2.5 py-1 text-sm"
+              dir="ltr"
+              className={nativeFieldClassName}
               value={to}
               onChange={(e) => setTo(e.target.value)}
             />
           </div>
-
-          {/* Branch Filter */}
           {!user.branchId && (data?.branches?.length ?? 0) > 1 && (
-            <select
-              className="rounded-lg border bg-background px-2.5 py-1 text-sm"
-              value={branchId}
-              onChange={(e) => setBranchId(e.target.value)}
-            >
-              <option value="">كل الفروع</option>
-              {data?.branches.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name}
-                </option>
-              ))}
-            </select>
+            <div className="space-y-1">
+              <Label htmlFor="pnl-branch">نطاق الفرع</Label>
+              <select
+                id="pnl-branch"
+                className={nativeFieldClassName}
+                value={branchId}
+                onChange={(e) => setBranchId(e.target.value)}
+              >
+                <option value="">كل الفروع</option>
+                {data?.branches.map((b) => (
+                  <option key={b.id} value={b.id}>
+                    {b.name}
+                  </option>
+                ))}
+              </select>
+            </div>
           )}
-
-          {/* Compare Toggle */}
-          <label className="flex cursor-pointer items-center gap-1.5 rounded-lg border px-2.5 py-1 text-sm hover:bg-muted/50">
-            <input
-              type="checkbox"
-              checked={compare}
-              onChange={(e) => setCompare(e.target.checked)}
-              className="rounded"
-            />
-            <span>مقارنة بالفترة السابقة</span>
-          </label>
-
-          {/* Print Button */}
-          <Button size="sm" variant="ghost" onClick={() => window.print()} title="طباعة القائمة">
-            <Printer className="size-4" />
-          </Button>
+          <div className="flex items-end pb-2 text-xs text-muted-foreground">
+            القائمة تعرض القيود المرحلة فعليًا في الدفاتر فقط؛ النسب تحسب مقارنةً بصافي الإيرادات.
+          </div>
         </div>
       </div>
 
-      {/* KPI Header Metric Cards (Odoo-Style Highlights) */}
       {kpis && (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-          {/* 1. Net Revenue */}
-          <Card className="border-t-4 border-t-emerald-500">
-            <CardHeader className="pb-1 pt-3">
-              <CardTitle className="text-xs font-medium text-muted-foreground">صافي الإيرادات (Net Sales)</CardTitle>
-            </CardHeader>
-            <CardContent className="pb-3">
-              <div className="text-xl font-bold tabular-nums text-foreground">{fmt(kpis.netRevenue)}</div>
-              {compareKpis && (
-                <div className="mt-1 flex items-center gap-1 text-xs">
-                  {kpis.netRevenue >= compareKpis.netRevenue ? (
-                    <span className="flex items-center text-emerald-600 font-medium">
-                      <TrendingUp className="me-0.5 size-3" />
-                      +{(((kpis.netRevenue - compareKpis.netRevenue) / (compareKpis.netRevenue || 1)) * 100).toFixed(1)}%
-                    </span>
-                  ) : (
-                    <span className="flex items-center text-red-600 font-medium">
-                      <TrendingDown className="me-0.5 size-3" />
-                      {(((kpis.netRevenue - compareKpis.netRevenue) / (compareKpis.netRevenue || 1)) * 100).toFixed(1)}%
-                    </span>
-                  )}
-                  <span className="text-muted-foreground">مقارنة بالسابق</span>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* 2. COGS */}
-          <Card className="border-t-4 border-t-amber-500">
-            <CardHeader className="pb-1 pt-3">
-              <CardTitle className="text-xs font-medium text-muted-foreground">تكلفة الخامات (COGS)</CardTitle>
-            </CardHeader>
-            <CardContent className="pb-3">
-              <div className="text-xl font-bold tabular-nums text-foreground">{fmt(kpis.cogs)}</div>
-              <div className="mt-1 text-xs text-muted-foreground">
-                تمثل <span className="font-semibold text-amber-700 dark:text-amber-400">{kpis.cogsPercent}%</span> من الإيراد
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* 3. Gross Profit & Margin */}
-          <Card className="border-t-4 border-t-blue-500">
-            <CardHeader className="pb-1 pt-3">
-              <CardTitle className="text-xs font-medium text-muted-foreground">مجمل الربح (Gross Profit)</CardTitle>
-            </CardHeader>
-            <CardContent className="pb-3">
-              <div className="text-xl font-bold tabular-nums text-foreground">{fmt(kpis.grossProfit)}</div>
-              <div className="mt-1 text-xs text-muted-foreground">
-                هامش مجمل: <span className="font-semibold text-blue-700 dark:text-blue-400">{kpis.grossMarginPercent}%</span>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* 4. Operating Expenses */}
-          <Card className="border-t-4 border-t-purple-500">
-            <CardHeader className="pb-1 pt-3">
-              <CardTitle className="text-xs font-medium text-muted-foreground">المصروفات التشغيلية (OpEx)</CardTitle>
-            </CardHeader>
-            <CardContent className="pb-3">
-              <div className="text-xl font-bold tabular-nums text-foreground">{fmt(kpis.operatingExpenses)}</div>
-              <div className="mt-1 text-xs text-muted-foreground">
-                تمثل <span className="font-semibold text-purple-700 dark:text-purple-400">{kpis.operatingExpensesPercent}%</span>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* 5. Net Profit (Bottom Line) */}
-          <Card className={`col-span-2 sm:col-span-1 border-t-4 ${kpis.netProfit >= 0 ? "border-t-emerald-600 bg-emerald-500/5" : "border-t-red-600 bg-red-500/5"}`}>
-            <CardHeader className="pb-1 pt-3">
-              <CardTitle className="text-xs font-medium text-muted-foreground">صافي الربح النهائي (Net Profit)</CardTitle>
-            </CardHeader>
-            <CardContent className="pb-3">
-              <div className={`text-xl font-bold tabular-nums ${kpis.netProfit >= 0 ? "text-emerald-700 dark:text-emerald-300" : "text-red-700 dark:text-red-300"}`}>
-                {fmt(kpis.netProfit)}
-              </div>
-              <div className="mt-1 text-xs text-muted-foreground">
-                هامش صافي: <span className="font-bold">{kpis.netProfitMarginPercent}%</span>
-              </div>
-            </CardContent>
-          </Card>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+          <StatCard
+            label="صافي الإيرادات"
+            value={fmt(kpis.netRevenue)}
+            accent="emerald"
+            icon={<TrendingUp className="size-5" />}
+            hint={
+              revenueDelta !== null ? (
+                <span className={revenueDelta >= 0 ? "text-sage-ink font-medium" : "text-clay-ink font-medium"}>
+                  {revenueDelta >= 0 ? `+${revenueDelta}%` : `${revenueDelta}%`} عن الفترة السابقة
+                </span>
+              ) : undefined
+            }
+          />
+          <StatCard
+            label="تكلفة المبيعات والهالك"
+            value={fmt(kpis.cogs)}
+            accent="amber"
+            icon={<PieChart className="size-5" />}
+            hint={<span>{kpis.cogsPercent}% من صافي الإيراد</span>}
+          />
+          <StatCard
+            label="مجمل الربح"
+            value={fmt(kpis.grossProfit)}
+            accent="blue"
+            icon={<Percent className="size-5" />}
+            hint={<span>هامش المجمل {kpis.grossMarginPercent}%</span>}
+          />
+          <StatCard
+            label="المصروفات التشغيلية"
+            value={fmt(kpis.operatingExpenses)}
+            accent="slate"
+            icon={<Wallet className="size-5" />}
+            hint={<span>{kpis.operatingExpensesPercent}% من صافي الإيراد</span>}
+          />
+          <StatCard
+            label="نسبة التكلفة الأولية"
+            value={`${primeCostPercent}%`}
+            accent={primeCostPercent > 65 ? "red" : "amber"}
+            icon={<PieChart className="size-5" />}
+            hint={<span>تكلفة الخامات + المصروف التشغيلي</span>}
+          />
+          <StatCard
+            label="صافي الربح النهائي"
+            value={fmt(kpis.netProfit)}
+            accent={kpis.netProfit >= 0 ? "emerald" : "red"}
+            icon={kpis.netProfit >= 0 ? <TrendingUp className="size-5" /> : <TrendingDown className="size-5" />}
+            hint={<span>هامش الصافي {kpis.netProfitMarginPercent}%</span>}
+          />
         </div>
       )}
 
-      {/* Main Odoo-Style Hierarchical P&L Table */}
       {data?.sections && (
-        <div className="overflow-x-auto rounded-xl border bg-card">
-          <Table>
-            <TableHeader>
-              <TableRow className="bg-muted/50 font-semibold">
-                <TableHead className="min-w-[280px]">بند الحساب (Account Item)</TableHead>
-                <TableHead className="text-end min-w-[120px]">الفترة الحالية ({from} ← {to})</TableHead>
-                <TableHead className="text-end min-w-[80px]">النسبة %</TableHead>
-                {compare && (
-                  <>
-                    <TableHead className="text-end min-w-[120px]">الفترة السابقة ({compareFrom} ← {compareTo})</TableHead>
-                    <TableHead className="text-end min-w-[100px]">التغير المالي</TableHead>
-                    <TableHead className="text-end min-w-[90px]">النمو %</TableHead>
-                  </>
-                )}
-              </TableRow>
-            </TableHeader>
-            <TableBody className="text-sm">
-              {/* 1. REVENUE SECTION */}
-              <SectionRows
-                section={data.sections.revenue}
-                isOpen={openSections.revenue}
-                onToggle={() => toggleSection("revenue")}
-                compare={compare}
-                currency={currency}
-                from={from}
-                to={to}
-                subtotalLabel="صافي الإيرادات (Net Revenue)"
-                highlight="bg-emerald-500/10 text-emerald-900 dark:text-emerald-200"
-              />
+        <Panel title="قائمة الأرباح والخسائر التفصيلية" bodyClassName="p-0">
+          <div className="overflow-x-auto">
+            <Table className="workspace-table">
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="min-w-[260px]">البند المحاسبي</TableHead>
+                  <TableHead className="min-w-[120px] text-end">الفترة الحالية ({from} ← {to})</TableHead>
+                  <TableHead className="min-w-[80px] text-end">النسبة %</TableHead>
+                  {compare && (
+                    <>
+                      <TableHead className="min-w-[120px] text-end">الفترة السابقة ({compareFrom} ← {compareTo})</TableHead>
+                      <TableHead className="min-w-[100px] text-end">التغير</TableHead>
+                      <TableHead className="min-w-[85px] text-end">النمو %</TableHead>
+                    </>
+                  )}
+                </TableRow>
+              </TableHeader>
+              <TableBody className="text-sm">
+                <SectionRows
+                  section={data.sections.revenue}
+                  isOpen={openSections.revenue}
+                  onToggle={() => toggleSection("revenue")}
+                  compare={compare}
+                  currency={currency}
+                  from={from}
+                  to={to}
+                  branchId={branchId}
+                  subtotalLabel="صافي الإيرادات"
+                  highlightClass="bg-sage-soft text-sage-ink"
+                />
+                <SectionRows
+                  section={data.sections.cogs}
+                  isOpen={openSections.cogs}
+                  onToggle={() => toggleSection("cogs")}
+                  compare={compare}
+                  currency={currency}
+                  from={from}
+                  to={to}
+                  branchId={branchId}
+                  subtotalLabel="إجمالي تكلفة البضاعة المباعة"
+                  highlightClass="bg-caramel-soft text-caramel-ink"
+                />
 
-              {/* 2. COGS SECTION */}
-              <SectionRows
-                section={data.sections.cogs}
-                isOpen={openSections.cogs}
-                onToggle={() => toggleSection("cogs")}
-                compare={compare}
-                currency={currency}
-                from={from}
-                to={to}
-                subtotalLabel="إجمالي تكلفة المبيعات (Total COGS)"
-                highlight="bg-amber-500/10 text-amber-900 dark:text-amber-200"
-              />
+                <TableRow className="border-y border-border bg-muted/50 font-bold text-base">
+                  <TableCell>مجمل الربح</TableCell>
+                  <TableCell className="text-end tabular-figures">{fmt(kpis?.grossProfit)}</TableCell>
+                  <TableCell className="text-end tabular-figures text-primary">{kpis?.grossMarginPercent}%</TableCell>
+                  {compare && (
+                    <>
+                      <TableCell className="text-end tabular-figures">{fmt(compareKpis?.grossProfit)}</TableCell>
+                      <TableCell className="text-end tabular-figures text-muted-foreground">
+                        {fmt((kpis?.grossProfit ?? 0) - (compareKpis?.grossProfit ?? 0))}
+                      </TableCell>
+                      <TableCell className="text-end tabular-figures font-semibold">
+                        {compareKpis?.grossProfit ? (
+                          <span className={(kpis?.grossProfit ?? 0) >= compareKpis.grossProfit ? "text-sage-ink" : "text-clay-ink"}>
+                            {(((kpis?.grossProfit ?? 0) - compareKpis.grossProfit) / (Math.abs(compareKpis.grossProfit) || 1) * 100).toFixed(1)}%
+                          </span>
+                        ) : "—"}
+                      </TableCell>
+                    </>
+                  )}
+                </TableRow>
 
-              {/* GROSS PROFIT ROW */}
-              <TableRow className="border-y-2 border-primary/20 bg-muted/60 font-bold text-base">
-                <TableCell colSpan={1}>مجمل الربح (Gross Profit)</TableCell>
-                <TableCell className="text-end tabular-nums">{fmt(kpis?.grossProfit)}</TableCell>
-                <TableCell className="text-end tabular-nums text-primary font-semibold">{kpis?.grossMarginPercent}%</TableCell>
-                {compare && (
-                  <>
-                    <TableCell className="text-end tabular-nums">{fmt(compareKpis?.grossProfit)}</TableCell>
-                    <TableCell className="text-end tabular-nums text-muted-foreground">
-                      {fmt((kpis?.grossProfit ?? 0) - (compareKpis?.grossProfit ?? 0))}
-                    </TableCell>
-                    <TableCell className="text-end tabular-nums font-semibold">
-                      {compareKpis?.grossProfit ? (
-                        <span className={(kpis?.grossProfit ?? 0) >= compareKpis.grossProfit ? "text-emerald-600" : "text-red-600"}>
-                          {(((kpis?.grossProfit ?? 0) - compareKpis.grossProfit) / (compareKpis.grossProfit || 1) * 100).toFixed(1)}%
-                        </span>
-                      ) : "—"}
-                    </TableCell>
-                  </>
-                )}
-              </TableRow>
+                <SectionRows
+                  section={data.sections.expenses}
+                  isOpen={openSections.expenses}
+                  onToggle={() => toggleSection("expenses")}
+                  compare={compare}
+                  currency={currency}
+                  from={from}
+                  to={to}
+                  branchId={branchId}
+                  subtotalLabel="إجمالي المصروفات التشغيلية"
+                  highlightClass="bg-tide-soft text-tide-ink"
+                />
 
-              {/* 3. OPERATING EXPENSES SECTION */}
-              <SectionRows
-                section={data.sections.expenses}
-                isOpen={openSections.expenses}
-                onToggle={() => toggleSection("expenses")}
-                compare={compare}
-                currency={currency}
-                from={from}
-                to={to}
-                subtotalLabel="إجمالي المصروفات التشغيلية (Total OpEx)"
-                highlight="bg-purple-500/10 text-purple-900 dark:text-purple-200"
-              />
+                <TableRow className="bg-muted/35 font-semibold">
+                  <TableCell>الربح التشغيلي</TableCell>
+                  <TableCell className="text-end tabular-figures">{fmt(kpis?.operatingProfit)}</TableCell>
+                  <TableCell className="text-end tabular-figures text-muted-foreground">{kpis?.operatingMarginPercent}%</TableCell>
+                  {compare && (
+                    <>
+                      <TableCell className="text-end tabular-figures">
+                        {fmt((compareKpis?.grossProfit ?? 0) - (compareKpis?.operatingExpenses ?? 0))}
+                      </TableCell>
+                      <TableCell colSpan={2} />
+                    </>
+                  )}
+                </TableRow>
 
-              {/* OPERATING PROFIT ROW */}
-              <TableRow className="bg-muted/40 font-semibold">
-                <TableCell colSpan={1}>الربح التشغيلي (Operating Profit / EBITDA)</TableCell>
-                <TableCell className="text-end tabular-nums">{fmt(kpis?.operatingProfit)}</TableCell>
-                <TableCell className="text-end tabular-nums text-muted-foreground">{kpis?.operatingMarginPercent}%</TableCell>
-                {compare && (
-                  <>
-                    <TableCell className="text-end tabular-nums">{fmt((compareKpis?.grossProfit ?? 0) - (compareKpis?.operatingExpenses ?? 0))}</TableCell>
-                    <TableCell colSpan={2} />
-                  </>
-                )}
-              </TableRow>
+                <SectionRows
+                  section={data.sections.variances}
+                  isOpen={openSections.variances}
+                  onToggle={() => toggleSection("variances")}
+                  compare={compare}
+                  currency={currency}
+                  from={from}
+                  to={to}
+                  branchId={branchId}
+                  subtotalLabel="صافي الفروقات والتسويات"
+                  highlightClass="bg-muted/30 text-foreground"
+                />
 
-              {/* 4. VARIANCES & OTHER ADJUSTMENTS */}
-              <SectionRows
-                section={data.sections.variances}
-                isOpen={openSections.variances}
-                onToggle={() => toggleSection("variances")}
-                compare={compare}
-                currency={currency}
-                from={from}
-                to={to}
-                subtotalLabel="صافي الفروقات والتسويات (Net Variances)"
-              />
-
-              {/* FINAL NET PROFIT / BOTTOM LINE ROW */}
-              <TableRow className="border-t-2 border-emerald-600 bg-emerald-600/10 font-bold text-lg">
-                <TableCell colSpan={1} className="text-emerald-950 dark:text-emerald-100">
-                  ★ صافي الربح النهائي (Net Profit / Bottom Line)
-                </TableCell>
-                <TableCell className="text-end tabular-nums text-emerald-700 dark:text-emerald-300">
-                  {fmt(kpis?.netProfit)}
-                </TableCell>
-                <TableCell className="text-end tabular-nums text-emerald-700 dark:text-emerald-300">
-                  {kpis?.netProfitMarginPercent}%
-                </TableCell>
-                {compare && (
-                  <>
-                    <TableCell className="text-end tabular-nums">{fmt(compareKpis?.netProfit)}</TableCell>
-                    <TableCell className="text-end tabular-nums">
-                      {fmt((kpis?.netProfit ?? 0) - (compareKpis?.netProfit ?? 0))}
-                    </TableCell>
-                    <TableCell className="text-end tabular-nums">
-                      {compareKpis?.netProfit ? (
-                        <span className={(kpis?.netProfit ?? 0) >= compareKpis.netProfit ? "text-emerald-600" : "text-red-600"}>
-                          {(((kpis?.netProfit ?? 0) - compareKpis.netProfit) / (Math.abs(compareKpis.netProfit) || 1) * 100).toFixed(1)}%
-                        </span>
-                      ) : "—"}
-                    </TableCell>
-                  </>
-                )}
-              </TableRow>
-            </TableBody>
-          </Table>
-        </div>
+                <TableRow
+                  className={cn(
+                    "border-t-2 font-bold text-base",
+                    (kpis?.netProfit ?? 0) >= 0
+                      ? "border-sage-line bg-sage-soft text-sage-ink"
+                      : "border-clay-line bg-clay-soft text-clay-ink",
+                  )}
+                >
+                  <TableCell>صافي الربح النهائي</TableCell>
+                  <TableCell className="text-end tabular-figures">{fmt(kpis?.netProfit)}</TableCell>
+                  <TableCell className="text-end tabular-figures">{kpis?.netProfitMarginPercent}%</TableCell>
+                  {compare && (
+                    <>
+                      <TableCell className="text-end tabular-figures">{fmt(compareKpis?.netProfit)}</TableCell>
+                      <TableCell className="text-end tabular-figures">
+                        {fmt((kpis?.netProfit ?? 0) - (compareKpis?.netProfit ?? 0))}
+                      </TableCell>
+                      <TableCell className="text-end tabular-figures">
+                        {compareKpis?.netProfit ? (
+                          <span>
+                            {(((kpis?.netProfit ?? 0) - compareKpis.netProfit) / (Math.abs(compareKpis.netProfit) || 1) * 100).toFixed(1)}%
+                          </span>
+                        ) : "—"}
+                      </TableCell>
+                    </>
+                  )}
+                </TableRow>
+              </TableBody>
+            </Table>
+          </div>
+        </Panel>
       )}
     </div>
   );
@@ -476,8 +481,9 @@ function SectionRows({
   currency,
   from,
   to,
+  branchId,
   subtotalLabel,
-  highlight,
+  highlightClass,
 }: {
   section: PnlSection;
   isOpen: boolean;
@@ -486,81 +492,80 @@ function SectionRows({
   currency: string;
   from: string;
   to: string;
+  branchId: string;
   subtotalLabel: string;
-  highlight?: string;
+  highlightClass: string;
 }) {
   const fmt = (n: number | undefined) => (n === undefined ? "—" : money(n, currency));
 
   return (
     <>
-      {/* Section Header Row */}
-      <TableRow
-        onClick={onToggle}
-        className="cursor-pointer bg-muted/30 font-semibold hover:bg-muted/50 transition-colors"
-      >
+      <TableRow onClick={onToggle} className="cursor-pointer bg-muted/30 font-semibold transition-colors hover:bg-muted/50">
         <TableCell colSpan={compare ? 6 : 3} className="py-2.5">
           <div className="flex items-center gap-2">
             {isOpen ? <ChevronDown className="size-4 text-muted-foreground" /> : <ChevronRight className="size-4 text-muted-foreground" />}
             <span>{section.title}</span>
-            <span className="text-xs text-muted-foreground">({section.lines.length} حسابات)</span>
+            <span className="text-xs font-normal text-muted-foreground">({section.lines.length} حساب)</span>
           </div>
         </TableCell>
       </TableRow>
 
-      {/* Individual Account Lines (Shown if section is open) */}
       {isOpen &&
-        section.lines.map((l) => (
-          <TableRow key={l.accountId || l.code || l.name} className="hover:bg-muted/20">
-            <TableCell className="ps-8">
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-muted-foreground tabular-nums">{l.code}</span>
-                <Link
-                  href={`/accounting/ledger?account=${l.accountId}&from=${from}&to=${to}`}
-                  className="font-medium text-primary hover:underline flex items-center gap-1 group"
-                  title="النزول لحركات دفتر الأستاذ (Drill-down)"
-                >
-                  <span>{l.name}</span>
-                  <ExternalLink className="size-3 opacity-0 group-hover:opacity-100 transition-opacity" />
-                </Link>
-              </div>
-            </TableCell>
-            <TableCell className="text-end tabular-nums">{fmt(l.amount)}</TableCell>
-            <TableCell className="text-end tabular-nums text-muted-foreground">{l.percentOfRevenue}%</TableCell>
-            {compare && (
-              <>
-                <TableCell className="text-end tabular-nums text-muted-foreground">{fmt(l.compareAmount)}</TableCell>
-                <TableCell className="text-end tabular-nums text-muted-foreground">{fmt(l.changeAmount)}</TableCell>
-                <TableCell className="text-end tabular-nums">
-                  {l.changePercent !== null && l.changePercent !== undefined ? (
-                    <span className={l.changePercent >= 0 ? "text-emerald-600" : "text-red-600"}>
-                      {l.changePercent >= 0 ? `+${l.changePercent}%` : `${l.changePercent}%`}
-                    </span>
-                  ) : (
-                    "—"
-                  )}
-                </TableCell>
-              </>
-            )}
-          </TableRow>
-        ))}
+        section.lines.map((l) => {
+          const ledgerParams = new URLSearchParams({
+            account: l.accountId,
+            from,
+            to,
+            ...(branchId ? { branchId } : {}),
+          });
+          return (
+            <TableRow key={l.accountId || l.code || l.name} className="hover:bg-muted/20">
+              <TableCell className="ps-8">
+                <div className="flex items-center gap-2">
+                  <span dir="ltr" className="rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground tabular-figures">
+                    {l.code}
+                  </span>
+                  <Link
+                    href={`/accounting/ledger?${ledgerParams.toString()}`}
+                    className="group flex items-center gap-1 font-medium text-primary hover:underline"
+                    title="فتح سجل دفتر الأستاذ لهذا الحساب"
+                  >
+                    <span>{l.name}</span>
+                    <ExternalLink className="size-3 opacity-0 transition-opacity group-hover:opacity-100" />
+                  </Link>
+                </div>
+              </TableCell>
+              <TableCell className="text-end tabular-figures">{fmt(l.amount)}</TableCell>
+              <TableCell className="text-end tabular-figures text-muted-foreground">{l.percentOfRevenue}%</TableCell>
+              {compare && (
+                <>
+                  <TableCell className="text-end tabular-figures text-muted-foreground">{fmt(l.compareAmount)}</TableCell>
+                  <TableCell className="text-end tabular-figures text-muted-foreground">{fmt(l.changeAmount)}</TableCell>
+                  <TableCell className="text-end tabular-figures">
+                    {l.changePercent !== null && l.changePercent !== undefined ? (
+                      <span className={l.changePercent >= 0 ? "text-sage-ink" : "text-clay-ink"}>
+                        {l.changePercent >= 0 ? `+${l.changePercent}%` : `${l.changePercent}%`}
+                      </span>
+                    ) : "—"}
+                  </TableCell>
+                </>
+              )}
+            </TableRow>
+          );
+        })}
 
-      {/* Section Subtotal Row */}
-      <TableRow className={`font-semibold ${highlight ?? "bg-muted/40"}`}>
+      <TableRow className={cn("font-semibold", highlightClass)}>
         <TableCell className="ps-6">{subtotalLabel}</TableCell>
-        <TableCell className="text-end tabular-nums">{fmt(section.total)}</TableCell>
-        <TableCell className="text-end tabular-nums">{section.percentOfRevenue}%</TableCell>
+        <TableCell className="text-end tabular-figures">{fmt(section.total)}</TableCell>
+        <TableCell className="text-end tabular-figures">{section.percentOfRevenue}%</TableCell>
         {compare && (
           <>
-            <TableCell className="text-end tabular-nums">{fmt(section.compareTotal)}</TableCell>
-            <TableCell className="text-end tabular-nums">{fmt(section.changeAmount)}</TableCell>
-            <TableCell className="text-end tabular-nums">
+            <TableCell className="text-end tabular-figures">{fmt(section.compareTotal)}</TableCell>
+            <TableCell className="text-end tabular-figures">{fmt(section.changeAmount)}</TableCell>
+            <TableCell className="text-end tabular-figures">
               {section.changePercent !== null && section.changePercent !== undefined ? (
-                <span className={section.changePercent >= 0 ? "text-emerald-600" : "text-red-600"}>
-                  {section.changePercent >= 0 ? `+${section.changePercent}%` : `${section.changePercent}%`}
-                </span>
-              ) : (
-                "—"
-              )}
+                <span>{section.changePercent >= 0 ? `+${section.changePercent}%` : `${section.changePercent}%`}</span>
+              ) : "—"}
             </TableCell>
           </>
         )}
@@ -571,7 +576,7 @@ function SectionRows({
 
 export default function PnlPage() {
   return (
-    <Suspense fallback={<p className="p-8 text-center text-muted-foreground">جارٍ تحميل قائمة الأرباح والخسائر…</p>}>
+    <Suspense fallback={<LoadingState label="جارٍ تحميل قائمة الأرباح والخسائر…" />}>
       <PnlContent />
     </Suspense>
   );

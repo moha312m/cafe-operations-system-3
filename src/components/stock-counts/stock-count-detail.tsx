@@ -221,15 +221,14 @@ export function StockCountDetail({
     }
   }
 
-  // Confirming agrees the figures; this moves the shelf to them, which is
-  // what books the shortage or surplus against profit.
+  // Confirming agrees the figures. This action records the stock movement.
   async function applyToStock() {
     if (!detail || inFlight.current) return;
     inFlight.current = true;
     setBusy(true);
     try {
       const res = await api<{ itemsApplied: number; alreadyApplied: boolean }>(`/api/stock-counts/${detail.id}/apply-to-stock`, { method: "POST", body: {} });
-      toast.success(res.alreadyApplied ? "الفروقات كانت اتطبقت قبل كده" : `اتطبقت الفروقات على المخزون (${res.itemsApplied} صنف) واتسجلت في الحسابات`);
+      toast.success(res.alreadyApplied ? "الفروقات كانت اتطبقت قبل كده" : `اتطبقت الفروقات على المخزون (${res.itemsApplied} صنف)`);
       await after();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "تعذّر تطبيق الفروقات");

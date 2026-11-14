@@ -87,3 +87,149 @@ export async function inventoryReconciliation(args: { cafeId: string; asOf: stri
     revaluation: money(valuation.minus(ledgerValue)).toNumber(),
   };
 }
+
+/**
+ * Read-only readiness summary across F&B operational bridges:
+ *   - R365-style GL mapping completeness on ExpenseCategory
+ *   - Unposted operating expenses & treasury transfers (awaiting approved posting policy)
+ *   - Card/Wallet tender settlements (Toast-style close-to-deposit tracking)
+ *   - Active zero-stock cutover count & core cash/clearing control balances
+ */
+export async function accountingBridgeReadiness(
+  args: { cafeId: string; asOf: string; branchId?: string },
+  client: Client = db,
+) {
+  const end = zonedDayStart(addDays(args.asOf, 1));
+  const asOfDate = new Date(`${args.asOf}T00:00:00Z`);
+  const opScope = { cafeId: args.cafeId, ...(args.branchId ? { branchId: args.branchId } : {}) };
+
+  const [
+    entity,
+    activeCategories,
+    mappings,
+    expenses,
+    expenseReturns,
+    treasuryMoves,
+    postedSourceEntries,
+    tenderRows,
+    activeItems,
+    tb,
+  ] = await Promise.all([
+    client.accountingEntity.findUnique({ where: { cafeId: args.cafeId }, select: { id: true } }),
+    client.expenseCategory.findMany({ where: { cafeId: args.cafeId, archivedAt: null }, select: { id: true } }),
+    client.expenseCategoryAccountMapping.findMany({
+      where: { cafeId: args.cafeId, effectiveFrom: { lte: asOfDate } },
+      orderBy: [{ effectiveFrom: "desc" }, { createdAt: "desc" }],
+      select: { categoryId: true, accountId: true },
+    }),
+    client.operatingExpense.findMany({ where: { ...opScope, occurredAt: { lt: end } }, select: { id: true } }),
+    client.operatingExpenseReturn.findMany({ where: { ...opScope, occurredAt: { lt: end } }, select: { id: true } }),
+    client.moneyMovement.findMany({
+      where: {
+        cafeId: args.cafeId,
+        occurredAt: { lt: end },
+        ...(args.branchId ? { account: { branchId: args.branchId } } : {}),
+      },
+      select: { id: true },
+    }),
+    client.journalEntry.findMany({
+      where: {
+        cafeId: args.cafeId,
+        reversalOfId: null,
+        entryDate: { lte: asOfDate },
+        sourceType: {
+          in: [
+            "OPERATING_EXPENSE",
+            "OPERATING_EXPENSE_RETURN",
+            "TREASURY_OPENING",
+            "TREASURY_TRANSFER_DISPATCH",
+            "TREASURY_TRANSFER_RECEIVE",
+          ],
+        },
+      },
+      select: { sourceType: true, sourceId: true },
+    }),
+    client.tenderReconciliation.findMany({
+      where: { ...opScope, createdAt: { lt: end } },
+      select: { status: true, varianceAmount: true },
+    }),
+    client.inventoryItem.findMany({
+      where: { ...opScope, archivedAt: null, isActive: true },
+      select: { currentStock: true },
+    }),
+    trialBalance({ cafeId: args.cafeId, to: args.asOf, branchId: args.branchId }, client),
+  ]);
+
+  const latestByCat = new Map<string, string | null>();
+  for (const m of mappings) {
+    if (!latestByCat.has(m.categoryId)) latestByCat.set(m.categoryId, m.accountId);
+  }
+  const activeCatIds = new Set(activeCategories.map((c) => c.id));
+  let mappedToday = 0;
+  for (const catId of activeCatIds) {
+    if (latestByCat.get(catId)) mappedToday += 1;
+  }
+
+  const postedExpenseIds = new Set(
+    postedSourceEntries.filter((e) => e.sourceType === "OPERATING_EXPENSE" && e.sourceId).map((e) => e.sourceId!),
+  );
+  const postedReturnIds = new Set(
+    postedSourceEntries.filter((e) => e.sourceType === "OPERATING_EXPENSE_RETURN" && e.sourceId).map((e) => e.sourceId!),
+  );
+  const postedTreasuryIds = new Set(
+    postedSourceEntries
+      .filter((e) => ["TREASURY_OPENING", "TREASURY_TRANSFER_DISPATCH", "TREASURY_TRANSFER_RECEIVE"].includes(e.sourceType) && e.sourceId)
+      .map((e) => e.sourceId!),
+  );
+
+  let zeroStockItems = 0;
+  let positiveStockItems = 0;
+  for (const item of activeItems) {
+    const quantity = decimal(item.currentStock);
+    if (quantity.isZero()) zeroStockItems += 1;
+    if (quantity.gt(0)) positiveStockItems += 1;
+  }
+
+  const draftCount = tenderRows.filter((t) => t.status === "DRAFT").length;
+  const submittedCount = tenderRows.filter((t) => t.status === "SUBMITTED").length;
+  const totalVariance = money(sumMoney(tenderRows.map((t) => t.varianceAmount ?? 0))).toNumber();
+
+  const bal = (key: string) => tb.accounts.find((a) => a.systemKey === key)?.balance ?? 0;
+
+  return {
+    configured: !!entity,
+    asOf: args.asOf,
+    branchId: args.branchId ?? null,
+    expenseCategories: {
+      totalActive: activeCategories.length,
+      mappedToday,
+      unmappedActive: Math.max(0, activeCategories.length - mappedToday),
+    },
+    unpostedOperations: {
+      operatingExpenses: expenses.filter((e) => !postedExpenseIds.has(e.id)).length,
+      operatingExpenseReturns: expenseReturns.filter((r) => !postedReturnIds.has(r.id)).length,
+      treasuryMovements: treasuryMoves.filter((m) => !postedTreasuryIds.has(m.id)).length,
+    },
+    tenderReconciliations: {
+      total: tenderRows.length,
+      draftCount,
+      submittedCount,
+      totalVariance,
+    },
+    inventoryCutover: {
+      totalActiveItems: activeItems.length,
+      zeroStockItems,
+      positiveStockItems,
+    },
+    controlBalances: {
+      cashDrawer: bal("CASH_DRAWER"),
+      cashSafe: bal("CASH_SAFE"),
+      bank: bal("BANK"),
+      cardClearing: bal("CARD_CLEARING"),
+      cashOverShort: bal("CASH_OVER_SHORT"),
+      accountsPayable: bal("ACCOUNTS_PAYABLE"),
+      supplierAdvances: bal("SUPPLIER_ADVANCES"),
+      inventory: bal("INVENTORY"),
+    },
+  };
+}
