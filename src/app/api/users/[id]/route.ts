@@ -16,6 +16,7 @@ const NOT_ALLOWED = "ليس لديك صلاحية لتنفيذ هذا الإجر
 const updateUserSchema = z.object({
   name: z.string().min(2).optional(),
   phone: z.string().max(30).nullable().optional(),
+  isDeliveryCourier: z.boolean().optional(),
   password: z.string().min(8, "كلمة المرور يجب أن تكون 8 أحرف على الأقل").optional(),
   role: z
     .enum(["CAFE_OWNER", "BRANCH_MANAGER", "CASHIER", "WAITER", "BARISTA", "INVENTORY_MANAGER"])
@@ -110,6 +111,9 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     if (nextRole !== "CAFE_OWNER" && nextRole !== "SUPER_ADMIN" && !nextBranchId) {
       throw new ApiError(400, "الفرع مطلوب");
     }
+    if (data.isDeliveryCourier && !isBranchStaff(nextRole)) {
+      throw new ApiError(400, "مندوب التوصيل يجب أن يكون موظفًا في الفرع");
+    }
     // Target branch must belong to the same cafe.
     if (data.branchId) {
       const branch = await db.branch.findFirst({
@@ -122,6 +126,9 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     if (data.name !== undefined) update.name = data.name;
     if (data.phone !== undefined) update.phone = data.phone?.trim() || null;
     if (data.role !== undefined) update.role = data.role;
+    if (data.isDeliveryCourier !== undefined || (data.role !== undefined && !isBranchStaff(nextRole))) {
+      update.isDeliveryCourier = isBranchStaff(nextRole) && data.isDeliveryCourier === true;
+    }
     if (data.branchId !== undefined) {
       update.branch = data.branchId
         ? { connect: { id: data.branchId } }
@@ -181,7 +188,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       }
       const updated = await tx.user.update({
         where: { id }, data: update,
-        select: { ...staffBranchSelect, email: true, name: true, phone: true, isActive: true, archivedAt: true },
+        select: { ...staffBranchSelect, email: true, name: true, phone: true, isActive: true, archivedAt: true, isDeliveryCourier: true },
       });
       if (temporaryChange) {
         await auditInTransaction(tx, { cafeId: current.cafeId, userId: session.id, entity: "User", entityId: id,
@@ -237,7 +244,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
         details: { ...who, oldValue: target.cafeRoleId, newValue: data.cafeRoleId },
       });
     }
-    if (data.name !== undefined || data.phone !== undefined) {
+    if (data.name !== undefined || data.phone !== undefined || user.isDeliveryCourier !== target.isDeliveryCourier) {
       await audit({
         ...base,
         action: "STAFF_UPDATED",
@@ -245,6 +252,9 @@ export async function PATCH(request: NextRequest, { params }: Params) {
           ...who,
           ...(data.name !== undefined
             ? { oldValue: target.name, newValue: data.name }
+            : {}),
+          ...(user.isDeliveryCourier !== target.isDeliveryCourier
+            ? { deliveryCourier: { before: target.isDeliveryCourier, after: user.isDeliveryCourier } }
             : {}),
         },
       });

@@ -40,6 +40,7 @@ type StaffUser = {
   email: string;
   name: string;
   phone: string | null;
+  isDeliveryCourier: boolean;
   role: Role;
   isActive: boolean;
   archivedAt: string | null;
@@ -79,6 +80,7 @@ const EMPTY_FORM = {
   name: "",
   email: "",
   phone: "",
+  isDeliveryCourier: false,
   password: "",
   confirm: "",
   role: "CASHIER" as Role,
@@ -105,7 +107,7 @@ export default function StaffPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [form, setForm] = useState(EMPTY_FORM);
   const [editing, setEditing] = useState<StaffUser | null>(null);
-  const [editForm, setEditForm] = useState({ name: "", phone: "", role: "" as Role, branchId: "", cafeRoleId: "" });
+  const [editForm, setEditForm] = useState({ name: "", phone: "", isDeliveryCourier: false, role: "" as Role, branchId: "", cafeRoleId: "" });
   const [temporaryTarget, setTemporaryTarget] = useState<StaffUser | null>(null);
   const [temporaryForm, setTemporaryForm] = useState({ branchId: "", until: "" });
   const [pwTarget, setPwTarget] = useState<StaffUser | null>(null);
@@ -158,6 +160,7 @@ export default function StaffPage() {
           name: form.name,
           email: form.email,
           phone: form.phone || undefined,
+          isDeliveryCourier: form.role !== "CAFE_OWNER" && form.isDeliveryCourier,
           password: form.password,
           role: form.role,
           branchId:
@@ -180,6 +183,7 @@ export default function StaffPage() {
     setEditForm({
       name: u.name,
       phone: u.phone ?? "",
+      isDeliveryCourier: u.isDeliveryCourier,
       role: u.role,
       branchId: u.branchId ?? "",
       cafeRoleId: u.cafeRoleId ?? "",
@@ -200,6 +204,7 @@ export default function StaffPage() {
         body: {
           name: editForm.name,
           phone: editForm.phone || null,
+          isDeliveryCourier: editForm.role !== "CAFE_OWNER" && editForm.isDeliveryCourier,
           ...(editForm.role !== editing.role ? { role: editForm.role } : {}),
           ...(editForm.branchId !== (editing.branchId ?? "")
             ? { branchId: editForm.branchId || null }
@@ -376,7 +381,9 @@ export default function StaffPage() {
                 const st = statusOf(u);
                 return (
                   <TableRow key={u.id}>
-                    <TableCell className="font-medium">{u.name}</TableCell>
+                    <TableCell className="font-medium">
+                      {u.name}{u.isDeliveryCourier && <Badge variant="secondary" className="ms-2">مندوب توصيل</Badge>}
+                    </TableCell>
                     <TableCell dir="ltr" className="text-end">{u.email}</TableCell>
                     <TableCell dir="ltr" className="text-end">{u.phone ?? "—"}</TableCell>
                     <TableCell>
@@ -522,6 +529,16 @@ export default function StaffPage() {
                 />
               </div>
             </div>
+            {form.role !== "CAFE_OWNER" && (
+              <div className="space-y-1">
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={form.isDeliveryCourier}
+                    onChange={(e) => setForm({ ...form, isDeliveryCourier: e.target.checked })} />
+                  يعمل كمندوب توصيل
+                </label>
+                <p className="text-xs text-muted-foreground">سيظهر الاسم ورقم الهاتف في نقطة البيع لموظفي الفرع الذين يمكنهم إنشاء طلبات.</p>
+              </div>
+            )}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>كلمة المرور</Label>
@@ -641,6 +658,16 @@ export default function StaffPage() {
                 onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })}
               />
             </div>
+            {editForm.role !== "CAFE_OWNER" && (
+              <div className="space-y-1">
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={editForm.isDeliveryCourier}
+                    onChange={(e) => setEditForm({ ...editForm, isDeliveryCourier: e.target.checked })} />
+                  يعمل كمندوب توصيل
+                </label>
+                <p className="text-xs text-muted-foreground">سيظهر الاسم ورقم الهاتف في نقطة البيع لموظفي الفرع الذين يمكنهم إنشاء طلبات.</p>
+              </div>
+            )}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>الدور</Label>

@@ -9,6 +9,8 @@ import { toast } from "sonner";
 import { api, money, ApiRequestError } from "@/lib/client";
 import { RefreshCw, Search, ShoppingBag } from "lucide-react";
 import { RegisterPickup } from "@/components/pos/register-pickup";
+import { useWorkspaceRead } from "@/components/cafe/use-workspace-read";
+import { clientRequestUuid } from "@/lib/client-request-key";
 import { registerOrderType } from "@/lib/branch-register-preferences";
 import { t } from "@/lib/i18n";
 import { branchShift, round2 as r2 } from "@/lib/pricing";
@@ -43,7 +45,7 @@ import { PaymentReceiptPreview } from "@/components/receipts/payment-receipt-pre
 import { QuickActions, type RepeatItem } from "@/components/pos/quick-actions";
 import type { LoyaltyRedeem } from "@/components/pos/customer-loyalty";
 import { currencySymbol } from "@/lib/currency";
-import type { CustomerDetails } from "@/components/pos/order-type-selector";
+import type { CourierPicker, CustomerDetails } from "@/components/pos/order-type-selector";
 import {
   computeUnitPrice,
   lineKey,
@@ -71,10 +73,15 @@ const EMPTY_DETAILS: CustomerDetails = {
   customerName: "",
   customerPhone: "",
   deliveryAddress: "",
+  deliveryCourierId: "",
   tableNumber: "",
 };
 
 type PlacedOrder = { id: string; orderNumber: number; total: string; branch?: { id: string; name: string }; payments?: { id: string }[] };
+type DeliveryCheckout = {
+  key: string;
+  body: Record<string, unknown> & { branchId: string; type: "DELIVERY"; collectionMode: CollectionMode };
+};
 
 type InvoiceDiscountType = "NONE" | "PERCENT" | "FIXED";
 type PosDraft = {
@@ -105,6 +112,7 @@ function parsePosDraft(raw: string | null): PosDraft | null {
     customerName: typeof rawDetails.customerName === "string" ? rawDetails.customerName : "",
     customerPhone: typeof rawDetails.customerPhone === "string" ? rawDetails.customerPhone : "",
     deliveryAddress: typeof rawDetails.deliveryAddress === "string" ? rawDetails.deliveryAddress : "",
+    deliveryCourierId: typeof rawDetails.deliveryCourierId === "string" ? rawDetails.deliveryCourierId : "",
     tableNumber: typeof rawDetails.tableNumber === "string" ? rawDetails.tableNumber : "",
   };
   const collectionMode: CollectionMode =
@@ -250,6 +258,16 @@ function PosPageInner() {
   const branchDefaultOrderType = branches.find((branch) => branch.id === branchId)?.posDefaultOrderType;
   const orderType = registerOrderType(orderTypeDraft, branchDefaultOrderType);
   const [details, setDetails] = useState<CustomerDetails>(EMPTY_DETAILS);
+  const courierOptions = useWorkspaceRead<{ couriers: CourierPicker["couriers"] }>(
+    canCreateOrder && orderType === "DELIVERY" && branchId
+      ? `/api/orders/delivery-couriers?branchId=${encodeURIComponent(branchId)}`
+      : null,
+    menuIdentity,
+  );
+  const couriers = courierOptions.data?.couriers ?? [];
+  const selectedCourierId = !courierOptions.loading && !courierOptions.error
+    ? couriers.find(courier => courier.id === details.deliveryCourierId)?.id ?? null
+    : null;
   const [discountInput, setDiscountInput] = useState("");
   const [invoiceDiscountType,setInvoiceDiscountType]=useState<'NONE'|'PERCENT'|'FIXED'>('FIXED');
   let manualDiscount=0,discountError:string|null=null,invoiceDiscountError:string|null=null;
@@ -287,6 +305,9 @@ function PosPageInner() {
   const [redeem, setRedeem] = useState<LoyaltyRedeem>({ points: 0, discount: 0 });
 
   const draftKey = branchId ? `nextcup-pos-draft:${user.cafeId ?? ""}:${user.id}:${branchId}` : "";
+  const deliveryCheckoutKey = draftKey ? `${draftKey}:delivery-checkout` : "";
+  const [deliveryCheckoutState, setDeliveryCheckoutState] = useState<{ key: string; checkout: DeliveryCheckout | null }>({ key: "", checkout: null });
+  const deliveryCheckout = deliveryCheckoutState.key === deliveryCheckoutKey ? deliveryCheckoutState.checkout : null;
   const [hydratedDraftKey, setHydratedDraftKey] = useState("");
   const previousDraftKeyRef = useRef("");
   const suppressNextDraftSaveRef = useRef(false);
@@ -388,6 +409,13 @@ function PosPageInner() {
   useEffect(() => {
     if (!draftKey) return;
     const timer = window.setTimeout(() => {
+      let checkout: DeliveryCheckout | null = null;
+      try {
+        const raw = window.sessionStorage.getItem(deliveryCheckoutKey);
+        const saved = raw ? JSON.parse(raw) as DeliveryCheckout : null;
+        if (saved?.key && saved.body?.type === "DELIVERY" && saved.body.branchId === branchId) checkout = saved;
+      } catch { /* Delivery checkout verifies storage before sending. */ }
+      setDeliveryCheckoutState({ key: deliveryCheckoutKey, checkout });
       const prevKey = previousDraftKeyRef.current;
       previousDraftKeyRef.current = draftKey;
       let draft: PosDraft | null = null;
@@ -437,7 +465,7 @@ function PosPageInner() {
       setHydratedDraftKey(draftKey);
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [draftKey]);
+  }, [draftKey, deliveryCheckoutKey, branchId]);
 
   useEffect(() => {
     if (!draftKey || hydratedDraftKey !== draftKey) return;
@@ -451,6 +479,7 @@ function PosPageInner() {
       details.customerName !== "" ||
       details.customerPhone !== "" ||
       details.deliveryAddress !== "" ||
+      details.deliveryCourierId !== "" ||
       details.tableNumber !== "" ||
       collectionMode !== "NOW" ||
       method !== "CASH" ||
@@ -764,24 +793,30 @@ function PosPageInner() {
   const disabledReason = useMemo(() => {
     if(discountError)return discountError;
     if (!canCreateOrder) return "ليس لديك صلاحية إنشاء طلب";
+    if (deliveryCheckout) return "أكّد نتيجة طلب التوصيل السابق أولًا";
     if (orderNeedsShift && !shiftActive) return t.shifts.mustOpen;
     if (cart.length === 0) return t.pos.validation.emptyCart;
     if (!branchId || !branches.some(branch => branch.id === branchId)) return t.pos.validation.noBranch;
     if (!finSettings) return settingsError ? "تعذر التحقق من الضرائب والخدمة؛ أعد تحميل إعدادات الفرع قبل التحصيل" : "جارٍ التحقق من إعدادات الضرائب والخدمة…";
     if (orderType === "DINE_IN" && !details.tableNumber.trim())
       return t.pos.validation.needTable;
+    if (orderType === "DELIVERY" && hydratedDraftKey !== draftKey)
+      return "جاري التحقق من طلبات التوصيل السابقة…";
+    if (orderType === "DELIVERY" && !selectedCourierId)
+      return "اختار مندوب التوصيل أولًا";
     if (orderType === "DELIVERY" && !details.customerName.trim())
       return t.pos.validation.needCustomer;
     return null;
-  }, [canCreateOrder, orderNeedsShift, shiftActive, cart.length, branchId, branches, finSettings, settingsError, orderType, details,discountError]);
+  }, [canCreateOrder, deliveryCheckout, orderNeedsShift, shiftActive, cart.length, branchId, branches, finSettings, settingsError, orderType, details, discountError, selectedCourierId, hydratedDraftKey, draftKey]);
 
   function changeMixed(field: SplitMethod, value: string) {
     setMixed((prev) => ({ ...prev, [field]: value }));
   }
 
   // ── Order submission ─────────────────────────────────────────
-  async function placeOrder() {
-    if (disabledReason || submissionInFlight.current) return;
+  async function placeOrder(retryDelivery = false) {
+    if (submissionInFlight.current || (retryDelivery ? !deliveryCheckout || !canCreateOrder : !!disabledReason)) return;
+    let checkout = retryDelivery ? deliveryCheckout : null;
     submissionInFlight.current = true;
     setSubmitError(null);
     setSubmitting(true);
@@ -803,15 +838,13 @@ function PosPageInner() {
             ? { method, paidAmount: round2(Number(paidInput) || 0) }
             : {};
 
-      const { order } = await api<{ order: PlacedOrder }>("/api/orders", {
-        method: "POST",
-        headers: overrideHeaders,
-        body: {
+      const body = checkout?.body ?? {
           branchId: branchId || undefined,
           type: orderType,
           customerName: details.customerName.trim() || undefined,
           customerPhone: details.customerPhone.trim() || undefined,
           deliveryAddress: details.deliveryAddress.trim() || undefined,
+          ...(orderType === "DELIVERY" ? { deliveryCourierId: selectedCourierId } : {}),
           tableNumber: orderType === "DINE_IN" ? (details.tableNumber.trim() || undefined) : undefined,
           // Manual discount only — the server recomputes the loyalty
           // discount from the redeemed points.
@@ -828,14 +861,35 @@ function PosPageInner() {
             addOnIds: l.addOns.map((a) => a.id),
             notes: l.note || undefined,
           })),
-        },
+      };
+      if (!checkout && orderType === "DELIVERY") {
+        const next: DeliveryCheckout = {
+          key: clientRequestUuid(),
+          body: { ...body, branchId, type: "DELIVERY", collectionMode },
+        };
+        try {
+          window.sessionStorage.setItem(deliveryCheckoutKey, JSON.stringify(next));
+        } catch {
+          throw new Error("تعذر حفظ محاولة طلب التوصيل على هذا الجهاز. لم يُرسل الطلب.");
+        }
+        checkout = next;
+        setDeliveryCheckoutState({ key: deliveryCheckoutKey, checkout });
+      }
+      const { order } = await api<{ order: PlacedOrder }>("/api/orders", {
+        method: "POST",
+        headers: overrideHeaders,
+        body: checkout?.body ?? body,
+        idempotencyKey: checkout?.key,
       });
+      if (checkout) clearDeliveryCheckout();
+      const submittedType = checkout?.body.type ?? orderType;
+      const submittedCollection = checkout?.body.collectionMode ?? collectionMode;
 
-      const isDineIn = orderType === "DINE_IN";
+      const isDineIn = submittedType === "DINE_IN";
       const collectedMsg =
-        collectionMode === "NOW"
+        submittedCollection === "NOW"
           ? ` · اتحصّل ${money(order.total, currency)}`
-          : collectionMode === "PARTIAL"
+          : submittedCollection === "PARTIAL"
             ? ` · ${t.collection.partial}`
             : ` · ${t.collection.pending}`;
       toast.success(
@@ -866,17 +920,22 @@ function PosPageInner() {
       setPaidInput("");
       setRedeem({ points: 0, discount: 0 });
       if (isDineIn) setTableReload((k) => k + 1);
-      setPickupConfirmation(orderType === "TAKEAWAY" && collectionMode === "PENDING" ? {
+      setPickupConfirmation(submittedType === "TAKEAWAY" && submittedCollection === "PENDING" ? {
         id: order.id, orderNumber: order.orderNumber,
         branchName: order.branch?.name ?? branches.find(branch => branch.id === branchId)?.name ?? "الفرع",
         zeroTotal: Number(order.total) === 0,
       } : null);
       // Use the payment committed with this order, for every method and partial
       // collection. Closing/printing must never resubmit the emptied cart.
-      if (collectionMode !== "PENDING" && order.payments?.[0]?.id) {
+      if (submittedCollection !== "PENDING" && order.payments?.[0]?.id) {
         setReceiptPaymentId(order.payments[0].id);
       }
     } catch (e) {
+      if (checkout && e instanceof ApiRequestError && e.status >= 400 && e.status < 500
+        && ![408, 409, 425, 429].includes(e.status) && (!retryDelivery || ![401, 403, 404].includes(e.status))) {
+        clearDeliveryCheckout();
+        if (e.status === 400) courierOptions.refresh();
+      }
       const message = ownerOverrideErrorMessage(e, !!overrideHeaders, "فشل تسجيل الطلب");
       setSubmitError(message);
       toast.error(message);
@@ -886,6 +945,11 @@ function PosPageInner() {
       submissionInFlight.current = false;
       setSubmitting(false);
     }
+  }
+
+  function clearDeliveryCheckout() {
+    try { window.sessionStorage.removeItem(deliveryCheckoutKey); } catch {}
+    setDeliveryCheckoutState({ key: deliveryCheckoutKey, checkout: null });
   }
 
   // ── Render ───────────────────────────────────────────────────
@@ -928,7 +992,18 @@ function PosPageInner() {
           }}>{view === "sale" ? "بيع جديد" : "استلام الطلبات"}</Button>)}
       </div>}
 
-      <fieldset disabled={submitting} aria-busy={submitting} className="cashier-workspace min-w-0" data-compact-view={compactView} data-register-view={registerView}>
+      {deliveryCheckout && (
+        <section aria-label="طلب توصيل بانتظار التأكيد" className="space-y-2 rounded-xl border border-primary/40 bg-card p-3">
+          <p className="font-semibold">طلب توصيل بانتظار التأكيد</p>
+          <p className="text-sm text-muted-foreground">أعد إرسال نفس الطلب للتأكد من تسجيله وتحصيله.</p>
+          {submitError && <p role="alert" className="text-sm text-destructive">{submitError}</p>}
+          {overrideOffered && <OwnerOverrideField value={overrideCode} onChange={setOverrideCode} />}
+          <Button type="button" disabled={submitting || !canCreateOrder} onClick={() => placeOrder(true)}>
+            تأكيد نتيجة طلب التوصيل
+          </Button>
+        </section>
+      )}
+      <fieldset disabled={submitting || !!deliveryCheckout} aria-busy={submitting} className="cashier-workspace min-w-0" data-compact-view={compactView} data-register-view={registerView}>
       <div className="cashier-lead flex min-w-0 shrink-0 flex-col gap-3">
         {!canChooseBranch && !branchId && (
           <p role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900">
@@ -1063,6 +1138,10 @@ function PosPageInner() {
         currency={currency}
         orderType={orderType}
         details={details}
+        courierPicker={{
+          couriers, selectedId: selectedCourierId, loading: courierOptions.loading,
+          error: courierOptions.error, refresh: courierOptions.refresh,
+        }}
         branchId={branchId || undefined}
         tableReloadKey={tableReload}
         totalBeforeLoyalty={preLoyaltyCharges.total}
@@ -1102,7 +1181,7 @@ function PosPageInner() {
         onPaidChange={setPaidInput}
         onMethodChange={setMethod}
         onMixedChange={changeMixed}
-        onPlaceOrder={placeOrder}
+        onPlaceOrder={() => placeOrder()}
       />
 
       <div className="cashier-compact-checkout space-y-2 rounded-xl border bg-card p-3">

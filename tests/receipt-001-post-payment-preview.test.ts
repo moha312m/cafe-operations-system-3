@@ -16,10 +16,10 @@ const product = { id: "drink", name: "Test drink", basePrice: "40", category: { 
 const target = { orderId: "order-1", orderNumber: 1, total: 40, paidAmount: 0, remainingAmount: 40, status: "CONFIRMED", payments: [], customer: null };
 
 // Execute actual product TSX; replace only React's host and external boundaries.
-function host(relative: string, name: string, props: Record<string, any> = {}, storageBlocked = false) {
+function host(relative: string, name: string, props: Record<string, any> = {}, storageBlocked = false, values = new Map<string, string>()) {
   const slots: Slot[] = [], effects: Array<() => void> = [], calls: Array<{ url: string; options?: any }> = [];
   const printed: string[] = [], timers = new Map<number, () => void>();
-  let cursor = 0, tree: any, failPayment = false, closed = 0, timerId = 0;
+  let cursor = 0, tree: any, failPayment = false, courierUnavailable = false, closed = 0, timerId = 0;
   const state = (initial: any) => {
     const i = cursor++;
     slots[i] ??= { value: typeof initial === "function" ? initial() : initial };
@@ -70,7 +70,14 @@ function host(relative: string, name: string, props: Record<string, any> = {}, s
     if (id === "react") return hooks;
     if (id === "react/jsx-runtime") return require(id);
     if (id === "@/components/app-shell") return { useApp: () => ({ cafe: { currency: "EGP", taxRate: 0, features: {} }, user: { id: "cashier", cafeId:"cafe-1", role: "CAFE_OWNER", branchId: "branch-1" }, permKeys:[], canKey: () => true, can: () => true, features: {} }) };
-    if (id === "@/lib/client") return { api, money: (n: unknown) => `${n} EGP` };
+    if (id === "@/lib/client") return { api, money: (n: unknown) => `${n} EGP`, ApiRequestError: require(path.join(root, "src/lib/client")).ApiRequestError };
+    if (id === "@/components/cafe/use-workspace-read") return {
+      useWorkspaceRead: (url: string | null) => ({
+        data: url === "/api/orders/delivery-couriers?branchId=branch-1"
+          ? { couriers: courierUnavailable ? [] : [{ id: "courier-1", name: "مندوب الفرع", phone: "01000000000" }] } : undefined,
+        loading: false, refresh() {},
+      }),
+    };
     if (id === "sonner") return { toast: { success() {}, error() {}, warning() {} } };
     if (id === "next/navigation") return { useRouter: () => ({ push() {}, replace() {} }), useSearchParams: () => new URLSearchParams() };
     if (id.startsWith("@/lib/") || id === "@/components/pos/types") return require(path.join(root, "src", id.slice(2)));
@@ -84,7 +91,6 @@ function host(relative: string, name: string, props: Record<string, any> = {}, s
   };
   const clearTimer = (id: number) => timers.delete(id);
   const location = { search: "" };
-  const values = new Map<string, string>();
   const sessionStorage = {
     getItem: (key: string) => {
       if (storageBlocked) throw new DOMException("Storage access is blocked", "SecurityError");
@@ -112,7 +118,12 @@ function host(relative: string, name: string, props: Record<string, any> = {}, s
   const button = (label: string) => { const n = nodes(tree).find(n => ["Button", "button"].includes(n.type as string) && text(n).includes(label)); assert.ok(n, `Missing button ${label}`); return n; };
   const flush = async () => { for (let i = 0; i < 3; i++) { await new Promise(r => setImmediate(r)); render(); } };
   render();
-  return { render, flush, nodes: () => nodes(tree), find, button, calls, printed, location, text: () => text(tree), fail: () => { failPayment = true; }, closed: () => closed, timeout: () => { for (const fn of timers.values()) fn(); render(); } };
+  return {
+    render, flush, nodes: () => nodes(tree), find, button, calls, printed, location, values, text: () => text(tree),
+    fail: () => { failPayment = true; },
+    recoverWithNoCouriers: () => { failPayment = false; courierUnavailable = true; },
+    closed: () => closed, timeout: () => { for (const fn of timers.values()) fn(); render(); },
+  };
 }
 
 test("ordinary collection works when access to pickup recovery storage is blocked", async () => {
@@ -129,6 +140,81 @@ test("pickup collection checks the order branch even when the sale branch has no
   await h.flush();
   assert.ok(h.calls.some(c => c.url === "/api/shifts/active?branchId=pickup-branch"));
   assert.ok(h.button("تحصيل الدفع"));
+});
+
+test("POS requires a courier from the active branch before placing a delivery order", async () => {
+  const h = host("src/app/(app)/pos/page.tsx", "default");
+  await h.flush();
+  h.find("ShiftControls").props.onActiveChange(true);
+  h.find("ProductGrid").props.onSelect(product);
+  h.render();
+  h.find("OrderCart").props.onTypeChange("DELIVERY");
+  h.render();
+  const enter = (deliveryCourierId: string) => {
+    const cart = h.find("OrderCart");
+    cart.props.onDetailsChange({ ...cart.props.details, customerName: "عميل تجريبي", deliveryCourierId });
+    h.render();
+  };
+  enter("");
+  assert.match(h.find("OrderCart").props.disabledReason ?? "", /مندوب التوصيل/);
+  enter("foreign-courier");
+  await h.find("OrderCart").props.onPlaceOrder();
+  assert.equal(h.calls.some(c => c.url === "/api/orders" && c.options?.method === "POST"), false);
+  enter("courier-1");
+  assert.equal(h.find("OrderCart").props.placeDisabled, false);
+  await h.find("OrderCart").props.onPlaceOrder();
+  assert.equal(h.calls.find(c => c.url === "/api/orders" && c.options?.method === "POST")?.options.body.deliveryCourierId, "courier-1");
+});
+
+test("delivery opens with employee cards and reveals customer fields after selection", () => {
+  const details = { customerName: "", customerPhone: "", deliveryAddress: "", deliveryCourierId: "", tableNumber: "" };
+  const props = {
+    type: "DELIVERY", branchId: "branch-1", details,
+    courierPicker: {
+      couriers: [{ id: "courier-1", name: "مندوب الفرع", phone: "01000000000" }],
+      selectedId: null as string | null, loading: false, refresh() {},
+    },
+    onDetailsChange(next: typeof details) {
+      props.details = next;
+      props.courierPicker.selectedId = next.deliveryCourierId;
+    },
+  };
+  const h = host("src/components/pos/order-type-selector.tsx", "OrderTypeSelector", props);
+  assert.match(h.text(), /مندوب الفرع.*01000000000/);
+  assert.equal(h.nodes().filter(n => n.type === "Input").length, 0);
+  const card = h.nodes().find(n => n.type === "input" && n.props.type === "radio");
+  assert.ok(card);
+  card.props.onChange();
+  h.render();
+  assert.equal(props.details.deliveryCourierId, "courier-1");
+  assert.equal(h.nodes().filter(n => n.type === "Input").length, 2);
+});
+
+test("an uncertain delivery checkout replays the stored request after reload and roster changes", async () => {
+  const h = host("src/app/(app)/pos/page.tsx", "default");
+  await h.flush();
+  h.find("ShiftControls").props.onActiveChange(true);
+  h.find("ProductGrid").props.onSelect(product);
+  h.render();
+  h.find("OrderCart").props.onTypeChange("DELIVERY");
+  h.render();
+  const cart = h.find("OrderCart");
+  cart.props.onDetailsChange({ ...cart.props.details, customerName: "عميل تجريبي", deliveryCourierId: "courier-1" });
+  h.render();
+  h.fail();
+  await h.find("OrderCart").props.onPlaceOrder();
+  const reloaded = host("src/app/(app)/pos/page.tsx", "default", {}, false, h.values);
+  reloaded.recoverWithNoCouriers();
+  await reloaded.flush();
+  assert.equal(reloaded.find("OrderCart").props.placeDisabled, true);
+  await reloaded.button("تأكيد نتيجة طلب التوصيل").props.onClick();
+  reloaded.render();
+  const requests = [...h.calls, ...reloaded.calls].filter(c => c.url === "/api/orders" && c.options?.method === "POST");
+  assert.equal(requests.length, 2);
+  assert.ok(requests[0].options.idempotencyKey);
+  assert.equal(requests[1].options.idempotencyKey, requests[0].options.idempotencyKey);
+  assert.equal(JSON.stringify(requests[1].options.body), JSON.stringify(requests[0].options.body));
+  assert.equal(reloaded.find("PaymentReceiptPreview").props.paymentId, "payment-1");
 });
 
 test("a stray touch outside a committed receipt cannot dismiss it", () => {

@@ -59,6 +59,7 @@ type Order = {
   createdAt: string;
   branch: { id: string; name: string };
   createdBy: { name: string } | null;
+  deliveryCourier?: { id: string; name: string } | null;
   approvedBy: { name: string } | null;
   approvedAt: string | null;
   approvalStatus: string;
@@ -505,6 +506,12 @@ export default function OrdersPage() {
                       <dt className="text-muted-foreground">{t.staffInfo.createdBy}</dt>
                       <dd>{detail.createdBy?.name ?? "العميل (منيو QR)"}</dd>
                     </div>
+                    {detail.deliveryCourier && (
+                      <div className="flex justify-between">
+                        <dt className="text-muted-foreground">مندوب التوصيل</dt>
+                        <dd>{detail.deliveryCourier.name}</dd>
+                      </div>
+                    )}
                     {detail.approvedBy && (
                       <div className="flex justify-between">
                         <dt className="text-muted-foreground">{t.staffInfo.approvedBy}</dt>

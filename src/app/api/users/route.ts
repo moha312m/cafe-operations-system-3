@@ -12,7 +12,7 @@ import { hashPassword } from "@/lib/auth";
 import { MANAGEABLE_ROLES } from "@/lib/permissions";
 import { resolvePermissions } from "@/lib/perms/effective";
 import { audit } from "@/lib/audit";
-import { projectStaffBranch } from "@/lib/staff-branch";
+import { isBranchStaff, projectStaffBranch } from "@/lib/staff-branch";
 
 // Validate a requested cafe-role assignment: it must live in the cafe, be
 // active, and never grant keys the acting user doesn't hold (no escalation).
@@ -39,6 +39,7 @@ const userSelect = {
   name: true,
   phone: true,
   role: true,
+  isDeliveryCourier: true,
   isActive: true,
   archivedAt: true,
   lastLoginAt: true,
@@ -114,6 +115,7 @@ const createUserSchema = z.object({
   name: z.string().min(2, "الاسم مطلوب"),
   email: z.string().email("البريد الإلكتروني مطلوب"),
   phone: z.string().max(30).optional(),
+  isDeliveryCourier: z.boolean().optional(),
   password: z.string().min(8, "كلمة المرور يجب أن تكون 8 أحرف على الأقل"),
   role: z.enum([
     "CAFE_OWNER",
@@ -151,6 +153,9 @@ export async function POST(request: NextRequest) {
     if (!branchId && data.role !== "CAFE_OWNER") {
       throw new ApiError(400, "الفرع مطلوب");
     }
+    if (data.isDeliveryCourier && !isBranchStaff(data.role)) {
+      throw new ApiError(400, "مندوب التوصيل يجب أن يكون موظفًا في الفرع");
+    }
 
     if (data.cafeRoleId) {
       await assertAssignableRole(session, cafeId, data.cafeRoleId);
@@ -176,6 +181,7 @@ export async function POST(request: NextRequest) {
         phone: data.phone?.trim() || null,
         passwordHash: await hashPassword(data.password),
         role: data.role,
+        isDeliveryCourier: data.isDeliveryCourier ?? false,
       },
       select: userSelect,
     });
@@ -190,6 +196,7 @@ export async function POST(request: NextRequest) {
         targetUserId: user.id,
         email: user.email,
         role: user.role,
+        isDeliveryCourier: user.isDeliveryCourier,
         branchId,
         createdByName: session.name,
       },

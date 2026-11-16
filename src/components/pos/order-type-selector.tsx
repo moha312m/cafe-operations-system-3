@@ -22,7 +22,16 @@ export type CustomerDetails = {
   customerName: string;
   customerPhone: string;
   deliveryAddress: string;
+  deliveryCourierId: string;
   tableNumber: string;
+};
+
+export type CourierPicker = {
+  couriers: { id: string; name: string; phone: string | null }[];
+  selectedId: string | null;
+  loading: boolean;
+  error?: string;
+  refresh: () => void;
 };
 
 type SelectorTable = {
@@ -60,6 +69,7 @@ function sinceLabel(startedAt: string): string {
 export function OrderTypeSelector({
   type,
   details,
+  courierPicker,
   branchId,
   tableReloadKey = 0,
   onTypeChange,
@@ -67,6 +77,7 @@ export function OrderTypeSelector({
 }: {
   type: OrderType;
   details: CustomerDetails;
+  courierPicker: CourierPicker;
   branchId?: string;
   tableReloadKey?: number;
   onTypeChange: (type: OrderType) => void;
@@ -245,19 +256,50 @@ export function OrderTypeSelector({
         />
       )}
       {type === "DELIVERY" && (
-        <div className="space-y-2">
-          {/* Phone lives in the customer/loyalty block below the selector. */}
-          <Input
-            placeholder={t.pos.customerNameRequired}
-            value={details.customerName}
-            onChange={(e) => set({ customerName: e.target.value })}
-          />
-          <Input
-            placeholder={t.pos.deliveryAddress}
-            value={details.deliveryAddress}
-            onChange={(e) => set({ deliveryAddress: e.target.value })}
-          />
-        </div>
+        <>
+          <fieldset className="space-y-2 rounded-xl border p-3" aria-busy={courierPicker.loading}>
+            <legend className="px-1 text-sm font-semibold">اختار مندوب التوصيل</legend>
+            {!branchId ? <p className="text-sm text-muted-foreground">اختار الفرع لعرض مندوبي التوصيل.</p>
+              : courierPicker.loading ? <p role="status" className="text-sm text-muted-foreground">جاري تحميل مندوبي التوصيل…</p>
+              : courierPicker.error || courierPicker.couriers.length === 0 ? (
+                <p role={courierPicker.error ? "alert" : "status"} className="text-sm text-muted-foreground">
+                  {courierPicker.error ? "تعذر تحميل مندوبي التوصيل." : "مفيش مندوبي توصيل نشطين في الفرع. تواصل مع المدير لتحديد مندوب."}
+                </p>
+              ) : (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {courierPicker.couriers.map(courier => (
+                    <label key={courier.id} className="cursor-pointer">
+                      <input type="radio" name="delivery-courier" className="peer sr-only" value={courier.id}
+                        checked={courierPicker.selectedId === courier.id}
+                        onChange={() => set({ deliveryCourierId: courier.id })} />
+                      <span className="flex h-full min-h-12 flex-col justify-center rounded-lg border px-3 py-2 text-sm
+                        hover:bg-muted/40 peer-checked:border-primary peer-checked:bg-primary/10 peer-focus-visible:ring-2 peer-focus-visible:ring-primary">
+                        <span className="font-semibold">{courier.name}</span>
+                        {courier.phone && <bdi className="text-xs text-muted-foreground" dir="ltr">{courier.phone}</bdi>}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            {branchId && !courierPicker.loading && (
+              <button type="button" onClick={courierPicker.refresh} className="rounded-md border px-2 py-1 text-xs font-medium">تحديث القائمة</button>
+            )}
+          </fieldset>
+          {courierPicker.selectedId && (
+            <div className="space-y-2">
+              <Input
+                placeholder={t.pos.customerNameRequired}
+                value={details.customerName}
+                onChange={(e) => set({ customerName: e.target.value })}
+              />
+              <Input
+                placeholder={t.pos.deliveryAddress}
+                value={details.deliveryAddress}
+                onChange={(e) => set({ deliveryAddress: e.target.value })}
+              />
+            </div>
+          )}
+        </>
       )}
     </div>
   );

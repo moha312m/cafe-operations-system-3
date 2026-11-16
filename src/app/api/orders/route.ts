@@ -18,6 +18,7 @@ import { audit, auditInTransaction } from "@/lib/audit";
 import { checkOwnerOverrideCode, isDiscountManager, overrideCodeFrom, overrideRefusal, recordOwnerOverrideInTransaction, type OwnerOverrideCheck, type OwnerOverrideReason } from "@/lib/owner-override";
 import { orderPage } from "@/lib/order-pagination";
 import { pickupSearchFilter, registerPickupFilter } from "@/lib/register-pickup";
+import { isAvailableDeliveryCourier } from "@/lib/delivery-couriers";
 import { unitPriceExact as computeUnitPrice } from "@/lib/pricing";
 import { recomputeShiftTotals } from "@/lib/shifts";
 import { getBranchFinancialSettings, computeChargesExact as computeCharges } from "@/lib/financials";
@@ -36,6 +37,7 @@ const orderInclude = {
   payments: true,
   branch: { select: { id: true, name: true } },
   createdBy: { select: { id: true, name: true } },
+  deliveryCourier: { select: { id: true, name: true } },
   approvedBy: { select: { id: true, name: true } },
   rejectedBy: { select: { id: true, name: true } },
 } as const;
@@ -121,6 +123,7 @@ const createOrderSchema = z.object({
   customerName: z.string().optional(),
   customerPhone: z.string().optional(),
   deliveryAddress: z.string().optional(),
+  deliveryCourierId: z.string().trim().min(1).max(128).optional(),
   tableNumber: z.string().optional(),
   notes: z.string().optional(),
   discountAmount: z.number().min(0).refine(validCurrencyInput, "المبلغ لازم يكون صحيح وبحد أقصى رقمين بعد العلامة").default(0),
@@ -184,6 +187,15 @@ export async function POST(request: NextRequest) {
     if (data.loyaltyPointsToRedeem > 0) await requireKey("loyalty.redeem_points");
     if (data.collectionMode !== "PENDING") await requireKey("pos.collect_payment");
     return await withIdempotency(request, (tx) => authenticatedRequestScope(tx, session, "POST /api/orders", {kind:"branch",id:branchId}), data, async (tx) => {
+      const deliveryCourierId = data.deliveryCourierId ?? null;
+      if (data.type === "DELIVERY") {
+        if (!deliveryCourierId) throw new ApiError(400, "اختار مندوب التوصيل أولًا");
+        if (!(await isAvailableDeliveryCourier(tx, cafeId, branchId, deliveryCourierId))) {
+          throw new ApiError(400, "مندوب التوصيل غير متاح لهذا الفرع. حدّث القائمة واختار مندوبًا متاحًا.");
+        }
+      } else if (deliveryCourierId) {
+        throw new ApiError(400, "اختيار مندوب التوصيل متاح لطلبات الدليفري فقط");
+      }
       const shift = session.role === "CASHIER" || data.collectionMode !== "PENDING"
         ? await requireCashCustodyInTx(tx, branchId, session.id) : null;
       await lockBranchAllocator(tx, branchId);
@@ -468,6 +480,7 @@ export async function POST(request: NextRequest) {
             customerName: data.customerName,
             customerPhone: data.customerPhone,
             deliveryAddress: data.deliveryAddress,
+            deliveryCourierId,
             tableNumber: data.type === "DINE_IN" ? (data.tableNumber?.trim() || null) : null,
             notes: data.notes,
             saleShiftId:shift?.id??null,invoiceDiscountType:invoiceDiscount.type,invoiceDiscountValue:invoiceDiscount.value,
@@ -620,7 +633,10 @@ export async function POST(request: NextRequest) {
 
       await auditInTransaction(tx, {
         cafeId, userId: session.id, action: "ORDER_CREATED", entity: "Order", entityId: order.id,
-        details: { orderNumber: order.orderNumber, total, branchId, source, createdByName: session.name },
+        details: {
+          orderNumber: order.orderNumber, total, branchId, source, createdByName: session.name,
+          ...(deliveryCourierId ? { deliveryCourierId } : {}),
+        },
       });
       if (data.collectionMode === "PENDING") {
         await auditInTransaction(tx, { cafeId, userId: session.id, action: "PAYMENT_COLLECTION_PENDING", entity: "Order", entityId: order.id, details: { orderNumber: order.orderNumber, branchId, total } });

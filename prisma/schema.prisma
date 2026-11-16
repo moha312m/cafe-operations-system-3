@@ -754,6 +754,7 @@ model User {
   name                       String
   phone                      String?
   role                       Role
+  isDeliveryCourier          Boolean   @default(false)
   isActive                   Boolean   @default(true)
   lastLoginAt                DateTime?
   archivedAt                 DateTime? // soft delete: archived staff keep their history on orders/shifts/audit
@@ -771,6 +772,7 @@ model User {
   ordersRejected              Order[]                        @relation("OrderRejectedBy")
   ordersAssigned              Order[]                        @relation("OrderAssignedApprover")
   ordersServed                Order[]                        @relation("OrderServedBy")
+  ordersForDelivery           Order[]                        @relation("OrderDeliveryCourier")
   qrApprovalTargetFor         QrOrderApprovalSettings[]      @relation("QrApprovalTargetUser")
   paymentsReceived            Payment[]
   shifts                      Shift[]                        @relation("ShiftCashier")
@@ -1164,6 +1166,7 @@ model Order {
   customerName        String?
   customerPhone       String?
   deliveryAddress     String?
+  deliveryCourierId   String?
   tableNumber         String?
   notes               String?
   subtotal            Decimal     @db.Decimal(10, 2)
@@ -1241,6 +1244,7 @@ model Order {
   rejectedBy               User?                   @relation("OrderRejectedBy", fields: [rejectedById], references: [id], onDelete: SetNull)
   assignedApprover         User?                   @relation("OrderAssignedApprover", fields: [assignedApproverUserId], references: [id], onDelete: SetNull)
   servedBy                 User?                   @relation("OrderServedBy", fields: [servedById], references: [id], onDelete: Restrict)
+  deliveryCourier          User?                   @relation("OrderDeliveryCourier", fields: [deliveryCourierId], references: [id], onDelete: SetNull)
   servedStockCustodyPeriod CustodyPeriod?          @relation("OrderServedStockCustody", fields: [servedStockCustodyPeriodId], references: [id], onDelete: Restrict)
   servedShift              Shift?                  @relation("OrderServedShift", fields: [servedShiftId], references: [id], onDelete: Restrict)
   customer                 Customer?               @relation(fields: [customerId], references: [id], onDelete: SetNull)
@@ -1265,6 +1269,7 @@ model Order {
   @@index([source])
   @@index([tableSessionId])
   @@index([servedById])
+  @@index([deliveryCourierId])
   @@index([servedStockCustodyPeriodId])
   @@index([servedShiftId])
 

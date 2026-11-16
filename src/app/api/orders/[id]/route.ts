@@ -31,6 +31,7 @@ export async function GET(_request: NextRequest, { params }: Params) {
         payments: { include: { receivedBy: { select: { name: true } } } },
         branch: { select: { id: true, name: true } },
         createdBy: { select: { id: true, name: true } },
+        deliveryCourier: { select: { id: true, name: true } },
       },
     });
     if (!order) throw new ApiError(404, "الطلب مش موجود");

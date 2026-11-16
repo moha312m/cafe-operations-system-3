@@ -7,6 +7,7 @@ import { CartItem } from "./cart-item";
 import {
   OrderTypeSelector,
   type CustomerDetails,
+  type CourierPicker,
 } from "./order-type-selector";
 import { PaymentSummary, type MixedAmounts } from "./payment-summary";
 import { CustomerLoyalty, type LoyaltyRedeem } from "./customer-loyalty";
@@ -22,6 +23,7 @@ export function OrderCart({
   currency,
   orderType,
   details,
+  courierPicker,
   branchId,
   tableReloadKey,
   totalBeforeLoyalty,
@@ -65,6 +67,7 @@ export function OrderCart({
   currency: string;
   orderType: OrderType;
   details: CustomerDetails;
+  courierPicker: CourierPicker;
   branchId?: string;
   tableReloadKey?: number;
   totalBeforeLoyalty: number;
@@ -115,6 +118,7 @@ export function OrderCart({
         <OrderTypeSelector
           type={orderType}
           details={details}
+          courierPicker={courierPicker}
           branchId={branchId}
           tableReloadKey={tableReloadKey}
           onTypeChange={onTypeChange}
@@ -122,7 +126,7 @@ export function OrderCart({
         />
 
         {/* Customer profile + loyalty (phone lookup, points redemption) */}
-        <details className="rounded-xl bg-muted/35 px-3 py-2">
+        {(orderType !== "DELIVERY" || courierPicker.selectedId) && <details className="rounded-xl bg-muted/35 px-3 py-2">
           <summary className="cursor-pointer text-sm font-semibold">العميل وبرنامج الولاء {details.customerPhone && <bdi dir="ltr">· {details.customerPhone}</bdi>}{redeem.points > 0 && <span> · {redeem.points} نقطة مستخدمة</span>}</summary>
           <div className="pt-3"><CustomerLoyalty
             branchId={branchId}
@@ -135,7 +139,7 @@ export function OrderCart({
             onPhoneChange={(customerPhone) => onDetailsChange({ ...details, customerPhone })}
             onRedeemChange={onRedeemChange}
           /></div>
-        </details>
+        </details>}
 
         <div className="space-y-2 border-t pt-3">
           {discountControls}
