@@ -3,10 +3,12 @@ import { z } from "zod";
 import { db } from "@/lib/db";
 import { requireKey, handleApiError, ApiError } from "@/lib/api";
 import { audit } from "@/lib/audit";
+import { branchRegisterPreferences } from "@/lib/branch-register-preferences";
 
 type Params = { params: Promise<{ id: string }> };
 
 const updateBranchSchema = z.object({
+  ...branchRegisterPreferences.shape,
   name: z.string().min(1).optional(),
   address: z.string().nullable().optional(),
   phone: z.string().nullable().optional(),

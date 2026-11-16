@@ -53,7 +53,7 @@ type Flow =
   | { stage: "NONE"; branch: { id: string; name: string } }
   | { stage: "MONEY"; branch: { id: string; name: string }; shift: MoneyShift; handover: { enabled: boolean }; materials: { cadence: string; duePreview: boolean; nextDueAt: string | null; branchCustodyFullCountDue?: boolean }; dueItemsPreview?: DueItem[]; branchCustodyItemsPreview?: DueItem[]; recipients?: EligibleRecipient[] }
   | ClosedFlow;
-type ClosedFlow = { stage: "MATERIALS" | "DONE"; branch: { id: string; name: string }; shift: ClosedShift; handover: FlowHandover | null; cashDisposition?: DispositionView | null; recipients?: EligibleRecipient[]; nightCashStored?: boolean };
+type ClosedFlow = { stage: "MATERIALS" | "DONE"; branch: { id: string; name: string }; shift: ClosedShift; handover: FlowHandover | null; cashDisposition?: DispositionView | null; recipients?: EligibleRecipient[]; nightCashStored?: boolean; recordedDifferences?: number };
 type DueItem = { id: string; name: string; unit: string };
 type DrawerChoice = "RETAIN_ALL" | "SPLIT";
 
@@ -64,6 +64,7 @@ export function ShiftCloseFlow({ branchId, currency }: { branchId: string; curre
   const [flow, setFlow] = useState<Flow | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<{ notDue?: { nextDueAt: string | null }; recordedDifferences?: number } | null>(null);
+  const [closingForBranchCustody, setClosingForBranchCustody] = useState(false);
   const generation = useRef(0);
 
   const load = useCallback(async () => {
@@ -82,14 +83,15 @@ export function ShiftCloseFlow({ branchId, currency }: { branchId: string; curre
   if (error && !flow) return <div role="alert" className="rounded-xl border border-destructive/40 p-4 text-sm text-destructive">{error} <Button size="sm" variant="outline" className="ms-2" onClick={() => void load()}>إعادة المحاولة</Button></div>;
   if (!flow) return <div className="h-64 animate-pulse rounded-2xl border bg-muted/30" />;
 
-  const showMaterialsStep = flow.stage === "MATERIALS" || (flow.stage === "MONEY" && flow.handover.enabled && flow.materials.duePreview) || (flow.stage === "DONE" && !!flow.handover);
+  const showMaterialsStep = flow.stage === "MATERIALS" || (flow.stage === "MONEY" && flow.handover.enabled && (flow.materials.duePreview || closingForBranchCustody)) || (flow.stage === "DONE" && !!flow.handover);
   return <div className="mx-auto w-full max-w-2xl space-y-4" dir="rtl">
     <Steps stage={flow.stage} withMaterials={showMaterialsStep} />
     {flow.stage === "NONE" && <section className="space-y-3 rounded-2xl border bg-card p-5 text-sm">
       <p>مفيش شيفت مفتوح ليك في الفرع ده.</p>
       <Link href="/pos" className={buttonVariants({ variant: "outline" })}>رجوع للكاشير</Link>
     </section>}
-    {flow.stage === "MONEY" && <MoneyStep flow={flow} currency={currency} onCommitted={async (result) => {
+    {flow.stage === "MONEY" && <MoneyStep flow={flow} currency={currency} onBranchCustodyChange={setClosingForBranchCustody} onCommitted={async (result) => {
+      setClosingForBranchCustody(false);
       const next = await load();
       if (result?.notDue) setOutcome({ notDue: result.notDue });
       return next;
@@ -201,9 +203,10 @@ function Identity({ branch, shiftNumber, name }: { branch: string; shiftNumber: 
 }
 
 // ── Screen 1 ──────────────────────────────────────────────────────────────
-function MoneyStep({ flow, currency, onCommitted }: {
+function MoneyStep({ flow, currency, onCommitted, onBranchCustodyChange }: {
   flow: Extract<Flow, { stage: "MONEY" }>; currency: string;
   onCommitted: (result: { notDue?: { nextDueAt: string | null } } | null) => Promise<Flow | null>;
+  onBranchCustodyChange?: (branchCustody: boolean) => void;
 }) {
   const { user, cafe, canKey } = useApp();
   const router = useRouter();
@@ -228,6 +231,11 @@ function MoneyStep({ flow, currency, onCommitted }: {
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<{ message: string; blockers: DetailedBlocker[] } | null>(null);
   const inFlight = useRef(false);
+
+  useEffect(() => {
+    onBranchCustodyChange?.(branchCustody);
+    return () => { onBranchCustodyChange?.(false); };
+  }, [branchCustody, onBranchCustodyChange]);
 
   useEffect(() => {
     saveCloseDraft(storage(), scope, { actualCash: cash, notes: note, varianceReason: "", actualCard: card, cardReason: "", actualWallet: wallet, walletReason: "",
@@ -442,8 +450,9 @@ function MoneyStep({ flow, currency, onCommitted }: {
     </div>}
     {managerFix && <ManagerHandoverActionDialog kind={managerFix.kind} open handoverId={managerFix.handoverId} branchId={flow.branch.id} onClose={() => setManagerFix(null)} onDone={() => setFailure(null)} />}
     <div className="sticky bottom-0 -mx-4 border-t bg-card/95 px-4 pt-3 pb-1 backdrop-blur sm:-mx-5 sm:px-5">
-      <Button className="h-12 w-full text-base" disabled={busy || !ready} onClick={() => void commit()} data-testid="close-money-submit">
-        {busy ? "جارٍ التسجيل…" : materialsNext ? "التالي: جرد الخامات وإغلاق الشيفت" : "إنهاء الشيفت"}
+      {materialsNext && <p id="close-money-effect" className="mb-2 text-sm text-muted-foreground">التأكيد يسجّل تسليم النقدية. جرد الخامات يظل مطلوبًا في الخطوة التالية.</p>}
+      <Button className="min-h-12 w-full whitespace-normal text-base" aria-describedby={materialsNext ? "close-money-effect" : undefined} disabled={busy || !ready} onClick={() => void commit()} data-testid="close-money-submit">
+        {busy ? "جارٍ التسجيل…" : materialsNext ? "سجّل تسليم النقدية وابدأ جرد الخامات" : "إنهاء الشيفت"}
       </Button>
     </div>
   </section>;
@@ -461,6 +470,7 @@ function MaterialsStep({ flow, handover, currency, onFinished, onStale }: {
   const [sessionId, setSessionId] = useState<string | null>(handover.status === "DRAFT" ? handover.stockCountSessionId : null);
   const [session, setSession] = useState<CountSession | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [note, setNote] = useState(handover.outgoingNote ?? "");
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
@@ -471,6 +481,11 @@ function MaterialsStep({ flow, handover, currency, onFinished, onStale }: {
   // Owed on every target — a branch-custody night included — unless the night cash was declared as storage.
   const needsDirectDisposition = !flow.nightCashStored;
 
+  function retryLoad() {
+    setLoadError(null);
+    setLoadAttempt((n) => n + 1);
+  }
+
   useEffect(() => { try { const saved = window.sessionStorage.getItem(noteKey); if (saved !== null) setNote(saved); } catch { /* storage unavailable */ } }, [noteKey]);
   useEffect(() => { try { if (note) window.sessionStorage.setItem(noteKey, note); else window.sessionStorage.removeItem(noteKey); } catch { /* storage unavailable */ } }, [note, noteKey]);
 
@@ -480,10 +495,10 @@ function MaterialsStep({ flow, handover, currency, onFinished, onStale }: {
     if (sessionId) return;
     let stopped = false;
     api<{ countSession: { id: string } }>("/api/handovers", { method: "POST", body: { action: "start_count", handoverId: handover.id } })
-      .then((r) => { if (!stopped) setSessionId(r.countSession.id); })
+      .then((r) => { if (!stopped) { setLoadError(null); setSessionId(r.countSession.id); } })
       .catch((e) => { if (!stopped) setLoadError(e instanceof Error ? e.message : "تعذّر فتح جرد الخامات"); });
     return () => { stopped = true; };
-  }, [sessionId, handover.id]);
+  }, [sessionId, handover.id, loadAttempt]);
 
   const queue = useMemo(() => new CountEntryQueue(async (lineId, value, expectedCountedAt) => {
     const { line } = await api<{ line: CountLine }>(`/api/stock-counts/${sessionId}/lines/${lineId}`, { method: "PATCH", body: { countedQuantity: value, expectedCountedAt } })
@@ -510,11 +525,12 @@ function MaterialsStep({ flow, handover, currency, onFinished, onStale }: {
       .then(({ session: s }) => {
         if (stopped) return;
         if (s.branchId !== flow.branch.id) throw new Error("الجرد لا يخص هذا الفرع");
+        setLoadError(null);
         queue.reconcile(s.lines); setSession(s);
       })
       .catch((e) => { if (!stopped) setLoadError(e instanceof Error ? e.message : "تعذّر فتح جرد الخامات"); });
     return () => { stopped = true; };
-  }, [sessionId, queue, flow.branch.id]);
+  }, [sessionId, queue, flow.branch.id, loadAttempt]);
 
   const lines = session?.lines ?? [];
   const capture = session ? ["DRAFT", "IN_PROGRESS"].includes(session.status) : false;
@@ -554,10 +570,16 @@ function MaterialsStep({ flow, handover, currency, onFinished, onStale }: {
   return <section className="space-y-4 rounded-2xl border bg-card p-4 sm:p-5" aria-labelledby="materials-heading" data-testid="close-materials-step">
     <div className="space-y-1">
       <h1 id="materials-heading" className="text-xl font-bold">تسليم الخامات</h1>
+      <p className="text-sm font-medium text-emerald-700 dark:text-emerald-300">تم تسجيل تسليم النقدية. الخطوة الحالية: جرد الخامات.</p>
       <Identity branch={flow.branch.name} shiftNumber={money1.shiftNumber} name={user.name} />
       {money1.materialsDecision && <p className="text-xs text-muted-foreground">{materialsDecisionLabel(money1.materialsDecision)}{money1.materialsDecision.periodFrom ? ` · ${money1.materialsDecision.periodFrom === money1.materialsDecision.periodTo ? money1.materialsDecision.periodTo : `${money1.materialsDecision.periodFrom} ← ${money1.materialsDecision.periodTo}`}` : ""}</p>}
     </div>
-    {loadError && <p role="alert" className="text-sm text-destructive">{loadError}</p>}
+    {loadError && (
+      <div role="alert" className="flex flex-wrap items-center gap-2 text-sm text-destructive">
+        <span>{loadError}</span>
+        <Button type="button" size="sm" variant="outline" onClick={retryLoad}>إعادة المحاولة</Button>
+      </div>
+    )}
     {!session && !loadError && <div className="h-40 animate-pulse rounded-xl bg-muted/30" />}
     {session && <>
       <p className="text-sm" aria-live="polite">اكتب الكمية الفعلية لكل صنف · المحفوظ {savedCount}/{lines.length}</p>
@@ -701,7 +723,7 @@ function DoneStep({ flow, currency, outcome }: { flow: ClosedFlow; currency: str
   const nextDueAt = decision?.nextDueAt ?? outcome?.notDue?.nextDueAt ?? null;
   const moneyDifference = shift.cashDifference != null && Number(shift.cashDifference) !== 0
     || shift.tenderReconciliations.some((t) => t.varianceAmount != null && Number(t.varianceAmount) !== 0);
-  const hasDifferences = (outcome?.recordedDifferences ?? 0) > 0 || moneyDifference;
+  const hasDifferences = (outcome?.recordedDifferences ?? flow.recordedDifferences ?? 0) > 0 || moneyDifference;
   // Every close ends with the drawer's fate recorded; night storage is its own record.
   const [recorded, setRecorded] = useState<DispositionView | null>(flow.cashDisposition ?? null);
   const dispositionOwed = shift.actualCashAmount !== null && !flow.nightCashStored;

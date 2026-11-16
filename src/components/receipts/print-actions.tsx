@@ -5,7 +5,7 @@ import { useEffect } from "react";
 // Screen-only action bar for the receipt page (hidden in print via
 // .no-print). autoPrint fires the browser print dialog on load — the
 // deep link POS uses for "طباعة الريسيت".
-export function PrintActions({ autoPrint }: { autoPrint: boolean }) {
+export function PrintActions({ autoPrint, printLabel = "🖨️ طباعة الريسيت" }: { autoPrint: boolean; printLabel?: string }) {
   useEffect(() => {
     if (!autoPrint) return;
     const t = setTimeout(() => window.print(), 400);
@@ -21,7 +21,7 @@ export function PrintActions({ autoPrint }: { autoPrint: boolean }) {
           padding: "10px 22px", fontSize: 14, fontWeight: 600, cursor: "pointer",
         }}
       >
-        🖨️ طباعة الريسيت
+        {printLabel}
       </button>
       <button
         onClick={() => (window.history.length > 1 ? window.history.back() : window.close())}

@@ -8,6 +8,7 @@ import { decideMaterialsCount, readMaterialsSchedule } from "@/lib/materials-sch
 import { fullCountDue } from "@/lib/stock-count-policy";
 import { dispositionForShift, listEligibleRecipients } from "@/lib/cash-disposition";
 import { planRequiredItems } from "@/lib/handover-required-items";
+import { outgoingCountOutcome } from "@/lib/handover";
 
 // GET /api/shifts/close-flow — where the requester's OWN close stands (HND-UX-004).
 //
@@ -120,13 +121,25 @@ export async function GET(request: NextRequest) {
       : "DONE";
     const { handoversOutgoing: _unused, ...shift } = last;
     void _unused;
-    const [cashDisposition, recipients, nightStorage] = await Promise.all([
+    const [cashDisposition, recipients, nightStorage, countOutcome] = await Promise.all([
       dispositionForShift(db, last.id),
       listEligibleRecipients(db, { cafeId: branch.cafeId, branchId, excludeUserId: session.id }),
       db.cashStorage.findUnique({ where: { outgoingShiftId: last.id }, select: { id: true } }),
+      stage === "DONE" && canViewReports && handover?.stockCountSessionId
+        ? outgoingCountOutcome(db, handover.stockCountSessionId)
+        : Promise.resolve(null),
     ]);
     // A night-storage declaration is this close's cash partition; every other close owes a disposition.
-    return NextResponse.json({ stage, branch: { id: branch.id, name: branch.name }, shift, handover, cashDisposition, recipients, nightCashStored: !!nightStorage });
+    return NextResponse.json({
+      stage,
+      branch: { id: branch.id, name: branch.name },
+      shift,
+      handover,
+      cashDisposition,
+      recipients,
+      nightCashStored: !!nightStorage,
+      ...(countOutcome ? { recordedDifferences: countOutcome.recordedDifferences } : {}),
+    });
   } catch (error) {
     return handleApiError(error);
   }

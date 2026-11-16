@@ -479,6 +479,9 @@ model Branch {
   menuSlug          String? // latin slug for the public URL
   publicMenuEnabled Boolean @default(true)
 
+  posDefaultOrderType OrderType @default(DINE_IN)
+  pickupAtCashier     Boolean   @default(false)
+
   // Serving policy overrides. NULL means "inherit the café setting", which is
   // why these are nullable rather than a separate settings row: a branch that
   // has never been configured is indistinguishable from one that inherits.

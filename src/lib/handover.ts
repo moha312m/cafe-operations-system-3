@@ -1255,6 +1255,35 @@ export type FinishOutgoingResult = {
 
 const FINISHED_STATUSES: readonly HandoverStatus[] = ["OUTGOING_SUBMITTED", "INCOMING_REVIEW", "ACCEPTED", "COMPLETED"];
 
+export async function outgoingCountOutcome(
+  client: Pick<SQL.TransactionClient, "stockCountSession" | "auditLog">,
+  sessionId: string | null,
+) {
+  if (!sessionId) return { systemValidated: false, recordedDifferences: 0 };
+  const session = await client.stockCountSession.findUnique({
+    where: { id: sessionId },
+    select: { confirmedById: true, lines: { select: { disposition: true } } },
+  });
+  // Later unsigned declarations supersede system validation. Declared
+  // differences within tolerance do not have VARIANCE_RECORDED dispositions.
+  const latest = session?.confirmedById === null ? await client.auditLog.findFirst({
+    where: {
+      entity: "StockCountSession", entityId: sessionId,
+      action: { in: [COUNT_SYSTEM_VALIDATED, COUNT_OUTGOING_DECLARED] },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { action: true, details: true },
+  }) : null;
+  if (latest?.action === COUNT_OUTGOING_DECLARED) {
+    const differenceLines = Number((latest.details as { differenceLines?: unknown } | null)?.differenceLines ?? 0);
+    return { systemValidated: false, recordedDifferences: Number.isFinite(differenceLines) ? differenceLines : 0 };
+  }
+  return {
+    systemValidated: latest?.action === COUNT_SYSTEM_VALIDATED,
+    recordedDifferences: session?.lines.filter((line) => line.disposition === "VARIANCE_RECORDED").length ?? 0,
+  };
+}
+
 export async function finishOutgoingHandover(args: {
   handoverId: string;
   actorId: string;
@@ -1272,33 +1301,10 @@ export async function finishOutgoingHandover(args: {
     if (args.viewerBranchId !== null && handover.branchId !== args.viewerBranchId) {
       throw new ApiError(403, FOREIGN_BRANCH);
     }
-    const counted = async () => {
-      if (!handover.stockCountSessionId) return { systemValidated: false, recordedDifferences: 0 };
-      const session = await tx.stockCountSession.findUnique({
-        where: { id: handover.stockCountSessionId },
-        select: { confirmedById: true, lines: { select: { disposition: true } } },
-      });
-      // The LATEST unsigned evidence answers (A10): after an approved correction
-      // the earlier automatic validation is superseded by the declaration, and a
-      // declared difference inside tolerance is not a VARIANCE_RECORDED line.
-      const latest = session?.confirmedById === null ? await tx.auditLog.findFirst({
-        where: { entity: "StockCountSession", entityId: handover.stockCountSessionId, action: { in: [COUNT_SYSTEM_VALIDATED, COUNT_OUTGOING_DECLARED] } },
-        orderBy: { createdAt: "desc" },
-        select: { action: true, details: true },
-      }) : null;
-      if (latest?.action === COUNT_OUTGOING_DECLARED) {
-        const differenceLines = Number((latest.details as { differenceLines?: unknown } | null)?.differenceLines ?? 0);
-        return { systemValidated: false, recordedDifferences: Number.isFinite(differenceLines) ? differenceLines : 0 };
-      }
-      return {
-        systemValidated: latest?.action === COUNT_SYSTEM_VALIDATED,
-        recordedDifferences: session?.lines.filter((l) => l.disposition === "VARIANCE_RECORDED").length ?? 0,
-      };
-    };
     // A retry of a submission that already happened, or one somebody else
     // made: the truthful answer is the state that exists.
     if (FINISHED_STATUSES.includes(handover.status)) {
-      return { status: handover.status, alreadySubmitted: true, ...(await counted()) };
+      return { status: handover.status, alreadySubmitted: true, ...(await outgoingCountOutcome(tx, handover.stockCountSessionId)) };
     }
     if (handover.status !== "DRAFT") throw new ApiError(409, "التسليم مش في حالة تسمح بالتسليم");
     // Stock handover v2: finishing without a count is allowed and reported.

@@ -39,7 +39,7 @@ describe("UI-007 grouped sidebar and compact banners", () => {
     assert.equal(groupOf("/settings"), "admin");
     assert.equal(groupOf("/roles-permissions"), "admin");
     // The reports hub replaced the single /reports entry; each report links from the catalog.
-    assert.equal(groupOf("/report-center"), "reports");
+    assert.equal(groupOf("/report-center"), "finance");
     // The cashier moved into the sales workspace links (group "sales").
     assert.ok(source("src/lib/sales-report-catalog.ts").includes("href:'/pos'"), "the cashier stays one click away");
   });

@@ -20,6 +20,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { ApiRequestError, detailedBlockersOf } from "../src/lib/client";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (file: string) => readFileSync(path.join(root, file), "utf8");
@@ -70,7 +71,8 @@ describe("UI-003 the two-stage close is reported honestly", () => {
 
   test("a settled close with materials owed continues to the materials screen, not to a success message", () => {
     const code = read(FLOW);
-    assert.match(code, /"التالي: جرد الخامات وإغلاق الشيفت"/);
+    assert.match(code, /"سجّل تسليم النقدية وابدأ جرد الخامات"/);
+    assert.match(code, /تم تسجيل تسليم النقدية.+جرد الخامات/);
     assert.match(code, /stage === "MATERIALS"/);
     assert.match(code, /data-testid="close-materials-step"/);
     // Done is only ever the server's answer.
@@ -82,9 +84,14 @@ describe("UI-003 the two-stage close is reported honestly", () => {
 
   test("a refusal shows every blocker the server named, beside the action", () => {
     const code = read(FLOW);
-    const clientImports = code.match(/import\s*\{([^}]+)\}\s*from "@\/lib\/client"/)?.[1].split(",").map((name) => name.trim());
-    assert.ok(clientImports?.includes("api") && clientImports.includes("blockersOf") && clientImports.includes("money"));
-    assert.match(code, /blockers: e instanceof ApiRequestError \? blockersOf\(e\) : \[\]/);
+    const error = new ApiRequestError("close refused", 409, { blockers: [
+      { code: "UNSERVED_ORDERS", count: 2, messageAr: "طلبات مفتوحة", refs: ["#31", "#47"] },
+      "عهدة غير مكتملة",
+    ] });
+    assert.deepEqual(detailedBlockersOf(error).map(b => [b.messageAr, b.refs]), [
+      ["طلبات مفتوحة", ["#31", "#47"]], ["عهدة غير مكتملة", undefined],
+    ]);
+    assert.match(code, /detailedBlockersOf\(e\)/);
     assert.match(code, /failure\.blockers\.map\(/);
     // Last attempt's obstacles are cleared at the next attempt.
     assert.match(code, /setFailure\(null\)/);

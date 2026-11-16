@@ -61,7 +61,7 @@ const MANAGER_KEYS = [
   // Customers & loyalty (settings edits stay owner-only by default).
   "customers.lookup", "customers.view", "customers.edit",
   "loyalty.view", "loyalty.redeem_points",
-  "receipts.print", "receipts.reprint",
+  "receipts.print", "receipts.print_pickup", "receipts.reprint",
 ];
 
 const CASHIER_KEYS = [
@@ -85,7 +85,7 @@ const CASHIER_KEYS = [
   // No customers.view — they can't browse the full customer list.
   "customers.lookup",
   "loyalty.redeem_points",
-  "receipts.print", "receipts.reprint",
+  "receipts.print", "receipts.print_pickup", "receipts.reprint",
 ];
 
 const WAITER_KEYS = [
@@ -95,6 +95,7 @@ const WAITER_KEYS = [
   "tables.view", "tables.open",
   "menu.view",
   "customers.lookup",
+  "receipts.print_pickup",
 ];
 
 const BARISTA_KEYS = [

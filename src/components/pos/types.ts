@@ -32,7 +32,7 @@ export type Product = {
 
 export type Category = { id: string; name: string; isActive: boolean };
 
-export type Branch = { id: string; name: string };
+export type Branch = { id: string; name: string; posDefaultOrderType?: "DINE_IN" | "TAKEAWAY" };
 
 export type CartLine = {
   discount?: {type:'NONE'|'PERCENT'|'FIXED';value:string};

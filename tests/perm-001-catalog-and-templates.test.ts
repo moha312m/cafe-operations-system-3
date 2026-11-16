@@ -195,7 +195,7 @@ describe("PERM-001 catalog, templates, and nav", () => {
     assert.equal(keysForModule("VARIANCE").length, 3);
   });
 
-  test("the owner holds all eighteen with no reseed, and reads 127 keys", async () => {
+  test("the owner resolves pickup printing without reseeding", async () => {
     const keys = await keysFor("owner@demo.com");
     for (const [key] of NEW_KEYS) {
       assert.ok(keys.has(key), `owner must hold ${key}`);
@@ -208,7 +208,12 @@ describe("PERM-001 catalog, templates, and nav", () => {
     // without touching a single row of their data.
     const TREASURY_KEYS = ["treasury.view", "treasury.manage_accounts", "treasury.transfer_create", "treasury.transfer_dispatch", "treasury.transfer_receive", "treasury.transfer_cancel"];
     for (const key of TREASURY_KEYS) assert.ok(keys.has(key), `owner must hold ${key}`);
-    assert.equal(keys.size, 127, "owner should read 89 + 18 + 1 + 1 + 5 + 7 + 6 keys");
+    assert.equal(new Set(CAFE_KEYS).size, 129);
+    assert.ok(keys.has("receipts.print_pickup"));
+    assert.ok(!keys.has("expenses.drawer_payout") && !keys.has("expenses.drawer_approve"));
+    const waiter = SYSTEM_ROLE_MAP.WAITER.keys;
+    assert.ok(waiter.includes("receipts.print_pickup"));
+    assert.ok(!waiter.includes("receipts.print") && !waiter.includes("receipts.reprint"));
     for (const key of ["sales.edit", "sales.approve", "sales.override_price", "sales.configure_limits"]) assert.ok(keys.has(key), `owner must hold ${key}`);
   });
 

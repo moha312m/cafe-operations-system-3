@@ -1,9 +1,8 @@
 "use client";
 
 import {visibleReportCatalog,REPORT_GROUPS} from "@/lib/report-center";
-import {SALES_WORKSPACE_LINKS} from "@/lib/sales-report-catalog";
 import { currentWorkspaceHref } from "@/lib/workspace-navigation";
-import { LayoutDashboard, ReceiptText, Armchair, Coffee, ClipboardList, ChartNoAxesCombined, ScanSearch, Smartphone, BookOpen, FlaskConical, Building2, Users, Package, ShoppingCart, Truck, CreditCard, ClipboardCheck, Scale, Handshake, FileChartColumn, Wallet, Landmark, BookText, Calculator, Settings, ShieldCheck, History, PanelRightClose, PanelRightOpen, ChevronDown } from "lucide-react";
+import { LayoutDashboard, ReceiptText, Armchair, Coffee, ClipboardList, ChartNoAxesCombined, ScanSearch, Smartphone, BookOpen, FlaskConical, Building2, Users, Package, ShoppingCart, ShoppingBag, RotateCcw, Bell, Monitor, Truck, CreditCard, ClipboardCheck, Scale, Handshake, FileChartColumn, Wallet, Landmark, BookText, Calculator, Settings, ShieldCheck, History, PanelRightClose, PanelRightOpen, ChevronDown } from "lucide-react";
 import { createContext, useContext, useEffect, useState, Suspense } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -50,14 +49,14 @@ export function useApp(): AppContextValue {
 // The sidebar is grouped so a laptop-height screen shows the section titles and
 // the section being worked in, not 25 flat links behind a small inner scroll.
 // Items without a `group` (the dashboard) stay pinned above the sections.
-type NavGroupId = "sales" | "daily" | "menu" | "stock" | "reports" | "finance" | "admin";
+type NavGroupId = "sales" | "daily" | "stock" | "finance" | "menu" | "customers" | "admin";
 const NAV_GROUPS: { id: NavGroupId; label: string }[] = [
-  {id:"sales",label:"المبيعات"},
-  { id: "daily", label: "التشغيل اليومي" },
+  { id: "sales", label: "الكاشير والطلبات" },
+  { id: "daily", label: "الخدمة والتحضير" },
+  { id: "stock", label: "الورديات والتسليم" },
+  { id: "finance", label: "المالية والتقارير" },
   { id: "menu", label: "المنيو والمخزون" },
-  { id: "stock", label: "الجرد والتسليم" },
-  { id: "reports", label: "التقارير والمتابعة" },
-  { id: "finance", label: "المحاسبة والماليات" },
+  { id: "customers", label: "العملاء والولاء" },
   { id: "admin", label: "الإدارة" },
 ];
 const NAV_COLLAPSED_KEY = "nextcup.nav.collapsed";
@@ -81,12 +80,12 @@ type NavItem = {
 };
 
 const NAV_ICONS: Record<string, React.ElementType> = {
- "/dashboard":LayoutDashboard,"/pos":ReceiptText,"/tables":Armchair,"/tables/setup":Armchair,
- "/current-shift":Coffee,"/kitchen":Coffee,"/orders":ClipboardList,"/sales":ChartNoAxesCombined,
+ "/dashboard":LayoutDashboard,"/pos":ReceiptText,"/pos?workspace=pickup":ShoppingBag,"/tables":Armchair,"/tables/setup":Armchair,
+ "/current-shift":Coffee,"/kitchen":Coffee,"/display":Monitor,"/orders":ClipboardList,"/sales":ChartNoAxesCombined,"/sales?returns=1":RotateCcw,
  "/tracing":ScanSearch,"/approvals":Smartphone,"/menu":BookOpen,"/recipe-review":FlaskConical,
  "/branches":Building2,"/staff":Users,"/inventory":Package,"/purchases":ShoppingCart,"/suppliers":Truck,
  "/customers":CreditCard,"/stock-counts":ClipboardCheck,"/variances":Scale,"/handovers":Handshake,
- "/report-center":FileChartColumn,"/reports":FileChartColumn,"/expenses":Wallet,"/treasury":Landmark,
+ "/notifications":Bell,"/report-center":FileChartColumn,"/reports":FileChartColumn,"/reports/stock-handovers":FileChartColumn,"/expenses":Wallet,"/treasury":Landmark,
  "/finance":Wallet,"/accounting/pnl":ChartNoAxesCombined,"/accounting":BookText,"/shifts":Calculator,"/settings":Settings,
  "/roles-permissions":ShieldCheck,"/audit":History,
 };
@@ -99,42 +98,46 @@ const REPORT_ICONS: Record<string, React.ElementType> = {
 };
 const REPORT_GROUP_ICONS: Record<string, React.ElementType> = {sales:ChartNoAxesCombined,inventory:Package,purchasing:ShoppingCart,finance:Wallet,customers:CreditCard,system:ShieldCheck};
 const NAV: NavItem[] = [
-  ...SALES_WORKSPACE_LINKS.map(item=>({...item,icon:"",permission:"orders:read" as const,group:"sales" as const})),
-  { href: "/report-center", label: "مركز التقارير", icon: "📊", permission: "reports:read", group: "reports" },
   { href: "/dashboard", label: t.nav.dashboard, icon: "📊", permission: "dashboard:read" },
-  { href: "/current-shift", label: t.nav.currentShift, icon: "🧑‍💼", permission: "shifts:operate", anyKey: ["shifts.view_current", "shifts.view_reports"], group: "daily", feature: (f) => f.shiftManagementEnabled },
-  { href: "/kitchen", label: t.nav.kitchen, icon: "☕", permission: "orders:update-status", group: "daily", feature: (f) => f.kitchenScreenEnabled },
+  { href: "/pos", label: "الكاشير", icon: "🧾", permission: "orders:read", group: "sales", key: "pos.view" },
+  { href: "/pos?workspace=pickup", label: "استلام الطلبات", icon: "🛍️", permission: "orders:read", group: "sales", allKeys: ["pos.view", "orders.view"] },
+  { href: "/orders", label: t.nav.orders, icon: "🔔", permission: "orders:read", group: "sales" },
+  { href: "/sales", label: "المبيعات", icon: "📈", permission: "orders:read", group: "sales", key: "sales.view" },
+  { href: "/sales?returns=1", label: "المرتجعات", icon: "↩️", permission: "orders:read", group: "sales", key: "sales.view" },
   { href: "/tables", label: "الترابيزات", icon: "🍽️", permission: "orders:create", group: "daily", key: "tables.view", feature: (f) => f.enableTables },
-  // Table setup is no longer a prominent daily page — it's reached from a
-  // small "إدارة أرقام الترابيزات" button on /tables (owner/manager only).
-  { href: "/orders", label: t.nav.orders, icon: "🔔", permission: "orders:read", group: "daily" },
-  { href: "/tracing", label: "التتبّع", icon: "🔎", permission: "audit:read", group: "reports", key: "audit.view" },
+  { href: "/kitchen", label: t.nav.kitchen, icon: "☕", permission: "orders:update-status", group: "daily", feature: (f) => f.kitchenScreenEnabled },
+  { href: "/display", label: "شاشة انتظار الطلبات", icon: "📺", permission: "orders:read", group: "daily", feature: (f) => f.kitchenScreenEnabled },
   // Approvals shows when waiter approval is on OR QR orders route to a waiter.
   { href: "/approvals", label: t.nav.approvals, icon: "📱", permission: "orders:approve", group: "daily", key: "qr_orders.view", feature: (f) => f.qrMenuEnabled },
-  { href: "/menu", label: t.nav.menu, icon: "📖", permission: "menu:manage", group: "menu" },
-  // Recipe accuracy sits beside the menu: it is about how the menu is made,
-  // and it exposes ingredient cost, so it rides the same cost permission.
-  { href: "/recipe-review", label: "دقة الوصفات", icon: "🧪", permission: "cost:read", group: "menu" },
-  { href: "/branches", label: t.nav.branches, icon: "🏬", permission: "branches:manage", group: "admin", feature: (f) => f.branchManagementEnabled },
-  { href: "/staff", label: t.nav.staff, icon: "👥", permission: "users:manage", group: "admin", feature: (f) => f.staffManagementEnabled },
-  // Historical finished orders/returns remain reachable after new inventory use is disabled.
-  { href: "/inventory", label: t.nav.inventory, icon: "📦", permission: "inventory:read", group: "menu" },
-  { href: "/purchases", label: "المشتريات", icon: "🛒", permission: "inventory:read", group: "menu", key: "purchases.view", feature: (f) => f.purchasesEnabled },
-  { href: "/suppliers", label: "الموردين", icon: "🚚", permission: "inventory:read", group: "menu", key: "suppliers.view", feature: (f) => f.purchasesEnabled },
-  { href: "/customers", label: "العملاء", icon: "💳", permission: "orders:read", group: "daily", key: "customers.view" },
+  { href: "/current-shift", label: t.nav.currentShift, icon: "🧑‍💼", permission: "shifts:operate", anyKey: ["shifts.view_current", "shifts.view_reports"], group: "stock", feature: (f) => f.shiftManagementEnabled },
   // Counting, its variance cases, and custody handover. Each gates on its own
   // granular key rather than the legacy bridge: the pages are new, so there is
   // no legacy permission that means "may see this" without over-granting.
+  { href: "/handovers", label: "التسليم والاستلام", icon: "🤝", permission: "shifts:operate", group: "stock", key: "handover.view", feature: (f) => f.shiftManagementEnabled },
   { href: "/stock-counts", label: "جرد المخزون", icon: "📋", permission: "inventory:read", group: "stock", key: "stock_count.view", feature: (f) => f.inventoryEnabled },
   { href: "/variances", label: "الفروقات", icon: "⚖️", permission: "shifts:read", group: "stock", key: "variance.view", feature: (f) => f.shiftManagementEnabled },
-  { href: "/handovers", label: "التسليم والاستلام", icon: "🤝", permission: "shifts:operate", group: "stock", key: "handover.view", feature: (f) => f.shiftManagementEnabled },
   // Stock handover v2: the comparison report and the alerts it raises — managers and owners.
   { href: "/reports/stock-handovers", label: "جرد التسليم والاستلام", icon: "🧾", permission: "shifts:read", group: "stock", key: "handover.manage", feature: (f) => f.inventoryEnabled },
   { href: "/notifications", label: "التنبيهات", icon: "🔔", permission: "shifts:read", group: "stock", key: "handover.manage" },
   { href: "/expenses", label: "مصروفات التشغيل", icon: "💸", permission: "cost:read", group: "finance", key: "expenses.view" },
+  { href: "/treasury", label: "الخزينة", icon: "🏦", permission: "cost:read", group: "finance", ownerOnly: true, key: "treasury.view" },
   { href: "/accounting", label: "الأرباح والخسائر والمحاسبة", icon: "📊", permission: "cost:read", group: "finance", key: "accounting.view" },
-  { href: "/settings", label: "الإعدادات", icon: "⚙️", permission: "branches:manage", group: "admin" },
+  { href: "/report-center", label: "مركز التقارير", icon: "📊", permission: "reports:read", group: "finance" },
+  { href: "/tracing", label: "التتبّع", icon: "🔎", permission: "audit:read", group: "finance", key: "audit.view" },
+  { href: "/audit", label: "سجل التدقيق", icon: "📜", permission: "audit:read", group: "finance", key: "audit.view" },
+  { href: "/menu", label: t.nav.menu, icon: "📖", permission: "menu:manage", group: "menu" },
+  // Recipe accuracy sits beside the menu: it is about how the menu is made,
+  // and it exposes ingredient cost, so it rides the same cost permission.
+  { href: "/recipe-review", label: "دقة الوصفات", icon: "🧪", permission: "cost:read", group: "menu" },
+  // Historical finished orders/returns remain reachable after new inventory use is disabled.
+  { href: "/inventory", label: t.nav.inventory, icon: "📦", permission: "inventory:read", group: "menu" },
+  { href: "/purchases", label: "المشتريات", icon: "🛒", permission: "inventory:read", group: "menu", key: "purchases.view", feature: (f) => f.purchasesEnabled },
+  { href: "/suppliers", label: "الموردين", icon: "🚚", permission: "inventory:read", group: "menu", key: "suppliers.view", feature: (f) => f.purchasesEnabled },
+  { href: "/customers", label: "العملاء", icon: "💳", permission: "orders:read", group: "customers", key: "customers.view" },
+  { href: "/branches", label: t.nav.branches, icon: "🏬", permission: "branches:manage", group: "admin", feature: (f) => f.branchManagementEnabled },
+  { href: "/staff", label: t.nav.staff, icon: "👥", permission: "users:manage", group: "admin", feature: (f) => f.staffManagementEnabled },
   { href: "/roles-permissions", label: "الأدوار والصلاحيات", icon: "🛡️", permission: "users:manage", group: "admin", key: "users.manage_permissions" },
+  { href: "/settings", label: "الإعدادات", icon: "⚙️", permission: "branches:manage", group: "admin" },
 ];
 
 export function AppShell({
@@ -173,7 +176,7 @@ export function AppShell({
 
   const catalog=visibleReportCatalog({keys:keySet,features:features??{},role:user.role,branchId:user.branchId});
   const SIDEBAR_REPORT_IDS = new Set(["shift-sales", "product-sales"]);
-  const reportNav:NavItem[]=catalog.filter(r => SIDEBAR_REPORT_IDS.has(r.id)).map(report=>({href:report.href,label:report.title,icon:'',permission:'reports:read',group:'reports',allKeys:report.keys,reportGroup:report.group,reportId:report.id}));
+  const reportNav:NavItem[]=catalog.filter(r => SIDEBAR_REPORT_IDS.has(r.id)).map(report=>({href:report.href,label:report.title,icon:'',permission:'reports:read',group:'finance',allKeys:report.keys,reportGroup:report.group,reportId:report.id}));
   const navItems = [...NAV,...reportNav].filter(
     (item) =>
       // An explicit `key` (new granular gate) wins; else fall back to the
@@ -296,13 +299,37 @@ export function AppShell({
   const showStaleBanner =
     (user.role === "CAFE_OWNER" || user.role === "BRANCH_MANAGER") && can("orders:read");
 
+  const queryVariantHrefsByBase = new Map<string, string[]>();
+  for (const navItem of navItems) {
+    const base = navItem.href.split("?")[0];
+    const list = queryVariantHrefsByBase.get(base) ?? [];
+    list.push(navItem.href);
+    queryVariantHrefsByBase.set(base, list);
+  }
+
   const navLink = (item: NavItem) => {
     const active = currentHref === item.href && item.group === activeGroup;
-    const ancestor = !active && pathname.startsWith(item.href + "/");
+    const ancestor = !active && !item.href.includes("?") && pathname.startsWith(item.href + "/");
     const Icon = item.reportGroup
       ? REPORT_ICONS[item.reportId ?? ""] ?? REPORT_GROUP_ICONS[item.reportGroup] ?? FileChartColumn
-      : NAV_ICONS[item.href.split("?")[0]] ?? BookOpen;
-    if(item.group==="sales")return <Suspense key={item.href} fallback={<Link className="workspace-nav-link block rounded-lg px-3 py-2.5 text-sm" href={item.href}>{item.label}</Link>}><SalesNavLink item={item} close={()=>setMobileNavOpen(false)}/></Suspense>;
+      : NAV_ICONS[item.href] ?? NAV_ICONS[item.href.split("?")[0]] ?? BookOpen;
+    const base = item.href.split("?")[0];
+    const siblings = queryVariantHrefsByBase.get(base) ?? [];
+    if (item.href.includes("?") || siblings.some((h) => h.includes("?"))) {
+      return (
+        <Suspense
+          key={item.href}
+          fallback={
+            <Link className="workspace-nav-link flex min-h-11 items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium" href={item.href}>
+              <Icon aria-hidden="true" className="size-5 shrink-0" />
+              <span className="workspace-nav-label flex-1">{item.label}</span>
+            </Link>
+          }
+        >
+          <QueryAwareNavLink item={item} siblingHrefs={siblings} close={() => setMobileNavOpen(false)} />
+        </Suspense>
+      );
+    }
     return (
       <Link
         key={item.href}
@@ -386,7 +413,7 @@ export function AppShell({
                   </button>
                   <div id={`nav-group-${group.id}`} hidden={!open} className="mt-1.5 space-y-1.5">
                     {items.filter(item=>!item.reportGroup).map(navLink)}
-                    {group.id==='reports'&&REPORT_GROUPS.map(reportGroup=>{const children=items.filter(item=>item.reportGroup===reportGroup.id);if(!children.length)return null;const active=children.some(item=>item.href===currentHref);return <details key={reportGroup.id} open={active||undefined} className="ms-2 space-y-1.5 border-s border-sidebar-border ps-1"><summary className="workspace-report-group min-h-10 cursor-pointer rounded-lg px-3 py-2 text-sm font-medium">تقارير {reportGroup.title}</summary>{children.map(navLink)}</details>;})}
+                    {group.id==='finance'&&REPORT_GROUPS.map(reportGroup=>{const children=items.filter(item=>item.reportGroup===reportGroup.id);if(!children.length)return null;const active=children.some(item=>item.href===currentHref);return <details key={reportGroup.id} open={active||undefined} className="ms-2 space-y-1.5 border-s border-sidebar-border ps-1"><summary className="workspace-report-group min-h-10 cursor-pointer rounded-lg px-3 py-2 text-sm font-medium">تقارير {reportGroup.title}</summary>{children.map(navLink)}</details>;})}
                   </div>
                 </div>
               );
@@ -452,8 +479,30 @@ export function AppShell({
   );
 }
 
-function SalesNavLink({item,close}:{item:NavItem;close:()=>void}){
- const pathname=usePathname(),search=useSearchParams();
- const active=currentWorkspaceHref(pathname+'?'+search.toString(),SALES_WORKSPACE_LINKS.map(l=>l.href))===item.href;
- return <Link href={item.href} onClick={close} aria-current={active?'page':undefined} className={cn('workspace-nav-link flex min-h-11 items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium focus-visible:outline-2',active?'bg-sidebar-primary text-sidebar-primary-foreground':'text-sidebar-foreground hover:bg-sidebar-accent')}><ReceiptText className="size-5 shrink-0" aria-hidden="true"/><span className="workspace-nav-label">{item.label}</span></Link>;
+function QueryAwareNavLink({ item, siblingHrefs, close }: { item: NavItem; siblingHrefs: string[]; close: () => void }) {
+  const pathname = usePathname(), search = useSearchParams();
+  const q = search.toString();
+  const location = q ? `${pathname}?${q}` : pathname;
+  const active = currentWorkspaceHref(location, siblingHrefs) === item.href;
+  const ancestor = !active && !item.href.includes("?") && pathname.startsWith(item.href + "/");
+  const Icon = NAV_ICONS[item.href] ?? NAV_ICONS[item.href.split("?")[0]] ?? BookOpen;
+  return (
+    <Link
+      href={item.href}
+      onClick={close}
+      aria-current={active ? "page" : undefined}
+      aria-label={item.label}
+      title={item.label}
+      className={cn(
+        "workspace-nav-link flex min-h-11 items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sidebar-ring",
+        ancestor && "border-s-2 border-sidebar-primary",
+        active
+          ? "bg-sidebar-primary text-sidebar-primary-foreground shadow-sm"
+          : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+      )}
+    >
+      <Icon aria-hidden="true" className="size-5 shrink-0" />
+      <span className="workspace-nav-label flex-1">{item.label}</span>
+    </Link>
+  );
 }

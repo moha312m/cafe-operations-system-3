@@ -112,7 +112,7 @@ describe("UI-018 cart", () => {
     assert.match(item, /min-h-12 min-w-12/, "touch targets stay at 48px");
     assert.match(item, /TONE_SIDE\.sage/);
     const css = source("src/app/globals.css");
-    assert.match(css, /grid-template-columns: minmax\(0, 1fr\) minmax\(400px, 460px\)/);
+    assert.match(css, /grid-template-columns:\s*minmax\(0,\s*1fr\)\s*minmax\(350px,\s*400px\)/);
     assert.doesNotMatch(css, /minmax\(370px, 420px\)/);
   });
 
@@ -121,13 +121,13 @@ describe("UI-018 cart", () => {
     // shrank to 24px; at a 480px floor it was still ~210px, so the cashier scrolled a postage stamp to find the items
     // and the total. The dock is ~250px, the header ~50px: 40rem leaves ~340px. A taller dock needs a taller floor.
     const css = source("src/app/globals.css");
-    assert.match(css, /\.cashier-lead, \.cashier-catalog \{ grid-column: 1; \}/);
-    assert.match(css, /\.cashier-cart \{ grid-column: 2; grid-row: 1 \/ span 2; position: sticky; top: 1rem; \}/);
-    assert.match(css, /\.cashier-catalog, \.cashier-cart \{ height: var\(--cashier-workspace-height, calc\(100dvh - 6rem\)\); min-height: 40rem; \}/);
+    assert.match(css, /grid-template-areas:\s*"lead lead"\s*"catalog cart"/);
+    assert.match(css, /\.cashier-cart\s*\{\s*grid-area:\s*cart;/);
+    assert.match(css, /\.cashier-catalog,\s*\.cashier-cart\s*\{\s*height:\s*100%;\s*min-height:\s*0;/);
     assert.match(css, /\.cashier-workspace\[data-compact-view="cart"\] \{ min-height: 36rem; \}/);
     assert.match(css, /min-height: 48px;\s*\n\s*min-width: 48px;/, "the 48px touch size is not lowered to make room");
     const pos = source("src/app/(app)/pos/page.tsx");
-    assert.ok(pos.indexOf("cashier-workspace") < pos.indexOf("cashier-lead") && pos.indexOf("cashier-lead") < pos.indexOf("<ShiftControls"), "shift controls and banners sit in the catalog column so the cart extends to the top of the POS workspace");
+    assert.ok(pos.indexOf("cashier-workspace") < pos.indexOf("cashier-lead") && pos.indexOf("cashier-lead") < pos.indexOf("<ShiftControls"), "shift controls are in the full-width lead row above the catalog and cart");
   });
 
   test("the final total is always in the dock, in every collection mode, so it never needs the scroll region", () => {

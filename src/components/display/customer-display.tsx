@@ -7,7 +7,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 // is highlighted for a while and, once sound is switched on (browsers only
 // allow audio after a tap), announced with a chime.
 
-type Data = { branchName: string; preparing: number[]; ready: { orderNumber: number; readyAt: string | null }[] };
+type DisplayPayload = {
+  branchName: string;
+  pickupAtCashier?: boolean;
+  preparing: number[];
+  ready: { orderNumber: number; readyAt: string | null; pickupAtCashier?: boolean }[];
+};
 type Branch = { id: string; name: string };
 
 const POLL_MS = 5000;
@@ -39,7 +44,7 @@ function chime() {
 export function CustomerDisplay({ initialBranchId }: { initialBranchId: string | null }) {
   const [branchId, setBranchId] = useState(initialBranchId);
   const [branches, setBranches] = useState<Branch[] | null>(null);
-  const [data, setData] = useState<Data | null>(null);
+  const [data, setData] = useState<DisplayPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [soundOn, setSoundOn] = useState(false);
   const [fresh, setFresh] = useState<Map<number, number>>(new Map());
@@ -63,7 +68,7 @@ export function CustomerDisplay({ initialBranchId }: { initialBranchId: string |
           : body.error ?? "تعذر تحميل الطلبات");
         return;
       }
-      const next = body as Data;
+      const next = body as DisplayPayload;
       const readyNow = new Set(next.ready.map((o) => o.orderNumber));
       if (known.current) {
         const added = [...readyNow].filter((n) => !known.current!.has(n));
@@ -140,6 +145,10 @@ export function CustomerDisplay({ initialBranchId }: { initialBranchId: string |
     );
   }
 
+  const allReadyAtCashier = data?.ready.length
+    ? data.ready.every((order) => order.pickupAtCashier)
+    : !!data?.pickupAtCashier;
+
   return (
     <main dir="rtl" className={`${shell} flex flex-col`}>
       <header className="flex items-center gap-3 px-8 py-4">
@@ -170,7 +179,9 @@ export function CustomerDisplay({ initialBranchId }: { initialBranchId: string |
         </section>
 
         <section className="rounded-3xl bg-emerald-950 p-6 md:col-span-3">
-          <h2 className="mb-6 text-center text-4xl font-extrabold text-emerald-300">✅ جاهز — اتفضل استلم</h2>
+          <h2 className="mb-6 text-center text-4xl font-extrabold text-emerald-300">
+            {allReadyAtCashier ? "جاهز للاستلام من الكاشير" : "✅ جاهز — اتفضل استلم"}
+          </h2>
           <div className="flex flex-wrap justify-center gap-5" data-testid="display-ready">
             {data?.ready.length === 0 && <p className="text-2xl text-emerald-700">—</p>}
             {data?.ready.map((o) => {
@@ -184,6 +195,9 @@ export function CustomerDisplay({ initialBranchId }: { initialBranchId: string |
                   }
                 >
                   {o.orderNumber}
+                  {o.pickupAtCashier && !allReadyAtCashier && (
+                    <span className="mt-2 block text-lg font-semibold">جاهز للاستلام من الكاشير</span>
+                  )}
                 </span>
               );
             })}

@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { db } from "@/lib/db";
 import { requirePermission, requireFeature, resolveCafeId, resolveBranchId, handleApiError, ApiError } from "@/lib/api";
+import { isRegisterPickup } from "@/lib/register-pickup";
 
 const WINDOW_HOURS = 12;
 const LIMIT = 30;
@@ -16,7 +17,10 @@ export async function GET(request: NextRequest) {
     const params = request.nextUrl.searchParams;
     const cafeId = resolveCafeId(session, params.get("cafeId"));
     const branchId = resolveBranchId(session, params.get("branchId"));
-    const branch = await db.branch.findFirst({ where: { id: branchId, cafeId }, select: { name: true } });
+    const branch = await db.branch.findFirst({
+      where: { id: branchId, cafeId },
+      select: { name: true, pickupAtCashier: true },
+    });
     if (!branch) throw new ApiError(404, "الفرع مش موجود");
 
     const since = new Date(Date.now() - WINDOW_HOURS * 3_600_000);
@@ -31,14 +35,22 @@ export async function GET(request: NextRequest) {
         where: { cafeId, branchId, status: "READY", createdAt: { gte: since } },
         orderBy: [{ readyAt: { sort: "desc", nulls: "last" } }, { orderNumber: "desc" }],
         take: LIMIT,
-        select: { orderNumber: true, readyAt: true },
+        select: {
+          orderNumber: true, readyAt: true, type: true, status: true, source: true,
+          tableSessionId: true, tableNumber: true, approvalStatus: true, paymentStatus: true,
+        },
       }),
     ]);
 
     return NextResponse.json({
       branchName: branch.name,
+      pickupAtCashier: branch.pickupAtCashier,
       preparing: preparing.map((o) => o.orderNumber),
-      ready: ready.map((o) => ({ orderNumber: o.orderNumber, readyAt: o.readyAt })),
+      ready: ready.map((o) => ({
+        orderNumber: o.orderNumber,
+        readyAt: o.readyAt,
+        ...(branch.pickupAtCashier && isRegisterPickup(o) ? { pickupAtCashier: true } : {}),
+      })),
     });
   } catch (error) {
     return handleApiError(error);

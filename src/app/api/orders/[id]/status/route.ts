@@ -10,6 +10,7 @@ import { auditInTransaction } from "@/lib/audit";
 import { deductStockForOrder, auditDeduction, StockError } from "@/lib/stock-deduction";
 import { recomputeSessionTotals } from "@/lib/table-sessions";
 import { isOrderFullyPaid } from "@/lib/order-payments";
+import { isRegisterPickup } from "@/lib/register-pickup";
 import { requiresPaymentBeforeServing } from "@/lib/serving-policy";
 import { requestOwnerAction } from "@/lib/owner-action-approvals";
 import type { OrderStatus } from "@prisma/client";
@@ -43,6 +44,7 @@ const TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
 const bodySchema = z.object({
   status: z.enum(["PREPARING", "READY", "SERVED", "CANCELLED"]),
   reason: z.string().trim().max(500).optional(),
+  pickup: z.literal(true).optional(),
 }).strict();
 
 export async function PATCH(request: NextRequest, { params }: Params) {
@@ -50,7 +52,8 @@ export async function PATCH(request: NextRequest, { params }: Params) {
     const session = await requirePermission("orders:update-status");
     resolveReadScope(session);
     const { id } = await params;
-    const { status, reason } = bodySchema.parse(await request.json());
+    const { status, reason, pickup } = bodySchema.parse(await request.json());
+    if (pickup && status !== "SERVED") throw new ApiError(400, "عملية الاستلام تتطلب التسليم");
 
     if (status === "CANCELLED") await requireKey("orders.request_owner_action");
     return await protectedTransaction(async (tx) => {
@@ -78,6 +81,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       if (session.branchId && order.branchId !== session.branchId) {
         throw new ApiError(403, "الطلب تبع فرع تاني");
       }
+      if (pickup && !isRegisterPickup(order, true)) throw new ApiError(400, "الطلب غير متاح للاستلام من الكاشير");
 
       const refundedReadyCancellation = status === "CANCELLED" && order.status === "READY"
         && order.paymentStatus === "REFUNDED" && order.paidAmount.isZero() && order.remainingAmount.isZero();
@@ -97,7 +101,7 @@ export async function PATCH(request: NextRequest, { params }: Params) {
       // never from anything the caller sends. A café with table service serves
       // first and bills after; a takeaway counter does not.
       if (status === "SERVED" && order.status !== "SERVED") {
-        const mustBePaid = await requiresPaymentBeforeServing(order.branchId, order.type, tx);
+        const mustBePaid = pickup || await requiresPaymentBeforeServing(order.branchId, order.type, tx);
         if (mustBePaid && !isOrderFullyPaid({ total: order.total, payments: order.payments })) {
           throw new ApiError(400, "لازم الطلب يتدفع بالكامل قبل التسليم");
         }

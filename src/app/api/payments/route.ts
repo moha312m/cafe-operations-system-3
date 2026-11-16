@@ -1,4 +1,4 @@
-import { decimal, money, type Numeric, validCurrencyInput } from "@/lib/money";
+import { decimal, money, sumMoney, type Numeric, validCurrencyInput } from "@/lib/money";
 import { resolveReadScope } from "@/lib/api";
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
@@ -7,6 +7,7 @@ import { collectOrderPayment, prepareOrderCollection, type PaymentSplit, type Co
 import { getLoyaltySettingsSafe, loyaltyCalcSettingsExact as loyaltyCalcSettings } from "@/lib/loyalty";
 import { normalizeEgyptianPhone } from "@/lib/phone";
 import { pointsValueExact as pointsValue } from "@/lib/loyalty-calc";
+import { isRegisterPickup } from "@/lib/register-pickup";
 
 // POS payment collection — the ONLY money-collection endpoint for single
 // orders. All logic lives in the shared collectPayment service (duplicate
@@ -29,7 +30,9 @@ const createPaymentSchema = z.object({
   // isn't linked to one yet.
   loyaltyPointsToRedeem: z.number().int().min(1).optional(),
   customerPhone: z.string().trim().optional(),
-});
+  pickup: z.enum(["COLLECT", "COLLECT_AND_HANDOFF"]).optional(),
+  pickupExpectedRemaining: z.string().regex(/^\d{1,10}\.\d{2}$/).optional(),
+}).refine(data => !!data.pickup === !!data.pickupExpectedRemaining, { message: "يلزم تحديد رصيد الطلب الحالي للتحصيل من الاستلام" });
 
 import { withIdempotency, authenticatedRequestScope } from "@/lib/idempotency";
 
@@ -38,6 +41,8 @@ export async function POST(request: NextRequest) {
   try {
     const session = await requirePermission("payments:create");
     const data = createPaymentSchema.parse(await request.json());
+    if (data.pickup) await requireKey("pos.collect_payment");
+    if (data.pickup === "COLLECT_AND_HANDOFF") await requirePermission("orders:update-status");
 
     if (data.loyaltyPointsToRedeem) await requireKey("loyalty.redeem_points");
     return await withIdempotency(request, (tx) => authenticatedRequestScope(tx, session, "POST /api/payments", {kind:"order",id:data.orderId}), data, async (tx) => {
@@ -74,6 +79,10 @@ export async function POST(request: NextRequest) {
       }
       if (order.status === "PENDING_WAITER_APPROVAL") {
         throw new ApiError(400, "الطلب لسه مستني موافقة الويتر");
+      }
+      if (data.pickup && !isRegisterPickup(order)) throw new ApiError(400, "الطلب غير متاح للاستلام من الكاشير");
+      if (data.pickupExpectedRemaining && !money(order.remainingAmount).eq(decimal(data.pickupExpectedRemaining))) {
+        throw new ApiError(400, "المبلغ المتبقي اتغيّر — راجع الحساب قبل التحصيل");
       }
 
       // ── Loyalty redemption validation (settings-level; balance and order
@@ -115,6 +124,10 @@ export async function POST(request: NextRequest) {
         pointValue = settings.pointValueAmount;
       }
 
+      if (data.pickup === "COLLECT_AND_HANDOFF" &&
+        !money(sumMoney(splits.map(split => split.amount)).plus(decimal(redemption?.discount ?? 0))).eq(money(order.remainingAmount))) {
+        throw new ApiError(400, "المبلغ المتبقي اتغيّر — راجع الحساب قبل التحصيل والتسليم");
+      }
       const result = await collectOrderPayment({
         session,
         orderId: order.id,
@@ -127,7 +140,8 @@ export async function POST(request: NextRequest) {
       });
 
       return NextResponse.json(
-        { payments: result.payments, shiftId: result.shift?.id ?? null },
+        { payments: result.payments, shiftId: result.shift?.id ?? null,
+          ...(data.pickup ? { remainingAmount: result.newRemaining.toFixed(2) } : {}) },
         { status: 201 }
       );
     }, { scope: resolveReadScope(session) });

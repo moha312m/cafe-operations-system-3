@@ -7,6 +7,7 @@ import { api, money, ApiRequestError } from "@/lib/client";
 import { collectOrderPages, type OrderPage } from "@/lib/order-pages-client";
 import { t, formatTime } from "@/lib/i18n";
 import { collectedAmount } from "@/lib/order-payments";
+import { hasPickupTicket } from "@/lib/register-pickup";
 import { handledBy } from "@/lib/order-staff";
 import { useApp } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
@@ -50,6 +51,7 @@ type Order = {
     | "REJECTED";
   customerName: string | null;
   tableNumber: string | null;
+  tableSessionId: string | null;
   total: string;
   paidAmount: string;
   remainingAmount: string;
@@ -59,6 +61,7 @@ type Order = {
   createdBy: { name: string } | null;
   approvedBy: { name: string } | null;
   approvedAt: string | null;
+  approvalStatus: string;
   items: OrderItem[];
   payments: Payment[];
   handoverCarries?: {
@@ -517,6 +520,11 @@ export default function OrdersPage() {
                   </dl>
                 </div>
 
+                {canKey("receipts.reprint") && hasPickupTicket(detail) && <a
+                  className="inline-block rounded-lg border px-3 py-2 text-sm font-medium"
+                  href={`/receipts/pickup/${encodeURIComponent(detail.id)}?reprint=1`} target="_blank" rel="noopener noreferrer">
+                  تذكرة الاستلام
+                </a>}
                 <ul className="space-y-0.5">
                   {detail.items.map((item) => (
                     <li key={item.id}>

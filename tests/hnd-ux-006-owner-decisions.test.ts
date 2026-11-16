@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CountEntryQueue } from "../src/components/stock-counts/count-entry-queue";
+import { outgoingCountOutcome } from "../src/lib/handover";
 
 // HND-UX-006 — the owner's answers of 2026-11-06:
 //   1. a manager's branch-custody close is saved to branch custody on the Done screen (R1);
@@ -12,8 +13,21 @@ import { CountEntryQueue } from "../src/components/stock-counts/count-entry-queu
 //   4. «الشيفت الحالي» lets an owner without a branch pick the branch.
 // Unchanged and pinned: per-line signatures, the server's omission rule, the blind count.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const source = (file: string) => readFileSync(path.join(root, file), "utf8");
+const source = (file: string) => readFileSync(path.join(root, file), "utf8").replace(/\r\n/g, "\n");
 const saved = (value: string) => ({ countedQuantity: value, countedAt: new Date().toISOString() });
+
+test("close reload distinguishes observed differences from declared differences", async () => {
+  const evidence = (latest: { action: string; details: { differenceLines: number } } | null) => ({
+    stockCountSession: { findUnique: async () => ({
+      confirmedById: null, lines: [{ disposition: "OUTSIDE_TOLERANCE" }, { disposition: "WITHIN_TOLERANCE" }],
+    }) },
+    auditLog: { findFirst: async () => latest },
+  }) as unknown as Parameters<typeof outgoingCountOutcome>[0];
+  assert.equal((await outgoingCountOutcome(evidence(null), "count")).recordedDifferences, 0);
+  assert.equal((await outgoingCountOutcome(
+    evidence({ action: "COUNT_OUTGOING_DECLARED", details: { differenceLines: 2 } }), "count",
+  )).recordedDifferences, 2);
+});
 
 describe("1. automatic branch custody at a manager's close", () => {
   test("runs once on arrival, signs first, converts only when every line is signed, and never sends an omission reason by itself", () => {
@@ -107,7 +121,8 @@ describe("4. current shift", () => {
   test("an owner without a branch picks it; employees keep their own branch", () => {
     const page = source("src/app/(app)/current-shift/page.tsx");
     assert.match(page, /\{canChooseBranch && <div className="mb-3" data-testid="current-shift-branch"><BranchScopeSelect /);
-    assert.match(page, /const branchId = canChooseBranch \? selectedBranchId : \(user\.branchId \?\? ""\);/);
+    assert.match(page, /const branchId = canChooseBranch \? params\.get\("branchId"\) \?\? "" : user\.branchId \?\? "";/);
+    assert.match(page, /router\.replace\(\x60\/current-shift\?branchId=\$\{encodeURIComponent\(id\)\}\x60\)/);
     assert.doesNotMatch(page, /r\.branches\[0\]/, "no silent first-branch pick");
   });
 });

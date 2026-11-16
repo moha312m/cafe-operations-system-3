@@ -8,6 +8,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { api, money, ApiRequestError } from "@/lib/client";
 import { RefreshCw, Search, ShoppingBag } from "lucide-react";
+import { RegisterPickup } from "@/components/pos/register-pickup";
+import { registerOrderType } from "@/lib/branch-register-preferences";
 import { t } from "@/lib/i18n";
 import { branchShift, round2 as r2 } from "@/lib/pricing";
 import { computeCharges, type ChargeSettings } from "@/lib/charges";
@@ -72,7 +74,69 @@ const EMPTY_DETAILS: CustomerDetails = {
   tableNumber: "",
 };
 
-type PlacedOrder = { id: string; orderNumber: number; total: string; payments?: { id: string }[] };
+type PlacedOrder = { id: string; orderNumber: number; total: string; branch?: { id: string; name: string }; payments?: { id: string }[] };
+
+type InvoiceDiscountType = "NONE" | "PERCENT" | "FIXED";
+type PosDraft = {
+  cart: CartLine[];
+  orderTypeDraft: OrderType | null;
+  details: CustomerDetails;
+  collectionMode: CollectionMode;
+  method: PaymentMethod;
+  paidInput: string;
+  mixed: { CASH: string; CARD: string; WALLET: string };
+  discountInput: string;
+  invoiceDiscountType: InvoiceDiscountType;
+};
+
+function parsePosDraft(raw: string | null): PosDraft | null {
+  if (!raw) return null;
+  const parsed: unknown = JSON.parse(raw);
+  if (!parsed || typeof parsed !== "object") return null;
+  const obj = parsed as Record<string, unknown>;
+  const cart = Array.isArray(obj.cart) ? (obj.cart as CartLine[]) : [];
+  const rawOrderType = obj.orderTypeDraft;
+  const orderTypeDraft: OrderType | null =
+    rawOrderType === "DINE_IN" || rawOrderType === "TAKEAWAY" || rawOrderType === "DELIVERY"
+      ? rawOrderType
+      : null;
+  const rawDetails = obj.details && typeof obj.details === "object" ? (obj.details as Record<string, unknown>) : {};
+  const details: CustomerDetails = {
+    customerName: typeof rawDetails.customerName === "string" ? rawDetails.customerName : "",
+    customerPhone: typeof rawDetails.customerPhone === "string" ? rawDetails.customerPhone : "",
+    deliveryAddress: typeof rawDetails.deliveryAddress === "string" ? rawDetails.deliveryAddress : "",
+    tableNumber: typeof rawDetails.tableNumber === "string" ? rawDetails.tableNumber : "",
+  };
+  const collectionMode: CollectionMode =
+    obj.collectionMode === "NOW" || obj.collectionMode === "PARTIAL" || obj.collectionMode === "PENDING"
+      ? obj.collectionMode
+      : "NOW";
+  const method: PaymentMethod =
+    obj.method === "CASH" || obj.method === "CARD" || obj.method === "WALLET" || obj.method === "MIXED"
+      ? obj.method
+      : "CASH";
+  const rawMixed = obj.mixed && typeof obj.mixed === "object" ? (obj.mixed as Record<string, unknown>) : {};
+  const mixed = {
+    CASH: typeof rawMixed.CASH === "string" ? rawMixed.CASH : "",
+    CARD: typeof rawMixed.CARD === "string" ? rawMixed.CARD : "",
+    WALLET: typeof rawMixed.WALLET === "string" ? rawMixed.WALLET : "",
+  };
+  const invoiceDiscountType: InvoiceDiscountType =
+    obj.invoiceDiscountType === "NONE" || obj.invoiceDiscountType === "PERCENT" || obj.invoiceDiscountType === "FIXED"
+      ? obj.invoiceDiscountType
+      : "FIXED";
+  return {
+    cart,
+    orderTypeDraft,
+    details,
+    collectionMode,
+    method,
+    paidInput: typeof obj.paidInput === "string" ? obj.paidInput : "",
+    mixed,
+    discountInput: typeof obj.discountInput === "string" ? obj.discountInput : "",
+    invoiceDiscountType,
+  };
+}
 
 // The POS tree must not sit inside the Suspense boundary that useSearchParams
 // requires. On a full page load React streams such a boundary as "queued"
@@ -86,14 +150,20 @@ export default function PosPage() {
 // Reads the collection-mode deep link inside its own (empty) boundary and
 // hands the params to the page. Renders nothing.
 function CollectionModeParams({
+  canChooseBranch,
   onParams,
 }: {
+  canChooseBranch: boolean;
   onParams: (sp: URLSearchParams) => void | (() => void);
 }) {
   const searchParams = useSearchParams();
+  const onParamsRef = useRef(onParams);
   useEffect(() => {
-    return onParams(new URLSearchParams(searchParams.toString()));
-  }, [searchParams, onParams]);
+    onParamsRef.current = onParams;
+  });
+  useEffect(() => {
+    return onParamsRef.current(new URLSearchParams(searchParams.toString()));
+  }, [searchParams, canChooseBranch]);
   return null;
 }
 
@@ -102,6 +172,7 @@ function PosPageInner() {
   const { cafe, user, can, canKey, permKeys } = useApp();
   const canDiscount = canKey("pos.apply_discount");
   const canCreateOrder = canKey("pos.create_order");
+  const canReadOrders = can("orders:read");
   // Without the discount key a cashier may still enter a discount; the server
   // accepts it only with a valid owner override code.
   const discountEnabled = canDiscount || canCreateOrder;
@@ -109,7 +180,7 @@ function PosPageInner() {
   const taxRate = cafe?.taxRate ?? 0;
 
   // ── Menu data ────────────────────────────────────────────────
-  const menuIdentity = `${user.cafeId}:${user.id}:${user.branchId}:${user.role}:${canCreateOrder}:${permKeys.join(",")}`;
+  const menuIdentity = `${user.cafeId}:${user.id}:${user.branchId}:${user.role}:${canCreateOrder}:${canReadOrders}:${permKeys.join(",")}`;
   const [menuVersion, setMenuVersion] = useState(0);
   const [menuState, setMenuState] = useState<{ identity: string; version: number; categories?: Category[]; products?: Product[]; branches?: Branch[]; error?: string; denied?: boolean }>({ identity: "", version: -1 });
   const menu = menuState.identity === menuIdentity && menuState.version === menuVersion ? menuState : null;
@@ -125,6 +196,17 @@ function PosPageInner() {
   const [activeCategory, setActiveCategory] = useState<string>("all");
   const [compactView, setCompactView] = useState<"products" | "cart">("products");
   const workspaceId = useId();
+  const [registerWorkspace, setRegisterView] = useState<"sale" | "pickup">("sale");
+  const registerView = canReadOrders ? registerWorkspace : "sale";
+  const registerTabRefs = useRef<Record<"sale" | "pickup", HTMLButtonElement | null>>({ sale: null, pickup: null });
+  function selectRegisterView(view: "sale" | "pickup") {
+    const params = new URLSearchParams(window.location.search);
+    if (view === "pickup") params.set("workspace", view);
+    else params.delete("workspace");
+    const query = params.toString();
+    window.history.replaceState(null, "", query ? `/pos?${query}` : "/pos");
+    setRegisterView(view);
+  }
   const productsId = `${workspaceId}-products`;
   const orderId = `${workspaceId}-order`;
   const productSearchRef = useRef<HTMLInputElement>(null);
@@ -164,7 +246,9 @@ function PosPageInner() {
 
   // ── Order state ──────────────────────────────────────────────
   const [cart, setCart] = useState<CartLine[]>([]);
-  const [orderType, setOrderType] = useState<OrderType>("DINE_IN");
+  const [orderTypeDraft, setOrderType] = useState<OrderType | null>(null);
+  const branchDefaultOrderType = branches.find((branch) => branch.id === branchId)?.posDefaultOrderType;
+  const orderType = registerOrderType(orderTypeDraft, branchDefaultOrderType);
   const [details, setDetails] = useState<CustomerDetails>(EMPTY_DETAILS);
   const [discountInput, setDiscountInput] = useState("");
   const [invoiceDiscountType,setInvoiceDiscountType]=useState<'NONE'|'PERCENT'|'FIXED'>('FIXED');
@@ -196,10 +280,16 @@ function PosPageInner() {
   const submissionInFlight = useRef(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [receiptPaymentId, setReceiptPaymentId] = useState<string | null>(null);
+  const [pickupConfirmation, setPickupConfirmation] = useState<{ id: string; orderNumber: number; branchName: string; zeroTotal: boolean } | null>(null);
   // Bumped after a dine-in order is placed so the table invoice cards refetch.
   const [tableReload, setTableReload] = useState(0);
   // Loyalty points the cashier is redeeming for this order.
   const [redeem, setRedeem] = useState<LoyaltyRedeem>({ points: 0, discount: 0 });
+
+  const draftKey = branchId ? `nextcup-pos-draft:${user.cafeId ?? ""}:${user.id}:${branchId}` : "";
+  const [hydratedDraftKey, setHydratedDraftKey] = useState("");
+  const previousDraftKeyRef = useRef("");
+  const suppressNextDraftSaveRef = useRef(false);
 
   // ── Collection mode (تحصيل دفع) — deep-linked from orders/tables ──
   // /pos?collectOrderId=X   → single-order collection dialog
@@ -208,12 +298,15 @@ function PosPageInner() {
   const [collectOrderId, setCollectOrderId] = useState<string | null>(null);
   const [collectTableBanner, setCollectTableBanner] = useState<string | null>(null);
 
-  const applyCollectionParams = useCallback((sp: URLSearchParams) => {
+  function applyCollectionParams(sp: URLSearchParams) {
     const controller = new AbortController();
     const orderParam = sp.get("collectOrderId");
     const sessionParam = sp.get("collectTableSessionId");
     const tableParam = sp.get("table");
     const modeParam = sp.get("mode");
+    const branchParam = sp.get("branchId");
+    if (branchParam && canChooseBranch) setBranchId(branchParam);
+    setRegisterView(sp.get("workspace") === "pickup" ? "pickup" : "sale");
     if (orderParam) setCollectOrderId(orderParam);
     if (tableParam && modeParam === "collect") {
       setOrderType("DINE_IN");
@@ -233,25 +326,186 @@ function PosPageInner() {
         .catch((e) => { if (!controller.signal.aborted) toast.error(e instanceof Error ? e.message : "فشل تحميل حساب الترابيزة"); });
     }
     return () => controller.abort();
-  }, []);
+  }
 
   function exitCollectionMode() {
     setCollectOrderId(null);
     setCollectTableBanner(null);
+    setDetails((d) => ({ ...d, tableNumber: "" }));
     router.replace("/pos", { scroll: false });
   }
 
-  // ── Shift gate (cashiers must have an open shift) ────────────
+  function setOrderTypeAndSync(next: OrderType | null) {
+    setOrderType(next);
+    if (next !== "DINE_IN") {
+      setDetails((d) => (d.tableNumber ? { ...d, tableNumber: "" } : d));
+    }
+  }
+
+  function clearCart() {
+    setCart([]);
+    setOrderType(null);
+    setDetails(EMPTY_DETAILS);
+    setDiscountInput("");
+    setInvoiceDiscountType("FIXED");
+    setCollectionMode("NOW");
+    setPaidInput("");
+    setMixed(EMPTY_MIXED);
+    setOverrideCode("");
+    setRedeem({ points: 0, discount: 0 });
+    setSubmitError(null);
+    if (draftKey) {
+      suppressNextDraftSaveRef.current = true;
+      try { window.sessionStorage.removeItem(draftKey); } catch {}
+    }
+  }
+
+  function handleBranchSwitch(next: string) {
+    if (next && next !== branchId && cart.length > 0) {
+      if (draftKey) {
+        try {
+          window.sessionStorage.setItem(
+            draftKey,
+            JSON.stringify({
+              cart,
+              orderTypeDraft,
+              details,
+              collectionMode,
+              method,
+              paidInput,
+              mixed,
+              discountInput,
+              invoiceDiscountType,
+            } satisfies PosDraft)
+          );
+        } catch {}
+      }
+      toast.info("تم حفظ مسودة طلب الفرع السابق مؤقتًا — راجع الأسعار والفرع الحالي");
+    }
+    setBranchId(next);
+  }
+
+  useEffect(() => {
+    if (!draftKey) return;
+    const timer = window.setTimeout(() => {
+      const prevKey = previousDraftKeyRef.current;
+      previousDraftKeyRef.current = draftKey;
+      let draft: PosDraft | null = null;
+      try {
+        draft = parsePosDraft(window.sessionStorage.getItem(draftKey));
+      } catch {
+        try { window.sessionStorage.removeItem(draftKey); } catch {}
+      }
+      const sp = new URLSearchParams(window.location.search);
+      const hasTableDeepLink =
+        (sp.get("mode") === "collect" && !!sp.get("table")) ||
+        !!sp.get("collectTableSessionId");
+      if (draft) {
+        suppressNextDraftSaveRef.current = true;
+        setCart(draft.cart);
+        if (!hasTableDeepLink) {
+          setOrderType(draft.orderTypeDraft);
+          setDetails(draft.details);
+        } else {
+          setDetails((d) => ({
+            ...draft.details,
+            tableNumber: d.tableNumber || draft.details.tableNumber,
+          }));
+        }
+        setCollectionMode(draft.collectionMode);
+        setMethod(draft.method);
+        setPaidInput(draft.paidInput);
+        setMixed(draft.mixed);
+        setDiscountInput(draft.discountInput);
+        setInvoiceDiscountType(draft.invoiceDiscountType);
+      } else if (prevKey && prevKey !== draftKey) {
+        suppressNextDraftSaveRef.current = true;
+        setCart([]);
+        if (!hasTableDeepLink) {
+          setOrderType(null);
+          setDetails(EMPTY_DETAILS);
+        }
+        setCollectionMode("NOW");
+        setMethod("CASH");
+        setPaidInput("");
+        setMixed(EMPTY_MIXED);
+        setDiscountInput("");
+        setInvoiceDiscountType("FIXED");
+        setOverrideCode("");
+        setRedeem({ points: 0, discount: 0 });
+      }
+      setHydratedDraftKey(draftKey);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [draftKey]);
+
+  useEffect(() => {
+    if (!draftKey || hydratedDraftKey !== draftKey) return;
+    if (suppressNextDraftSaveRef.current) {
+      suppressNextDraftSaveRef.current = false;
+      return;
+    }
+    const hasContent =
+      cart.length > 0 ||
+      orderTypeDraft !== null ||
+      details.customerName !== "" ||
+      details.customerPhone !== "" ||
+      details.deliveryAddress !== "" ||
+      details.tableNumber !== "" ||
+      collectionMode !== "NOW" ||
+      method !== "CASH" ||
+      paidInput !== "" ||
+      mixed.CASH !== "" ||
+      mixed.CARD !== "" ||
+      mixed.WALLET !== "" ||
+      discountInput !== "" ||
+      invoiceDiscountType !== "FIXED";
+    try {
+      if (!hasContent) {
+        window.sessionStorage.removeItem(draftKey);
+      } else {
+        window.sessionStorage.setItem(
+          draftKey,
+          JSON.stringify({
+            cart,
+            orderTypeDraft,
+            details,
+            collectionMode,
+            method,
+            paidInput,
+            mixed,
+            discountInput,
+            invoiceDiscountType,
+          } satisfies PosDraft)
+        );
+      }
+    } catch {}
+  }, [
+    draftKey,
+    hydratedDraftKey,
+    cart,
+    orderTypeDraft,
+    details,
+    collectionMode,
+    method,
+    paidInput,
+    mixed,
+    discountInput,
+    invoiceDiscountType,
+  ]);
+
+  // ── Shift gate (cashiers and immediate-collection orders require an open shift) ─
   const [activeShiftBranch, setActiveShiftBranch] = useState<string | null>(null);
   const shiftActive = activeShiftBranch === branchId;
   const handleShiftActive = useCallback((active: boolean) => {
     setActiveShiftBranch(active ? branchId : null);
   }, [branchId]);
   const canOperateShift =
+    can("shifts:operate") ||
     user.role === "CASHIER" ||
     user.role === "BRANCH_MANAGER" ||
     user.role === "CAFE_OWNER";
-  const needsShift = user.role === "CASHIER";
+  const orderNeedsShift = user.role === "CASHIER" || collectionMode !== "PENDING";
 
   // ── Item configuration dialog (variant / add-ons / note) ────
   const [configuring, setConfiguring] = useState<Product | null>(null);
@@ -260,14 +514,33 @@ function PosPageInner() {
   const [itemNote, setItemNote] = useState("");
 
   useEffect(() => {
-    if (!canCreateOrder) return;
+    if (!canCreateOrder && !canReadOrders) return;
     const controller = new AbortController();
     let live = true;
     const read = { signal: controller.signal, readTimeoutMs: 20_000 };
+    const branchesPromise = api<{ branches: (Branch & { isActive?: boolean })[] }>("/api/branches", read);
+    if (!canCreateOrder) {
+      branchesPromise
+        .then((b) => {
+          if (!live) return;
+          const activeBranches = b.branches.filter(branch => branch.isActive !== false);
+          setMenuState({ identity: menuIdentity, version: menuVersion, categories: [], products: [], branches: activeBranches });
+          if (canChooseBranch) setBranchId(current => activeBranches.some(branch => branch.id === current) ? current : activeBranches[0]?.id ?? "");
+        })
+        .catch((error: unknown) => {
+          if (!live || controller.signal.aborted) return;
+          if (error instanceof ApiRequestError && error.status === 403) {
+            setMenuState({ identity: menuIdentity, version: menuVersion, categories: [], products: [], branches: [] });
+            return;
+          }
+          setMenuState({ identity: menuIdentity, version: menuVersion, error: error instanceof Error ? error.message : "تعذر تحميل بيانات الفروع" });
+        });
+      return () => { live = false; controller.abort(); };
+    }
     Promise.all([
       api<{ categories: Category[] }>("/api/categories", read),
       api<{ products: Product[] }>("/api/products", read),
-      api<{ branches: (Branch & { isActive?: boolean })[] }>("/api/branches", read),
+      branchesPromise,
     ]).then(([c, p, b]) => {
       if (!live) return;
       const activeBranches = b.branches.filter(branch => branch.isActive !== false);
@@ -278,7 +551,7 @@ function PosPageInner() {
       setMenuState({ identity: menuIdentity, version: menuVersion, error: error instanceof Error ? error.message : "تعذر تحميل قائمة البيع", denied: error instanceof ApiRequestError && error.status === 403 });
     });
     return () => { live = false; controller.abort(); };
-  }, [menuIdentity, menuVersion, canCreateOrder, canChooseBranch]);
+  }, [menuIdentity, menuVersion, canCreateOrder, canReadOrders, canChooseBranch]);
 
   // Only the current branch read may supply preview tax/service settings.
   // Cancellation is limited to reads; financial submission keys remain untouched.
@@ -341,6 +614,7 @@ function PosPageInner() {
   ) {
     // Clear the search so the cashier can type the next product right away.
     setSearch("");
+    setOrderType((current) => current ?? orderType);
     const key = lineKey(product.id, variant?.id ?? null, addOns.map((a) => a.id), note);
     setCart((prev) => {
       const existing = prev.find((l) => l.key === key);
@@ -490,7 +764,7 @@ function PosPageInner() {
   const disabledReason = useMemo(() => {
     if(discountError)return discountError;
     if (!canCreateOrder) return "ليس لديك صلاحية إنشاء طلب";
-    if (needsShift && !shiftActive) return t.shifts.mustOpen;
+    if (orderNeedsShift && !shiftActive) return t.shifts.mustOpen;
     if (cart.length === 0) return t.pos.validation.emptyCart;
     if (!branchId || !branches.some(branch => branch.id === branchId)) return t.pos.validation.noBranch;
     if (!finSettings) return settingsError ? "تعذر التحقق من الضرائب والخدمة؛ أعد تحميل إعدادات الفرع قبل التحصيل" : "جارٍ التحقق من إعدادات الضرائب والخدمة…";
@@ -499,7 +773,7 @@ function PosPageInner() {
     if (orderType === "DELIVERY" && !details.customerName.trim())
       return t.pos.validation.needCustomer;
     return null;
-  }, [canCreateOrder, needsShift, shiftActive, cart.length, branchId, branches, finSettings, settingsError, orderType, details,discountError]);
+  }, [canCreateOrder, orderNeedsShift, shiftActive, cart.length, branchId, branches, finSettings, settingsError, orderType, details,discountError]);
 
   function changeMixed(field: SplitMethod, value: string) {
     setMixed((prev) => ({ ...prev, [field]: value }));
@@ -538,7 +812,7 @@ function PosPageInner() {
           customerName: details.customerName.trim() || undefined,
           customerPhone: details.customerPhone.trim() || undefined,
           deliveryAddress: details.deliveryAddress.trim() || undefined,
-          tableNumber: details.tableNumber.trim() || undefined,
+          tableNumber: orderType === "DINE_IN" ? (details.tableNumber.trim() || undefined) : undefined,
           // Manual discount only — the server recomputes the loyalty
           // discount from the redeemed points.
           discountAmount: 0,
@@ -576,13 +850,27 @@ function PosPageInner() {
 
       // Reset the cart for the next order. For dine-in keep the table selected
       // so the newly-added invoice appears in "فواتير الترابيزة" cards.
+      if (draftKey) {
+        suppressNextDraftSaveRef.current = true;
+        try { window.sessionStorage.removeItem(draftKey); } catch {}
+      }
       setCart([]);
-      setDetails(isDineIn ? { ...EMPTY_DETAILS, tableNumber: details.tableNumber } : EMPTY_DETAILS);
+      setOrderType(null);
+      setDetails(isDineIn && branchDefaultOrderType !== "TAKEAWAY"
+        ? { ...EMPTY_DETAILS, tableNumber: details.tableNumber }
+        : EMPTY_DETAILS);
       setDiscountInput("");
+      setInvoiceDiscountType("FIXED");
+      setCollectionMode("NOW");
       setMixed(EMPTY_MIXED);
       setPaidInput("");
       setRedeem({ points: 0, discount: 0 });
       if (isDineIn) setTableReload((k) => k + 1);
+      setPickupConfirmation(orderType === "TAKEAWAY" && collectionMode === "PENDING" ? {
+        id: order.id, orderNumber: order.orderNumber,
+        branchName: order.branch?.name ?? branches.find(branch => branch.id === branchId)?.name ?? "الفرع",
+        zeroTotal: Number(order.total) === 0,
+      } : null);
       // Use the payment committed with this order, for every method and partial
       // collection. Closing/printing must never resubmit the emptied cart.
       if (collectionMode !== "PENDING" && order.payments?.[0]?.id) {
@@ -610,11 +898,37 @@ function PosPageInner() {
       {receiptPaymentId && (
         <PaymentReceiptPreview key={receiptPaymentId} paymentId={receiptPaymentId} scope="order" onClose={() => setReceiptPaymentId(null)} />
       )}
+      {pickupConfirmation && <section aria-label="تأكيد طلب الاستلام" className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-primary/40 bg-card p-3">
+        <div role="status">
+          <p className="text-lg font-semibold">رقم الاستلام <bdi className="text-2xl">#{pickupConfirmation.orderNumber}</bdi></p>
+          <p className="text-sm">{pickupConfirmation.branchName} · {pickupConfirmation.zeroTotal ? "لا يوجد مبلغ مستحق" : "في انتظار التحصيل"}</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {(canKey("receipts.print") || canKey("receipts.print_pickup")) && <a className="inline-flex items-center rounded-lg border px-3 text-sm font-medium"
+            href={`/receipts/pickup/${encodeURIComponent(pickupConfirmation.id)}?print=1`} target="_blank" rel="noopener noreferrer">طباعة تذكرة الاستلام</a>}
+          <Button variant="ghost" onClick={() => setPickupConfirmation(null)}>إخفاء التأكيد</Button>
+        </div>
+      </section>}
       <Suspense fallback={null}>
-        <CollectionModeParams onParams={applyCollectionParams} />
+        <CollectionModeParams canChooseBranch={canChooseBranch} onParams={applyCollectionParams} />
       </Suspense>
+      {can("orders:read") && <div role="tablist" aria-label="مساحة عمل الكاشير" className="flex gap-2">
+        {(["sale", "pickup"] as const).map(view => <Button key={view}
+          ref={node => { registerTabRefs.current[view] = node; }}
+          id={`${workspaceId}-tab-${view}`} role="tab" aria-selected={registerView === view}
+          aria-controls={`${workspaceId}-panel-${view}`} tabIndex={registerView === view ? 0 : -1}
+          disabled={submitting} variant={registerView === view ? "default" : "outline"}
+          onClick={() => selectRegisterView(view)}
+          onKeyDown={event => {
+            if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+            event.preventDefault();
+            const next = event.key === "Home" ? "sale" : event.key === "End" ? "pickup" : view === "sale" ? "pickup" : "sale";
+            selectRegisterView(next);
+            registerTabRefs.current[next]?.focus();
+          }}>{view === "sale" ? "بيع جديد" : "استلام الطلبات"}</Button>)}
+      </div>}
 
-      <fieldset disabled={submitting} aria-busy={submitting} className="cashier-workspace min-w-0" data-compact-view={compactView}>
+      <fieldset disabled={submitting} aria-busy={submitting} className="cashier-workspace min-w-0" data-compact-view={compactView} data-register-view={registerView}>
       <div className="cashier-lead flex min-w-0 shrink-0 flex-col gap-3">
         {!canChooseBranch && !branchId && (
           <p role="alert" className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-amber-900">
@@ -623,12 +937,12 @@ function PosPageInner() {
         )}
 
         {canOperateShift && branchId && (
-          <details className="cashier-shift-context rounded-xl bg-card px-3"><summary className="flex cursor-pointer items-center justify-between gap-2 text-sm"><span>{shiftActive ? "الوردية مفتوحة" : "راجع حالة الوردية قبل التحصيل"}</span><span className="text-primary">تفاصيل الوردية</span></summary><ShiftControls
+          <ShiftControls
             key={branchId}
             branchId={branchId}
             currency={currency}
             onActiveChange={handleShiftActive}
-          /></details>
+          />
         )}
 
         {/* تحصيل دفع mode banner — deep-linked table collection */}
@@ -651,7 +965,7 @@ function PosPageInner() {
           <CollectPaymentPanel key={collectOrderId}
             orderId={collectOrderId}
             currency={currency}
-            needsShift={needsShift}
+            needsShift={true}
             shiftActive={shiftActive}
             onDone={exitCollectionMode}
             onClose={exitCollectionMode}
@@ -662,6 +976,13 @@ function PosPageInner() {
         {submitError && <p role="alert" className="rounded-lg border border-destructive p-3">{submitError} — البيانات محفوظة للمراجعة وإعادة المحاولة.</p>}
         {submitting && <p role="status">جاري حفظ الطلب وتسجيل الدفع…</p>}
       </div>
+      <div role="tabpanel" id={`${workspaceId}-panel-pickup`} aria-labelledby={`${workspaceId}-tab-pickup`}
+        className={registerView === "pickup" ? "cashier-pickup min-w-0 flex-1" : "hidden"}>
+        <RegisterPickup active={registerView === "pickup"} branchId={branchId} branches={branches} currency={currency} />
+      </div>
+      <div role={can("orders:read") ? "tabpanel" : undefined} id={`${workspaceId}-panel-sale`}
+        aria-labelledby={can("orders:read") ? `${workspaceId}-tab-sale` : undefined}
+        className={registerView === "sale" ? "contents" : "hidden"}>
       <div className="cashier-compact-tabs gap-2" aria-label="عرض الكاشير">
         <Button aria-controls={productsId} aria-pressed={compactView === "products"} variant={compactView === "products" ? "default" : "outline"} onClick={() => showCompactWorkspace("products")}>المنتجات والتصنيفات</Button>
         <Button aria-controls={orderId} aria-pressed={compactView === "cart"} variant={compactView === "cart" ? "default" : "outline"} onClick={() => showCompactWorkspace("cart")}>الطلب والدفع ({cart.reduce((sum,line) => sum + line.quantity,0)})</Button>
@@ -682,7 +1003,7 @@ function PosPageInner() {
             />
           </div>
           {canChooseBranch && branches.length > 1 && (
-            <Select value={branchId} onValueChange={(v) => setBranchId(v ?? "")}>
+            <Select value={branchId} onValueChange={(v) => handleBranchSwitch(v ?? "")}>
               <SelectTrigger className="h-10 w-32">
                 <SelectValue placeholder={t.common.branch}>
                   {branches.find((b) => b.id === branchId)?.name}
@@ -706,6 +1027,15 @@ function PosPageInner() {
           counts={countsByCategory}
           onChange={selectCategory}
         />}
+        {menuReady && canCreateOrder && branchId && <QuickActions
+          key={branchId}
+          branchId={branchId}
+          products={posProducts}
+          customerPhone={details.customerPhone}
+          showPicks={search.trim() === "" && activeCategory === "all"}
+          onSelect={handleSelectProduct}
+          onRepeat={repeatOrder}
+        />}
         {menuReady && branchId && <div className="flex shrink-0 items-center justify-between gap-2 text-sm"><h3 className="font-semibold">{activeCategory === "all" ? "قائمة المنتجات" : categories.find(category => category.id === activeCategory)?.name ?? "المنتجات"}</h3><span className="text-muted-foreground">{visibleProducts.length} منتج مطابق</span></div>}
 
 
@@ -720,14 +1050,6 @@ function PosPageInner() {
           currency={currency}
           onSelect={handleSelectProduct}
         />
-        {menuReady && canCreateOrder && branchId && <details className="shrink-0 rounded-lg bg-card px-3 text-sm"><summary className="cursor-pointer text-primary">اختصارات البيع وتكرار آخر طلب</summary><QuickActions
-          branchId={branchId}
-          products={posProducts}
-          customerPhone={details.customerPhone}
-          showPicks={search.trim() === "" && activeCategory === "all"}
-          onSelect={handleSelectProduct}
-          onRepeat={repeatOrder}
-        /></details>}
 
       </div>
 
@@ -736,7 +1058,7 @@ function PosPageInner() {
         id={orderId}
         headingId={`${orderId}-heading`}
         headingRef={orderHeadingRef}
-        discountControls={discountEnabled&&cart.length>0?<details className="space-y-2 rounded border p-2 text-sm"><summary>خصومات الأصناف والفاتورة</summary>{cart.map(l=><div key={l.key} className="flex flex-wrap items-center gap-1"><span>{l.product.name}</span><TouchSelect aria-label={'نوع خصم '+l.product.name} value={l.discount?.type??'NONE'} className="rounded border bg-background p-1" onValueChange={touchValue => setCart(rows=>rows.map(r=>r.key===l.key?{...r,discount:{type:touchValue as 'NONE'|'PERCENT'|'FIXED',value:'0'}}:r))}><option value="NONE">بدون خصم</option><option value="PERCENT">%</option><option value="FIXED">{currencySymbol(currency)}</option></TouchSelect><TouchNumberInput aria-label={'قيمة خصم '+l.product.name} type="number" min="0" step="0.01" className="w-20 rounded border bg-background p-1" disabled={!l.discount||l.discount.type==='NONE'} value={l.discount?.value??'0'} onValueChange={touchValue => setCart(rows=>rows.map(r=>r.key===l.key?{...r,discount:{type:r.discount!.type,value:touchValue}}:r))}/></div>)}<label className="block">نوع خصم الفاتورة <TouchSelect aria-label="نوع خصم الفاتورة قبل التأكيد" className="rounded border bg-background p-1" value={invoiceDiscountType} onValueChange={touchValue => {setInvoiceDiscountType(touchValue as typeof invoiceDiscountType);setDiscountInput('');}}><option value="FIXED">مبلغ</option><option value="PERCENT">نسبة %</option><option value="NONE">بدون خصم</option></TouchSelect></label><p>تُحسب خصومات الأصناف أولًا. ما يتجاوز حدك يحتاج كود تخويل المالك، أو اعتماد المدير عبر طلب تعديل بالمبيعات.</p></details>:null}
+        discountControls={cart.length > 0 ? <div className="space-y-2">{discountEnabled && <details className="space-y-2 rounded border p-2 text-sm"><summary>خصومات الأصناف والفاتورة</summary>{cart.map(l=><div key={l.key} className="flex flex-wrap items-center gap-1"><span>{l.product.name}</span><TouchSelect aria-label={'نوع خصم '+l.product.name} value={l.discount?.type??'NONE'} className="rounded border bg-background p-1" onValueChange={touchValue => setCart(rows=>rows.map(r=>r.key===l.key?{...r,discount:{type:touchValue as 'NONE'|'PERCENT'|'FIXED',value:'0'}}:r))}><option value="NONE">بدون خصم</option><option value="PERCENT">%</option><option value="FIXED">{currencySymbol(currency)}</option></TouchSelect><TouchNumberInput aria-label={'قيمة خصم '+l.product.name} type="number" min="0" step="0.01" className="w-20 rounded border bg-background p-1" disabled={!l.discount||l.discount.type==='NONE'} value={l.discount?.value??'0'} onValueChange={touchValue => setCart(rows=>rows.map(r=>r.key===l.key?{...r,discount:{type:r.discount!.type,value:touchValue}}:r))}/></div>)}<label className="block">نوع خصم الفاتورة <TouchSelect aria-label="نوع خصم الفاتورة قبل التأكيد" className="rounded border bg-background p-1" value={invoiceDiscountType} onValueChange={touchValue => {setInvoiceDiscountType(touchValue as typeof invoiceDiscountType);setDiscountInput('');}}><option value="FIXED">مبلغ</option><option value="PERCENT">نسبة %</option><option value="NONE">بدون خصم</option></TouchSelect></label><p>تُحسب خصومات الأصناف أولًا. ما يتجاوز حدك يحتاج كود تخويل المالك، أو اعتماد المدير عبر طلب تعديل بالمبيعات.</p></details>}<Button type="button" size="sm" variant="outline" className="w-full" onClick={clearCart}>تفريغ السلة</Button></div> : null}
         cart={cart}
         currency={currency}
         orderType={orderType}
@@ -770,7 +1092,7 @@ function PosPageInner() {
         placeDisabled={disabledReason !== null}
         disabledReason={disabledReason}
         submitting={submitting}
-        onTypeChange={setOrderType}
+        onTypeChange={setOrderTypeAndSync}
         onDetailsChange={setDetails}
         onQuantityChange={changeQuantity}
         onRemove={removeLine}
@@ -860,6 +1182,7 @@ function PosPageInner() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      </div>
       </fieldset>
     </div>
   );

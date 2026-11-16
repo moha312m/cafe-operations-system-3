@@ -97,13 +97,12 @@ export function QuickActions({
   return (
     <div className="flex shrink-0 flex-col gap-2">
       {last && (
-        <div
+        <details
           data-testid="repeat-last-order"
-          className="flex flex-wrap items-center gap-2 rounded-xl border border-tide-line bg-tide-soft px-3 py-2 text-sm"
+          className="rounded-xl border border-tide-line bg-tide-soft px-3 py-1 text-sm"
         >
-          <span className="font-semibold text-tide-ink">
-            🔁 آخر طلب{last.customerName ? ` لـ ${last.customerName}` : ""}:
-          </span>
+          <summary className="cursor-pointer font-semibold text-tide-ink">آخر طلب{last.customerName ? ` لـ ${last.customerName}` : ""}</summary>
+          <div className="flex items-center gap-2 py-1">
           <span className="min-w-0 flex-1 truncate text-xs text-tide-ink">
             {last.items
               .map((i) => `${i.quantity}× ${i.productName}${i.variantName ? ` (${i.variantName})` : ""}`)
@@ -116,18 +115,19 @@ export function QuickActions({
           >
             كرر الطلب
           </button>
-        </div>
+          </div>
+        </details>
       )}
       {showPicks && picks.length > 0 && (
-        <div data-testid="quick-picks" className="flex flex-wrap items-center gap-1.5">
-          <span className="text-xs font-medium text-muted-foreground">
+        <div data-testid="quick-picks" className="flex min-w-0 items-center gap-1.5 overflow-x-auto pb-1">
+          <span className="shrink-0 text-xs font-medium text-muted-foreground">
             ⚡ {pickWindow === "HOUR" ? "الأكثر طلبًا الساعة دي" : "الأكثر طلبًا"}:
           </span>
           {picks.map((p) => (
             <button
               key={p.id}
               type="button"
-              className="rounded-full border bg-card px-3 py-1 text-xs font-medium hover:border-primary/50 hover:bg-primary/5"
+              className="shrink-0 rounded-full border bg-card px-3 py-1 text-xs font-medium hover:border-primary/50 hover:bg-primary/5"
               onClick={() => onSelect(p)}
             >
               {p.name}

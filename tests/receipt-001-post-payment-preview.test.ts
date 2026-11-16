@@ -16,7 +16,7 @@ const product = { id: "drink", name: "Test drink", basePrice: "40", category: { 
 const target = { orderId: "order-1", orderNumber: 1, total: 40, paidAmount: 0, remainingAmount: 40, status: "CONFIRMED", payments: [], customer: null };
 
 // Execute actual product TSX; replace only React's host and external boundaries.
-function host(relative: string, name: string, props: Record<string, any> = {}) {
+function host(relative: string, name: string, props: Record<string, any> = {}, storageBlocked = false) {
   const slots: Slot[] = [], effects: Array<() => void> = [], calls: Array<{ url: string; options?: any }> = [];
   const printed: string[] = [], timers = new Map<number, () => void>();
   let cursor = 0, tree: any, failPayment = false, closed = 0, timerId = 0;
@@ -51,7 +51,11 @@ function host(relative: string, name: string, props: Record<string, any> = {}) {
     if (url === "/api/orders") return { order: { ...target, id: target.orderId, total: "40", payments: options.body.collectionMode === "PENDING" ? [] : [{ id: "payment-1" }] } };
     if (url === "/api/payments") return { payments: [{ id: "payment-2" }] };
     if (url.includes("/pay") && options?.method === "POST") return { paymentIds: ["payment-table"] };
-    if (url.includes("collect-info")) return { target, loyalty: { enabled: false } };
+    if (url.includes("collect-info")) return {
+      target: props.pickup ? { ...target, branchId: "pickup-branch", status: "READY" } : target,
+      loyalty: { enabled: false },
+    };
+    if (url === "/api/shifts/active?branchId=pickup-branch") return { shift: { id: "pickup-shift" } };
     if (url.includes("/session")) return { session: { id: "table-1", tableNumber: "101", remainingAmount: 40, totalAmount: 40, paidAmount: 0, invoiceCount: 1 }, invoices: [{ ...target, id: target.orderId, remainingAmount: 40, items: [] }] };
     if (url === "/api/products") return { products: [product] };
     if (url === "/api/categories") return { categories: [] };
@@ -72,9 +76,28 @@ function host(relative: string, name: string, props: Record<string, any> = {}) {
     if (id.startsWith("@/lib/") || id === "@/components/pos/types") return require(path.join(root, "src", id.slice(2)));
     return new Proxy({}, { get: (_, key) => String(key) });
   };
+  const setTimer = (fn: () => void, delay = 0) => {
+    const id = ++timerId;
+    timers.set(id, fn);
+    if (delay === 0) queueMicrotask(() => { if (timers.delete(id)) fn(); });
+    return id;
+  };
+  const clearTimer = (id: number) => timers.delete(id);
+  const location = { search: "" };
+  const values = new Map<string, string>();
+  const sessionStorage = {
+    getItem: (key: string) => {
+      if (storageBlocked) throw new DOMException("Storage access is blocked", "SecurityError");
+      return values.get(key) ?? null;
+    },
+    setItem: (key: string, value: string) => values.set(key, value),
+    removeItem: (key: string) => values.delete(key),
+  };
   vm.runInNewContext(code, { exports, require: mockedRequire, URLSearchParams, AbortController, DOMException, Intl, Date, console,
-    setTimeout: (fn: () => void) => { timers.set(++timerId, fn); return timerId; }, clearTimeout: (id: number) => timers.delete(id),
-    window: { open: () => { throw new Error("Unexpected popup"); }, print: () => printed.push("outer") },
+    setTimeout: setTimer, clearTimeout: clearTimer, sessionStorage,
+    window: { setTimeout: setTimer, clearTimeout: clearTimer, sessionStorage, location,
+      history: { replaceState: (_data: unknown, _title: string, url: string) => { location.search = new URL(url, "http://localhost").search; } },
+      open: () => { throw new Error("Unexpected popup"); }, print: () => printed.push("outer") },
   });
   function render() {
     cursor = 0;
@@ -89,8 +112,24 @@ function host(relative: string, name: string, props: Record<string, any> = {}) {
   const button = (label: string) => { const n = nodes(tree).find(n => ["Button", "button"].includes(n.type as string) && text(n).includes(label)); assert.ok(n, `Missing button ${label}`); return n; };
   const flush = async () => { for (let i = 0; i < 3; i++) { await new Promise(r => setImmediate(r)); render(); } };
   render();
-  return { render, flush, nodes: () => nodes(tree), find, button, calls, printed, text: () => text(tree), fail: () => { failPayment = true; }, closed: () => closed, timeout: () => { for (const fn of timers.values()) fn(); render(); } };
+  return { render, flush, nodes: () => nodes(tree), find, button, calls, printed, location, text: () => text(tree), fail: () => { failPayment = true; }, closed: () => closed, timeout: () => { for (const fn of timers.values()) fn(); render(); } };
 }
+
+test("ordinary collection works when access to pickup recovery storage is blocked", async () => {
+  const h = host("src/components/pos/collect-payment-panel.tsx", "CollectPaymentPanel", { orderId: "order-1", currency: "EGP", needsShift: false, shiftActive: true }, true);
+  await h.flush();
+  await h.button("تحصيل الدفع").props.onClick();
+  assert.equal(h.calls.filter(c => c.url === "/api/payments" && c.options?.method === "POST").length, 1);
+});
+
+test("pickup collection checks the order branch even when the sale branch has no shift", async () => {
+  const h = host("src/components/pos/collect-payment-panel.tsx", "CollectPaymentPanel", {
+    orderId: "order-1", currency: "EGP", needsShift: true, shiftActive: false, pickup: { onChange() {} },
+  });
+  await h.flush();
+  assert.ok(h.calls.some(c => c.url === "/api/shifts/active?branchId=pickup-branch"));
+  assert.ok(h.button("تحصيل الدفع"));
+});
 
 test("a stray touch outside a committed receipt cannot dismiss it", () => {
   const h = host("src/components/receipts/payment-receipt-preview.tsx", "PaymentReceiptPreview");
@@ -112,9 +151,11 @@ for (const method of ["CASH", "CARD", "WALLET", "MIXED"]) {
   for (const mode of ["NOW", "PARTIAL"]) {
     test(`new POS order opens receipt after ${method} ${mode} collection`, async () => {
       const h = host("src/app/(app)/pos/page.tsx", "default"); await h.flush();
+      h.find("ShiftControls").props.onActiveChange(true); h.render();
       h.find("ProductGrid").props.onSelect(product); h.render();
       h.find("OrderCart").props.onTypeChange("TAKEAWAY"); h.render();
       h.find("OrderCart").props.onMethodChange(method); h.find("OrderCart").props.onCollectionModeChange(mode); h.find("OrderCart").props.onPaidChange("15"); h.render();
+      assert.equal(h.find("OrderCart").props.placeDisabled, false, h.find("OrderCart").props.disabledReason);
       await h.find("OrderCart").props.onPlaceOrder(); h.render();
       assert.equal(h.find("PaymentReceiptPreview").props.paymentId, "payment-1");
       assert.equal(h.find("PaymentReceiptPreview").props.scope, "order");
@@ -128,6 +169,7 @@ for (const method of ["CASH", "CARD", "WALLET", "MIXED"]) {
 test("pending orders and refused payments never open a receipt", async () => {
   for (const pending of [true, false]) {
     const h = host("src/app/(app)/pos/page.tsx", "default"); await h.flush();
+    h.find("ShiftControls").props.onActiveChange(true); h.render();
     h.find("ProductGrid").props.onSelect(product); h.render();
     h.find("OrderCart").props.onTypeChange("TAKEAWAY");
     h.find("OrderCart").props.onCollectionModeChange(pending ? "PENDING" : "NOW");
@@ -135,6 +177,35 @@ test("pending orders and refused payments never open a receipt", async () => {
     await h.find("OrderCart").props.onPlaceOrder(); h.render();
     assert.equal(h.nodes().some(n => n.type === "PaymentReceiptPreview"), false);
   }
+});
+
+test("an unpaid takeaway offers its own ticket after the cart clears; a new draft does not hide it", async () => {
+  const h = host("src/app/(app)/pos/page.tsx", "default"); await h.flush();
+  h.find("ProductGrid").props.onSelect(product); h.render();
+  h.find("OrderCart").props.onTypeChange("TAKEAWAY");
+  h.find("OrderCart").props.onCollectionModeChange("PENDING"); h.render();
+  await h.find("OrderCart").props.onPlaceOrder(); h.render();
+  assert.match(h.text(), /رقم الاستلام/);
+  assert.match(h.text(), /في انتظار التحصيل/);
+  assert.match(h.text(), /Synthetic branch/);
+  assert.ok(h.nodes().some(n => n.props.href === "/receipts/pickup/order-1?print=1"));
+  h.find("ProductGrid").props.onSelect(product); h.render();
+  assert.match(h.text(), /رقم الاستلام/);
+  assert.equal(h.nodes().some(n => n.type === "PaymentReceiptPreview"), false);
+});
+
+test("switching to pickup and back preserves the basket and the selected sale type", async () => {
+  const h = host("src/app/(app)/pos/page.tsx", "default"); await h.flush();
+  h.find("ProductGrid").props.onSelect(product); h.render();
+  h.find("OrderCart").props.onTypeChange("TAKEAWAY"); h.render();
+  h.button("استلام الطلبات").props.onClick(); h.render();
+  assert.equal(h.find("RegisterPickup").props.active, true);
+  assert.equal(h.location.search, "?workspace=pickup");
+  h.button("بيع جديد").props.onClick(); h.render();
+  assert.equal(h.find("RegisterPickup").props.active, false);
+  assert.equal(h.location.search, "");
+  assert.equal(h.find("OrderCart").props.cart.length, 1);
+  assert.equal(h.find("OrderCart").props.orderType, "TAKEAWAY");
 });
 
 for (const method of ["كاش", "فيزا", "محفظة"]) {

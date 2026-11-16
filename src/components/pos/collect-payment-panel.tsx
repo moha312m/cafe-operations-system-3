@@ -3,7 +3,8 @@ import { TouchNumberInput } from "@/components/pos/touch-number-input";
 
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { api, money } from "@/lib/client";
+import { api, ApiRequestError, money } from "@/lib/client";
+import { clientRequestUuid } from "@/lib/client-request-key";
 import { useApp } from "@/components/app-shell";
 import { PaymentReceiptPreview } from "@/components/receipts/payment-receipt-preview";
 import { Button } from "@/components/ui/button";
@@ -14,6 +15,7 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { maxRedeemablePoints, pointsValue, type LoyaltyCalcSettings } from "@/lib/loyalty-calc";
+import { awaitPickupResponse, PAID_AWAITING_HANDOFF, pickupAttemptStorageKey, pickupSettled, readPickupAttempt, resolvePickupCollection, type PickupCollectionAttempt, type PickupOrderState } from "@/lib/register-pickup";
 
 type LookupCustomer = {
   id: string;
@@ -30,6 +32,7 @@ type OrderTarget = {
   kind: "order";
   orderId: string;
   orderNumber: number;
+  branchId: string;
   branchName: string;
   status: string;
   tableNumber: string | null;
@@ -60,18 +63,20 @@ export function CollectPaymentPanel({
   orderId,
   currency,
   needsShift,
-  shiftActive,
+  shiftActive = false,
   onDone,
   onClose,
+  pickup,
 }: {
   orderId: string;
   currency: string;
   needsShift: boolean;
-  shiftActive: boolean;
+  shiftActive?: boolean;
   onDone: () => void;
   onClose: () => void;
+  pickup?: { onChange: () => void };
 }) {
-  const { canKey, can } = useApp();
+  const { user, canKey, can } = useApp();
   const canRedeem = canKey("loyalty.redeem_points");
   const canServe = can("orders:update-status");
   const [served, setServed] = useState(false);
@@ -85,6 +90,18 @@ export function CollectPaymentPanel({
   const inFlight = useRef(false);
   const [collectionError, setCollectionError] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<{ paymentId: string | null; amount: number; loyaltyDiscount: number } | null>(null);
+  const pendingKey = pickupAttemptStorageKey(user.id, orderId);
+  const [initialAttempt] = useState(() => {
+    try { return { value: readPickupAttempt(window.sessionStorage, user.id, orderId), error: null }; }
+    catch { return { value: null, error: pickup ? "تعذر استعادة التحصيل السابق. راجع الدفعات قبل إعادة المحاولة." : null }; }
+  });
+  const [attempt, setAttempt] = useState<PickupCollectionAttempt | null>(initialAttempt.value);
+  const [handoffMessage, setHandoffMessage] = useState<string | null>(null);
+  const [handoffRetry, setHandoffRetry] = useState(false);
+  const [serving, setServing] = useState(false);
+  const handoffInFlight = useRef(false);
+  const [isPickup] = useState(() => !!pickup || !!attempt);
+  const [pickupShiftActive, setPickupShiftActive] = useState(false);
 
   // بيانات العميل والنقاط
   const [phone, setPhone] = useState("");
@@ -103,8 +120,21 @@ export function CollectPaymentPanel({
       `/api/payments/collect-info?orderId=${orderId}`,{signal:controller.signal,readTimeoutMs:20_000}
     );
     if(controller.signal.aborted)throw new DOMException("تم إلغاء القراءة السابقة","AbortError");
+    if (isPickup && needsShift) {
+      const params = new URLSearchParams({ branchId: r.target.branchId });
+      const active = await api<{ shift: { id: string } | null }>(
+        `/api/shifts/active?${params}`, { signal: controller.signal, readTimeoutMs: 20_000 },
+      ).catch(() => null);
+      if (controller.signal.aborted) throw new DOMException("تم إلغاء القراءة السابقة", "AbortError");
+      setPickupShiftActive(!!active?.shift);
+    }
     setTarget(r.target);
     setLoyalty(r.loyalty);
+    if (isPickup) {
+      if (r.target.paymentStatus === "CANCELLED" || r.target.status === "CANCELLED") setError("تم إلغاء هذا الطلب");
+      else if (r.target.paymentStatus === "REFUNDED") setError("تم ردّ قيمة هذا الطلب");
+      else if (!["READY", "SERVED"].includes(r.target.status)) setError("الطلب لم يعد جاهزًا للاستلام الآن");
+    }
     // Linked customer loads automatically — no retyping the phone.
     if (r.target.customer) {
       setCustomer(r.target.customer);
@@ -146,8 +176,8 @@ export function CollectPaymentPanel({
   }, [phone, target?.customer]);
 
   const remaining = target?.remainingAmount ?? 0;
-  const settled = remaining <= 0.001;
-  const shiftBlocked = needsShift && !shiftActive;
+  const settled = isPickup && target ? pickupSettled(target) : remaining <= 0.001;
+  const shiftBlocked = needsShift && !(isPickup ? pickupShiftActive : shiftActive);
 
   // Redemption caps: balance, min, max% of the invoice, and the remaining.
   const cap = target && loyalty && customer
@@ -180,27 +210,116 @@ export function CollectPaymentPanel({
   }
 
   const servable = !!target && target.status === "READY" && canServe && !served;
+  const exactPickupAmount = Number(amount) === requiredToCollect;
+
+  function sendHandoff(id: string) {
+    return awaitPickupResponse((signal) => api(`/api/orders/${encodeURIComponent(id)}/status`, { signal, method: "PATCH", body: { status: "SERVED", pickup: true } }));
+  }
 
   // Serving is its own request through the ordinary status route, so the
   // café's payment, stock and custody rules decide it. A refusal after a
   // successful collection leaves the money recorded and says so plainly.
   async function serveNow(afterCollect: boolean) {
-    if (!target) return;
+    if (!target || handoffInFlight.current) return;
+    handoffInFlight.current = true;
+    setServing(true);
     try {
-      await api(`/api/orders/${target.orderId}/status`, { method: "PATCH", body: { status: "SERVED" } });
+      if (isPickup) await sendHandoff(target.orderId);
+      else await api(`/api/orders/${target.orderId}/status`, { method: "PATCH", body: { status: "SERVED" } });
       setServed(true);
+      setHandoffMessage(null);
+      setHandoffRetry(false);
       toast.success(`الطلب #${target.orderNumber} اتقدم ✅`);
     } catch (e) {
       const reason = e instanceof Error ? e.message : "فشل التقديم";
-      toast.error(afterCollect ? `اتحصّل بس متقدمش: ${reason}` : reason);
+      if (isPickup) {
+        const current = await loadTarget().catch(() => null);
+        if (current?.status === "SERVED") {
+          setServed(true);
+          setHandoffMessage(null);
+          setHandoffRetry(false);
+        } else {
+          const stillReady = current?.status === "READY" && pickupSettled(current);
+          const awaitingHandoff = stillReady || (!current && (afterCollect || settled || !!receipt));
+          setHandoffRetry(stillReady || !current);
+          setHandoffMessage(awaitingHandoff ? `${PAID_AWAITING_HANDOFF}. ${reason}` : reason);
+        }
+      } else toast.error(afterCollect ? `اتحصّل بس متقدمش: ${reason}` : reason);
+    } finally {
+      setServing(false);
+      handoffInFlight.current = false;
+      pickup?.onChange();
+    }
+  }
+
+  async function runPickup(original: PickupCollectionAttempt, retry = false) {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setBusy(true);
+    setCollectionError(null);
+    try {
+      // Keep other collection entry points on the same terminal fenced too.
+      sessionStorage.setItem(pendingKey, JSON.stringify(original));
+      setAttempt(original);
+      const outcome = await resolvePickupCollection(original, {
+        pay: current => awaitPickupResponse(api("/api/payments", {
+          method: "POST", idempotencyKey: current.key,
+          body: { ...current.body, pickup: current.handoff ? "COLLECT_AND_HANDOFF" : "COLLECT" },
+        })),
+        handoff: sendHandoff,
+        read: loadTarget,
+      });
+      try { sessionStorage.removeItem(pendingKey); } catch {}
+      setAttempt(null);
+      if (outcome.kind === "handed-off") setServed(true);
+      if (outcome.kind === "paid-awaiting-handoff" || outcome.kind === "handoff-unconfirmed") {
+        const reason = outcome.error instanceof Error ? outcome.error.message : "";
+        setHandoffRetry(outcome.kind === "paid-awaiting-handoff" || !outcome.current);
+        setHandoffMessage(outcome.kind === "paid-awaiting-handoff"
+          ? `${PAID_AWAITING_HANDOFF}${reason ? `. ${reason}` : ""}`
+          : "تم تسجيل التحصيل وتعذر تأكيد التسليم. راجع حالة الطلب.");
+      } else toast.success(outcome.kind === "handed-off" ? "تم التحصيل وتسليم الطلب" : "تم تحصيل الدفع بنجاح");
+      setReceipt({ paymentId: outcome.paymentId, amount: original.body.amount ?? 0, loyaltyDiscount: 0 });
+    } catch (e) {
+      // Ordinary validation on the first response is final. On replay,
+      // authorization/not-found can hide a previously committed response.
+      const finalRefusal = e instanceof ApiRequestError && e.status >= 400 && e.status < 500
+        && ![408, 409, 425, 429].includes(e.status) && (!retry || ![401, 403, 404].includes(e.status));
+      if (finalRefusal) {
+        try { sessionStorage.removeItem(pendingKey); } catch {}
+        setAttempt(null);
+      }
+      setCollectionError(e instanceof Error ? e.message : "فشل التحصيل");
+      const current = await loadTarget().catch(() => null);
+      if (finalRefusal && current) {
+        setRedeemState({ points: 0, discount: 0 });
+        setAmount(String(current.remainingAmount));
+      }
+    } finally {
+      pickup?.onChange();
+      setBusy(false);
+      inFlight.current = false;
     }
   }
 
   async function collect(andServe = false) {
-    if (!target || inFlight.current) return;
+    if (!target || inFlight.current || initialAttempt.error) return;
     const amt = Number(amount) || 0;
     if (amt <= 0 && redeem.points === 0) return toast.error("مبلغ الدفع يجب أن يكون أكبر من صفر");
     if (amt > requiredToCollect + 0.001) return toast.error("مبلغ الدفع أكبر من المطلوب تحصيله");
+    if (isPickup) {
+      if (attempt || target.status !== "READY" || shiftBlocked || !canKey("pos.collect_payment") || !can("payments:create")) return;
+      if (andServe && (!canServe || !exactPickupAmount)) return;
+      return runPickup({
+        key: clientRequestUuid(),
+        handoff: andServe,
+        reference: { branchId: target.branchId, orderNumber: target.orderNumber },
+        body: {
+          orderId: target.orderId, pickupExpectedRemaining: target.remainingAmount.toFixed(2), ...(amt > 0 ? { amount: amt, method } : {}),
+          ...(redeem.points > 0 ? { loyaltyPointsToRedeem: redeem.points, ...(!target.customer && customer ? { customerPhone: customer.phone } : {}) } : {}),
+        },
+      });
+    }
     inFlight.current = true;
     setCollectionError(null);
     setBusy(true);
@@ -230,7 +349,10 @@ export function CollectPaymentPanel({
       paymentId={receipt.paymentId}
       scope="order"
       onClose={onDone}
-      extraActions={servable ? <Button variant="outline" onClick={() => serveNow(false)}>🍽️ قدّم الطلب دلوقتي</Button> : undefined}
+      extraActions={isPickup ? <>
+        {handoffMessage && <p role="alert" className="text-sm">{handoffMessage}</p>}
+        {handoffRetry && canServe && !served && <Button variant="outline" disabled={serving} onClick={() => void serveNow(false)}>تسليم الطلب</Button>}
+      </> : servable ? <Button variant="outline" disabled={serving} onClick={() => serveNow(false)}>🍽️ قدّم الطلب دلوقتي</Button> : undefined}
     />;
   }
   return (
@@ -238,11 +360,14 @@ export function CollectPaymentPanel({
       <DialogContent className="max-h-[92vh] overflow-y-auto sm:max-w-sm">
         <DialogHeader>
           <DialogTitle>
-            تحصيل الدفع{target ? ` — طلب #${target.orderNumber}` : ""}
+            تحصيل الدفع{target ? ` — طلب #${target.orderNumber}${isPickup ? ` · ${target.branchName}` : ""}` : ""}
           </DialogTitle>
         </DialogHeader>
 
-        {collectionError && <p role="alert" className="text-destructive">{collectionError} — المبلغ والبيانات محفوظة. إعادة نفس المحاولة لا تسجل دفعة أخرى.</p>}
+        {collectionError && <p role="alert" className="text-destructive">{collectionError}{attempt ? " — لازم تأكّد نتيجة نفس المحاولة قبل تحصيل مبلغ جديد." : !isPickup ? " — المبلغ والبيانات محفوظة. إعادة نفس المحاولة لا تسجل دفعة أخرى." : ""}</p>}
+        {initialAttempt.error && <p role="alert" className="text-destructive">{initialAttempt.error}</p>}
+        {attempt && <p role="status" className="text-sm">في محاولة تحصيل بانتظار التأكيد لهذا الطلب.</p>}
+        {handoffMessage && <p role="alert" className="text-sm">{handoffMessage}</p>}
         {busy && <p role="status">جاري تسجيل الدفع…</p>}
         {error ? (
           <div role="alert" className="space-y-3 text-sm text-destructive"><p>{error}</p><Button variant="outline" onClick={()=>void loadTarget().then(t=>setAmount(String(t.remainingAmount))).catch(e=>{if(e?.name!=="AbortError")setError(e instanceof Error?e.message:"فشل التحميل")})}>إعادة المحاولة</Button></div>
@@ -412,11 +537,11 @@ export function CollectPaymentPanel({
             {settled ? (
               <div className="space-y-2">
                 <p className="rounded-lg bg-emerald-500/10 px-3 py-2 text-sm font-medium text-emerald-700 dark:text-emerald-400">
-                  تم تحصيل هذا الحساب بالفعل ✅
+                  {isPickup && target.paymentStatus !== "PAID" ? "لا يوجد مبلغ مستحق على الطلب" : "تم تحصيل هذا الحساب بالفعل ✅"}
                 </p>
-                {servable && (
-                  <Button variant="outline" className="h-10 w-full" onClick={() => serveNow(false)}>
-                    🍽️ قدّم الطلب دلوقتي
+                {servable && !attempt && (
+                  <Button variant="outline" className="h-10 w-full" disabled={serving} onClick={() => serveNow(false)}>
+                    {isPickup ? "تسليم الطلب" : "🍽️ قدّم الطلب دلوقتي"}
                   </Button>
                 )}
               </div>
@@ -460,16 +585,17 @@ export function CollectPaymentPanel({
         {!receipt && (
           <DialogFooter>
             <Button variant="outline" onClick={onClose} disabled={busy}>
-              رجوع لإنشاء طلب
+              {isPickup ? "رجوع" : "رجوع لإنشاء طلب"}
             </Button>
-            {target && !settled && !shiftBlocked && (
+            {attempt && <Button onClick={() => void runPickup(attempt, true)} disabled={busy}>تأكيد نتيجة التحصيل</Button>}
+            {!initialAttempt.error && !attempt && target && !settled && !shiftBlocked && (!isPickup || target.status === "READY") && (
               <Button variant={servable ? "outline" : "default"} onClick={() => collect(false)} disabled={busy}>
                 {busy ? "جاري التحصيل…" : "تحصيل الدفع"}
               </Button>
             )}
-            {target && !settled && !shiftBlocked && servable && (
+            {!initialAttempt.error && !attempt && target && !settled && !shiftBlocked && servable && (!isPickup || exactPickupAmount) && (
               <Button data-testid="collect-and-serve" onClick={() => collect(true)} disabled={busy}>
-                {busy ? "جاري…" : "حصّل وقدّم 🍽️"}
+                {busy ? "جاري…" : isPickup ? "حصّل وسلّم" : "حصّل وقدّم 🍽️"}
               </Button>
             )}
           </DialogFooter>

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 
-import { Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { api } from "@/lib/client";
@@ -29,7 +29,12 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 
-type Branch = { id: string; name: string };
+type Branch = {
+  id: string;
+  name: string;
+  posDefaultOrderType?: "DINE_IN" | "TAKEAWAY";
+  pickupAtCashier?: boolean;
+};
 type FinSettings = {
   taxEnabled: boolean;
   taxRate: number | string;
@@ -141,18 +146,77 @@ function LoyaltySettingsCard() {
   );
 }
 
-function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
+function Toggle({ checked, onChange, label, disabled = false }: { checked: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean }) {
   return (
     <label className="flex cursor-pointer items-center justify-between gap-3">
       <span className="text-sm font-medium">{label}</span>
       <button
-        type="button" role="switch" aria-checked={checked}
+        type="button" role="switch" aria-checked={checked} disabled={disabled}
         onClick={() => onChange(!checked)}
-        className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${checked ? "bg-emerald-500" : "bg-muted-foreground/30"}`}
+        className={`relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:opacity-50 ${checked ? "bg-emerald-500" : "bg-muted-foreground/30"}`}
       >
         <span className={`absolute top-0.5 size-5 rounded-full bg-white shadow transition-all ${checked ? "start-0.5" : "start-[22px]"}`} />
       </button>
     </label>
+  );
+}
+
+function BranchRegisterPrefsCard({ branch, onSaved }: { branch: Branch; onSaved: (updated: Branch) => void }) {
+  const [orderType, setOrderType] = useState<"DINE_IN" | "TAKEAWAY">(branch.posDefaultOrderType ?? "DINE_IN");
+  const [pickupAtCashier, setPickupAtCashier] = useState(Boolean(branch.pickupAtCashier));
+  const [busy, setBusy] = useState(false);
+  const currentBranch = useRef(branch.id);
+  useLayoutEffect(() => { currentBranch.current = branch.id; }, [branch.id]);
+
+  async function save() {
+    const context = branch.id;
+    setBusy(true);
+    try {
+      const res = await api<{ branch: Branch }>(`/api/branches/${encodeURIComponent(context)}`, {
+        method: "PATCH",
+        body: { posDefaultOrderType: orderType, pickupAtCashier },
+      });
+      onSaved(res.branch);
+      if (currentBranch.current === context) {
+        setOrderType(res.branch.posDefaultOrderType ?? orderType);
+        setPickupAtCashier(Boolean(res.branch.pickupAtCashier));
+        toast.success("تم حفظ تفضيلات نقطة البيع والاستلام للفرع");
+      }
+    } catch (e) {
+      if (currentBranch.current === context) {
+        toast.error(e instanceof Error ? e.message : "فشل حفظ تفضيلات الفرع");
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card data-testid="settings-branch-register-prefs">
+      <CardHeader><CardTitle className="text-base">تفضيلات نقطة البيع والاستلام للفرع</CardTitle></CardHeader>
+      <CardContent className="space-y-3">
+        <div className="space-y-1.5">
+          <Label htmlFor={`branch-pos-default-${branch.id}`}>نوع الطلب الافتراضي في الكاشير</Label>
+          <select
+            id={`branch-pos-default-${branch.id}`}
+            value={orderType}
+            disabled={busy}
+            onChange={(e) => setOrderType(e.target.value === "TAKEAWAY" ? "TAKEAWAY" : "DINE_IN")}
+            className="h-9 w-full rounded-lg border border-input bg-background px-3 text-sm"
+          >
+            <option value="DINE_IN">صالة</option>
+            <option value="TAKEAWAY">تيك أواي</option>
+          </select>
+        </div>
+        <Toggle
+          label="استلام طلبات التيك أواي من الكاشير"
+          checked={pickupAtCashier}
+          disabled={busy}
+          onChange={setPickupAtCashier}
+        />
+        <Button onClick={save} disabled={busy}>حفظ تفضيلات الفرع</Button>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -173,6 +237,7 @@ function SettingsWorkspace() {
   const pickedNow = picked && picked.forRequest === requestedBranchId ? picked.id : null;
   const openShiftKnown = !!openShiftBranchId && branches.some((b) => b.id === openShiftBranchId);
   const branchId = user.branchId ?? pickedNow ?? (requestedKnown ? requestedBranchId : null) ?? (openShiftKnown ? openShiftBranchId : null) ?? branches[0]?.id ?? "";
+  const selectedBranch = branches.find((b) => b.id === branchId) ?? null;
   // A requested branch this account cannot use is said out loud instead of silently landing on a different one.
   const branchNotice = requestedBranchId && (user.branchId ? requestedBranchId !== user.branchId : branches.length > 0 && !requestedKnown)
     ? "الفرع المطلوب غير متاح لهذا الحساب — اتفتحت إعدادات فرع تاني. راجع اسم الفرع قبل أي تغيير."
@@ -371,6 +436,14 @@ function SettingsWorkspace() {
           {/* Payment & serving policy — café default, with a branch
               override only where more than one branch exists. */}
           <ServingPolicyCard branchId={branchId} showBranchOverride={branches.length > 1} />
+
+          {selectedBranch && canKey("branches.manage") && (
+            <BranchRegisterPrefsCard
+              key={selectedBranch.id}
+              branch={selectedBranch}
+              onSaved={(updated) => setBranches((prev) => prev.map((b) => (b.id === updated.id ? { ...b, ...updated } : b)))}
+            />
+          )}
 
           <InventoryPolicyCard />
 

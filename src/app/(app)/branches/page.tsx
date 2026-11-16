@@ -5,6 +5,8 @@ import { toast } from "sonner";
 import { api } from "@/lib/client";
 import { useApp } from "@/components/app-shell";
 import { TableQrLinks, publicMenuUrl } from "@/components/table-qr-links";
+import { TouchSelect } from "@/components/pos/touch-select";
+import type { BranchOrderType } from "@/lib/branch-register-preferences";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -33,6 +35,8 @@ type Branch = {
   isActive: boolean;
   menuSlug: string | null;
   publicMenuEnabled: boolean;
+  posDefaultOrderType: BranchOrderType;
+  pickupAtCashier: boolean;
 };
 
 export default function BranchesPage() {
@@ -43,10 +47,11 @@ export default function BranchesPage() {
   const [phone, setPhone] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // إعدادات منيو العميل dialog
   const [settingsFor, setSettingsFor] = useState<Branch | null>(null);
   const [slugDraft, setSlugDraft] = useState("");
   const [enabledDraft, setEnabledDraft] = useState(true);
+  const [defaultOrderTypeDraft, setDefaultOrderTypeDraft] = useState<BranchOrderType>("DINE_IN");
+  const [pickupAtCashierDraft, setPickupAtCashierDraft] = useState(false);
 
   // روابط QR للترابيزات dialog
   const [qrFor, setQrFor] = useState<Branch | null>(null);
@@ -99,7 +104,7 @@ export default function BranchesPage() {
     }
   }
 
-  async function saveMenuSettings() {
+  async function saveBranchSettings() {
     if (!settingsFor) return;
     setBusy(true);
     try {
@@ -108,9 +113,11 @@ export default function BranchesPage() {
         body: {
           publicMenuEnabled: enabledDraft,
           menuSlug: slugDraft.trim() || null,
+          posDefaultOrderType: defaultOrderTypeDraft,
+          pickupAtCashier: pickupAtCashierDraft,
         },
       });
-      toast.success("اتحفظت إعدادات المنيو");
+      toast.success("اتحفظت إعدادات الفرع");
       setSettingsFor(null);
       await load();
     } catch (err) {
@@ -202,10 +209,12 @@ export default function BranchesPage() {
                   onClick={() => {
                     setSlugDraft(b.menuSlug ?? "");
                     setEnabledDraft(b.publicMenuEnabled);
+                    setDefaultOrderTypeDraft(b.posDefaultOrderType);
+                    setPickupAtCashierDraft(b.pickupAtCashier);
                     setSettingsFor(b);
                   }}
                 >
-                  إعدادات منيو العميل
+                  إعدادات الفرع
                 </Button>
                 <Button
                   size="sm"
@@ -221,13 +230,33 @@ export default function BranchesPage() {
         </TableBody>
       </Table>
 
-      {/* ── إعدادات منيو العميل ─────────────────────────────────── */}
       <Dialog open={settingsFor !== null} onOpenChange={(o) => !o && setSettingsFor(null)}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>إعدادات منيو العميل — {settingsFor?.name}</DialogTitle>
+            <DialogTitle>إعدادات الفرع — {settingsFor?.name}</DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="branch-default-order-type">نوع البيع الجديد في الكاشير</Label>
+              <TouchSelect
+                id="branch-default-order-type"
+                className="w-full rounded-md border bg-background p-2 text-sm"
+                value={defaultOrderTypeDraft}
+                onValueChange={(value) => setDefaultOrderTypeDraft(value === "TAKEAWAY" ? "TAKEAWAY" : "DINE_IN")}
+              >
+                <option value="DINE_IN">صالة</option>
+                <option value="TAKEAWAY">تيك أواي</option>
+              </TouchSelect>
+            </div>
+            <label className="flex cursor-pointer items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="size-4 accent-primary"
+                checked={pickupAtCashierDraft}
+                onChange={(e) => setPickupAtCashierDraft(e.target.checked)}
+              />
+              استلام طلبات التيك أواي من الكاشير
+            </label>
             <label className="flex cursor-pointer items-center gap-2 text-sm">
               <input
                 type="checkbox"
@@ -263,7 +292,7 @@ export default function BranchesPage() {
             </div>
           </div>
           <DialogFooter>
-            <Button onClick={saveMenuSettings} disabled={busy}>
+            <Button onClick={saveBranchSettings} disabled={busy}>
               {busy ? "جاري الحفظ…" : "حفظ"}
             </Button>
           </DialogFooter>

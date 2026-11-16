@@ -257,6 +257,7 @@ export const PERMISSION_KEYS: PermKey[] = [
 
   // Receipts (POS customer receipts)
   { key: "receipts.print", module: "POS", label: "طباعة ريسيت العميل" },
+  { key: "receipts.print_pickup", module: "POS", label: "طباعة تذكرة الاستلام فقط" },
   { key: "receipts.reprint", module: "POS", label: "إعادة طباعة الريسيت" },
 
   // Customers & loyalty
@@ -329,7 +330,7 @@ export const LEGACY_TO_KEYS: Record<string, string[]> = {
   // NOTE: pos.collect_payment intentionally does NOT ride here — money
   // collection is centralized behind payments:create (POS cashier flow),
   // so order-takers (waiters) can place orders without touching the drawer.
-  "orders:create": ["pos.view", "pos.create_order", "pos.view_payments", "tables.view", "tables.open", "pos.apply_discount", "customers.lookup", "orders.request_owner_action"],
+  "orders:create": ["pos.view", "pos.create_order", "pos.view_payments", "tables.view", "tables.open", "pos.apply_discount", "customers.lookup", "orders.request_owner_action", "receipts.print_pickup"],
   "orders:read": ["orders.view"],
   "orders:update-status": ["orders.update_status", "kitchen.view", "kitchen.update_status", "orders.request_owner_action"],
   "orders:cancel": ["orders.cancel", "orders.refund", "orders.request_owner_action"],

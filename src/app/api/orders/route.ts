@@ -17,6 +17,7 @@ import {
 import { audit, auditInTransaction } from "@/lib/audit";
 import { checkOwnerOverrideCode, isDiscountManager, overrideCodeFrom, overrideRefusal, recordOwnerOverrideInTransaction, type OwnerOverrideCheck, type OwnerOverrideReason } from "@/lib/owner-override";
 import { orderPage } from "@/lib/order-pagination";
+import { pickupSearchFilter, registerPickupFilter } from "@/lib/register-pickup";
 import { unitPriceExact as computeUnitPrice } from "@/lib/pricing";
 import { recomputeShiftTotals } from "@/lib/shifts";
 import { getBranchFinancialSettings, computeChargesExact as computeCharges } from "@/lib/financials";
@@ -49,6 +50,23 @@ export async function GET(request: NextRequest) {
     const requestedBranch = params.get("branchId");
     // Branch-pinned staff only see their branch's orders.
     const branchId = resolveReadScope(session).branchId ?? requestedBranch;
+    if (params.get("workspace") === "pickup") {
+      const query = (params.get("q") ?? "").trim();
+      if (query.length > 100) throw new ApiError(400, "البحث طويل جدًا");
+      const page = orderPage(params, {
+        cafeId,
+        ...(branchId ? { branchId } : {}),
+        AND: [registerPickupFilter, pickupSearchFilter(query)],
+      });
+      const orders = await db.order.findMany({
+        where: page.where,
+        select: { id: true, orderNumber: true, customerName: true, customer: { select: { name: true } },
+          branch: { select: { id: true, name: true } }, paymentStatus: true, remainingAmount: true, createdAt: true },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        take: page.pageSize + 1,
+      });
+      return NextResponse.json(page.finish(orders));
+    }
 
     // Staff-tracking filters (waiter performance reports build on these).
     const createdById = params.get("createdById");
@@ -450,7 +468,7 @@ export async function POST(request: NextRequest) {
             customerName: data.customerName,
             customerPhone: data.customerPhone,
             deliveryAddress: data.deliveryAddress,
-            tableNumber: data.tableNumber,
+            tableNumber: data.type === "DINE_IN" ? (data.tableNumber?.trim() || null) : null,
             notes: data.notes,
             saleShiftId:shift?.id??null,invoiceDiscountType:invoiceDiscount.type,invoiceDiscountValue:invoiceDiscount.value,
             subtotal: charges.subtotal,

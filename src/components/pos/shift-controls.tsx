@@ -288,10 +288,10 @@ export function ShiftControls({
         <p className="font-medium">فيه تسليم مباشر منتظر استلامك{pendingDirect.previousShiftNumber ? ` من الشيفت #${pendingDirect.previousShiftNumber}` : ""}{pendingDirect.previousCashierName ? ` (الكاشير: ${pendingDirect.previousCashierName})` : ""}{pendingDirect.expectedOpeningCash != null ? ` · عهدة الدرج ${money(pendingDirect.expectedOpeningCash, currency)}` : ""}. افتح الشيفت واستلم العهدة قبل البيع — مينفعش تبدأ من غيره.</p>
         {canViewHandover && <Link className={buttonVariants({ size: "sm", variant: "outline", className: "ms-auto" })} href={pendingDirect.pendingDirectHandoverId ? `${handoverHref}&handoverId=${encodeURIComponent(pendingDirect.pendingDirectHandoverId)}` : handoverHref}>عرض التسليم</Link>}
       </section>}
-      {carried?.source === "CASH_DISPOSITION" && carried.expectedOpeningCash != null && <section className="space-y-1 rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-3 text-sm" data-testid="carryforward-card">
-        <p className="font-medium">عهدة الدرج المرحّلة من الشيفت السابق (#{carried.previousShiftNumber} - الكاشير: {carried.previousCashierName}): <span className="tabular-nums">{money(carried.expectedOpeningCash, currency)}</span></p>
-        <p className="text-xs text-muted-foreground">عند إغلاق شيفتك المطلوب في الدرج = رصيد الافتتاح ده + صافي المبيعات النقدية (بعد المرتجعات والمصروفات من الدرج).</p>
-      </section>}
+      {carried?.source === "CASH_DISPOSITION" && carried.expectedOpeningCash != null && <details className="rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-3 text-sm" data-testid="carryforward-card">
+        <summary className="cursor-pointer font-medium">عهدة الدرج المرحّلة من الشيفت السابق (#{carried.previousShiftNumber} - الكاشير: {carried.previousCashierName}): <span className="tabular-nums">{money(carried.expectedOpeningCash, currency)}</span></summary>
+        <p className="mt-1.5 text-xs text-muted-foreground">عند إغلاق شيفتك المطلوب في الدرج = رصيد الافتتاح ده + صافي المبيعات النقدية (بعد المرتجعات والمصروفات من الدرج).</p>
+      </details>}
 
       {!shift && closeStage === "MATERIALS" && <section className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-sm" data-testid="close-resume-materials">
         <p className="font-medium">الفلوس اتسجلت — فاضل تسليم الخامات.</p>
