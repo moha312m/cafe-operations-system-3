@@ -15,7 +15,8 @@ import type { expenseDto } from "@/lib/expenses";
 
 type Expense = ReturnType<typeof expenseDto>;
 type Category = { id: string; code: string; nameAr: string; archivedAt: string | null };
-type Metadata = { categories: Category[]; branches: { id: string; name: string }[] };
+type ChartAccount = { id: string; code: string; name: string };
+type Metadata = { categories: Category[]; chartAccounts?: ChartAccount[]; branches: { id: string; name: string }[] };
 type Breakdown = { branchId: string; branchName: string; categoryId: string; categoryName: string; categoryCode: string; count: number; paid: number };
 type Listing = { branchNames: Record<string, string>; breakdown: Breakdown[]; expenses: Expense[]; count: number; pageSize: number; totals: { paid: number; returned: number } };
 const field = nativeFieldClassName;
@@ -72,7 +73,7 @@ export function ExpenseWorkspace() {
         if (!live) return;
         setPending(intent); setUncertain(!!intent);
         if (intent && "branchId" in intent.body) {
-          setExpenseBranch(intent.body.branchId); setCategoryId(intent.body.categoryId); setAmount(String(intent.body.amount));
+          setExpenseBranch(intent.body.branchId); setCategoryId(intent.body.categoryId ?? (intent.body.accountId ? `account:${intent.body.accountId}` : "")); setAmount(String(intent.body.amount));
           setDescription(intent.body.description); setReference(intent.body.documentReference ?? "");
         }
         setReadyOwner(intentOwner);
@@ -103,15 +104,25 @@ export function ExpenseWorkspace() {
   async function pay(event: FormEvent) {
     event.preventDefault(); if (!intentReady) return;
     setError(""); setSuccess(""); setFieldErrors({});
+    const selectedAccountId = categoryId.startsWith("account:") ? categoryId.slice("account:".length) : "";
     if (!pending) {
       const missing: Record<string, string> = {};
       if (!expenseBranch) missing.branchId = "اختر فرع الصرف";
-      if (!metadata.categories.some(c => c.id === categoryId && !c.archivedAt)) missing.categoryId = "اختر تصنيفًا نشطًا من القائمة";
+      const validCategory = selectedAccountId
+        ? (metadata.chartAccounts ?? []).some(a => a.id === selectedAccountId)
+        : metadata.categories.some(c => c.id === categoryId && !c.archivedAt);
+      if (!validCategory) missing.categoryId = "اختر تصنيفًا نشطًا من القائمة";
       if (!(Number(amount) > 0)) missing.amount = "أدخل مبلغًا أكبر من صفر";
       if (!description.trim()) missing.description = "اكتب وصف المصروف";
       if (Object.keys(missing).length) { setFieldErrors(missing); return; }
     }
-    const result = pending ? null : expenseInput.safeParse({ branchId: expenseBranch, categoryId, amount: Number(amount), description, ...(reference.trim() ? { documentReference: reference } : {}) });
+    const result = pending ? null : expenseInput.safeParse({
+      branchId: expenseBranch,
+      ...(selectedAccountId ? { accountId: selectedAccountId } : { categoryId }),
+      amount: Number(amount),
+      description,
+      ...(reference.trim() ? { documentReference: reference } : {}),
+    });
     if (result && !result.success) {
       const issues = issueMap(result.error.issues);
       const known = ["branchId", "categoryId", "amount", "description"];
@@ -127,7 +138,7 @@ export function ExpenseWorkspace() {
       setPending(intent);
       const saved = await api<Expense>(intent.path, { method: "POST", body: intent.body, idempotencyKey: intent.key });
       if (!completeExpenseIntent(window.sessionStorage, intentOwner, intent)) throw new Error("هوية الطلب المعلّق اتغيرت؛ راجع نتيجته قبل حركة جديدة");
-      setPending(null); setUncertain(false); setAmount(""); setDescription(""); setReference(""); setSuccess(saved.id); refresh();
+      setPending(null); setUncertain(false); setCategoryId(saved.categoryId); setAmount(""); setDescription(""); setReference(""); setSuccess(saved.id); refresh();
     } catch (e) {
       let keep = !!pending || uncertainResult(e);
       if (intent && !keep) { try { completeExpenseIntent(window.sessionStorage, intentOwner, intent); } catch { keep = true; } }
@@ -166,10 +177,21 @@ export function ExpenseWorkspace() {
   }
   if (!view) return <p role="alert">ليس لديك صلاحية عرض المصروفات.</p>;
   const activeCategories = metadata.categories.filter(c => !c.archivedAt);
+  const existingCodes = new Set(metadata.categories.map(c => c.code));
+  const chartChoices = (metadata.chartAccounts ?? [])
+    .filter(a => !existingCodes.has(a.code))
+    .map(a => ({ id: `account:${a.id}`, code: a.code, nameAr: a.name, fromChart: true as const }));
+  const allChoices = [
+    ...activeCategories.map(c => ({ id: c.id, code: c.code, nameAr: c.nameAr, fromChart: false as const })),
+    ...chartChoices,
+  ];
   const query = categorySearch.trim().toLowerCase();
-  const categoryChoices = metadata.categories.filter(c =>
-    (!!pending && c.id === categoryId) || (!c.archivedAt && (c.id === categoryId || `${c.nameAr} ${c.code}`.toLowerCase().includes(query))));
-  const selectedCategory = metadata.categories.find(c => c.id === categoryId);
+  const pendingArchived = pending
+    ? metadata.categories.filter(c => c.archivedAt && c.id === categoryId).map(c => ({ id: c.id, code: c.code, nameAr: c.nameAr, fromChart: false as const }))
+    : [];
+  const categoryChoices = [...pendingArchived, ...allChoices].filter(c =>
+    (!!pending && c.id === categoryId) || c.id === categoryId || `${c.nameAr} ${c.code}`.toLowerCase().includes(query));
+  const selectedCategory = [...pendingArchived, ...allChoices].find(c => c.id === categoryId);
   const branchLabel = branchId ? (metadata.branches.find(b => b.id === branchId)?.name ?? "فرع محدد") : "كل الفروع";
   const categoryLabel = filterCategory ? (metadata.categories.find(c => c.id === filterCategory)?.nameAr ?? "تصنيف محدد") : "";
   const rangeLabel = from || to ? `${from || "البداية"} ← ${to || "اليوم"}` : "كل الفترات";
@@ -294,9 +316,13 @@ export function ExpenseWorkspace() {
             <div id="expense-category" role="listbox" aria-label="تصنيف المصروف النشط" className="grid max-h-56 gap-2 overflow-y-auto">
               {categoryChoices.map(c => <button key={c.id} type="button" role="option" aria-selected={c.id === categoryId} onClick={() => setCategoryId(c.id)}
                 className={cn("flex min-h-12 items-center justify-between gap-3 rounded-xl border px-4 py-2 text-start text-base", c.id === categoryId ? "border-primary bg-primary/10 font-semibold" : "border-border bg-card hover:border-primary")}>
-                <span className="[overflow-wrap:anywhere]">{c.nameAr} <bdi className="text-sm text-muted-foreground">({c.code})</bdi></span>{c.id === categoryId && <span aria-hidden="true" className="text-primary">✓</span>}</button>)}
+                <span className="[overflow-wrap:anywhere]">{c.nameAr} <bdi className="text-sm text-muted-foreground">({c.code})</bdi>{c.fromChart && <span className="ms-2 rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-muted-foreground">دليل الحسابات</span>}</span>{c.id === categoryId && <span aria-hidden="true" className="text-primary">✓</span>}</button>)}
             </div>
-            {query && !categoryChoices.length && <p role="status" className="text-base text-muted-foreground">لا يوجد تصنيف مطابق للبحث.</p>}
+            {!setupError && !allChoices.length && <div className="space-y-2 rounded-xl border border-dashed border-border p-3 text-sm text-muted-foreground">
+              <p>لا توجد تصنيفات مصروفات أو حسابات مصروفات تشغيلية في دليل الحسابات بعد.</p>
+              {canManageCategories && <button type="button" className={button} onClick={() => { setCreateOpen(false); setCategoriesOpen(true); }}>إعداد تصنيفات المصروفات</button>}
+            </div>}
+            {query && !categoryChoices.length && allChoices.length > 0 && <p role="status" className="text-base text-muted-foreground">لا يوجد تصنيف مطابق للبحث.</p>}
             {selectedCategory && <p className="text-sm text-muted-foreground">التصنيف المختار: <strong className="text-foreground">{selectedCategory.nameAr}</strong></p>}
             {fieldErrors.categoryId && <p role="alert" className="text-sm font-medium text-destructive">{fieldErrors.categoryId}</p>}
           </div>
@@ -307,7 +333,7 @@ export function ExpenseWorkspace() {
             <div><label className={label} htmlFor="expense-reference">مرجع المستند — اختياري</label><input id="expense-reference" className={field} maxLength={200} value={reference} onChange={e => setReference(e.target.value)} /></div>
           </div>
         </fieldset>
-        {!setupError && !activeCategories.length && <div className="space-y-2 rounded-xl border border-border/70 p-4 text-base">
+        {!setupError && !allChoices.length && <div className="space-y-2 rounded-xl border border-border/70 p-4 text-base">
           <p>لا توجد تصنيفات نشطة. يلزم إعداد تصنيف قبل تسجيل المصروف.</p>
           {canManageCategories ? <button type="button" className={button} onClick={() => { setCreateOpen(false); setCategoriesOpen(true); }}>إعداد تصنيفات المصروفات</button>
             : <p>اطلب من مالك الكافيه إتاحة تصنيف للصرف.</p>}

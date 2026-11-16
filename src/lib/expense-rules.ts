@@ -12,7 +12,7 @@ const amount = z.number({ error: "أدخل مبلغًا رقميًا محدود�
   try { expenseAmount(value); } catch (error) { ctx.addIssue({ code: "custom", message: (error as Error).message }); }
 });
 const text = (max: number) => z.string().trim().min(1, "هذا الحقل مطلوب").max(max);
-export const expenseInput = z.object({ branchId: text(128), categoryId: text(128), amount, description: text(500), documentReference: text(200).optional() }).strict();
+export const expenseInput = z.object({ branchId: text(128), categoryId: text(128).optional(), accountId: text(128).optional(), amount, description: text(500), documentReference: text(200).optional() }).strict().refine(v => !!(v.categoryId || v.accountId), { message: "اختر تصنيفًا نشطًا من القائمة", path: ["categoryId"] });
 export const returnInput = z.object({ amount, reason: text(500), documentReference: text(200).optional() }).strict();
 export const categoryInput = z.object({ code: z.string().trim().regex(/^[A-Z0-9_]{1,40}$/, "الكود حروف لاتينية كبيرة وأرقام وشرطة سفلية"), nameAr: text(100), classification: z.literal("OPERATING_EXPENSE") }).strict();
 export const categoryUpdateInput = z.object({ nameAr: text(100).optional(), archived: z.boolean().optional() }).strict().refine(x => x.nameAr !== undefined || x.archived !== undefined);

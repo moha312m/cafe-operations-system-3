@@ -7,6 +7,7 @@ import { requireCashCustodyInTx, lockOperatingExpense } from "@/lib/transaction-
 import { recomputeShiftTotals } from "@/lib/shifts";
 import { decimal, sumMoney } from "@/lib/money";
 import { expenseAmount, assertExpenseReturn, expenseSourceKey, type expenseInput, type returnInput } from "@/lib/expense-rules";
+import { isOperatingExpenseAccount } from "@/lib/accounting/chart-view";
 import type { z } from "zod";
 
 type Identity = { idempotencyScope: string; idempotencyKey: string; requestHash: string };
@@ -29,9 +30,41 @@ export async function recordOperatingExpense(tx: Prisma.TransactionClient, actor
   const currency = branch.cafe.currency;
   if (!isSupportedCurrency(currency)) throw new ApiError(400, "عملة الكافيه غير مدعومة للمصروفات حاليًا");
   const shift = await requireCashCustodyInTx(tx, data.branchId, actor.id);
-  const categories = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "ExpenseCategory" WHERE "id"=${data.categoryId} AND "cafeId"=${actor.cafeId!} AND "archivedAt" IS NULL FOR SHARE`;
-  if (!categories.length) throw new ApiError(400, "اختر بند مصروف تشغيلي معتمد وغير مؤرشف");
-  const category = await tx.expenseCategory.findUniqueOrThrow({ where: { id: data.categoryId } });
+  let category;
+  if (data.categoryId) {
+    const categories = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "ExpenseCategory" WHERE "id"=${data.categoryId} AND "cafeId"=${actor.cafeId!} AND "archivedAt" IS NULL FOR SHARE`;
+    if (!categories.length) throw new ApiError(400, "اختر بند مصروف تشغيلي معتمد وغير مؤرشف");
+    category = await tx.expenseCategory.findUniqueOrThrow({ where: { id: data.categoryId } });
+  } else if (data.accountId) {
+    const account = await tx.accountingAccount.findFirst({
+      where: { id: data.accountId, cafeId: actor.cafeId! },
+      select: { id: true, code: true, name: true, type: true, isPostable: true, isActive: true, systemKey: true },
+    });
+    if (!account || !isOperatingExpenseAccount(account)) {
+      throw new ApiError(400, "اختر حساب مصروف تشغيلي نشط يقبل القيود");
+    }
+    const existing = await tx.expenseCategory.findUnique({
+      where: { cafeId_code: { cafeId: actor.cafeId!, code: account.code } },
+    });
+    if (existing) {
+      if (existing.archivedAt) throw new ApiError(400, "اختر بند مصروف تشغيلي معتمد وغير مؤرشف");
+      category = existing;
+    } else {
+      category = await tx.expenseCategory.create({
+        data: { cafeId: actor.cafeId!, code: account.code, nameAr: account.name, createdById: actor.id },
+      });
+      await auditInTransaction(tx, {
+        cafeId: actor.cafeId,
+        userId: actor.id,
+        action: "EXPENSE_CATEGORY_CREATED",
+        entity: "ExpenseCategory",
+        entityId: category.id,
+        details: { code: category.code, nameAr: category.nameAr, classification: "OPERATING_EXPENSE", fromAccountId: account.id },
+      });
+    }
+  } else {
+    throw new ApiError(400, "اختر بند مصروف تشغيلي معتمد وغير مؤرشف");
+  }
   const amount = expenseAmount(data.amount);
   const fresh = await recomputeExpenseDrawer(shift.id, tx);
   if (!fresh || fresh.status !== "OPEN") throw new ApiError(409, "الدرج لم يعد مفتوحًا");
